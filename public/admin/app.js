@@ -58,11 +58,12 @@ function toast(message, type = "success") {
 
 let confirmResolve = null;
 
-function showConfirm(title, message, actionLabel = "confirm") {
+function showConfirm(title, message, actionLabel = "confirm", extrasHtml = "") {
   return new Promise((resolve) => {
     confirmResolve = resolve;
     $("#confirm-title").textContent = title;
     $("#confirm-message").textContent = message;
+    $("#confirm-extras").innerHTML = extrasHtml;
     $("#btn-confirm-action").textContent = actionLabel;
     $("#modal-confirm").classList.add("open");
   });
@@ -293,7 +294,12 @@ function renderKeys() {
 
 function setupSnippetForKey(key) {
   if (!key) return "# create an API key to generate setup snippet";
-  return `OPENCODE_MODELS_URL=${APP_ORIGIN}\nKLEIS_API_KEY=${key.key}`;
+  return [
+    "# kleis models live under kleis/* alongside built-in providers",
+    `export OPENCODE_MODELS_URL=${APP_ORIGIN}`,
+    `export KLEIS_API_KEY=${key.key}`,
+    "opencode models --refresh",
+  ].join("\n");
 }
 
 function renderSetupSnippet() {
@@ -495,8 +501,9 @@ async function rotateKey(id, button) {
   const label = existing.label || maskKey(existing.key);
   const confirmed = await showConfirm(
     "Rotate API Key",
-    `Create a new key with the same settings as "${label}"? The old key will remain active unless you check "revoke old key after rotate".`,
-    "rotate"
+    `Create a new key with the same settings as "${label}".`,
+    "rotate",
+    '<label class="scope-check" style="margin-top:14px;margin-bottom:0"><input id="rotate-revoke-old" type="checkbox"> revoke old key after rotate</label>'
   );
   if (!confirmed) return;
 
