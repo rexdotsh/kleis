@@ -1,21 +1,47 @@
-```txt
-npm install
-npm run dev
-```
+# Kleis
+
+Cloudflare Workers OAuth proxy scaffold for Copilot, Codex, and Claude accounts.
+
+## Local Dev
 
 ```txt
-npm run deploy
+bun install
+bun run cf-typegen
+bun run dev
 ```
 
-[For generating/synchronizing types based on your Worker configuration run](https://developers.cloudflare.com/workers/wrangler/commands/#types):
+## Typecheck and Lint
 
 ```txt
-npm run cf-typegen
+bun run typecheck
+bun run lint
 ```
 
-Pass the `CloudflareBindings` as generics when instantiation `Hono`:
+- `typecheck` uses `tsgo` from `@typescript/native-preview`.
+- `tsconfig.json` sets `noEmit: true`, so running TS checks does not write `.js` files into `src/`.
 
-```ts
-// src/index.ts
-const app = new Hono<{ Bindings: CloudflareBindings }>()
+## D1 + Drizzle
+
+Generate migrations from schema:
+
+```txt
+bun run db:generate
+```
+
+Apply migrations locally:
+
+```txt
+bun run db:migrate:local
+```
+
+Apply migrations remotely:
+
+```txt
+bun run db:migrate:remote
+```
+
+## Deploy
+
+```txt
+bun run deploy
 ```
