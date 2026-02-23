@@ -15,6 +15,12 @@ const APP_ORIGIN = window.location.origin;
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+function escapeHtml(str) {
+  const el = document.createElement("span");
+  el.textContent = str;
+  return el.innerHTML;
+}
+
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("Content-Type", "application/json");
@@ -34,10 +40,8 @@ async function api(path, options = {}) {
         `${body?.message || "Too many requests"}. Retry in ${retryAfter}s`
       );
     }
-
     throw new Error(body?.message || `Request failed (${res.status})`);
   }
-
   return body;
 }
 
@@ -50,6 +54,26 @@ function toast(message, type = "success") {
     el.classList.add("removing");
     setTimeout(() => el.remove(), 150);
   }, 3500);
+}
+
+let confirmResolve = null;
+
+function showConfirm(title, message, actionLabel = "confirm") {
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+    $("#confirm-title").textContent = title;
+    $("#confirm-message").textContent = message;
+    $("#btn-confirm-action").textContent = actionLabel;
+    $("#modal-confirm").classList.add("open");
+  });
+}
+
+function resolveConfirm(value) {
+  if (confirmResolve) {
+    confirmResolve(value);
+    confirmResolve = null;
+  }
+  $("#modal-confirm").classList.remove("open");
 }
 
 function relativeTime(ts) {
@@ -71,23 +95,6 @@ function relativeTime(ts) {
   });
 }
 
-function exactTime(ts) {
-  if (!ts) return "n/a";
-  return new Date(ts).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
-}
-
-function formatTimeMeta(ts, empty = "n/a") {
-  if (!ts) return empty;
-  return `${relativeTime(ts)} • ${exactTime(ts)}`;
-}
-
 function expiryCountdown(expiresAt) {
   if (!expiresAt) return "unknown";
   const seconds = Math.floor((expiresAt - Date.now()) / 1000);
@@ -98,137 +105,6 @@ function expiryCountdown(expiresAt) {
   return `${Math.floor(seconds / 86_400)}d left`;
 }
 
-function firstUsableKey() {
-  const now = Date.now();
-  const active = state.keys.find(
-    (key) => !key.revokedAt && (!key.expiresAt || key.expiresAt > now)
-  );
-  if (active) {
-    return active;
-  }
-
-  return state.keys.find((key) => !key.revokedAt) ?? state.keys[0] ?? null;
-}
-
-function keyById(keyId) {
-  return state.keys.find((key) => key.id === keyId) ?? null;
-}
-
-function usageForKey(keyId) {
-  return state.keyUsageById.get(keyId) ?? null;
-}
-
-function usageWindowLabel(windowMs) {
-  if (windowMs % 86_400_000 === 0) {
-    return `${windowMs / 86_400_000}d`;
-  }
-
-  if (windowMs % 3_600_000 === 0) {
-    return `${windowMs / 3_600_000}h`;
-  }
-
-  if (windowMs % 60_000 === 0) {
-    return `${windowMs / 60_000}m`;
-  }
-
-  return `${Math.floor(windowMs / 1000)}s`;
-}
-
-function usageSuccessRate(usage) {
-  if (!usage || !usage.requestCount) {
-    return null;
-  }
-
-  return Math.round((usage.successCount / usage.requestCount) * 100);
-}
-
-function usageProviderBreakdown(usage) {
-  if (!usage?.providers?.length) {
-    return null;
-  }
-
-  return usage.providers
-    .map((item) => `${item.provider}:${item.requestCount}`)
-    .join(" ");
-}
-
-function usageMapFromList(items) {
-  const usageById = new Map();
-  if (!Array.isArray(items)) {
-    return usageById;
-  }
-
-  for (const usage of items) {
-    if (!usage?.apiKeyId) {
-      continue;
-    }
-
-    usageById.set(usage.apiKeyId, usage);
-  }
-
-  return usageById;
-}
-
-function setupSnippetForKey(key) {
-  if (!key) {
-    return "# create an API key to generate setup snippet";
-  }
-
-  return `OPENCODE_MODELS_URL=${APP_ORIGIN}\nKLEIS_API_KEY=${key.key}`;
-}
-
-function renderSetupSnippet() {
-  const keySelect = $("#setup-key-select");
-  const copyButton = $("#btn-copy-setup");
-  const snippet = $("#setup-snippet");
-  if (!keySelect || !copyButton || !snippet) {
-    return;
-  }
-
-  const previousSelection = state.setupKeyId;
-  const fallback = firstUsableKey();
-  const selected =
-    (previousSelection ? keyById(previousSelection) : null) ?? fallback;
-  state.setupKeyId = selected?.id ?? null;
-
-  keySelect.innerHTML = state.keys
-    .map((key) => {
-      const status = key.revokedAt
-        ? "revoked"
-        : key.expiresAt && key.expiresAt <= Date.now()
-          ? "expired"
-          : "active";
-      const label = key.label || maskKey(key.key);
-      const selectedAttr = key.id === state.setupKeyId ? " selected" : "";
-      return `<option value="${key.id}"${selectedAttr}>${escapeHtml(label)} (${status})</option>`;
-    })
-    .join("");
-
-  const hasKey = Boolean(selected);
-  keySelect.disabled = !hasKey;
-  copyButton.disabled = !hasKey;
-  snippet.textContent = setupSnippetForKey(selected);
-}
-
-function showKeyReveal(fullKey) {
-  const reveal = document.createElement("div");
-  reveal.className = "key-reveal";
-  const revealValue = document.createElement("span");
-  revealValue.className = "key-reveal-value";
-  revealValue.textContent = fullKey;
-  reveal.append(revealValue);
-  const copyButton = document.createElement("button");
-  copyButton.className = "btn btn-ghost btn-sm";
-  copyButton.type = "button";
-  copyButton.textContent = "copy";
-  copyButton.addEventListener("click", () =>
-    copyToClipboard(fullKey, copyButton)
-  );
-  reveal.append(copyButton);
-  $("#keys-list").prepend(reveal);
-  setTimeout(() => reveal.remove(), 30_000);
-}
-
 function tokenStatus(expiresAt) {
   if (!expiresAt) return { label: "unknown", class: "unknown" };
   return expiresAt > Date.now()
@@ -236,14 +112,47 @@ function tokenStatus(expiresAt) {
     : { label: "expired", class: "expired" };
 }
 
-function escapeHtml(str) {
-  const el = document.createElement("span");
-  el.textContent = str;
-  return el.innerHTML;
-}
-
 function maskKey(k) {
   return k.length <= 12 ? k : `${k.slice(0, 8)}...${k.slice(-4)}`;
+}
+
+function firstUsableKey() {
+  const now = Date.now();
+  const active = state.keys.find(
+    (key) => !key.revokedAt && (!key.expiresAt || key.expiresAt > now)
+  );
+  return (
+    active || state.keys.find((key) => !key.revokedAt) || state.keys[0] || null
+  );
+}
+
+function keyById(keyId) {
+  return state.keys.find((key) => key.id === keyId) || null;
+}
+
+function usageForKey(keyId) {
+  return state.keyUsageById.get(keyId) || null;
+}
+
+function usageWindowLabel(windowMs) {
+  if (windowMs % 86_400_000 === 0) return `${windowMs / 86_400_000}d`;
+  if (windowMs % 3_600_000 === 0) return `${windowMs / 3_600_000}h`;
+  if (windowMs % 60_000 === 0) return `${windowMs / 60_000}m`;
+  return `${Math.floor(windowMs / 1000)}s`;
+}
+
+function usageSuccessRate(usage) {
+  if (!usage?.requestCount) return null;
+  return Math.round((usage.successCount / usage.requestCount) * 100);
+}
+
+function usageMapFromList(items) {
+  const map = new Map();
+  if (!Array.isArray(items)) return map;
+  for (const u of items) {
+    if (u?.apiKeyId) map.set(u.apiKeyId, u);
+  }
+  return map;
 }
 
 function switchToTab(name) {
@@ -253,8 +162,43 @@ function switchToTab(name) {
     p.classList.toggle("active", p.id === `panel-${name}`);
 }
 
-function meta(label, value) {
-  return `<span class="card-meta-item"><span class="card-meta-label">${label}</span> <span class="card-meta-value">${value}</span></span>`;
+function showLoading(containerId) {
+  const el = $(`#${containerId}`);
+  if (el && !el.querySelector(".loading-indicator")) {
+    el.innerHTML =
+      '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
+  }
+}
+
+function accountCardHtml(account) {
+  const s = tokenStatus(account.expiresAt);
+  const name = account.label || account.accountId || account.id;
+
+  const setPrimaryBtn = account.isPrimary
+    ? ""
+    : `<button class="btn btn-ghost btn-sm" data-action="set-primary" data-account-id="${account.id}" type="button">set primary</button>`;
+
+  return `<div class="card" data-account-id="${account.id}">
+    <div class="card-top">
+      <div class="card-identity">
+        <span class="badge badge-${account.provider}">${account.provider}</span>
+        <span class="card-label">${escapeHtml(name)}</span>
+        ${account.isPrimary ? '<span class="badge badge-primary">primary</span>' : ""}
+      </div>
+      <div class="card-actions">
+        ${setPrimaryBtn}
+        <button class="btn btn-ghost btn-sm" data-action="refresh-account" data-account-id="${account.id}" type="button">refresh</button>
+      </div>
+    </div>
+    <div class="card-status">
+      <span class="status-dot ${s.class}"></span>
+      <span>${s.label}</span>
+      <span class="dot-sep"></span>
+      <span>${escapeHtml(expiryCountdown(account.expiresAt))}</span>
+      ${account.lastRefreshAt ? `<span class="dot-sep"></span><span>refreshed ${escapeHtml(relativeTime(account.lastRefreshAt))}</span>` : ""}
+      ${account.lastRefreshStatus && account.lastRefreshStatus !== "success" ? `<span class="dot-sep"></span><span style="color:var(--red)">${escapeHtml(account.lastRefreshStatus)}</span>` : ""}
+    </div>
+  </div>`;
 }
 
 function renderAccounts() {
@@ -265,16 +209,68 @@ function renderAccounts() {
 
   if (!accounts.length) {
     $("#accounts-list").innerHTML =
-      `<div class="empty-state"><div class="empty-state-icon">&mdash;</div><div class="empty-state-text">No provider accounts connected yet.</div><button class="btn btn-primary btn-sm" type="button" onclick="switchToTab('oauth')">connect a provider</button></div>`;
+      '<div class="empty-state"><div class="empty-state-text">No provider accounts connected yet.</div><button class="btn btn-primary btn-sm" type="button" data-action="go-connect">connect a provider</button></div>';
     return;
   }
 
-  $("#accounts-list").innerHTML = accounts
-    .map((a) => {
-      const s = tokenStatus(a.expiresAt);
-      return `<div class="card" data-account-id="${a.id}"><div class="card-header"><div class="card-identity"><span class="status-dot ${s.class}"></span><span class="badge badge-${a.provider}">${a.provider}</span><span class="card-label">${escapeHtml(a.label || a.accountId || a.id)}</span>${a.isPrimary ? '<span class="badge badge-primary">primary</span>' : ""}</div><div class="card-actions">${a.isPrimary ? "" : `<button class="btn btn-ghost btn-sm" data-action="set-primary" data-account-id="${a.id}" type="button">set primary</button>`}<button class="btn btn-ghost btn-sm" data-action="refresh-account" data-account-id="${a.id}" type="button">refresh</button></div></div><div class="card-meta">${meta("status", `<span class="badge badge-${s.class}">${s.label}</span>`)}${meta("ttl", `<span class="badge badge-${s.class}">${escapeHtml(expiryCountdown(a.expiresAt))}</span>`)}${meta("expires", escapeHtml(formatTimeMeta(a.expiresAt)))}${meta("last refresh", escapeHtml(formatTimeMeta(a.lastRefreshAt, "never")))}${a.lastRefreshStatus ? meta("refresh result", escapeHtml(a.lastRefreshStatus)) : ""}${meta("added", escapeHtml(formatTimeMeta(a.createdAt)))}</div></div>`;
-    })
-    .join("");
+  $("#accounts-list").innerHTML = accounts.map(accountCardHtml).join("");
+}
+
+function keyCardHtml(key) {
+  const revoked = !!key.revokedAt;
+  const expired = !revoked && key.expiresAt && key.expiresAt < Date.now();
+  const status = revoked ? "revoked" : expired ? "expired" : "active";
+  const isRevealed = state.revealedKeyIds.has(key.id);
+  const keyDisplay = isRevealed ? key.key : maskKey(key.key);
+  const usage = usageForKey(key.id);
+  const successRate = usageSuccessRate(usage);
+  const windowLabel = usageWindowLabel(state.keyUsageWindowMs);
+
+  const scopeBadges = key.providerScopes
+    ? key.providerScopes
+        .map((p) => `<span class="badge badge-${p}">${p}</span>`)
+        .join(" ")
+    : '<span style="color:var(--text-tertiary)">all providers</span>';
+
+  const metaParts = [`<span class="card-meta-item">${scopeBadges}</span>`];
+
+  if (usage?.requestCount) {
+    metaParts.push(
+      `<span class="card-meta-item">${usage.requestCount} reqs (${windowLabel})</span>`
+    );
+  }
+  if (successRate !== null) {
+    metaParts.push(
+      `<span class="card-meta-item">${successRate}% success</span>`
+    );
+  }
+  if (usage?.avgLatencyMs) {
+    metaParts.push(
+      `<span class="card-meta-item">${usage.avgLatencyMs}ms avg</span>`
+    );
+  }
+  if (!revoked && key.expiresAt) {
+    metaParts.push(
+      `<span class="card-meta-item"><span class="badge badge-${status}">${escapeHtml(expiryCountdown(key.expiresAt))}</span></span>`
+    );
+  }
+
+  return `<div class="card">
+    <div class="card-top">
+      <div class="card-identity">
+        <span class="card-label">${escapeHtml(key.label || "untitled")}</span>
+        <span class="badge badge-${status}">${status}</span>
+      </div>
+      <div class="card-actions">
+        <button class="btn btn-ghost btn-sm" data-action="copy-key" data-key-id="${key.id}" type="button">copy</button>
+        <button class="btn btn-ghost btn-sm" data-action="toggle-key" data-key-id="${key.id}" type="button">${isRevealed ? "hide" : "show"}</button>
+        ${revoked ? "" : `<button class="btn btn-ghost btn-sm" data-action="rotate-key" data-key-id="${key.id}" type="button">rotate</button>`}
+        ${revoked ? "" : `<button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${key.id}" type="button">revoke</button>`}
+      </div>
+    </div>
+    <div class="card-key"><code>${escapeHtml(keyDisplay)}</code></div>
+    <div class="card-meta">${metaParts.join("")}</div>
+  </div>`;
 }
 
 function renderKeys() {
@@ -283,47 +279,98 @@ function renderKeys() {
 
   if (!keys.length) {
     $("#keys-list").innerHTML =
-      `<div class="empty-state"><div class="empty-state-icon">&mdash;</div><div class="empty-state-text">No API keys created yet.</div><button class="btn btn-primary btn-sm" type="button" onclick="openCreateKeyModal()">create one</button></div>`;
+      '<div class="empty-state"><div class="empty-state-text">No API keys created yet.</div><button class="btn btn-primary btn-sm" type="button" data-action="open-create-key">create one</button></div>';
     return;
   }
 
-  $("#keys-list").innerHTML = keys
-    .map((k) => {
-      const revoked = !!k.revokedAt;
-      const expired = k.expiresAt && k.expiresAt < Date.now();
-      const badge = revoked ? "revoked" : expired ? "expired" : "active";
-      const fullKey = k.key;
-      const isRevealed = state.revealedKeyIds.has(k.id);
-      const keyValue = isRevealed ? fullKey : maskKey(fullKey);
-      const revealAction = `<button class="btn btn-ghost btn-sm" data-action="toggle-key" data-key-id="${k.id}" type="button">${isRevealed ? "hide" : "show"}</button>`;
-      const copyAction = `<button class="btn btn-ghost btn-sm" data-action="copy-key" data-key-id="${k.id}" type="button">copy</button>`;
-      const rotateAction = revoked
-        ? ""
-        : `<button class="btn btn-ghost btn-sm" data-action="rotate-key" data-key-id="${k.id}" type="button">rotate</button>`;
-      const scopes = k.providerScopes
-        ? k.providerScopes
-            .map((p) => `<span class="badge badge-${p}">${p}</span>`)
-            .join(" ")
-        : '<span style="color:var(--text-tertiary)">all</span>';
-      const models = k.modelScopes
-        ? k.modelScopes
-            .map(
-              (m) =>
-                `<span style="color:var(--text-secondary)">${escapeHtml(m)}</span>`
-            )
-            .join(", ")
-        : '<span style="color:var(--text-tertiary)">all</span>';
-      const usage = usageForKey(k.id);
-      const usageWindow = usageWindowLabel(state.keyUsageWindowMs);
-      const usageRate = usageSuccessRate(usage);
-      const providerBreakdown = usageProviderBreakdown(usage);
+  const activeIds = new Set(keys.map((k) => k.id));
+  for (const id of state.revealedKeyIds) {
+    if (!activeIds.has(id)) state.revealedKeyIds.delete(id);
+  }
 
-      return `<div class="card"><div class="card-header"><div class="card-identity"><span class="card-label">${escapeHtml(k.label || "untitled")}</span><span class="badge badge-${badge}">${badge}</span></div><div class="card-actions">${copyAction}${revealAction}${rotateAction}${revoked ? "" : `<button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${k.id}" type="button">revoke</button>`}</div></div><div class="card-meta">${meta("key", `<span style="font-size:10px">${escapeHtml(keyValue)}</span>`)}${meta("providers", scopes)}${meta("models", models)}${meta("created", escapeHtml(formatTimeMeta(k.createdAt)))}${meta(`${usageWindow} reqs`, `<span class="card-meta-value">${usage?.requestCount ?? 0}</span>`)}${usageRate === null ? "" : meta("success", `<span class="card-meta-value">${usageRate}%</span>`)}${usage ? meta("avg latency", `<span class="card-meta-value">${usage.avgLatencyMs}ms</span>`) : ""}${usage?.lastRequestAt ? meta("last used", escapeHtml(formatTimeMeta(usage.lastRequestAt, "never"))) : ""}${providerBreakdown ? meta("traffic", escapeHtml(providerBreakdown)) : ""}${meta("ttl", `<span class="badge badge-${badge}">${escapeHtml(expiryCountdown(k.expiresAt))}</span>`)}${k.expiresAt ? meta("expires", escapeHtml(formatTimeMeta(k.expiresAt))) : ""}</div></div>`;
+  $("#keys-list").innerHTML = keys.map(keyCardHtml).join("");
+}
+
+function setupSnippetForKey(key) {
+  if (!key) return "# create an API key to generate setup snippet";
+  return `OPENCODE_MODELS_URL=${APP_ORIGIN}\nKLEIS_API_KEY=${key.key}`;
+}
+
+function renderSetupSnippet() {
+  const keySelect = $("#setup-key-select");
+  const snippet = $("#setup-snippet");
+  const copyBtn = $("#btn-copy-setup");
+  if (!keySelect || !snippet || !copyBtn) return;
+
+  const fallback = firstUsableKey();
+  const selected =
+    (state.setupKeyId ? keyById(state.setupKeyId) : null) || fallback;
+  state.setupKeyId = selected?.id || null;
+
+  keySelect.innerHTML = state.keys
+    .map((key) => {
+      const status = key.revokedAt
+        ? "revoked"
+        : key.expiresAt && key.expiresAt <= Date.now()
+          ? "expired"
+          : "active";
+      const label = key.label || maskKey(key.key);
+      const sel = key.id === state.setupKeyId ? " selected" : "";
+      return `<option value="${key.id}"${sel}>${escapeHtml(label)} (${status})</option>`;
     })
     .join("");
+
+  const hasKey = Boolean(selected);
+  keySelect.disabled = !hasKey;
+  copyBtn.disabled = !hasKey;
+  snippet.textContent = setupSnippetForKey(selected);
+}
+
+function showKeyReveal(fullKey) {
+  const reveal = document.createElement("div");
+  reveal.className = "key-reveal";
+  const value = document.createElement("span");
+  value.className = "key-reveal-value";
+  value.textContent = fullKey;
+  reveal.append(value);
+  const btn = document.createElement("button");
+  btn.className = "btn btn-ghost btn-sm";
+  btn.type = "button";
+  btn.textContent = "copy";
+  btn.addEventListener("click", () => copyToClipboard(fullKey, btn));
+  reveal.append(btn);
+  $("#keys-list").prepend(reveal);
+  setTimeout(() => reveal.remove(), 30_000);
+}
+
+function renderOAuthFlow(data, provider) {
+  const container = $("#oauth-flow-active");
+  container.style.display = "block";
+
+  const urlStep = `<div class="oauth-step"><span class="oauth-step-num">1</span><div><div style="margin-bottom:4px">Open the authorization page:</div><div class="oauth-url"><a href="${escapeHtml(data.authorizationUrl)}" target="_blank" rel="noopener">${escapeHtml(data.authorizationUrl)}</a></div></div></div>`;
+
+  const instrStep = data.instructions
+    ? `<div class="oauth-step"><span class="oauth-step-num">2</span><div><div class="oauth-instructions">${escapeHtml(data.instructions)}</div></div></div>`
+    : "";
+
+  const lastNum = data.instructions ? 3 : 2;
+  const isDevice = data.method === "auto";
+
+  const completeStep = isDevice
+    ? '<div style="margin-bottom:8px">Once you have authorized, click complete:</div><button class="btn btn-primary" type="button" id="btn-oauth-complete">complete flow</button>'
+    : '<div style="margin-bottom:8px">After authorizing, paste callback code or full callback URL:</div><input id="oauth-code" class="field-input" type="text" placeholder="code or callback URL" style="margin-bottom:8px"><button class="btn btn-primary" type="button" id="btn-oauth-complete">complete flow</button>';
+
+  container.innerHTML = `<div class="oauth-flow-panel">
+    <div class="oauth-flow-title">Active Flow: <span class="badge badge-${provider}">${provider}</span></div>
+    ${urlStep}${instrStep}
+    <div class="oauth-step"><span class="oauth-step-num">${lastNum}</span><div>${completeStep}</div></div>
+  </div>`;
+
+  $("#btn-oauth-complete").addEventListener("click", completeOAuth);
 }
 
 async function loadAccounts() {
+  showLoading("accounts-list");
   try {
     state.accounts = (await api("/admin/accounts")).accounts || [];
     renderAccounts();
@@ -332,7 +379,45 @@ async function loadAccounts() {
   }
 }
 
+async function loadKeys() {
+  showLoading("keys-list");
+  try {
+    const [keysResult, usageResult] = await Promise.allSettled([
+      api("/admin/keys"),
+      api(`/admin/keys/usage?windowMs=${state.keyUsageWindowMs}`),
+    ]);
+
+    if (keysResult.status !== "fulfilled") throw keysResult.reason;
+
+    state.keys = keysResult.value.keys || [];
+
+    if (usageResult.status === "fulfilled") {
+      if (typeof usageResult.value.windowMs === "number") {
+        state.keyUsageWindowMs = usageResult.value.windowMs;
+      }
+      state.keyUsageById = usageMapFromList(usageResult.value.usage);
+    } else {
+      state.keyUsageById = new Map();
+      toast("Failed to load API key usage", "error");
+    }
+
+    renderKeys();
+    renderSetupSnippet();
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
 async function setPrimary(id) {
+  const account = state.accounts.find((a) => a.id === id);
+  const name = account?.label || account?.accountId || id;
+  const confirmed = await showConfirm(
+    "Set Primary Account",
+    `Set "${name}" as the primary ${account?.provider || ""} account? Requests will be routed to this account.`,
+    "set primary"
+  );
+  if (!confirmed) return;
+
   try {
     await api(`/admin/accounts/${id}/primary`, { method: "POST" });
     toast("Account set as primary");
@@ -344,7 +429,7 @@ async function setPrimary(id) {
 
 async function refreshAccount(id) {
   const btn = document.querySelector(
-    `[data-account-id="${id}"] .card-actions button:last-child`
+    `[data-action="refresh-account"][data-account-id="${id}"]`
   );
   if (btn) {
     btn.disabled = true;
@@ -360,41 +445,6 @@ async function refreshAccount(id) {
       btn.disabled = false;
       btn.textContent = "refresh";
     }
-  }
-}
-
-async function loadKeys() {
-  try {
-    const [keysResult, usageResult] = await Promise.allSettled([
-      api("/admin/keys"),
-      api(`/admin/keys/usage?windowMs=${state.keyUsageWindowMs}`),
-    ]);
-
-    if (keysResult.status !== "fulfilled") {
-      throw keysResult.reason;
-    }
-
-    state.keys = keysResult.value.keys || [];
-    if (usageResult.status === "fulfilled") {
-      if (typeof usageResult.value.windowMs === "number") {
-        state.keyUsageWindowMs = usageResult.value.windowMs;
-      }
-      state.keyUsageById = usageMapFromList(usageResult.value.usage);
-    } else {
-      state.keyUsageById = new Map();
-      toast("Failed to load API key usage analytics", "error");
-    }
-
-    const activeIds = new Set(state.keys.map((key) => key.id));
-    for (const keyId of state.revealedKeyIds) {
-      if (!activeIds.has(keyId)) {
-        state.revealedKeyIds.delete(keyId);
-      }
-    }
-    renderKeys();
-    renderSetupSnippet();
-  } catch (e) {
-    toast(e.message, "error");
   }
 }
 
@@ -442,6 +492,14 @@ async function rotateKey(id, button) {
     return;
   }
 
+  const label = existing.label || maskKey(existing.key);
+  const confirmed = await showConfirm(
+    "Rotate API Key",
+    `Create a new key with the same settings as "${label}"? The old key will remain active unless you check "revoke old key after rotate".`,
+    "rotate"
+  );
+  if (!confirmed) return;
+
   const payload = {
     label: existing.label || undefined,
     providerScopes: existing.providerScopes || undefined,
@@ -476,6 +534,15 @@ async function rotateKey(id, button) {
 }
 
 async function revokeKey(id) {
+  const key = keyById(id);
+  const label = key?.label || maskKey(key?.key || id);
+  const confirmed = await showConfirm(
+    "Revoke API Key",
+    `Revoke "${label}"? Any clients using this key will stop working immediately. This cannot be undone.`,
+    "revoke"
+  );
+  if (!confirmed) return;
+
   try {
     await api(`/admin/keys/${id}/revoke`, { method: "POST" });
     toast("Key revoked");
@@ -503,9 +570,6 @@ function updateOAuthProviderUI() {
   $("#oauth-claude-opts").style.display = p === "claude" ? "block" : "none";
 }
 
-$("#oauth-provider").addEventListener("change", updateOAuthProviderUI);
-updateOAuthProviderUI();
-
 async function startOAuth() {
   const provider = $("#oauth-provider").value;
   const btn = $("#btn-oauth-start");
@@ -517,8 +581,9 @@ async function startOAuth() {
     if (provider === "copilot") {
       const ed = $("#oauth-enterprise-domain").value.trim();
       if (ed) body.options = { enterpriseDomain: ed };
-    } else if (provider === "claude")
+    } else if (provider === "claude") {
       body.options = { mode: $("#oauth-claude-mode").value };
+    }
 
     const data = await api(`/admin/accounts/${provider}/oauth/start`, {
       method: "POST",
@@ -533,21 +598,6 @@ async function startOAuth() {
     btn.disabled = false;
     btn.innerHTML = "start oauth flow";
   }
-}
-
-function renderOAuthFlow(data, provider) {
-  const c = $("#oauth-flow-active");
-  c.style.display = "block";
-  const device = data.method === "auto";
-  const urlStep = `<div class="oauth-step"><span class="oauth-step-num">1</span><div><div style="margin-bottom:4px">Open the authorization page:</div><div class="oauth-url"><a href="${escapeHtml(data.authorizationUrl)}" target="_blank" rel="noopener">${escapeHtml(data.authorizationUrl)}</a></div></div></div>`;
-  const instrStep = data.instructions
-    ? `<div class="oauth-step"><span class="oauth-step-num">2</span><div><div class="oauth-instructions">${escapeHtml(data.instructions)}</div></div></div>`
-    : "";
-  const lastNum = data.instructions ? 3 : 2;
-  const completeStep = device
-    ? `<div style="margin-bottom:8px">Once you have authorized, click complete:</div><button class="btn btn-primary" onclick="completeOAuth()" type="button" id="btn-oauth-complete">complete flow</button>`
-    : `<div style="margin-bottom:8px">After authorizing, paste callback code or full callback URL:</div><input id="oauth-code" class="field-input" type="text" placeholder="code or callback URL" style="margin-bottom:8px"><button class="btn btn-primary" onclick="completeOAuth()" type="button" id="btn-oauth-complete">complete flow</button>`;
-  c.innerHTML = `<div class="oauth-flow-panel"><div class="oauth-flow-title">Active Flow: <span class="badge badge-${provider}">${provider}</span></div>${urlStep}${instrStep}<div class="oauth-step"><span class="oauth-step-num">${lastNum}</span><div>${completeStep}</div></div></div>`;
 }
 
 async function completeOAuth() {
@@ -613,11 +663,7 @@ async function importAccount() {
     }
   }
 
-  const body = {
-    accessToken,
-    refreshToken,
-    expiresAt,
-  };
+  const body = { accessToken, refreshToken, expiresAt };
   if (accountId) body.accountId = accountId;
   if (label) body.label = label;
   if (metadata) body.metadata = metadata;
@@ -631,12 +677,16 @@ async function importAccount() {
       body: JSON.stringify(body),
     });
     toast("Account imported");
-    $("#import-access-token").value = "";
-    $("#import-refresh-token").value = "";
-    $("#import-expires-at").value = "";
-    $("#import-account-id").value = "";
-    $("#import-label").value = "";
-    $("#import-metadata").value = "";
+    for (const id of [
+      "import-access-token",
+      "import-refresh-token",
+      "import-expires-at",
+      "import-account-id",
+      "import-label",
+      "import-metadata",
+    ]) {
+      $(`#${id}`).value = "";
+    }
     await loadAccounts();
     switchToTab("accounts");
   } catch (e) {
@@ -693,111 +743,49 @@ function logout() {
   $("#login-error").textContent = "";
 }
 
-window.completeOAuth = completeOAuth;
-window.switchToTab = switchToTab;
-window.openCreateKeyModal = openCreateKeyModal;
-
-$("#accounts-list").addEventListener("click", (event) => {
-  const target = event.target;
-  if (!(target instanceof Element)) {
-    return;
-  }
-
-  const button = target.closest("button[data-action][data-account-id]");
-  if (!(button instanceof HTMLButtonElement)) {
-    return;
-  }
-
-  const accountId = button.dataset.accountId;
-  if (!accountId) {
-    return;
-  }
+$("#accounts-list").addEventListener("click", (e) => {
+  const button = e.target.closest("button[data-action]");
+  if (!button) return;
 
   const action = button.dataset.action;
-  if (action === "set-primary") {
-    setPrimary(accountId);
+  const accountId = button.dataset.accountId;
+
+  if (action === "go-connect") {
+    switchToTab("oauth");
     return;
   }
-
-  if (action === "refresh-account") {
-    refreshAccount(accountId);
-  }
+  if (!accountId) return;
+  if (action === "set-primary") setPrimary(accountId);
+  if (action === "refresh-account") refreshAccount(accountId);
 });
 
-$("#keys-list").addEventListener("click", (event) => {
-  const target = event.target;
-  if (!(target instanceof Element)) {
-    return;
-  }
-
-  const button = target.closest("button[data-action][data-key-id]");
-  if (!(button instanceof HTMLButtonElement)) {
-    return;
-  }
+$("#keys-list").addEventListener("click", (e) => {
+  const button = e.target.closest("button[data-action]");
+  if (!button) return;
 
   const action = button.dataset.action;
   const keyId = button.dataset.keyId;
-  if (!keyId) {
+
+  if (action === "open-create-key") {
+    openCreateKeyModal();
     return;
   }
+  if (!keyId) return;
 
   if (action === "copy-key") {
-    const key = state.keys.find((item) => item.id === keyId);
-    if (!key) {
-      toast("Full key is unavailable", "error");
-      return;
-    }
-
-    copyToClipboard(key.key, button);
+    const key = keyById(keyId);
+    if (key) copyToClipboard(key.key, button);
+    else toast("Key unavailable", "error");
     return;
   }
-
   if (action === "toggle-key") {
-    if (state.revealedKeyIds.has(keyId)) {
-      state.revealedKeyIds.delete(keyId);
-    } else {
-      state.revealedKeyIds.add(keyId);
-    }
+    if (state.revealedKeyIds.has(keyId)) state.revealedKeyIds.delete(keyId);
+    else state.revealedKeyIds.add(keyId);
     renderKeys();
     return;
   }
-
-  if (action === "rotate-key") {
-    rotateKey(keyId, button);
-    return;
-  }
-
-  if (action === "revoke-key") {
-    revokeKey(keyId);
-  }
-});
-
-$("#setup-key-select").addEventListener("change", (event) => {
-  const target = event.target;
-  if (!(target instanceof HTMLSelectElement)) {
-    return;
-  }
-
-  state.setupKeyId = target.value || null;
-  renderSetupSnippet();
-});
-
-$("#btn-copy-setup").addEventListener("click", (event) => {
-  const button = event.currentTarget;
-  if (!(button instanceof HTMLButtonElement)) {
-    return;
-  }
-
-  const selected = state.setupKeyId
-    ? keyById(state.setupKeyId)
-    : firstUsableKey();
-  if (!selected) {
-    toast("Create an API key first", "error");
-    return;
-  }
-
-  const snippet = setupSnippetForKey(selected);
-  copyToClipboard(snippet, button);
+  if (action === "rotate-key") rotateKey(keyId, button);
+  if (action === "revoke-key") revokeKey(keyId);
 });
 
 $("#login-btn").addEventListener("click", handleLogin);
@@ -812,26 +800,51 @@ $("#btn-modal-create-key").addEventListener("click", createKey);
 $("#btn-oauth-start").addEventListener("click", startOAuth);
 $("#btn-import-account").addEventListener("click", importAccount);
 
+$("#oauth-provider").addEventListener("change", updateOAuthProviderUI);
+updateOAuthProviderUI();
+
+$("#setup-key-select").addEventListener("change", (e) => {
+  state.setupKeyId = e.target.value || null;
+  renderSetupSnippet();
+});
+
+$("#btn-copy-setup").addEventListener("click", (e) => {
+  const selected = state.setupKeyId
+    ? keyById(state.setupKeyId)
+    : firstUsableKey();
+  if (!selected) {
+    toast("Create an API key first", "error");
+    return;
+  }
+  copyToClipboard(setupSnippetForKey(selected), e.currentTarget);
+});
+
 for (const tab of $$(".tab")) {
-  tab.addEventListener("click", () => {
-    for (const t of $$(".tab")) t.classList.remove("active");
-    for (const p of $$(".tab-panel")) p.classList.remove("active");
-    tab.classList.add("active");
-    $(`#panel-${tab.dataset.tab}`).classList.add("active");
-  });
+  tab.addEventListener("click", () => switchToTab(tab.dataset.tab));
 }
 
-for (const el of $$(".modal-close"))
+for (const el of $$(".modal-close")) {
   el.addEventListener("click", () =>
     el.closest(".modal-backdrop").classList.remove("open")
   );
-for (const b of $$(".modal-backdrop"))
-  b.addEventListener("click", (e) => {
-    if (e.target === b) b.classList.remove("open");
+}
+for (const backdrop of $$(".modal-backdrop")) {
+  backdrop.addEventListener("click", (e) => {
+    if (e.target !== backdrop) return;
+    if (backdrop.id === "modal-confirm") resolveConfirm(false);
+    else backdrop.classList.remove("open");
   });
+}
+$("#btn-confirm-cancel").addEventListener("click", () => resolveConfirm(false));
+$("#btn-confirm-action").addEventListener("click", () => resolveConfirm(true));
+
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape")
-    for (const m of $$(".modal-backdrop.open")) m.classList.remove("open");
+  if (e.key !== "Escape") return;
+  if ($("#modal-confirm").classList.contains("open")) {
+    resolveConfirm(false);
+    return;
+  }
+  for (const m of $$(".modal-backdrop.open")) m.classList.remove("open");
 });
 
 (async () => {

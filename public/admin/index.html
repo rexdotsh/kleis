@@ -88,6 +88,7 @@
     #login-gate.hidden {
       display: none;
     }
+
     .login-box {
       width: 320px;
       text-align: center;
@@ -198,17 +199,6 @@
       padding: 5px 10px;
       font-size: 11px;
     }
-    .btn-block {
-      width: 100%;
-      justify-content: center;
-    }
-    .login-form .btn {
-      height: 40px;
-      border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-      padding: 0 18px;
-      font-size: 12px;
-      flex-shrink: 0;
-    }
 
     #app {
       display: none;
@@ -216,6 +206,7 @@
     #app.visible {
       display: block;
     }
+
     .shell {
       max-width: 1080px;
       margin: 0 auto;
@@ -318,17 +309,18 @@
     .card:hover {
       border-color: var(--border);
     }
-    .card-header {
+    .card-top {
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
-      margin-bottom: 14px;
+      gap: 12px;
     }
     .card-identity {
       display: flex;
       align-items: center;
       gap: 10px;
       min-width: 0;
+      flex-wrap: wrap;
     }
     .card-actions {
       display: flex;
@@ -343,21 +335,47 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+
+    .card-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      flex-wrap: wrap;
+    }
+
+    .card-key {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--text-tertiary);
+    }
+    .card-key code {
+      font-family: var(--font-mono);
+      user-select: all;
+    }
+
     .card-meta {
       display: flex;
       flex-wrap: wrap;
-      gap: 16px;
+      gap: 14px;
+      margin-top: 12px;
       font-size: 11px;
       color: var(--text-tertiary);
     }
     .card-meta-item {
-      display: flex;
+      display: inline-flex;
       align-items: center;
       gap: 5px;
     }
-    .card-meta-value {
-      color: var(--text-secondary);
-      font-weight: 500;
+
+    .dot-sep {
+      color: var(--text-tertiary);
+      opacity: 0.5;
+    }
+    .dot-sep::before {
+      content: "\00b7";
     }
 
     .badge {
@@ -424,51 +442,16 @@
       padding: 48px 20px;
       color: var(--text-tertiary);
     }
-    .empty-state-icon {
-      font-size: 28px;
-      margin-bottom: 12px;
-      opacity: 0.4;
-    }
     .empty-state-text {
       font-size: 13px;
       margin-bottom: 16px;
     }
 
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      z-index: 900;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(4px);
-      display: none;
+    .loading-indicator {
+      display: flex;
       align-items: center;
       justify-content: center;
-    }
-    .modal-backdrop.open {
-      display: flex;
-    }
-    .modal {
-      background: var(--bg-surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      padding: 28px;
-      width: 440px;
-      max-width: 90vw;
-      max-height: 85vh;
-      overflow-y: auto;
-      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
-    }
-    .modal-title {
-      font-family: var(--font-display);
-      font-size: 1.05rem;
-      font-weight: 600;
-      margin-bottom: 20px;
-    }
-    .modal-footer {
-      display: flex;
-      justify-content: flex-end;
-      gap: 8px;
-      margin-top: 24px;
+      padding: 48px 20px;
     }
 
     .field {
@@ -506,7 +489,7 @@
     }
     textarea.field-input {
       resize: vertical;
-      min-height: 100px;
+      min-height: 80px;
       line-height: 1.45;
     }
     select.field-input {
@@ -531,6 +514,51 @@
       cursor: pointer;
       font-size: 12px;
       color: var(--text-secondary);
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 900;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-backdrop.open {
+      display: flex;
+    }
+    .modal {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px;
+      width: 440px;
+      max-width: 90vw;
+      max-height: 85vh;
+      overflow-y: auto;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+    }
+    .modal-sm {
+      width: 380px;
+    }
+    .modal-title {
+      font-family: var(--font-display);
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 20px;
+    }
+    .modal-body {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 24px;
     }
 
     #toast-container {
@@ -647,7 +675,7 @@
       background: var(--bg-root);
       border: 1px dashed var(--amber-dim);
       border-radius: var(--radius-sm);
-      margin-top: 12px;
+      margin-bottom: 12px;
     }
     .key-reveal-value {
       flex: 1;
@@ -672,12 +700,42 @@
       user-select: all;
     }
 
-    .snippet-actions {
+    .collapsible {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      background: var(--bg-surface);
+      margin-top: 14px;
+      transition: border-color 200ms ease;
+    }
+    .collapsible:hover {
+      border-color: var(--border);
+    }
+    .collapsible > summary {
+      padding: 16px 20px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      list-style: none;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-top: 10px;
+      gap: 8px;
+      user-select: none;
+    }
+    .collapsible > summary::-webkit-details-marker {
+      display: none;
+    }
+    .collapsible > summary::before {
+      content: "\25B8";
+      font-size: 10px;
+      color: var(--text-tertiary);
+      transition: transform 150ms ease;
+    }
+    .collapsible[open] > summary::before {
+      transform: rotate(90deg);
+    }
+    .collapsible-body {
+      padding: 0 20px 20px;
     }
 
     .spinner {
@@ -689,6 +747,12 @@
       border-radius: 50%;
       animation: spin 600ms linear infinite;
     }
+    .spinner-lg {
+      width: 24px;
+      height: 24px;
+      border-width: 2.5px;
+    }
+
     @keyframes spin {
       to {
         transform: rotate(360deg);
@@ -720,13 +784,20 @@
       .header-tag {
         display: none;
       }
-      .card-meta {
-        flex-direction: column;
-        gap: 6px;
-      }
       .tab {
         padding: 10px 12px;
         font-size: 11px;
+      }
+      .card-top {
+        flex-direction: column;
+        gap: 10px;
+      }
+      .card-actions {
+        align-self: flex-start;
+        flex-wrap: wrap;
+      }
+      .card-meta {
+        gap: 8px;
       }
     }
     </style>
@@ -819,30 +890,28 @@
 
           <div class="card">
             <div
-              class="section-title"
-              style="font-size:13px;margin-bottom:10px"
+              style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px"
             >
-              OpenCode setup snippet
-            </div>
-            <div class="field">
-              <label class="field-label" for="setup-key-select"
-                >API key for snippet</label
+              <span class="section-title" style="font-size:13px"
+                >Setup snippet</span
               >
-              <select id="setup-key-select" class="field-input"></select>
-            </div>
-            <pre id="setup-snippet" class="snippet-block"></pre>
-            <div class="snippet-actions">
-              <label class="scope-check" style="margin-bottom:0">
-                <input id="rotate-revoke-old" type="checkbox">
-                revoke old key after rotate
-              </label>
               <button
                 id="btn-copy-setup"
                 class="btn btn-primary btn-sm"
                 type="button"
               >
-                copy snippet
+                copy
               </button>
+            </div>
+            <div class="field" style="margin-bottom:8px">
+              <select id="setup-key-select" class="field-input"></select>
+            </div>
+            <pre id="setup-snippet" class="snippet-block"></pre>
+            <div style="margin-top:8px">
+              <label class="scope-check" style="margin-bottom:0">
+                <input id="rotate-revoke-old" type="checkbox">
+                revoke old key after rotate
+              </label>
             </div>
           </div>
 
@@ -853,6 +922,7 @@
           <div class="section-header">
             <span class="section-title">Connect Provider</span>
           </div>
+
           <div class="card">
             <div class="field-hint" style="margin-bottom:14px">
               OAuth flow (recommended)
@@ -866,9 +936,9 @@
               </select>
             </div>
             <div id="oauth-copilot-opts" class="field">
-              <label class="field-label" for="oauth-enterprise-domain"
-                >Enterprise Domain (optional)</label
-              >
+              <label class="field-label" for="oauth-enterprise-domain">
+                Enterprise Domain (optional)
+              </label>
               <input
                 id="oauth-enterprise-domain"
                 class="field-input"
@@ -878,9 +948,9 @@
               <div class="field-hint">Leave blank for github.com</div>
             </div>
             <div id="oauth-claude-opts" class="field" style="display:none">
-              <label class="field-label" for="oauth-claude-mode"
-                >OAuth Mode</label
-              >
+              <label class="field-label" for="oauth-claude-mode">
+                OAuth Mode
+              </label>
               <select id="oauth-claude-mode" class="field-input">
                 <option value="max">Max (claude.ai)</option>
                 <option value="console">Console (console.anthropic.com)</option>
@@ -890,103 +960,106 @@
               start oauth flow
             </button>
           </div>
+
           <div id="oauth-flow-active" style="display:none"></div>
 
-          <div class="card" style="margin-top:14px">
-            <div class="field-hint" style="margin-bottom:14px">
-              Manual token import
-            </div>
-            <div class="field">
-              <label class="field-label" for="import-provider">Provider</label>
-              <select id="import-provider" class="field-input">
-                <option value="copilot">Copilot (GitHub)</option>
-                <option value="codex">Codex (OpenAI)</option>
-                <option value="claude">Claude (Anthropic)</option>
-              </select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="import-access-token"
-                >Access Token</label
-              >
-              <input
-                id="import-access-token"
-                class="field-input"
-                type="text"
-                placeholder="access token"
-                autocomplete="off"
-                spellcheck="false"
-              >
-            </div>
-            <div class="field">
-              <label class="field-label" for="import-refresh-token"
-                >Refresh Token</label
-              >
-              <input
-                id="import-refresh-token"
-                class="field-input"
-                type="text"
-                placeholder="refresh token"
-                autocomplete="off"
-                spellcheck="false"
-              >
-            </div>
-            <div class="field">
-              <label class="field-label" for="import-expires-at"
-                >Expires At (unix seconds or ms)</label
-              >
-              <input
-                id="import-expires-at"
-                class="field-input"
-                type="number"
-                placeholder="1767225600000"
-              >
-              <div class="field-hint">
-                If omitted, defaults to one hour from now.
+          <details class="collapsible">
+            <summary>Manual token import</summary>
+            <div class="collapsible-body">
+              <div class="field">
+                <label class="field-label" for="import-provider">
+                  Provider
+                </label>
+                <select id="import-provider" class="field-input">
+                  <option value="copilot">Copilot (GitHub)</option>
+                  <option value="codex">Codex (OpenAI)</option>
+                  <option value="claude">Claude (Anthropic)</option>
+                </select>
               </div>
-            </div>
-            <div class="field">
-              <label class="field-label" for="import-account-id"
-                >Account ID (optional)</label
-              >
-              <input
-                id="import-account-id"
-                class="field-input"
-                type="text"
-                placeholder="chatgpt-org-id or github user id"
-              >
-            </div>
-            <div class="field">
-              <label class="field-label" for="import-label"
-                >Label (optional)</label
-              >
-              <input
-                id="import-label"
-                class="field-input"
-                type="text"
-                placeholder="my-main-account"
-              >
-            </div>
-            <div class="field">
-              <label class="field-label" for="import-metadata"
-                >Metadata JSON (optional)</label
-              >
-              <textarea
-                id="import-metadata"
-                class="field-input"
-                placeholder='{"chatgptAccountId":"org_123"}'
-              ></textarea>
-              <div class="field-hint">
-                Optional provider metadata. Leave empty to apply sane defaults.
+              <div class="field">
+                <label class="field-label" for="import-access-token">
+                  Access Token
+                </label>
+                <input
+                  id="import-access-token"
+                  class="field-input"
+                  type="text"
+                  placeholder="access token"
+                  autocomplete="off"
+                  spellcheck="false"
+                >
               </div>
+              <div class="field">
+                <label class="field-label" for="import-refresh-token">
+                  Refresh Token
+                </label>
+                <input
+                  id="import-refresh-token"
+                  class="field-input"
+                  type="text"
+                  placeholder="refresh token"
+                  autocomplete="off"
+                  spellcheck="false"
+                >
+              </div>
+              <div class="field">
+                <label class="field-label" for="import-expires-at">
+                  Expires At (unix seconds or ms)
+                </label>
+                <input
+                  id="import-expires-at"
+                  class="field-input"
+                  type="number"
+                  placeholder="1767225600000"
+                >
+                <div class="field-hint">
+                  If omitted, defaults to one hour from now.
+                </div>
+              </div>
+              <div class="field">
+                <label class="field-label" for="import-account-id">
+                  Account ID (optional)
+                </label>
+                <input
+                  id="import-account-id"
+                  class="field-input"
+                  type="text"
+                  placeholder="chatgpt-org-id or github user id"
+                >
+              </div>
+              <div class="field">
+                <label class="field-label" for="import-label">
+                  Label (optional)
+                </label>
+                <input
+                  id="import-label"
+                  class="field-input"
+                  type="text"
+                  placeholder="my-main-account"
+                >
+              </div>
+              <div class="field">
+                <label class="field-label" for="import-metadata">
+                  Metadata JSON (optional)
+                </label>
+                <textarea
+                  id="import-metadata"
+                  class="field-input"
+                  placeholder='{"chatgptAccountId":"org_123"}'
+                ></textarea>
+                <div class="field-hint">
+                  Optional provider metadata. Leave empty for defaults.
+                </div>
+              </div>
+              <button
+                id="btn-import-account"
+                class="btn btn-primary"
+                type="button"
+              >
+                import account
+              </button>
             </div>
-            <button
-              id="btn-import-account"
-              class="btn btn-primary"
-              type="button"
-            >
-              import account
-            </button>
-          </div>
+          </details>
         </div>
       </div>
     </div>
@@ -1007,23 +1080,25 @@
         <div class="field">
           <label class="field-label">Provider Scopes</label>
           <div class="field-hint" style="margin-bottom:8px">
-            Select which providers this key can access. Leave empty for all.
+            Leave empty for all providers.
           </div>
-          <label class="scope-check"
-            ><input type="checkbox" value="copilot" class="key-scope-provider">
-            copilot (github-copilot)</label
-          >
-          <label class="scope-check"
-            ><input type="checkbox" value="codex" class="key-scope-provider">
-            codex (openai)</label
-          >
-          <label class="scope-check"
-            ><input type="checkbox" value="claude" class="key-scope-provider">
-            claude (anthropic)</label
-          >
+          <label class="scope-check">
+            <input type="checkbox" value="copilot" class="key-scope-provider">
+            copilot
+          </label>
+          <label class="scope-check">
+            <input type="checkbox" value="codex" class="key-scope-provider">
+            codex
+          </label>
+          <label class="scope-check">
+            <input type="checkbox" value="claude" class="key-scope-provider">
+            claude
+          </label>
         </div>
         <div class="field">
-          <label class="field-label" for="key-model-scopes">Model Scopes</label>
+          <label class="field-label" for="key-model-scopes">
+            Model Scopes
+          </label>
           <input
             id="key-model-scopes"
             class="field-input"
@@ -1044,6 +1119,21 @@
             type="button"
           >
             create
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-confirm" class="modal-backdrop">
+      <div class="modal modal-sm">
+        <div class="modal-title" id="confirm-title"></div>
+        <div class="modal-body" id="confirm-message"></div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" id="btn-confirm-cancel" type="button">
+            cancel
+          </button>
+          <button class="btn btn-danger" id="btn-confirm-action" type="button">
+            confirm
           </button>
         </div>
       </div>
