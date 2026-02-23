@@ -37,13 +37,14 @@ const sleep = (milliseconds: number): Promise<void> =>
 const waitForInFlightRefresh = async (
   database: Database,
   accountId: string,
-  now: number
+  now: number,
+  forceRefresh: boolean
 ): Promise<ProviderAccountRecord | null> => {
   const deadline = Date.now() + REFRESH_WAIT_TIMEOUT_MS;
   let account = await findProviderAccountById(database, accountId);
 
   while (account && Date.now() < deadline) {
-    if (account.expiresAt > now) {
+    if (!forceRefresh && account.expiresAt > now) {
       return account;
     }
 
@@ -61,7 +62,8 @@ const waitForInFlightRefresh = async (
 const refreshProviderAccountWithLock = async (
   database: Database,
   accountId: string,
-  lockToken: string
+  lockToken: string,
+  forceRefresh: boolean
 ): Promise<ProviderAccountRecord | null> => {
   try {
     const account = await findProviderAccountById(database, accountId);
@@ -70,7 +72,7 @@ const refreshProviderAccountWithLock = async (
     }
 
     const refreshNow = Date.now();
-    if (account.expiresAt > refreshNow) {
+    if (!forceRefresh && account.expiresAt > refreshNow) {
       return account;
     }
 
@@ -203,8 +205,12 @@ export const importProviderAccount = (
 export const refreshProviderAccount = async (
   database: Database,
   accountId: string,
-  now: number
+  now: number,
+  input?: {
+    force?: boolean;
+  }
 ): Promise<ProviderAccountRecord | null> => {
+  const forceRefresh = input?.force ?? false;
   const account = await findProviderAccountById(database, accountId);
   if (!account) {
     return null;
@@ -223,15 +229,25 @@ export const refreshProviderAccount = async (
   );
 
   if (lockAcquired) {
-    return refreshProviderAccountWithLock(database, account.id, lockToken);
+    return refreshProviderAccountWithLock(
+      database,
+      account.id,
+      lockToken,
+      forceRefresh
+    );
   }
 
-  const waited = await waitForInFlightRefresh(database, account.id, now);
+  const waited = await waitForInFlightRefresh(
+    database,
+    account.id,
+    now,
+    forceRefresh
+  );
   if (!waited) {
     return null;
   }
 
-  if (waited.expiresAt > now) {
+  if (!forceRefresh && waited.expiresAt > now) {
     return waited;
   }
 
@@ -251,7 +267,12 @@ export const refreshProviderAccount = async (
     throw new Error("Provider account refresh is already in progress");
   }
 
-  return refreshProviderAccountWithLock(database, account.id, retryLockToken);
+  return refreshProviderAccountWithLock(
+    database,
+    account.id,
+    retryLockToken,
+    forceRefresh
+  );
 };
 
 export const getPrimaryProviderAccount = async (

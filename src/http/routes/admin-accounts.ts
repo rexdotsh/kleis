@@ -116,7 +116,9 @@ export const adminAccountsRoutes = new Hono()
     zValidator("param", accountIdParamsSchema),
     async (context) => {
       const { id } = context.req.valid("param");
-      const account = await refreshProviderAccount(db, id, Date.now());
+      const account = await refreshProviderAccount(db, id, Date.now(), {
+        force: true,
+      });
       if (!account) {
         return context.json(
           {
