@@ -3,7 +3,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun --hot --no-clear-screen run src/index.ts",
-    "check": "bun run typecheck && bun run lint",
+    "build": "bun run db:migrate && bun run typecheck && bun run lint",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
     "lint": "bun x ultracite check",
     "test": "bun test tests/providers/proxy-contract.test.ts tests/http/routing-auth-contract.test.ts",
