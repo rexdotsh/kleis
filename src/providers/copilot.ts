@@ -19,14 +19,7 @@ import type {
 
 const COPILOT_CLIENT_ID = "Ov23li8tweQw6odWQebz";
 const POLLING_SAFETY_MARGIN_MS = 3000;
-const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
-
-const copilotHeaders = {
-  "User-Agent": "GitHubCopilotChat/0.35.0",
-  "Editor-Version": "vscode/1.107.0",
-  "Editor-Plugin-Version": "copilot-chat/0.35.0",
-  "Copilot-Integration-Id": "vscode-chat",
-} as const;
+const COPILOT_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const copilotStateMetadataSchema = z.strictObject({
   domain: z.string().min(1),
@@ -48,11 +41,6 @@ type DeviceTokenResponse = {
   access_token?: string;
   error?: string;
   interval?: number;
-};
-
-type CopilotTokenResponse = {
-  token?: string;
-  expires_at?: number;
 };
 
 type GithubUserResponse = {
@@ -85,18 +73,17 @@ const normalizeDomain = (input: string): string | null => {
 const resolveCopilotUrls = (domain: string) => ({
   deviceCodeUrl: `https://${domain}/login/device/code`,
   accessTokenUrl: `https://${domain}/login/oauth/access_token`,
-  copilotTokenUrl: `https://api.${domain}/copilot_internal/v2/token`,
   userUrl: `https://api.${domain}/user`,
 });
 
-const parseCopilotApiBaseUrl = (token: string): string | null => {
-  const proxyMatch = token.match(/proxy-ep=([^;]+)/);
-  if (!proxyMatch?.[1]) {
+const parseCopilotEnterpriseApiBaseUrl = (
+  enterpriseDomain: string | null
+): string | null => {
+  if (!enterpriseDomain) {
     return null;
   }
 
-  const apiHost = proxyMatch[1].replace(/^proxy\./, "api.");
-  return `https://${apiHost}`;
+  return `https://copilot-api.${enterpriseDomain}`;
 };
 
 const parseGithubUserId = (value: string | null | undefined): number | null => {
@@ -209,32 +196,6 @@ const pollGithubAccessToken = async (input: {
   throw new Error("Copilot device flow timed out");
 };
 
-const requestCopilotAccessToken = async (
-  domain: string,
-  githubAccessToken: string
-) => {
-  const urls = resolveCopilotUrls(domain);
-  const response = await fetch(urls.copilotTokenUrl, {
-    headers: {
-      Accept: "application/json",
-      Authorization: `Bearer ${githubAccessToken}`,
-      ...copilotHeaders,
-    },
-  });
-
-  await requireOkResponse(response, "Copilot token request failed");
-
-  const body = (await response.json()) as CopilotTokenResponse;
-  if (!body.token || typeof body.expires_at !== "number") {
-    throw new Error("Copilot token response is malformed");
-  }
-
-  return {
-    accessToken: body.token,
-    expiresAt: body.expires_at * 1000 - TOKEN_REFRESH_BUFFER_MS,
-  };
-};
-
 const requestGithubUser = async (
   domain: string,
   githubAccessToken: string
@@ -268,7 +229,7 @@ const buildCopilotMetadata = (input: {
   scope: input.scope ?? input.existing?.scope ?? null,
   enterpriseDomain: input.enterpriseDomain,
   copilotApiBaseUrl:
-    parseCopilotApiBaseUrl(input.accessToken) ??
+    parseCopilotEnterpriseApiBaseUrl(input.enterpriseDomain) ??
     input.existing?.copilotApiBaseUrl ??
     null,
   githubUserId:
@@ -376,15 +337,12 @@ export const copilotAdapter: ProviderAdapter = {
       expiresAt: stateRecord.expiresAt,
     });
 
-    const copilotToken = await requestCopilotAccessToken(
-      metadata.domain,
-      githubAccessToken
-    );
     const user = await requestGithubUser(metadata.domain, githubAccessToken);
+
     return buildTokenResult({
-      accessToken: copilotToken.accessToken,
+      accessToken: githubAccessToken,
       refreshToken: githubAccessToken,
-      expiresAt: copilotToken.expiresAt,
+      expiresAt: input.now + COPILOT_TOKEN_TTL_MS,
       tokenType: null,
       scope: null,
       enterpriseDomain: metadata.enterpriseDomain,
@@ -394,17 +352,12 @@ export const copilotAdapter: ProviderAdapter = {
       fallbackLabel: null,
     });
   },
-  async refreshAccount(
+  refreshAccount(
     account: ProviderAccountRecord,
-    _now: number
+    now: number
   ): Promise<ProviderTokenResult> {
     const existing =
       account.metadata?.provider === "copilot" ? account.metadata : null;
-    const domain = existing?.enterpriseDomain ?? "github.com";
-    const copilotToken = await requestCopilotAccessToken(
-      domain,
-      account.refreshToken
-    );
     const existingGithubUserId = parseGithubUserId(existing?.githubUserId);
     const existingUser: GithubUserResponse | null =
       existingGithubUserId !== null ||
@@ -419,17 +372,19 @@ export const copilotAdapter: ProviderAdapter = {
           }
         : null;
 
-    return buildTokenResult({
-      accessToken: copilotToken.accessToken,
-      refreshToken: account.refreshToken,
-      expiresAt: copilotToken.expiresAt,
-      tokenType: existing?.tokenType ?? null,
-      scope: existing?.scope ?? null,
-      enterpriseDomain: existing?.enterpriseDomain ?? null,
-      user: existingUser,
-      existing,
-      fallbackAccountId: account.accountId,
-      fallbackLabel: account.label,
-    });
+    return Promise.resolve(
+      buildTokenResult({
+        accessToken: account.refreshToken,
+        refreshToken: account.refreshToken,
+        expiresAt: now + COPILOT_TOKEN_TTL_MS,
+        tokenType: existing?.tokenType ?? null,
+        scope: existing?.scope ?? null,
+        enterpriseDomain: existing?.enterpriseDomain ?? null,
+        user: existingUser,
+        existing,
+        fallbackAccountId: account.accountId,
+        fallbackLabel: account.label,
+      })
+    );
   },
 };
