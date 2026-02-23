@@ -1,15 +1,54 @@
-# Elysia with Bun runtime
+# Kleis
 
-## Getting Started
-To get started with this template, simply paste this command into your terminal:
-```bash
-bun create elysia ./elysia-example
-```
+One OAuth control plane for coding agents.
 
-## Development
-To start the development server run:
-```bash
+Kleis is a Cloudflare Workers proxy that centralizes Copilot, Codex, and Claude OAuth accounts,
+then exposes clean API-keyed endpoints for clients.
+
+> [!NOTE]
+> "Kleis" is named from the idea of a **key** that can unlock many paths with one handle.
+
+## Stack
+
+- Cloudflare Workers + Hono
+- D1 + Drizzle ORM
+- Typed provider adapters (Copilot, Codex, Claude)
+- OpenCode-oriented model discovery routes
+
+## Quick Start
+
+```txt
+bun install
+bun run cf-typegen
+bun run db:migrate:local
 bun run dev
 ```
 
-Open http://localhost:3000/ with your browser to see the result.
+## Core Commands
+
+```txt
+bun run typecheck
+bun run lint
+bun run db:generate
+bun run db:migrate:local
+bun run db:migrate:remote
+bun run deploy
+```
+
+## Model Routing
+
+Kleis routes provider traffic from model ids in `provider/model` format:
+
+- `codex/<model>` -> Codex upstream
+- `copilot/<model>` -> Copilot upstream
+- `claude/<model>` -> Claude upstream
+
+This keeps client config simple: override models, keep normal API usage.
+
+## Current Scope (v1)
+
+- Admin OAuth start/complete/refresh flows
+- Primary account selection per provider
+- API key issue/revoke with provider/model scopes
+- `/models/api.json` and `/v1/models`
+- Proxy routes for `/v1/chat/completions`, `/v1/responses`, `/v1/messages`

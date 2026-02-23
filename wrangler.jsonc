@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "kleis",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-02-23",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "KLEIS_DB",
+      "database_name": "kleis",
+      "database_id": "9792ee64-6afe-4525-9cd2-a654c515914d",
+      "migrations_dir": "drizzle/migrations"
+    }
+  ]
+}

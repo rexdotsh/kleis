@@ -1,21 +1,31 @@
 {
   "name": "kleis",
-  "version": "1.0.50",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "bun run --watch src/index.ts",
-    "check": "ultracite check",
-    "fix": "ultracite fix",
-    "prepare": "lefthook install"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy --minify",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "typecheck": "tsgo --noEmit -p tsconfig.json",
+    "lint": "bun x ultracite check",
+    "test": "bun test",
+    "format": "bun x ultracite fix",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply KLEIS_DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply KLEIS_DB --remote"
   },
   "dependencies": {
-    "elysia": "latest"
+    "@hono/zod-validator": "^0.7.6",
+    "drizzle-orm": "^0.45.1",
+    "hono": "^4.12.2",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.0",
+    "@typescript/native-preview": "^7.0.0-dev.20260223.1",
     "bun-types": "latest",
+    "drizzle-kit": "^0.31.9",
     "lefthook": "^2.1.1",
-    "ultracite": "7.2.3"
-  },
-  "module": "src/index.js"
+    "ultracite": "7.2.3",
+    "wrangler": "^4.4.0"
+  }
 }

@@ -144,3 +144,93 @@ npx opensrc <owner>/<repo>      # GitHub repo (e.g., npx opensrc vercel/ai)
 ```
 
 <!-- opensrc:end -->
+
+---
+
+## Kleis Project Charter
+
+This repository is building a **single OAuth account proxy** for coding agents.
+
+### Problem Statement
+
+One user can have multiple OAuth-backed accounts across Copilot, Codex, and Claude.
+Re-authenticating these accounts in every client and every machine is painful.
+
+### Product Goal
+
+Provide one reusable base URL that:
+
+- accepts admin-managed API keys,
+- stores OAuth credentials centrally,
+- refreshes tokens automatically,
+- exposes model discovery endpoints,
+- routes requests to Copilot/Codex/Claude accounts,
+- includes a minimal admin UI for account operations.
+
+### Primary Use Case
+
+- OpenCode compatibility first.
+- Other coding agents should work via OpenAI-compatible and Anthropic-compatible endpoints.
+
+### Required Provider Behavior
+
+- **Copilot**: first-party OAuth flow should work without workaround hacks.
+- **Codex**: first-party OAuth flow should work without workaround hacks.
+- **Claude**: include workaround patterns used in:
+  - `opensrc/repos/github.com/anomalyco/opencode-anthropic-auth`
+  - `opensrc/repos/github.com/badlogic/pi-mono`
+
+For Claude OAuth behavior in this project:
+
+- include required beta headers,
+- include Claude Code user-agent/system identity behavior,
+- include request/stream tool-name normalization patterns,
+- do **not** hide this behind a feature flag.
+
+### Deployment and Runtime Decisions
+
+- Build **Cloudflare Workers-first** architecture.
+- Keep route/service boundaries portable to other runtimes.
+- Use **Hono + Wrangler** for implementation.
+
+### Data and ORM Decisions
+
+- Use **Cloudflare D1** as the relational database.
+- Use **Drizzle ORM** + Drizzle migrations for schema and queries.
+- Keep all request/response and env contracts fully typed.
+
+### Storage Decisions
+
+- Use a database for persistence (tokens, accounts, API keys, OAuth state).
+- Plaintext token storage is acceptable for this personal project.
+- No encryption/hashing required right now.
+
+### Simplicity and Maintainability Rules
+
+- Keep modules small and explicit.
+- Avoid duplicate provider logic by sharing small utilities.
+- Prefer straightforward control flow over clever abstractions.
+- Keep the admin UI minimal and functional.
+- Build only what is needed for v1.
+
+### Model Registry Requirements
+
+- Provide endpoint(s) compatible with OpenCode model discovery.
+- Merge custom proxy models with latest `models.dev` data.
+- Keep `models.dev` data fresh by fetching upstream.
+- Expose a models.dev-compatible JSON route that OpenCode can consume directly.
+
+### Admin UI Requirements (v1)
+
+- view all configured accounts,
+- set primary account per provider,
+- issue/revoke API keys,
+- trigger token refresh manually,
+- show last refresh state.
+
+### Immediate Non-Goals
+
+- advanced telemetry,
+- billing, quotas, monetization,
+- enterprise-grade multi-tenant security,
+- over-designed dashboards.

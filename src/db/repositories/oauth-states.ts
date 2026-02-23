@@ -1,0 +1,73 @@
+import { and, eq } from "drizzle-orm";
+
+import type { Database } from "../client";
+import { oauthStates, type Provider } from "../schema";
+
+type OAuthStateRecord = {
+  state: string;
+  provider: Provider;
+  pkceVerifier: string | null;
+  metadataJson: string | null;
+  expiresAt: number;
+};
+
+const toRecord = (row: typeof oauthStates.$inferSelect): OAuthStateRecord => ({
+  state: row.state,
+  provider: row.provider,
+  pkceVerifier: row.pkceVerifier,
+  metadataJson: row.metadataJson,
+  expiresAt: row.expiresAt,
+});
+
+type CreateOAuthStateInput = {
+  state: string;
+  provider: Provider;
+  pkceVerifier: string | null;
+  metadataJson: string | null;
+  expiresAt: number;
+};
+
+export const createOAuthState = async (
+  database: Database,
+  input: CreateOAuthStateInput
+): Promise<void> => {
+  await database.insert(oauthStates).values({
+    state: input.state,
+    provider: input.provider,
+    pkceVerifier: input.pkceVerifier,
+    metadataJson: input.metadataJson,
+    expiresAt: input.expiresAt,
+  });
+};
+
+export const consumeOAuthState = (
+  database: Database,
+  state: string,
+  provider: Provider,
+  now: number
+): Promise<OAuthStateRecord | null> => {
+  return database.transaction(async (transaction) => {
+    const row = await transaction.query.oauthStates.findFirst({
+      where: and(
+        eq(oauthStates.state, state),
+        eq(oauthStates.provider, provider)
+      ),
+    });
+
+    if (!row || row.expiresAt <= now) {
+      return null;
+    }
+
+    const deleteResult = await transaction
+      .delete(oauthStates)
+      .where(
+        and(eq(oauthStates.state, state), eq(oauthStates.provider, provider))
+      );
+
+    if ((deleteResult.meta.changes ?? 0) < 1) {
+      return null;
+    }
+
+    return toRecord(row);
+  });
+};

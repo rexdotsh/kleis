@@ -1,13 +1,17 @@
 {
   "compilerOptions": {
-    "target": "ES2021",
-    "module": "ES2022",
-    "moduleResolution": "node",
-    "types": ["bun-types"],
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
     "strict": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "lib": ["ES2022"],
+    "jsx": "react-jsx",
+    "jsxImportSource": "hono/jsx"
   },
-  "exclude": ["node_modules", "opensrc"]
+  "include": ["src/**/*.ts", "drizzle.config.ts", "worker-configuration.d.ts"],
+  "exclude": ["node_modules", "opensrc", ".wrangler", "drizzle/migrations"]
 }

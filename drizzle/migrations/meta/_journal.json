@@ -1,0 +1,34 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1771850493381,
+      "tag": "0000_clear_dazzler",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1771856158785,
+      "tag": "0001_wild_red_hulk",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1771857228385,
+      "tag": "0002_small_killraven",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1771858188864,
+      "tag": "0003_aspiring_outlaw_kid",
+      "breakpoints": true
+    }
+  ]
+}
