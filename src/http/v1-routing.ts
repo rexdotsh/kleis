@@ -3,7 +3,7 @@ import { isObjectRecord } from "../utils/object";
 
 export type V1ProxyEndpoint = "chat_completions" | "responses" | "messages";
 
-export type ParsedModelRoute = {
+type ParsedModelRoute = {
   rawModel: string | null;
   provider: Provider | null;
   upstreamModel: string | null;
@@ -38,9 +38,7 @@ const endpointEntries = Object.entries(endpointConfigs) as [
   EndpointConfig,
 ][];
 
-export const toProvider = (
-  value: string | null | undefined
-): Provider | null => {
+const toProvider = (value: string | null | undefined): Provider | null => {
   if (value === "copilot" || value === "codex" || value === "claude") {
     return value;
   }

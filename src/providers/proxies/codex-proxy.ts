@@ -2,14 +2,14 @@ import type { CodexAccountMetadata } from "../metadata";
 
 import { CODEX_ACCOUNT_ID_HEADER, CODEX_RESPONSE_ENDPOINT } from "../constants";
 
-export type CodexProxyPreparationInput = {
+type CodexProxyPreparationInput = {
   headers: Headers;
   accessToken: string;
   fallbackAccountId: string | null;
   metadata: CodexAccountMetadata | null;
 };
 
-export type CodexProxyPreparationResult = {
+type CodexProxyPreparationResult = {
   upstreamUrl: string;
 };
 

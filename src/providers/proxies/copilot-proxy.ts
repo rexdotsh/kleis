@@ -8,10 +8,7 @@ import {
 } from "../constants";
 import { isObjectRecord } from "../../utils/object";
 
-export type CopilotProxyEndpoint =
-  | "chat_completions"
-  | "responses"
-  | "messages";
+type CopilotProxyEndpoint = "chat_completions" | "responses" | "messages";
 
 type CopilotMessageProfile = {
   isVision: boolean;
@@ -172,7 +169,7 @@ const buildUpstreamUrl = (baseUrl: string, requestUrl: URL): string => {
   return upstream.toString();
 };
 
-export type CopilotProxyPreparationInput = {
+type CopilotProxyPreparationInput = {
   endpoint: CopilotProxyEndpoint;
   requestUrl: URL;
   headers: Headers;
@@ -181,7 +178,7 @@ export type CopilotProxyPreparationInput = {
   metadata: CopilotAccountMetadata | null;
 };
 
-export type CopilotProxyPreparationResult = {
+type CopilotProxyPreparationResult = {
   upstreamUrl: string;
 };
 

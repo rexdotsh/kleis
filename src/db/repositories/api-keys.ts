@@ -5,7 +5,7 @@ import type { Database } from "../client";
 
 type ScopeList = string[] | null;
 
-export type ApiKeyRecord = {
+type ApiKeyRecord = {
   id: string;
   key: string;
   label: string | null;

@@ -1,4 +1,4 @@
-export const encodeBase64Url = (bytes: Uint8Array): string =>
+const encodeBase64Url = (bytes: Uint8Array): string =>
   btoa(String.fromCharCode(...bytes))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")

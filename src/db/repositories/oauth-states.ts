@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { Database } from "../client";
 import { oauthStates, type Provider } from "../schema";
 
-export type OAuthStateRecord = {
+type OAuthStateRecord = {
   state: string;
   provider: Provider;
   pkceVerifier: string | null;
@@ -21,7 +21,7 @@ const toRecord = (row: typeof oauthStates.$inferSelect): OAuthStateRecord => ({
   createdAt: row.createdAt,
 });
 
-export type CreateOAuthStateInput = {
+type CreateOAuthStateInput = {
   state: string;
   provider: Provider;
   pkceVerifier: string | null;

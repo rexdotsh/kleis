@@ -118,7 +118,7 @@ const hasPrimaryProviderAccount = async (
   return Boolean(primary);
 };
 
-export type UpsertProviderAccountInput = {
+type UpsertProviderAccountInput = {
   provider: Provider;
   accountId: string | null;
   label?: string | null;
@@ -190,7 +190,7 @@ export const upsertProviderAccount = async (
   return created;
 };
 
-export type UpdateProviderAccountTokensInput = {
+type UpdateProviderAccountTokensInput = {
   accessToken: string;
   refreshToken: string;
   expiresAt: number;

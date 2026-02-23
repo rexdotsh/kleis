@@ -179,7 +179,7 @@ const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {
   return [...new Set([...required, ...incoming])].join(",");
 };
 
-export type ClaudeProxyPreparationInput = {
+type ClaudeProxyPreparationInput = {
   requestUrl: URL;
   headers: Headers;
   bodyText: string;
@@ -188,7 +188,7 @@ export type ClaudeProxyPreparationInput = {
   metadata: ClaudeAccountMetadata | null;
 };
 
-export type ClaudeProxyPreparationResult = {
+type ClaudeProxyPreparationResult = {
   upstreamUrl: string;
   bodyText: string;
   transformResponse(response: Response): Response;
