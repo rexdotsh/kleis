@@ -1,21 +1,19 @@
 {
   "name": "kleis",
-  "version": "1.0.50",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "bun run --watch src/index.ts",
-    "check": "ultracite check",
-    "fix": "ultracite fix",
-    "prepare": "lefthook install"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy --minify",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {
-    "elysia": "latest"
+    "hono": "^4.12.2"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.0",
     "bun-types": "latest",
     "lefthook": "^2.1.1",
-    "ultracite": "7.2.3"
-  },
-  "module": "src/index.js"
+    "ultracite": "7.2.3",
+    "wrangler": "^4.4.0"
+  }
 }

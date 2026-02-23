@@ -1,15 +1,21 @@
-# Elysia with Bun runtime
-
-## Getting Started
-To get started with this template, simply paste this command into your terminal:
-```bash
-bun create elysia ./elysia-example
+```txt
+npm install
+npm run dev
 ```
 
-## Development
-To start the development server run:
-```bash
-bun run dev
+```txt
+npm run deploy
 ```
 
-Open http://localhost:3000/ with your browser to see the result.
+[For generating/synchronizing types based on your Worker configuration run](https://developers.cloudflare.com/workers/wrangler/commands/#types):
+
+```txt
+npm run cf-typegen
+```
+
+Pass the `CloudflareBindings` as generics when instantiation `Hono`:
+
+```ts
+// src/index.ts
+const app = new Hono<{ Bindings: CloudflareBindings }>()
+```
