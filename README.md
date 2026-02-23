@@ -140,6 +140,19 @@ bun run lint
 bun run test
 bun run db:generate
 bun run db:migrate
-bun run db:push
 bun run db:studio
 ```
+
+## Vercel Deployment Notes
+
+The `build` script runs `db:migrate && bundle`. The bundle step uses `bun build`
+to collapse all internal modules into a single `dist/index.js`. Vercel's Hono
+builder then picks it up via `outputDirectory` in `vercel.json`.
+
+This pre-bundle step is needed because Vercel's `@vercel/node` esbuild pass
+does not resolve extensionless TypeScript imports — a known bug
+([vercel/vercel#14910](https://github.com/vercel/vercel/issues/14910)). Without
+it, multi-file Hono apps crash with `ERR_MODULE_NOT_FOUND`.
+
+`VERCEL_EXPERIMENTAL_BACKENDS=1` fixes module resolution but completely bypasses
+CDN static file serving from `public/`. Pre-bundling gives us both.
