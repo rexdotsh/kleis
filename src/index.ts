@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { serveStatic } from "hono/bun";
 
 import { requireAdminAuth } from "./http/middleware/admin-auth";
 import { requireProxyApiKey } from "./http/middleware/api-key-auth";
@@ -44,6 +43,7 @@ app.route("/", healthRoutes);
 app.route("/", modelsRoutes);
 
 if (!isVercel) {
+  const { serveStatic } = await import("hono/bun");
   app.get(
     "/admin",
     serveStatic({
