@@ -6,7 +6,9 @@ import {
   createOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
+import { COPILOT_REQUEST_PROFILE } from "./constants";
 import type { CopilotAccountMetadata } from "./metadata";
+import { generateState } from "./oauth-utils";
 import type {
   ProviderAdapter,
   ProviderOAuthCompleteInput,
@@ -53,7 +55,6 @@ type DeviceTokenResponse = {
 type CopilotTokenResponse = {
   token?: string;
   expires_at?: number;
-  refresh_in?: number;
 };
 
 type GithubUserResponse = {
@@ -89,14 +90,6 @@ const resolveCopilotUrls = (domain: string) => ({
   copilotTokenUrl: `https://api.${domain}/copilot_internal/v2/token`,
   userUrl: `https://api.${domain}/user`,
 });
-
-const generateState = (): string => {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-};
 
 const parseCopilotApiBaseUrl = (token: string): string | null => {
   const proxyMatch = token.match(/proxy-ep=([^;]+)/);
@@ -288,11 +281,7 @@ const buildCopilotMetadata = (input: {
       : (input.existing?.githubUserId ?? null),
   githubLogin: input.user?.login ?? input.existing?.githubLogin ?? null,
   githubEmail: input.user?.email ?? input.existing?.githubEmail ?? null,
-  requestProfile: {
-    openaiIntent: "conversation-edits",
-    initiatorHeader: "x-initiator",
-    visionHeader: "Copilot-Vision-Request",
-  },
+  requestProfile: COPILOT_REQUEST_PROFILE,
 });
 
 const buildTokenResult = (input: {

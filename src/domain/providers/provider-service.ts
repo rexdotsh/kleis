@@ -21,21 +21,12 @@ export const startProviderOAuth = (
   now: number
 ): Promise<ProviderOAuthStartResult> => {
   const adapter = getProviderAdapter(provider);
-  const startInput: {
-    database: Database;
-    redirectUri: string;
-    options?: Record<string, unknown>;
-    now: number;
-  } = {
+  return adapter.startOAuth({
     database,
     redirectUri: input.redirectUri,
+    ...(input.options ? { options: input.options } : {}),
     now,
-  };
-  if (input.options) {
-    startInput.options = input.options;
-  }
-
-  return adapter.startOAuth(startInput);
+  });
 };
 
 export const completeProviderOAuth = async (
@@ -48,21 +39,12 @@ export const completeProviderOAuth = async (
   now: number
 ): Promise<ProviderAccountRecord> => {
   const adapter = getProviderAdapter(provider);
-  const completeInput: {
-    database: Database;
-    state: string;
-    code?: string;
-    now: number;
-  } = {
+  const tokens = await adapter.completeOAuth({
     database,
     state: input.state,
+    ...(input.code ? { code: input.code } : {}),
     now,
-  };
-  if (input.code) {
-    completeInput.code = input.code;
-  }
-
-  const tokens = await adapter.completeOAuth(completeInput);
+  });
 
   return upsertProviderAccount(database, {
     provider,

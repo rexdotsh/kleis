@@ -245,8 +245,9 @@ Potential future optimization:
 - Implemented Copilot device-flow OAuth adapter with enterprise domain support and profile metadata.
 - Implemented Claude OAuth adapter with typed identity/beta metadata for request normalization phase.
 - Implemented `/v1/chat/completions`, `/v1/responses`, and `/v1/messages` proxy routing with primary-account resolution and metadata-driven provider headers.
-- Moved Claude-specific request/stream normalization into `src/providers/claude-proxy.ts` to keep route logic thin.
-- Moved Copilot and Codex request-shaping logic into `src/providers/copilot-proxy.ts` and `src/providers/codex-proxy.ts`.
+- Moved Claude-specific request/stream normalization into `src/providers/proxies/claude-proxy.ts` to keep route logic thin.
+- Moved Copilot and Codex request-shaping logic into `src/providers/proxies/copilot-proxy.ts` and `src/providers/proxies/codex-proxy.ts`.
+- Added shared provider constants and OAuth helpers, enforced API key provider/model scopes, and deduplicated in-flight models.dev cache fetches.
 
 ---
 

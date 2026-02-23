@@ -1,15 +1,12 @@
-import type { ClaudeAccountMetadata } from "./metadata";
+import type { ClaudeAccountMetadata } from "../metadata";
 
-const ANTHROPIC_API_BASE_URL = "https://api.anthropic.com";
-const DEFAULT_BETA_HEADERS = [
-  "claude-code-20250219",
-  "oauth-2025-04-20",
-  "interleaved-thinking-2025-05-14",
-] as const;
-const DEFAULT_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
-const DEFAULT_SYSTEM_IDENTITY =
-  "You are Claude Code, Anthropic's official CLI for Claude.";
-const DEFAULT_TOOL_PREFIX = "mcp_";
+import {
+  ANTHROPIC_API_BASE_URL,
+  CLAUDE_CLI_USER_AGENT,
+  CLAUDE_REQUIRED_BETA_HEADERS,
+  CLAUDE_SYSTEM_IDENTITY,
+  CLAUDE_TOOL_PREFIX,
+} from "../constants";
 
 type JsonObject = Record<string, unknown>;
 
@@ -205,17 +202,17 @@ export const prepareClaudeProxyRequest = (
   input: ClaudeProxyPreparationInput
 ): ClaudeProxyPreparationResult => {
   const requiredBetaHeaders =
-    input.metadata?.betaHeaders ?? DEFAULT_BETA_HEADERS;
-  const toolPrefix = input.metadata?.toolPrefix ?? DEFAULT_TOOL_PREFIX;
+    input.metadata?.betaHeaders ?? CLAUDE_REQUIRED_BETA_HEADERS;
+  const toolPrefix = input.metadata?.toolPrefix ?? CLAUDE_TOOL_PREFIX;
   const systemIdentity =
-    input.metadata?.systemIdentity ?? DEFAULT_SYSTEM_IDENTITY;
+    input.metadata?.systemIdentity ?? CLAUDE_SYSTEM_IDENTITY;
   const mergedBetas = mergeBetaHeaders(input.headers, requiredBetaHeaders);
 
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("anthropic-beta", mergedBetas);
   input.headers.set(
     "user-agent",
-    input.metadata?.userAgent ?? DEFAULT_USER_AGENT
+    input.metadata?.userAgent ?? CLAUDE_CLI_USER_AGENT
   );
   input.headers.set("x-app", "cli");
 

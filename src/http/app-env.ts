@@ -1,6 +1,4 @@
-export type AppContextVariables = {
-  apiKeyId?: string;
-};
+export type AppContextVariables = Record<string, never>;
 
 export type AppBindings = CloudflareBindings & {
   ADMIN_TOKEN?: string;

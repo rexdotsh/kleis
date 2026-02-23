@@ -2,18 +2,7 @@ import { createMiddleware } from "hono/factory";
 
 import { getAdminToken } from "../../config/runtime";
 import type { AppEnv } from "../app-env";
-
-const BEARER_PREFIX = "Bearer ";
-
-const parseBearerToken = (
-  authorizationHeader: string | undefined
-): string | null => {
-  if (!authorizationHeader?.startsWith(BEARER_PREFIX)) {
-    return null;
-  }
-
-  return authorizationHeader.slice(BEARER_PREFIX.length).trim() || null;
-};
+import { parseBearerToken } from "../utils/bearer";
 
 export const requireAdminAuth = createMiddleware<AppEnv>(
   async (context, next) => {

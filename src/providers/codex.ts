@@ -5,7 +5,9 @@ import {
   createOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
+import { CODEX_ORIGINATOR, CODEX_REQUEST_PROFILE } from "./constants";
 import type { CodexAccountMetadata } from "./metadata";
+import { decodeBase64Url, generatePkce, generateState } from "./oauth-utils";
 import type {
   ProviderAdapter,
   ProviderOAuthCompleteInput,
@@ -44,40 +46,6 @@ type IdTokenClaims = {
   };
 };
 
-const encodeBase64Url = (bytes: Uint8Array): string =>
-  btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-
-const decodeBase64Url = (value: string): string => {
-  const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-  const padding = normalized.length % 4;
-  const padded =
-    padding === 0 ? normalized : normalized + "=".repeat(4 - padding);
-  return atob(padded);
-};
-
-const generateState = (): string => {
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  return encodeBase64Url(bytes);
-};
-
-const generatePkce = async (): Promise<{
-  verifier: string;
-  challenge: string;
-}> => {
-  const verifier = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(verifier)
-  );
-  return {
-    verifier,
-    challenge: encodeBase64Url(new Uint8Array(digest)),
-  };
-};
-
 const buildAuthorizeUrl = (input: {
   redirectUri: string;
   state: string;
@@ -93,7 +61,7 @@ const buildAuthorizeUrl = (input: {
     id_token_add_organizations: "true",
     codex_cli_simplified_flow: "true",
     state: input.state,
-    originator: "opencode",
+    originator: CODEX_ORIGINATOR,
   });
 
   return `${CODEX_AUTHORIZE_URL}?${query.toString()}`;
@@ -227,11 +195,7 @@ const buildCodexMetadata = (input: {
         ? organizationIds
         : (input.existing?.organizationIds ?? []),
     email: claims?.email ?? input.existing?.email ?? null,
-    requestProfile: {
-      originator: "opencode",
-      accountIdHeader: "ChatGPT-Account-Id",
-      endpoint: "https://chatgpt.com/backend-api/codex/responses",
-    },
+    requestProfile: CODEX_REQUEST_PROFILE,
   };
 };
 

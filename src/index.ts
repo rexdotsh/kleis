@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
 
 import type { AppEnv } from "./http/app-env";
 import { requireAdminAuth } from "./http/middleware/admin-auth";
@@ -13,10 +14,20 @@ import { v1Routes } from "./http/routes/v1";
 const app = new Hono<AppEnv>();
 
 app.onError((error, context) => {
+  if (error instanceof HTTPException) {
+    return context.json(
+      {
+        error: "request_error",
+        message: error.message,
+      },
+      error.status
+    );
+  }
+
   return context.json(
     {
       error: "internal_error",
-      message: error.message,
+      message: "Internal server error",
     },
     500
   );

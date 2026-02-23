@@ -1,8 +1,6 @@
-import type { CodexAccountMetadata } from "./metadata";
+import type { CodexAccountMetadata } from "../metadata";
 
-const DEFAULT_CODEX_ENDPOINT =
-  "https://chatgpt.com/backend-api/codex/responses";
-const DEFAULT_ACCOUNT_ID_HEADER = "ChatGPT-Account-Id";
+import { CODEX_ACCOUNT_ID_HEADER, CODEX_RESPONSE_ENDPOINT } from "../constants";
 
 export type CodexProxyPreparationInput = {
   headers: Headers;
@@ -23,14 +21,13 @@ export const prepareCodexProxyRequest = (
   const accountId = input.metadata?.chatgptAccountId ?? input.fallbackAccountId;
   if (accountId) {
     input.headers.set(
-      input.metadata?.requestProfile.accountIdHeader ??
-        DEFAULT_ACCOUNT_ID_HEADER,
+      input.metadata?.requestProfile.accountIdHeader ?? CODEX_ACCOUNT_ID_HEADER,
       accountId
     );
   }
 
   return {
     upstreamUrl:
-      input.metadata?.requestProfile.endpoint ?? DEFAULT_CODEX_ENDPOINT,
+      input.metadata?.requestProfile.endpoint ?? CODEX_RESPONSE_ENDPOINT,
   };
 };

@@ -5,7 +5,14 @@ import {
   createOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
+import {
+  CLAUDE_CLI_USER_AGENT,
+  CLAUDE_REQUIRED_BETA_HEADERS,
+  CLAUDE_SYSTEM_IDENTITY,
+  CLAUDE_TOOL_PREFIX,
+} from "./constants";
 import type { ClaudeAccountMetadata } from "./metadata";
+import { generatePkce, generateState } from "./oauth-utils";
 import type {
   ProviderAdapter,
   ProviderOAuthCompleteInput,
@@ -34,30 +41,6 @@ type ClaudeTokenResponse = {
   token_type?: string;
   scope?: string;
 };
-
-const encodeBase64Url = (bytes: Uint8Array): string =>
-  btoa(String.fromCharCode(...bytes))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-
-const generatePkce = async (): Promise<{
-  verifier: string;
-  challenge: string;
-}> => {
-  const verifier = encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(verifier)
-  );
-  return {
-    verifier,
-    challenge: encodeBase64Url(new Uint8Array(digest)),
-  };
-};
-
-const generateState = (): string =>
-  encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
 
 const parseAuthorizationCodeInput = (
   input: string
@@ -177,14 +160,10 @@ const buildClaudeMetadata = (input: {
   scope: input.tokens.scope ?? input.existing?.scope ?? null,
   oauthMode: input.mode,
   oauthHost: input.host,
-  betaHeaders: [
-    "claude-code-20250219",
-    "oauth-2025-04-20",
-    "interleaved-thinking-2025-05-14",
-  ],
-  userAgent: "claude-cli/2.1.2 (external, cli)",
-  systemIdentity: "You are Claude Code, Anthropic's official CLI for Claude.",
-  toolPrefix: "mcp_",
+  betaHeaders: [...CLAUDE_REQUIRED_BETA_HEADERS],
+  userAgent: CLAUDE_CLI_USER_AGENT,
+  systemIdentity: CLAUDE_SYSTEM_IDENTITY,
+  toolPrefix: CLAUDE_TOOL_PREFIX,
 });
 
 const buildTokenResult = (input: {

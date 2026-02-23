@@ -1,9 +1,11 @@
-import type { CopilotAccountMetadata } from "./metadata";
+import type { CopilotAccountMetadata } from "../metadata";
 
-const COPILOT_DEFAULT_BASE_URL = "https://api.githubcopilot.com";
-const DEFAULT_OPENAI_INTENT = "conversation-edits";
-const DEFAULT_INITIATOR_HEADER = "x-initiator";
-const DEFAULT_VISION_HEADER = "Copilot-Vision-Request";
+import {
+  COPILOT_DEFAULT_API_BASE_URL,
+  COPILOT_INITIATOR_HEADER,
+  COPILOT_OPENAI_INTENT,
+  COPILOT_VISION_HEADER,
+} from "../constants";
 
 export type CopilotProxyEndpoint =
   | "chat_completions"
@@ -192,15 +194,16 @@ export const prepareCopilotProxyRequest = (
 ): CopilotProxyPreparationResult => {
   const requestProfile = input.metadata?.requestProfile;
   const profile = deriveCopilotRequestProfile(input.endpoint, input.bodyJson);
-  const baseUrl = input.metadata?.copilotApiBaseUrl ?? COPILOT_DEFAULT_BASE_URL;
+  const baseUrl =
+    input.metadata?.copilotApiBaseUrl ?? COPILOT_DEFAULT_API_BASE_URL;
   const initiatorHeader =
-    requestProfile?.initiatorHeader ?? DEFAULT_INITIATOR_HEADER;
-  const visionHeader = requestProfile?.visionHeader ?? DEFAULT_VISION_HEADER;
+    requestProfile?.initiatorHeader ?? COPILOT_INITIATOR_HEADER;
+  const visionHeader = requestProfile?.visionHeader ?? COPILOT_VISION_HEADER;
 
   input.headers.set("authorization", `Bearer ${input.githubAccessToken}`);
   input.headers.set(
     "Openai-Intent",
-    requestProfile?.openaiIntent ?? DEFAULT_OPENAI_INTENT
+    requestProfile?.openaiIntent ?? COPILOT_OPENAI_INTENT
   );
   input.headers.set(initiatorHeader, profile.isAgent ? "agent" : "user");
   if (profile.isVision) {

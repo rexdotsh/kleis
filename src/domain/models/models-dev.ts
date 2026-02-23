@@ -8,6 +8,7 @@ type CacheEntry = {
 };
 
 let cache: CacheEntry | null = null;
+let inFlightFetch: Promise<ModelsDevRegistry> | null = null;
 
 const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -44,20 +45,31 @@ const fetchRegistry = async (url: string): Promise<ModelsDevRegistry> => {
   return parseRegistry(await response.json());
 };
 
-export const getModelsDevRegistry = async (
+export const getModelsDevRegistry = (
   config: RuntimeConfig
 ): Promise<ModelsDevRegistry> => {
   const now = Date.now();
   if (cache && isCacheFresh(cache, now, config.modelsDevCacheTtlSeconds)) {
-    return cache.registry;
+    return Promise.resolve(cache.registry);
   }
 
-  const registry = await fetchRegistry(config.modelsDevUrl);
-  cache = {
-    fetchedAt: now,
-    registry,
-  };
-  return registry;
+  if (inFlightFetch) {
+    return inFlightFetch;
+  }
+
+  inFlightFetch = fetchRegistry(config.modelsDevUrl)
+    .then((registry) => {
+      cache = {
+        fetchedAt: Date.now(),
+        registry,
+      };
+      return registry;
+    })
+    .finally(() => {
+      inFlightFetch = null;
+    });
+
+  return inFlightFetch;
 };
 
 type OpenAiModelList = {

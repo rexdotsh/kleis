@@ -1,4 +1,4 @@
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import type { Database } from "../client";
 import { oauthStates, type Provider } from "../schema";
@@ -104,14 +104,4 @@ export const deleteOAuthState = async (
     .where(
       and(eq(oauthStates.state, state), eq(oauthStates.provider, provider))
     );
-};
-
-export const deleteExpiredOAuthStates = async (
-  database: Database,
-  now: number
-): Promise<number> => {
-  const result = await database
-    .delete(oauthStates)
-    .where(lte(oauthStates.expiresAt, now));
-  return result.meta.changes;
 };

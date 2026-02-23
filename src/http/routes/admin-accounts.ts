@@ -116,20 +116,14 @@ export const adminAccountsRoutes = new Hono<AppEnv>()
       const { provider } = context.req.valid("param");
       const body = context.req.valid("json");
       const database = dbFromContext(context);
-      const startInput: {
-        redirectUri: string;
-        options?: Record<string, unknown>;
-      } = {
-        redirectUri: body.redirectUri,
-      };
-      if (body.options) {
-        startInput.options = body.options;
-      }
 
       const result = await startProviderOAuth(
         database,
         provider,
-        startInput,
+        {
+          redirectUri: body.redirectUri,
+          ...(body.options ? { options: body.options } : {}),
+        },
         Date.now()
       );
       return context.json(result);
@@ -144,17 +138,13 @@ export const adminAccountsRoutes = new Hono<AppEnv>()
       const body = context.req.valid("json");
       const database = dbFromContext(context);
 
-      const input: { state: string; code?: string } = {
-        state: body.state,
-      };
-      if (body.code) {
-        input.code = body.code;
-      }
-
       const account = await completeProviderOAuth(
         database,
         provider,
-        input,
+        {
+          state: body.state,
+          ...(body.code ? { code: body.code } : {}),
+        },
         Date.now()
       );
       return context.json({ account: toAdminAccountView(account) });

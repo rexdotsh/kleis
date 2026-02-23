@@ -1,5 +1,15 @@
 import { z } from "zod";
 
+import {
+  CLAUDE_TOOL_PREFIX,
+  CODEX_ACCOUNT_ID_HEADER,
+  CODEX_RESPONSE_ENDPOINT,
+  CODEX_ORIGINATOR,
+  COPILOT_INITIATOR_HEADER,
+  COPILOT_OPENAI_INTENT,
+  COPILOT_VISION_HEADER,
+} from "./constants";
+
 const codexMetadataSchema = z
   .object({
     provider: z.literal("codex"),
@@ -10,9 +20,9 @@ const codexMetadataSchema = z
     organizationIds: z.array(z.string()),
     email: z.string().nullable(),
     requestProfile: z.object({
-      originator: z.literal("opencode"),
-      accountIdHeader: z.literal("ChatGPT-Account-Id"),
-      endpoint: z.literal("https://chatgpt.com/backend-api/codex/responses"),
+      originator: z.literal(CODEX_ORIGINATOR),
+      accountIdHeader: z.literal(CODEX_ACCOUNT_ID_HEADER),
+      endpoint: z.literal(CODEX_RESPONSE_ENDPOINT),
     }),
   })
   .strict();
@@ -28,9 +38,9 @@ const copilotMetadataSchema = z
     githubLogin: z.string().nullable(),
     githubEmail: z.string().nullable(),
     requestProfile: z.object({
-      openaiIntent: z.literal("conversation-edits"),
-      initiatorHeader: z.literal("x-initiator"),
-      visionHeader: z.literal("Copilot-Vision-Request"),
+      openaiIntent: z.literal(COPILOT_OPENAI_INTENT),
+      initiatorHeader: z.literal(COPILOT_INITIATOR_HEADER),
+      visionHeader: z.literal(COPILOT_VISION_HEADER),
     }),
   })
   .strict();
@@ -45,7 +55,7 @@ const claudeMetadataSchema = z
     betaHeaders: z.array(z.string()),
     userAgent: z.string(),
     systemIdentity: z.string(),
-    toolPrefix: z.literal("mcp_"),
+    toolPrefix: z.literal(CLAUDE_TOOL_PREFIX),
   })
   .strict();
 

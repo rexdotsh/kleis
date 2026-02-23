@@ -2,15 +2,20 @@ import { Hono, type Context } from "hono";
 
 import { getRuntimeConfig } from "../../config/runtime";
 import { dbFromContext } from "../../db/client";
-import type { Provider } from "../../db/schema";
 import {
   getModelsDevRegistry,
   toOpenAiModelList,
 } from "../../domain/models/models-dev";
+import {
+  resolveTargetProvider,
+  toProvider,
+  type V1ProxyEndpoint,
+  V1_PROVIDER_HEADER,
+} from "../v1-routing";
 import { getPrimaryProviderAccount } from "../../domain/providers/provider-service";
-import { prepareClaudeProxyRequest } from "../../providers/claude-proxy";
-import { prepareCodexProxyRequest } from "../../providers/codex-proxy";
-import { prepareCopilotProxyRequest } from "../../providers/copilot-proxy";
+import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
+import { prepareCodexProxyRequest } from "../../providers/proxies/codex-proxy";
+import { prepareCopilotProxyRequest } from "../../providers/proxies/copilot-proxy";
 import type { AppEnv } from "../app-env";
 
 const proxyErrorResponse = (message: string, type = "proxy_error") => ({
@@ -19,37 +24,6 @@ const proxyErrorResponse = (message: string, type = "proxy_error") => ({
     type,
   },
 });
-
-const PROVIDER_HEADER = "x-kleis-provider";
-
-type ProxyEndpoint = "chat_completions" | "responses" | "messages";
-
-const toProvider = (value: string | null | undefined): Provider | null => {
-  if (value === "copilot" || value === "codex" || value === "claude") {
-    return value;
-  }
-
-  return null;
-};
-
-const resolveTargetProvider = (
-  endpoint: ProxyEndpoint,
-  preferredProvider: Provider | null
-): Provider => {
-  if (preferredProvider) {
-    return preferredProvider;
-  }
-
-  if (endpoint === "messages") {
-    return "claude";
-  }
-
-  if (endpoint === "chat_completions") {
-    return "copilot";
-  }
-
-  return "codex";
-};
 
 const removeProxyAuthHeaders = (headers: Headers): void => {
   headers.delete("authorization");
@@ -72,9 +46,9 @@ const tryParseJsonBody = (bodyText: string | null): unknown | null => {
 
 const proxyRequest = async (
   context: Context<AppEnv>,
-  endpoint: ProxyEndpoint
+  endpoint: V1ProxyEndpoint
 ): Promise<Response> => {
-  const requestedProvider = toProvider(context.req.header(PROVIDER_HEADER));
+  const requestedProvider = toProvider(context.req.header(V1_PROVIDER_HEADER));
   const targetProvider = resolveTargetProvider(endpoint, requestedProvider);
   const database = dbFromContext(context);
   const now = Date.now();
