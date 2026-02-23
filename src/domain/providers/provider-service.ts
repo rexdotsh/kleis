@@ -120,7 +120,6 @@ export const startProviderOAuth = (
   database: Database,
   provider: Provider,
   input: {
-    redirectUri: string;
     options?: Record<string, unknown>;
   },
   now: number
@@ -128,7 +127,6 @@ export const startProviderOAuth = (
   const adapter = getProviderAdapter(provider);
   return adapter.startOAuth({
     database,
-    redirectUri: input.redirectUri,
     ...(input.options ? { options: input.options } : {}),
     now,
   });

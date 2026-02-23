@@ -30,7 +30,6 @@ const oauthProviderParamsSchema = z.strictObject({
 });
 
 const oauthStartBodySchema = z.strictObject({
-  redirectUri: z.url(),
   options: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -131,7 +130,6 @@ export const adminAccountsRoutes = new Hono<AppEnv>()
         database,
         provider,
         {
-          redirectUri: body.redirectUri,
           ...(body.options ? { options: body.options } : {}),
         },
         Date.now()

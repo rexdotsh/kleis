@@ -22,6 +22,7 @@ const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_ISSUER = "https://auth.openai.com";
 const CODEX_AUTHORIZE_URL = `${CODEX_ISSUER}/oauth/authorize`;
 const CODEX_TOKEN_URL = `${CODEX_ISSUER}/oauth/token`;
+const CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback";
 const CODEX_OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
 
 const codexOAuthStateMetadataSchema = z.strictObject({
@@ -44,6 +45,48 @@ type IdTokenClaims = {
   "https://api.openai.com/auth"?: {
     chatgpt_account_id?: string;
   };
+};
+
+const parseAuthorizationCodeInput = (
+  input: string
+): { code: string; state?: string } => {
+  const value = input.trim();
+  if (!value) {
+    throw new Error("Codex OAuth completion requires an authorization code");
+  }
+
+  try {
+    const url = new URL(value);
+    const code = url.searchParams.get("code");
+    if (code) {
+      const state = url.searchParams.get("state");
+      if (state) {
+        return { code, state };
+      }
+
+      return { code };
+    }
+  } catch {
+    // ignore non-url values
+  }
+
+  if (value.includes("#")) {
+    const split = value.split("#", 2);
+    if (split[0]) {
+      if (split[1]) {
+        return {
+          code: split[0],
+          state: split[1],
+        };
+      }
+
+      return {
+        code: split[0],
+      };
+    }
+  }
+
+  return { code: value };
 };
 
 const buildAuthorizeUrl = (input: {
@@ -236,6 +279,8 @@ export const codexAdapter: ProviderAdapter = {
   async startOAuth(
     input: ProviderOAuthStartInput
   ): Promise<ProviderOAuthStartResult> {
+    const redirectUri = CODEX_REDIRECT_URI;
+
     const pkce = await generatePkce();
     const state = generateState();
     await createOAuthState(input.database, {
@@ -243,21 +288,21 @@ export const codexAdapter: ProviderAdapter = {
       provider: "codex",
       pkceVerifier: pkce.verifier,
       metadataJson: JSON.stringify({
-        redirectUri: input.redirectUri,
+        redirectUri,
       }),
       expiresAt: input.now + CODEX_OAUTH_STATE_TTL_MS,
     });
 
     return {
       authorizationUrl: buildAuthorizeUrl({
-        redirectUri: input.redirectUri,
+        redirectUri,
         state,
         challenge: pkce.challenge,
       }),
       state,
       method: "code",
       instructions:
-        "After completing login, pass the callback code into oauth/complete.",
+        "After login, paste either the callback code or the full callback URL.",
     };
   },
   async completeOAuth(
@@ -287,8 +332,13 @@ export const codexAdapter: ProviderAdapter = {
       throw new Error("Codex OAuth state is missing PKCE verifier");
     }
 
+    const codeInput = parseAuthorizationCodeInput(input.code);
+    if (codeInput.state && codeInput.state !== input.state) {
+      throw new Error("Codex OAuth callback state mismatch");
+    }
+
     const tokens = await exchangeCodeForTokens({
-      code: input.code,
+      code: codeInput.code,
       redirectUri: stateMetadata.redirectUri,
       verifier: stateRecord.pkceVerifier,
     });

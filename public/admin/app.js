@@ -417,7 +417,6 @@ async function copyToClipboard(text, btn) {
 function updateOAuthProviderUI() {
   const p = $("#oauth-provider").value;
   $("#oauth-copilot-opts").style.display = p === "copilot" ? "block" : "none";
-  $("#oauth-redirect-opts").style.display = p !== "copilot" ? "block" : "none";
   $("#oauth-claude-opts").style.display = p === "claude" ? "block" : "none";
 }
 
@@ -433,16 +432,10 @@ async function startOAuth() {
   try {
     const body = {};
     if (provider === "copilot") {
-      body.redirectUri = "http://localhost:0/callback";
       const ed = $("#oauth-enterprise-domain").value.trim();
       if (ed) body.options = { enterpriseDomain: ed };
-    } else {
-      const uri = $("#oauth-redirect-uri").value.trim();
-      if (!uri) throw new Error("Redirect URI is required");
-      body.redirectUri = uri;
-      if (provider === "claude")
-        body.options = { mode: $("#oauth-claude-mode").value };
-    }
+    } else if (provider === "claude")
+      body.options = { mode: $("#oauth-claude-mode").value };
 
     const data = await api(`/admin/accounts/${provider}/oauth/start`, {
       method: "POST",
@@ -470,7 +463,7 @@ function renderOAuthFlow(data, provider) {
   const lastNum = data.instructions ? 3 : 2;
   const completeStep = device
     ? `<div style="margin-bottom:8px">Once you have authorized, click complete:</div><button class="btn btn-primary" onclick="completeOAuth()" type="button" id="btn-oauth-complete">complete flow</button>`
-    : `<div style="margin-bottom:8px">After authorizing, paste the callback code:</div><input id="oauth-code" class="field-input" type="text" placeholder="authorization code" style="margin-bottom:8px"><button class="btn btn-primary" onclick="completeOAuth()" type="button" id="btn-oauth-complete">complete flow</button>`;
+    : `<div style="margin-bottom:8px">After authorizing, paste callback code or full callback URL:</div><input id="oauth-code" class="field-input" type="text" placeholder="code or callback URL" style="margin-bottom:8px"><button class="btn btn-primary" onclick="completeOAuth()" type="button" id="btn-oauth-complete">complete flow</button>`;
   c.innerHTML = `<div class="oauth-flow-panel"><div class="oauth-flow-title">Active Flow: <span class="badge badge-${provider}">${provider}</span></div>${urlStep}${instrStep}<div class="oauth-step"><span class="oauth-step-num">${lastNum}</span><div>${completeStep}</div></div></div>`;
 }
 
