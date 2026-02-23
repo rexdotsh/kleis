@@ -837,10 +837,12 @@ document.addEventListener("keydown", (e) => {
 (async () => {
   const saved = sessionStorage.getItem("kleis_admin_token");
   if (!saved) return;
+  $("#login-gate").classList.add("hidden");
   try {
     await verifyToken(saved);
     enterApp();
   } catch {
     sessionStorage.removeItem("kleis_admin_token");
+    $("#login-gate").classList.remove("hidden");
   }
 })();
