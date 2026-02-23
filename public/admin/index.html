@@ -643,6 +643,29 @@
       user-select: all;
     }
 
+    .snippet-block {
+      margin-top: 10px;
+      padding: 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--bg-input);
+      color: var(--amber);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-all;
+      user-select: all;
+    }
+
+    .snippet-actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 10px;
+    }
+
     .spinner {
       display: inline-block;
       width: 14px;
@@ -779,6 +802,36 @@
               </button>
             </div>
           </div>
+
+          <div class="card">
+            <div
+              class="section-title"
+              style="font-size:13px;margin-bottom:10px"
+            >
+              OpenCode setup snippet
+            </div>
+            <div class="field">
+              <label class="field-label" for="setup-key-select"
+                >API key for snippet</label
+              >
+              <select id="setup-key-select" class="field-input"></select>
+            </div>
+            <pre id="setup-snippet" class="snippet-block"></pre>
+            <div class="snippet-actions">
+              <label class="scope-check" style="margin-bottom:0">
+                <input id="rotate-revoke-old" type="checkbox">
+                revoke old key after rotate
+              </label>
+              <button
+                id="btn-copy-setup"
+                class="btn btn-primary btn-sm"
+                type="button"
+              >
+                copy snippet
+              </button>
+            </div>
+          </div>
+
           <div id="keys-list"></div>
         </div>
 
