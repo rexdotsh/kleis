@@ -3,8 +3,8 @@ import { z } from "zod";
 import type { AppBindings } from "../http/app-env";
 
 const runtimeConfigSchema = z.object({
-  modelsDevUrl: z.string().url(),
-  modelsDevCacheTtlSeconds: z.number().int().positive(),
+  modelsDevUrl: z.url(),
+  modelsDevCacheTtlSeconds: z.int().positive(),
 });
 
 export type RuntimeConfig = z.infer<typeof runtimeConfigSchema>;

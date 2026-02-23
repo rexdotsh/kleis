@@ -29,12 +29,10 @@ const CLAUDE_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
 const CLAUDE_SCOPE = "org:create_api_key user:profile user:inference";
 const CLAUDE_STATE_TTL_MS = 15 * 60 * 1000;
 
-const claudeStateMetadataSchema = z
-  .object({
-    mode: z.enum(["max", "console"]),
-    host: z.enum(["claude.ai", "console.anthropic.com"]),
-  })
-  .strict();
+const claudeStateMetadataSchema = z.strictObject({
+  mode: z.enum(["max", "console"]),
+  host: z.enum(["claude.ai", "console.anthropic.com"]),
+});
 
 type ClaudeTokenResponse = {
   access_token?: string;

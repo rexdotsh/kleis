@@ -10,54 +10,48 @@ import {
   COPILOT_VISION_HEADER,
 } from "./constants";
 
-const codexMetadataSchema = z
-  .object({
-    provider: z.literal("codex"),
-    tokenType: z.string().nullable(),
-    scope: z.string().nullable(),
-    idToken: z.string().nullable(),
-    chatgptAccountId: z.string().nullable(),
-    organizationIds: z.array(z.string()),
-    email: z.string().nullable(),
-    requestProfile: z.object({
-      originator: z.literal(CODEX_ORIGINATOR),
-      accountIdHeader: z.literal(CODEX_ACCOUNT_ID_HEADER),
-      endpoint: z.literal(CODEX_RESPONSE_ENDPOINT),
-    }),
-  })
-  .strict();
+const codexMetadataSchema = z.strictObject({
+  provider: z.literal("codex"),
+  tokenType: z.string().nullable(),
+  scope: z.string().nullable(),
+  idToken: z.string().nullable(),
+  chatgptAccountId: z.string().nullable(),
+  organizationIds: z.array(z.string()),
+  email: z.string().nullable(),
+  requestProfile: z.strictObject({
+    originator: z.literal(CODEX_ORIGINATOR),
+    accountIdHeader: z.literal(CODEX_ACCOUNT_ID_HEADER),
+    endpoint: z.literal(CODEX_RESPONSE_ENDPOINT),
+  }),
+});
 
-const copilotMetadataSchema = z
-  .object({
-    provider: z.literal("copilot"),
-    tokenType: z.string().nullable(),
-    scope: z.string().nullable(),
-    enterpriseDomain: z.string().nullable(),
-    copilotApiBaseUrl: z.string().nullable(),
-    githubUserId: z.string().nullable(),
-    githubLogin: z.string().nullable(),
-    githubEmail: z.string().nullable(),
-    requestProfile: z.object({
-      openaiIntent: z.literal(COPILOT_OPENAI_INTENT),
-      initiatorHeader: z.literal(COPILOT_INITIATOR_HEADER),
-      visionHeader: z.literal(COPILOT_VISION_HEADER),
-    }),
-  })
-  .strict();
+const copilotMetadataSchema = z.strictObject({
+  provider: z.literal("copilot"),
+  tokenType: z.string().nullable(),
+  scope: z.string().nullable(),
+  enterpriseDomain: z.string().nullable(),
+  copilotApiBaseUrl: z.string().nullable(),
+  githubUserId: z.string().nullable(),
+  githubLogin: z.string().nullable(),
+  githubEmail: z.string().nullable(),
+  requestProfile: z.strictObject({
+    openaiIntent: z.literal(COPILOT_OPENAI_INTENT),
+    initiatorHeader: z.literal(COPILOT_INITIATOR_HEADER),
+    visionHeader: z.literal(COPILOT_VISION_HEADER),
+  }),
+});
 
-const claudeMetadataSchema = z
-  .object({
-    provider: z.literal("claude"),
-    tokenType: z.string().nullable(),
-    scope: z.string().nullable(),
-    oauthMode: z.enum(["max", "console"]),
-    oauthHost: z.enum(["claude.ai", "console.anthropic.com"]),
-    betaHeaders: z.array(z.string()),
-    userAgent: z.string(),
-    systemIdentity: z.string(),
-    toolPrefix: z.literal(CLAUDE_TOOL_PREFIX),
-  })
-  .strict();
+const claudeMetadataSchema = z.strictObject({
+  provider: z.literal("claude"),
+  tokenType: z.string().nullable(),
+  scope: z.string().nullable(),
+  oauthMode: z.enum(["max", "console"]),
+  oauthHost: z.enum(["claude.ai", "console.anthropic.com"]),
+  betaHeaders: z.array(z.string()),
+  userAgent: z.string(),
+  systemIdentity: z.string(),
+  toolPrefix: z.literal(CLAUDE_TOOL_PREFIX),
+});
 
 export const providerAccountMetadataSchema = z.discriminatedUnion("provider", [
   codexMetadataSchema,

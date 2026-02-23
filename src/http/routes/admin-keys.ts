@@ -12,20 +12,16 @@ import {
 import { providers } from "../../db/schema";
 import type { AppEnv } from "../app-env";
 
-const createApiKeyBodySchema = z
-  .object({
-    label: z.string().trim().min(1).max(120).optional(),
-    providerScopes: z.array(z.enum(providers)).max(providers.length).optional(),
-    modelScopes: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
-    expiresAt: z.number().int().positive().nullable().optional(),
-  })
-  .strict();
+const createApiKeyBodySchema = z.strictObject({
+  label: z.string().trim().min(1).max(120).optional(),
+  providerScopes: z.array(z.enum(providers)).max(providers.length).optional(),
+  modelScopes: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+  expiresAt: z.int().positive().nullable().optional(),
+});
 
-const revokeApiKeyParamsSchema = z
-  .object({
-    id: z.string().uuid(),
-  })
-  .strict();
+const revokeApiKeyParamsSchema = z.strictObject({
+  id: z.uuid(),
+});
 
 export const adminKeysRoutes = new Hono<AppEnv>()
   .get("/", async (context) => {

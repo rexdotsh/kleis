@@ -24,11 +24,9 @@ const CODEX_AUTHORIZE_URL = `${CODEX_ISSUER}/oauth/authorize`;
 const CODEX_TOKEN_URL = `${CODEX_ISSUER}/oauth/token`;
 const CODEX_OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
 
-const codexOAuthStateMetadataSchema = z
-  .object({
-    redirectUri: z.string().url(),
-  })
-  .strict();
+const codexOAuthStateMetadataSchema = z.strictObject({
+  redirectUri: z.url(),
+});
 
 type CodexTokenResponse = {
   access_token?: string;

@@ -15,31 +15,23 @@ import {
 import { providers } from "../../db/schema";
 import type { AppEnv } from "../app-env";
 
-const accountIdParamsSchema = z
-  .object({
-    id: z.string().trim().min(1).max(120),
-  })
-  .strict();
+const accountIdParamsSchema = z.strictObject({
+  id: z.string().trim().min(1).max(120),
+});
 
-const oauthProviderParamsSchema = z
-  .object({
-    provider: z.enum(providers),
-  })
-  .strict();
+const oauthProviderParamsSchema = z.strictObject({
+  provider: z.enum(providers),
+});
 
-const oauthStartBodySchema = z
-  .object({
-    redirectUri: z.string().url(),
-    options: z.record(z.string(), z.unknown()).optional(),
-  })
-  .strict();
+const oauthStartBodySchema = z.strictObject({
+  redirectUri: z.url(),
+  options: z.record(z.string(), z.unknown()).optional(),
+});
 
-const oauthCompleteBodySchema = z
-  .object({
-    state: z.string().trim().min(1),
-    code: z.string().trim().min(1).optional(),
-  })
-  .strict();
+const oauthCompleteBodySchema = z.strictObject({
+  state: z.string().trim().min(1),
+  code: z.string().trim().min(1).optional(),
+});
 
 const toAdminAccountView = (
   account: Awaited<ReturnType<typeof listProviderAccounts>>[number]

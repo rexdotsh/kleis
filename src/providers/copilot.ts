@@ -29,15 +29,13 @@ const copilotHeaders = {
   "Copilot-Integration-Id": "vscode-chat",
 } as const;
 
-const copilotStateMetadataSchema = z
-  .object({
-    domain: z.string().min(1),
-    enterpriseDomain: z.string().nullable(),
-    deviceCode: z.string().min(1),
-    interval: z.number().int().positive(),
-    expiresIn: z.number().int().positive(),
-  })
-  .strict();
+const copilotStateMetadataSchema = z.strictObject({
+  domain: z.string().min(1),
+  enterpriseDomain: z.string().nullable(),
+  deviceCode: z.string().min(1),
+  interval: z.int().positive(),
+  expiresIn: z.int().positive(),
+});
 
 type DeviceCodeResponse = {
   device_code?: string;
