@@ -1,0 +1,894 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kleis Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    >
+    <style>
+    :root {
+      --bg-root: #0a0a0c;
+      --bg-surface: #111114;
+      --bg-elevated: #18181c;
+      --bg-input: #0e0e11;
+      --border: #27272d;
+      --border-subtle: #1e1e23;
+      --text-primary: #e8e4dd;
+      --text-secondary: #8a8580;
+      --text-tertiary: #5c5853;
+      --text-inverse: #0a0a0c;
+      --amber: #d4a24e;
+      --amber-dim: #b8882e;
+      --amber-glow: rgba(212, 162, 78, 0.15);
+      --amber-glow-strong: rgba(212, 162, 78, 0.3);
+      --green: #4ade80;
+      --green-dim: rgba(74, 222, 128, 0.15);
+      --red: #f87171;
+      --red-dim: rgba(248, 113, 113, 0.15);
+      --copilot: #79c0ff;
+      --copilot-dim: rgba(121, 192, 255, 0.12);
+      --codex: #a78bfa;
+      --codex-dim: rgba(167, 139, 250, 0.12);
+      --claude: #fb923c;
+      --claude-dim: rgba(251, 146, 60, 0.12);
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --font-display: "Lexend", sans-serif;
+      --font-mono: "IBM Plex Mono", "SF Mono", "Cascadia Code", monospace;
+    }
+
+    *,
+    *::before,
+    *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text-primary);
+      background: var(--bg-root);
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+    }
+
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--text-tertiary);
+    }
+
+    #login-gate {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-root);
+    }
+    #login-gate.hidden {
+      display: none;
+    }
+    .login-box {
+      width: 380px;
+      padding: 40px 32px;
+      text-align: center;
+    }
+    .login-logo {
+      font-family: var(--font-display);
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--amber);
+      margin-bottom: 4px;
+      text-shadow: 0 0 40px var(--amber-glow-strong);
+    }
+    .login-sub {
+      font-size: 12px;
+      color: var(--text-tertiary);
+      margin-bottom: 32px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .login-input-wrap {
+      margin-bottom: 16px;
+    }
+    .login-input-wrap input {
+      width: 100%;
+      padding: 12px 16px;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text-primary);
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      outline: none;
+      transition:
+        border-color 200ms ease,
+        box-shadow 200ms ease;
+    }
+    .login-input-wrap input:focus {
+      border-color: var(--amber-dim);
+      box-shadow: 0 0 0 3px var(--amber-glow);
+    }
+    .login-input-wrap input::placeholder {
+      color: var(--text-tertiary);
+    }
+    .login-error {
+      font-size: 12px;
+      color: var(--red);
+      margin-bottom: 12px;
+      min-height: 18px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 16px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      border: 1px solid transparent;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 120ms ease;
+      white-space: nowrap;
+      line-height: 1;
+    }
+    .btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .btn-primary {
+      background: var(--amber);
+      color: var(--text-inverse);
+      border-color: var(--amber);
+    }
+    .btn-primary:hover:not(:disabled) {
+      background: var(--amber-dim);
+      border-color: var(--amber-dim);
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-secondary);
+      border-color: var(--border);
+    }
+    .btn-ghost:hover:not(:disabled) {
+      color: var(--text-primary);
+      border-color: var(--text-tertiary);
+      background: var(--bg-elevated);
+    }
+    .btn-danger {
+      background: transparent;
+      color: var(--red);
+      border-color: var(--border);
+    }
+    .btn-danger:hover:not(:disabled) {
+      background: var(--red-dim);
+      border-color: var(--red);
+    }
+    .btn-sm {
+      padding: 5px 10px;
+      font-size: 11px;
+    }
+    .btn-block {
+      width: 100%;
+      justify-content: center;
+    }
+
+    #app {
+      display: none;
+    }
+    #app.visible {
+      display: block;
+    }
+    .shell {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    .header {
+      padding: 20px 0;
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 32px;
+    }
+    .header-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .header-brand {
+      font-family: var(--font-display);
+      font-size: 1.25rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      color: var(--amber);
+    }
+    .header-tag {
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+      padding: 3px 8px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+
+    .tabs {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 28px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .tab {
+      padding: 10px 18px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      background: none;
+      border: none;
+      border-bottom: 2px solid transparent;
+      cursor: pointer;
+      transition:
+        color 120ms ease,
+        border-color 120ms ease;
+      margin-bottom: -1px;
+    }
+    .tab:hover {
+      color: var(--text-secondary);
+    }
+    .tab.active {
+      color: var(--amber);
+      border-bottom-color: var(--amber);
+    }
+    .tab-panel {
+      display: none;
+    }
+    .tab-panel.active {
+      display: block;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-family: var(--font-display);
+      font-size: 1rem;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+    .section-count {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      margin-left: 8px;
+    }
+
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      margin-bottom: 12px;
+      transition: border-color 200ms ease;
+    }
+    .card:hover {
+      border-color: var(--border);
+    }
+    .card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .card-identity {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+    .card-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .card-label {
+      font-weight: 600;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .card-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      font-size: 11px;
+      color: var(--text-tertiary);
+    }
+    .card-meta-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .card-meta-value {
+      color: var(--text-secondary);
+      font-weight: 500;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border-radius: var(--radius-sm);
+      line-height: 1;
+    }
+    .badge-copilot {
+      color: var(--copilot);
+      background: var(--copilot-dim);
+    }
+    .badge-codex {
+      color: var(--codex);
+      background: var(--codex-dim);
+    }
+    .badge-claude {
+      color: var(--claude);
+      background: var(--claude-dim);
+    }
+    .badge-primary {
+      color: var(--amber);
+      background: var(--amber-glow);
+    }
+    .badge-active {
+      color: var(--green);
+      background: var(--green-dim);
+    }
+    .badge-expired {
+      color: var(--red);
+      background: var(--red-dim);
+    }
+    .badge-revoked {
+      color: var(--text-tertiary);
+      background: var(--bg-elevated);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .status-dot.active {
+      background: var(--green);
+      box-shadow: 0 0 8px var(--green);
+    }
+    .status-dot.expired {
+      background: var(--red);
+      box-shadow: 0 0 8px var(--red);
+    }
+    .status-dot.unknown {
+      background: var(--text-tertiary);
+    }
+
+    .empty-state {
+      text-align: center;
+      padding: 48px 20px;
+      color: var(--text-tertiary);
+    }
+    .empty-state-icon {
+      font-size: 28px;
+      margin-bottom: 12px;
+      opacity: 0.4;
+    }
+    .empty-state-text {
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 900;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    .modal-backdrop.open {
+      display: flex;
+    }
+    .modal {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px;
+      width: 440px;
+      max-width: 90vw;
+      max-height: 85vh;
+      overflow-y: auto;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+    }
+    .modal-title {
+      font-family: var(--font-display);
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 20px;
+    }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 24px;
+    }
+
+    .field {
+      margin-bottom: 16px;
+    }
+    .field-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+    .field-input {
+      width: 100%;
+      padding: 10px 12px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-primary);
+      background: var(--bg-input);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      outline: none;
+      transition:
+        border-color 200ms ease,
+        box-shadow 200ms ease;
+    }
+    .field-input:focus {
+      border-color: var(--amber-dim);
+      box-shadow: 0 0 0 3px var(--amber-glow);
+    }
+    .field-input::placeholder {
+      color: var(--text-tertiary);
+    }
+    select.field-input {
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none'%3E%3Cpath d='M3 5l3 3 3-3' stroke='%235c5853' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      padding-right: 32px;
+    }
+    .field-hint {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      margin-top: 4px;
+    }
+
+    .scope-check {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    #toast-container {
+      position: fixed;
+      top: 16px;
+      right: 16px;
+      z-index: 2000;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .toast {
+      padding: 10px 16px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+      background: var(--bg-elevated);
+      color: var(--text-primary);
+      pointer-events: auto;
+      animation: toast-in 200ms ease forwards;
+      max-width: 380px;
+    }
+    .toast.success {
+      border-color: var(--green);
+      background: linear-gradient(135deg, var(--green-dim), var(--bg-elevated));
+    }
+    .toast.error {
+      border-color: var(--red);
+      background: linear-gradient(135deg, var(--red-dim), var(--bg-elevated));
+    }
+    .toast.removing {
+      animation: toast-out 150ms ease forwards;
+    }
+
+    @keyframes toast-in {
+      from {
+        opacity: 0;
+        transform: translateX(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateX(0);
+      }
+    }
+    @keyframes toast-out {
+      from {
+        opacity: 1;
+        transform: translateX(0);
+      }
+      to {
+        opacity: 0;
+        transform: translateX(20px);
+      }
+    }
+
+    .oauth-flow-panel {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      margin-top: 12px;
+    }
+    .oauth-flow-title {
+      font-family: var(--font-display);
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 14px;
+    }
+    .oauth-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 12px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .oauth-step-num {
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: var(--amber-glow);
+      color: var(--amber);
+      font-size: 10px;
+      font-weight: 600;
+    }
+    .oauth-instructions {
+      font-weight: 600;
+      color: var(--amber);
+      font-size: 14px;
+    }
+    .oauth-url {
+      word-break: break-all;
+      color: var(--text-secondary);
+    }
+    .oauth-url a {
+      color: var(--amber);
+      text-decoration: none;
+    }
+    .oauth-url a:hover {
+      text-decoration: underline;
+    }
+
+    .key-reveal {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      background: var(--bg-root);
+      border: 1px dashed var(--amber-dim);
+      border-radius: var(--radius-sm);
+      margin-top: 12px;
+    }
+    .key-reveal-value {
+      flex: 1;
+      font-size: 12px;
+      color: var(--amber);
+      word-break: break-all;
+      user-select: all;
+    }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--amber);
+      border-radius: 50%;
+      animation: spin 600ms linear infinite;
+    }
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .fade-in {
+      animation: fade-in 300ms ease forwards;
+    }
+    .fade-in-delay {
+      opacity: 0;
+      animation: fade-in 300ms ease 100ms forwards;
+    }
+    @keyframes fade-in {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (max-width: 640px) {
+      .shell {
+        padding: 0 16px;
+      }
+      .header-tag {
+        display: none;
+      }
+      .card-meta {
+        flex-direction: column;
+        gap: 6px;
+      }
+      .tab {
+        padding: 10px 12px;
+        font-size: 11px;
+      }
+    }
+    </style>
+  </head>
+  <body>
+    <div id="login-gate">
+      <div class="login-box">
+        <div class="login-logo">kleis</div>
+        <div class="login-sub">admin console</div>
+        <div class="login-input-wrap">
+          <input
+            id="login-token"
+            type="password"
+            placeholder="admin token"
+            autocomplete="off"
+            spellcheck="false"
+          >
+        </div>
+        <div id="login-error" class="login-error"></div>
+        <button id="login-btn" class="btn btn-primary btn-block" type="button">
+          authenticate
+        </button>
+      </div>
+    </div>
+
+    <div id="toast-container"></div>
+
+    <div id="app">
+      <header class="header">
+        <div class="shell header-inner">
+          <div class="header-left">
+            <span class="header-brand">kleis</span>
+            <span class="header-tag">admin</span>
+          </div>
+          <button id="btn-logout" class="btn btn-ghost btn-sm" type="button">
+            logout
+          </button>
+        </div>
+      </header>
+
+      <div class="shell">
+        <nav class="tabs fade-in">
+          <button class="tab active" data-tab="accounts" type="button">
+            accounts
+          </button>
+          <button class="tab" data-tab="keys" type="button">api keys</button>
+          <button class="tab" data-tab="oauth" type="button">connect</button>
+        </nav>
+
+        <div id="panel-accounts" class="tab-panel active fade-in-delay">
+          <div class="section-header">
+            <div>
+              <span class="section-title">Provider Accounts</span>
+              <span id="accounts-count" class="section-count"></span>
+            </div>
+            <button
+              id="btn-refresh-accounts"
+              class="btn btn-ghost btn-sm"
+              type="button"
+            >
+              refresh
+            </button>
+          </div>
+          <div id="accounts-list"></div>
+        </div>
+
+        <div id="panel-keys" class="tab-panel">
+          <div class="section-header">
+            <div>
+              <span class="section-title">API Keys</span>
+              <span id="keys-count" class="section-count"></span>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button
+                id="btn-refresh-keys"
+                class="btn btn-ghost btn-sm"
+                type="button"
+              >
+                refresh
+              </button>
+              <button
+                id="btn-create-key"
+                class="btn btn-primary btn-sm"
+                type="button"
+              >
+                + new key
+              </button>
+            </div>
+          </div>
+          <div id="keys-list"></div>
+        </div>
+
+        <div id="panel-oauth" class="tab-panel">
+          <div class="section-header">
+            <span class="section-title">Connect Provider</span>
+          </div>
+          <div class="card">
+            <div class="field">
+              <label class="field-label" for="oauth-provider">Provider</label>
+              <select id="oauth-provider" class="field-input">
+                <option value="copilot">Copilot (GitHub)</option>
+                <option value="codex">Codex (OpenAI)</option>
+                <option value="claude">Claude (Anthropic)</option>
+              </select>
+            </div>
+            <div id="oauth-copilot-opts" class="field">
+              <label class="field-label" for="oauth-enterprise-domain"
+                >Enterprise Domain (optional)</label
+              >
+              <input
+                id="oauth-enterprise-domain"
+                class="field-input"
+                type="text"
+                placeholder="github.mycompany.com"
+              >
+              <div class="field-hint">Leave blank for github.com</div>
+            </div>
+            <div id="oauth-redirect-opts" class="field" style="display:none">
+              <label class="field-label" for="oauth-redirect-uri"
+                >Redirect URI</label
+              >
+              <input
+                id="oauth-redirect-uri"
+                class="field-input"
+                type="url"
+                placeholder="http://localhost:8080/callback"
+              >
+            </div>
+            <div id="oauth-claude-opts" class="field" style="display:none">
+              <label class="field-label" for="oauth-claude-mode"
+                >OAuth Mode</label
+              >
+              <select id="oauth-claude-mode" class="field-input">
+                <option value="max">Max (claude.ai)</option>
+                <option value="console">Console (console.anthropic.com)</option>
+              </select>
+            </div>
+            <button id="btn-oauth-start" class="btn btn-primary" type="button">
+              start oauth flow
+            </button>
+          </div>
+          <div id="oauth-flow-active" style="display:none"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-create-key" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-title">Create API Key</div>
+        <div class="field">
+          <label class="field-label" for="key-label">Label</label>
+          <input
+            id="key-label"
+            class="field-input"
+            type="text"
+            maxlength="120"
+            placeholder="my-laptop"
+          >
+        </div>
+        <div class="field">
+          <label class="field-label">Provider Scopes</label>
+          <div class="field-hint" style="margin-bottom:8px">
+            Select which providers this key can access. Leave empty for all.
+          </div>
+          <label class="scope-check"
+            ><input type="checkbox" value="copilot" class="key-scope-provider">
+            copilot</label
+          >
+          <label class="scope-check"
+            ><input type="checkbox" value="codex" class="key-scope-provider">
+            codex</label
+          >
+          <label class="scope-check"
+            ><input type="checkbox" value="claude" class="key-scope-provider">
+            claude</label
+          >
+        </div>
+        <div class="field">
+          <label class="field-label" for="key-model-scopes">Model Scopes</label>
+          <input
+            id="key-model-scopes"
+            class="field-input"
+            type="text"
+            placeholder="copilot/gpt-4o, claude/opus"
+          >
+          <div class="field-hint">
+            Comma-separated model patterns. Leave empty for all.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost modal-close" type="button">
+            cancel
+          </button>
+          <button
+            id="btn-modal-create-key"
+            class="btn btn-primary"
+            type="button"
+          >
+            create
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/admin/app.js"></script>
+  </body>
+</html>

@@ -6,7 +6,6 @@ import { requireAdminAuth } from "./http/middleware/admin-auth";
 import { requireProxyApiKey } from "./http/middleware/api-key-auth";
 import { adminAccountsRoutes } from "./http/routes/admin-accounts";
 import { adminKeysRoutes } from "./http/routes/admin-keys";
-import { adminUiRoutes } from "./http/routes/admin-ui";
 import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
 import { v1Routes } from "./http/routes/v1";
@@ -42,7 +41,6 @@ app.get("/", (context) =>
 
 app.route("/", healthRoutes);
 app.route("/", modelsRoutes);
-app.route("/admin", adminUiRoutes);
 
 const adminApi = new Hono<AppEnv>();
 adminApi.use("/*", requireAdminAuth);
