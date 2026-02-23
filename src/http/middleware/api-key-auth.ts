@@ -3,6 +3,13 @@ import { createMiddleware } from "hono/factory";
 import { dbFromContext } from "../../db/client";
 import { findActiveApiKeyByValue } from "../../db/repositories/api-keys";
 import type { AppEnv } from "../app-env";
+import {
+  authRateLimitedResponse,
+  authRateLimitRetryAfter,
+  clearAuthRateLimit,
+  registerAuthRateLimitFailure,
+  type AuthRateLimitPolicy,
+} from "../security/auth-rate-limit";
 import { parseBearerToken } from "../utils/bearer";
 import {
   modelScopeCandidates,
@@ -10,6 +17,14 @@ import {
   readModelFromBody,
   resolveProxyRoute,
 } from "../proxy-routing";
+
+const PROXY_AUTH_RATE_LIMIT: AuthRateLimitPolicy = {
+  scope: "proxy",
+  maxFailures: 120,
+  windowMs: 60_000,
+  blockMs: 60_000,
+  message: "Too many invalid API key attempts",
+};
 
 const readRequestedModel = async (request: Request): Promise<string | null> => {
   const bodyText = await request.clone().text();
@@ -29,11 +44,35 @@ const readRequestedModel = async (request: Request): Promise<string | null> => {
 
 export const requireProxyApiKey = createMiddleware<AppEnv>(
   async (context, next) => {
+    const retryAfter = authRateLimitRetryAfter(
+      PROXY_AUTH_RATE_LIMIT,
+      context.req.raw.headers
+    );
+    if (retryAfter !== null) {
+      return authRateLimitedResponse(
+        context,
+        retryAfter,
+        PROXY_AUTH_RATE_LIMIT.message
+      );
+    }
+
     const token =
       parseBearerToken(context.req.header("authorization")) ??
       context.req.header("x-api-key")?.trim() ??
       null;
     if (!token) {
+      const blockedAfter = registerAuthRateLimitFailure(
+        PROXY_AUTH_RATE_LIMIT,
+        context.req.raw.headers
+      );
+      if (blockedAfter !== null) {
+        return authRateLimitedResponse(
+          context,
+          blockedAfter,
+          PROXY_AUTH_RATE_LIMIT.message
+        );
+      }
+
       return context.json(
         {
           error: "unauthorized",
@@ -46,6 +85,18 @@ export const requireProxyApiKey = createMiddleware<AppEnv>(
     const database = dbFromContext(context);
     const apiKey = await findActiveApiKeyByValue(database, token, Date.now());
     if (!apiKey) {
+      const blockedAfter = registerAuthRateLimitFailure(
+        PROXY_AUTH_RATE_LIMIT,
+        context.req.raw.headers
+      );
+      if (blockedAfter !== null) {
+        return authRateLimitedResponse(
+          context,
+          blockedAfter,
+          PROXY_AUTH_RATE_LIMIT.message
+        );
+      }
+
       return context.json(
         {
           error: "unauthorized",
@@ -97,6 +148,7 @@ export const requireProxyApiKey = createMiddleware<AppEnv>(
       }
     }
 
+    clearAuthRateLimit(PROXY_AUTH_RATE_LIMIT, context.req.raw.headers);
     await next();
   }
 );
