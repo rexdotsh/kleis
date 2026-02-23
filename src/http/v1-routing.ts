@@ -1,8 +1,46 @@
 import type { Provider } from "../db/schema";
 
-export const V1_PROVIDER_HEADER = "x-kleis-provider";
-
 export type V1ProxyEndpoint = "chat_completions" | "responses" | "messages";
+
+export type ParsedModelRoute = {
+  rawModel: string | null;
+  provider: Provider | null;
+  upstreamModel: string | null;
+};
+
+type JsonObject = Record<string, unknown>;
+
+const isObjectRecord = (value: unknown): value is JsonObject =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+type EndpointConfig = {
+  pathSuffix: string;
+  defaultProvider: Provider;
+  allowedProviders: readonly Provider[];
+};
+
+const endpointConfigs: Record<V1ProxyEndpoint, EndpointConfig> = {
+  chat_completions: {
+    pathSuffix: "/chat/completions",
+    defaultProvider: "copilot",
+    allowedProviders: ["copilot", "codex"],
+  },
+  responses: {
+    pathSuffix: "/responses",
+    defaultProvider: "codex",
+    allowedProviders: ["copilot", "codex"],
+  },
+  messages: {
+    pathSuffix: "/messages",
+    defaultProvider: "claude",
+    allowedProviders: ["claude"],
+  },
+};
+
+const endpointEntries = Object.entries(endpointConfigs) as [
+  V1ProxyEndpoint,
+  EndpointConfig,
+][];
 
 export const toProvider = (
   value: string | null | undefined
@@ -14,37 +52,72 @@ export const toProvider = (
   return null;
 };
 
+export const parseProviderPrefixedModel = (
+  value: string | null | undefined
+): ParsedModelRoute => {
+  const model = value?.trim() ?? "";
+  if (!model) {
+    return {
+      rawModel: null,
+      provider: null,
+      upstreamModel: null,
+    };
+  }
+
+  const [providerSegment, ...rest] = model.split("/");
+  const provider = toProvider(providerSegment);
+  if (!provider || rest.length === 0) {
+    return {
+      rawModel: model,
+      provider: null,
+      upstreamModel: model,
+    };
+  }
+
+  const upstreamModel = rest.join("/").trim();
+  if (!upstreamModel) {
+    return {
+      rawModel: model,
+      provider: null,
+      upstreamModel: model,
+    };
+  }
+
+  return {
+    rawModel: model,
+    provider,
+    upstreamModel,
+  };
+};
+
+export const readModelFromBody = (body: unknown): string | null => {
+  if (!isObjectRecord(body) || typeof body.model !== "string") {
+    return null;
+  }
+
+  const model = body.model.trim();
+  return model || null;
+};
+
 export const endpointFromPath = (path: string): V1ProxyEndpoint | null => {
-  if (path.endsWith("/chat/completions")) {
-    return "chat_completions";
-  }
-
-  if (path.endsWith("/responses")) {
-    return "responses";
-  }
-
-  if (path.endsWith("/messages")) {
-    return "messages";
+  for (const [endpoint, config] of endpointEntries) {
+    if (path.endsWith(config.pathSuffix)) {
+      return endpoint;
+    }
   }
 
   return null;
 };
 
+export const endpointPathSuffix = (endpoint: V1ProxyEndpoint): string =>
+  endpointConfigs[endpoint].pathSuffix;
+
 export const resolveTargetProvider = (
   endpoint: V1ProxyEndpoint,
-  preferredProvider: Provider | null
-): Provider => {
-  if (preferredProvider) {
-    return preferredProvider;
-  }
+  requestedProvider: Provider | null
+): Provider => requestedProvider ?? endpointConfigs[endpoint].defaultProvider;
 
-  if (endpoint === "messages") {
-    return "claude";
-  }
-
-  if (endpoint === "chat_completions") {
-    return "copilot";
-  }
-
-  return "codex";
-};
+export const isProviderSupportedForEndpoint = (
+  endpoint: V1ProxyEndpoint,
+  provider: Provider
+): boolean => endpointConfigs[endpoint].allowedProviders.includes(provider);

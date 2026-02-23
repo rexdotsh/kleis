@@ -6,15 +6,11 @@ import type { AppEnv } from "../app-env";
 import { parseBearerToken } from "../utils/bearer";
 import {
   endpointFromPath,
+  isProviderSupportedForEndpoint,
+  parseProviderPrefixedModel,
+  readModelFromBody,
   resolveTargetProvider,
-  toProvider,
-  V1_PROVIDER_HEADER,
 } from "../v1-routing";
-
-type JsonObject = Record<string, unknown>;
-
-const isObjectRecord = (value: unknown): value is JsonObject =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const readRequestedModel = async (request: Request): Promise<string | null> => {
   const contentType = request.headers.get("content-type") ?? "";
@@ -29,12 +25,7 @@ const readRequestedModel = async (request: Request): Promise<string | null> => {
     return null;
   }
 
-  if (!isObjectRecord(body) || typeof body.model !== "string") {
-    return null;
-  }
-
-  const model = body.model.trim();
-  return model || null;
+  return readModelFromBody(body);
 };
 
 export const requireProxyApiKey = createMiddleware<AppEnv>(
@@ -63,13 +54,27 @@ export const requireProxyApiKey = createMiddleware<AppEnv>(
     }
 
     const endpoint = endpointFromPath(context.req.path);
-    const providerOverride = toProvider(context.req.header(V1_PROVIDER_HEADER));
+    const requestedModel = endpoint
+      ? await readRequestedModel(context.req.raw)
+      : null;
+    const requestedModelRoute = parseProviderPrefixedModel(requestedModel);
 
-    if (apiKey.providerScopes?.length) {
-      const targetProvider = endpoint
-        ? resolveTargetProvider(endpoint, providerOverride)
-        : providerOverride;
-      if (targetProvider && !apiKey.providerScopes.includes(targetProvider)) {
+    if (endpoint && apiKey.providerScopes?.length) {
+      const targetProvider = resolveTargetProvider(
+        endpoint,
+        requestedModelRoute.provider
+      );
+      if (!isProviderSupportedForEndpoint(endpoint, targetProvider)) {
+        return context.json(
+          {
+            error: "bad_request",
+            message: `Provider ${targetProvider} is not valid for this endpoint`,
+          },
+          400
+        );
+      }
+
+      if (!apiKey.providerScopes.includes(targetProvider)) {
         return context.json(
           {
             error: "forbidden",
@@ -81,13 +86,20 @@ export const requireProxyApiKey = createMiddleware<AppEnv>(
     }
 
     if (endpoint && apiKey.modelScopes?.length) {
-      const model = await readRequestedModel(context.req.raw);
-      if (!model || !apiKey.modelScopes.includes(model)) {
+      const modelCandidates = [
+        requestedModelRoute.rawModel,
+        requestedModelRoute.upstreamModel,
+      ].filter((value): value is string => Boolean(value));
+      const allowed = modelCandidates.some((candidate) =>
+        apiKey.modelScopes?.includes(candidate)
+      );
+      if (!allowed) {
+        const deniedModel = requestedModelRoute.rawModel ?? null;
         return context.json(
           {
             error: "forbidden",
-            message: model
-              ? `API key is not allowed to access model: ${model}`
+            message: deniedModel
+              ? `API key is not allowed to access model: ${deniedModel}`
               : "API key model scope requires an explicit model field",
           },
           403

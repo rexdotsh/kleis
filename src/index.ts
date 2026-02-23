@@ -27,7 +27,12 @@ app.onError((error, context) => {
   return context.json(
     {
       error: "internal_error",
-      message: "Internal server error",
+      message: error.message,
+      ...(error instanceof Error && error.stack
+        ? {
+            stack: error.stack,
+          }
+        : {}),
     },
     500
   );

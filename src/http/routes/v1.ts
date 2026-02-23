@@ -7,10 +7,12 @@ import {
   toOpenAiModelList,
 } from "../../domain/models/models-dev";
 import {
+  endpointPathSuffix,
+  isProviderSupportedForEndpoint,
+  parseProviderPrefixedModel,
+  readModelFromBody,
   resolveTargetProvider,
-  toProvider,
   type V1ProxyEndpoint,
-  V1_PROVIDER_HEADER,
 } from "../v1-routing";
 import { getPrimaryProviderAccount } from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
@@ -48,8 +50,22 @@ const proxyRequest = async (
   context: Context<AppEnv>,
   endpoint: V1ProxyEndpoint
 ): Promise<Response> => {
-  const requestedProvider = toProvider(context.req.header(V1_PROVIDER_HEADER));
-  const targetProvider = resolveTargetProvider(endpoint, requestedProvider);
+  const requestUrl = new URL(context.req.url);
+  const requestBodyText = await context.req.text();
+  const parsedRequestBody = tryParseJsonBody(requestBodyText);
+  const requestedModel = readModelFromBody(parsedRequestBody);
+  const modelRoute = parseProviderPrefixedModel(requestedModel);
+  const targetProvider = resolveTargetProvider(endpoint, modelRoute.provider);
+  if (!isProviderSupportedForEndpoint(endpoint, targetProvider)) {
+    return context.json(
+      proxyErrorResponse(
+        `Provider ${targetProvider} does not support /v1${endpointPathSuffix(endpoint)}`,
+        "provider_endpoint_mismatch"
+      ),
+      400
+    );
+  }
+
   const database = dbFromContext(context);
   const now = Date.now();
   const account = await getPrimaryProviderAccount(
@@ -67,15 +83,21 @@ const proxyRequest = async (
     );
   }
 
-  const requestUrl = new URL(context.req.url);
-  const requestBodyText = await context.req.text();
-  const requestBodyJson = tryParseJsonBody(requestBodyText);
   const headers = new Headers(context.req.raw.headers);
   removeProxyAuthHeaders(headers);
 
   let upstreamUrl = "";
+  let requestBodyJson = parsedRequestBody;
   let requestBody = requestBodyText;
   let responseTransformer: ((response: Response) => Response) | null = null;
+
+  if (modelRoute.provider && modelRoute.upstreamModel) {
+    requestBodyJson = {
+      ...(parsedRequestBody as Record<string, unknown>),
+      model: modelRoute.upstreamModel,
+    };
+    requestBody = JSON.stringify(requestBodyJson);
+  }
 
   if (targetProvider === "codex") {
     const codexMetadata =
