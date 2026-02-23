@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
 
 import { apiKeys } from "../schema";
-import type { Database } from "../client";
+import type { Database } from "../index";
 
 type ScopeList = string[] | null;
 
@@ -114,7 +114,7 @@ export const revokeApiKey = async (
     .set({ revokedAt: now })
     .where(and(eq(apiKeys.id, id), isNull(apiKeys.revokedAt)));
 
-  return result.meta.changes > 0;
+  return result.rowsAffected > 0;
 };
 
 export const findActiveApiKeyByValue = async (

@@ -3,8 +3,8 @@
 OpenCode-first OAuth account proxy for coding agents.
 
 Kleis centralizes OAuth accounts for Copilot, Codex, and Claude behind a single
-Cloudflare Worker, then exposes API-keyed proxy endpoints plus models.dev-style
-discovery so clients can use one base URL.
+API base URL, then exposes API-keyed proxy endpoints plus models.dev-style model
+discovery.
 
 > [!NOTE]
 > "Kleis" is named from the idea of a key that can unlock many paths with one
@@ -23,14 +23,19 @@ refresh in one place and lets clients authenticate with scoped API keys.
 - OpenCode-compatible `GET /api.json` model discovery
 - Provider-specific proxy routes (instead of one generic `/v1`)
 - Per-API-key usage analytics (non-blocking ingest on proxy path)
-- Basic brute-force protection for admin and API-key auth middleware
 
 ## Stack
 
-- Cloudflare Workers + Hono
-- D1 + Drizzle ORM
+- Vercel Functions + Hono
+- Turso (libSQL) + Drizzle ORM
 - Zod request validation
 - Typed provider metadata/adapters
+
+## Environment Variables
+
+- `ADMIN_TOKEN` - bearer token required for all `/admin/*` routes
+- `TURSO_CONNECTION_URL` - Turso database URL
+- `TURSO_AUTH_TOKEN` - Turso database auth token
 
 ## API Surface
 
@@ -78,26 +83,27 @@ The UI is intentionally minimal and talks to the admin API directly.
 bun install
 ```
 
-2) Set your admin token for local dev (Wrangler loads `.dev.vars`):
+2) Create `.env`:
 
 ```txt
 ADMIN_TOKEN=replace-with-a-long-random-token
+TURSO_CONNECTION_URL=libsql://<your-db>.<region>.turso.io
+TURSO_AUTH_TOKEN=<your-turso-token>
 ```
 
-3) Apply local migrations:
+3) Apply migrations:
 
 ```txt
-bun run db:migrate:local
+bun run db:migrate
 ```
 
-4) Start the worker:
+4) Start local dev server:
 
 ```txt
 bun run dev
 ```
 
-5) Open `http://127.0.0.1:8787/admin/index.html` and log in with
-`ADMIN_TOKEN`.
+5) Open `http://localhost:3000/admin/index.html` and log in with `ADMIN_TOKEN`.
 
 ## OpenCode Setup
 
@@ -122,9 +128,9 @@ rewriting, these prefixes are normalized before forwarding:
 
 ## Analytics Notes
 
-Per-key analytics are written as minute buckets in D1 and include request
-counts, status-class counters, average/max latency, last-seen timestamp, and
-provider breakdown. Ingest is non-blocking relative to proxy response flow.
+Per-key analytics are written as minute buckets and include request counts,
+status-class counters, average/max latency, last-seen timestamp, and provider
+breakdown.
 
 ## Core Commands
 
@@ -133,7 +139,7 @@ bun run typecheck
 bun run lint
 bun run test
 bun run db:generate
-bun run db:migrate:local
-bun run db:migrate:remote
-bun run deploy
+bun run db:migrate
+bun run db:push
+bun run db:studio
 ```

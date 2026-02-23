@@ -8,10 +8,10 @@
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
-    "lib": ["ES2022"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
     "jsxImportSource": "hono/jsx"
   },
-  "include": ["src/**/*.ts", "drizzle.config.ts", "worker-configuration.d.ts"],
-  "exclude": ["node_modules", "opensrc", ".wrangler", "drizzle/migrations"]
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "drizzle.config.ts"],
+  "exclude": ["node_modules", "opensrc", "drizzle/migrations"]
 }

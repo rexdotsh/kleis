@@ -1,4 +1,4 @@
-import type { Database } from "../db/client";
+import type { Database } from "../db";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
 import type { Provider } from "../db/schema";
 import type { ProviderAccountMetadata } from "./metadata";

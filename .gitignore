@@ -44,6 +44,3 @@ package-lock.json
 
 # opensrc - source code for packages
 opensrc/
-
-# wrangler
-.wrangler/

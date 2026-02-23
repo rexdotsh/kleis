@@ -2,19 +2,18 @@
   "name": "kleis",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy --minify",
-    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "dev": "bun --hot --no-clear-screen run src/index.ts",
+    "build": "bun run db:migrate && bun run typecheck && bun run lint",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
     "lint": "bun x ultracite check",
-    "test": "bun test",
-    "format": "bun x ultracite fix",
+    "test": "bun test tests/providers/proxy-contract.test.ts tests/http/routing-auth-contract.test.ts",
     "db:generate": "drizzle-kit generate",
-    "db:migrate:local": "wrangler d1 migrations apply KLEIS_DB --local",
-    "db:migrate:remote": "wrangler d1 migrations apply KLEIS_DB --remote"
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
     "@hono/zod-validator": "^0.7.6",
+    "@libsql/client": "^0.15.15",
     "drizzle-orm": "^0.45.1",
     "hono": "^4.12.2",
     "zod": "^4.3.6"
@@ -22,10 +21,8 @@
   "devDependencies": {
     "@biomejs/biome": "2.4.0",
     "@typescript/native-preview": "^7.0.0-dev.20260223.1",
-    "bun-types": "latest",
     "drizzle-kit": "^0.31.9",
     "lefthook": "^2.1.1",
-    "ultracite": "7.2.3",
-    "wrangler": "^4.4.0"
+    "ultracite": "7.2.3"
   }
 }

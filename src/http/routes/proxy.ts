@@ -1,13 +1,12 @@
 import { Hono, type Context } from "hono";
 
-import { dbFromContext } from "../../db/client";
+import { db } from "../../db";
 import { recordApiKeyUsage } from "../../db/repositories/api-key-usage";
 import { getPrimaryProviderAccount } from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../providers/proxies/codex-proxy";
 import { prepareCopilotProxyRequest } from "../../providers/proxies/copilot-proxy";
 import { isObjectRecord } from "../../utils/object";
-import type { AppEnv } from "../app-env";
 import {
   parseModelForProxyRoute,
   proxyRouteTable,
@@ -41,30 +40,19 @@ const tryParseJsonBody = (bodyText: string | null): unknown | null => {
   }
 };
 
-const runInBackground = (
-  context: Context<AppEnv>,
-  promise: Promise<unknown>
-): void => {
-  const backgroundTask = promise.catch(() => undefined);
-
-  try {
-    context.executionCtx.waitUntil(backgroundTask);
-  } catch {
-    return;
-  }
+const runInBackground = (promise: Promise<unknown>): void => {
+  promise.catch(() => undefined);
 };
 
 const proxyRequest = async (
-  context: Context<AppEnv>,
+  context: Context,
   route: ProxyRoute
 ): Promise<Response> => {
   const startedAt = Date.now();
-  const database = dbFromContext(context);
   const apiKeyId = context.get("proxyApiKeyId");
   const recordUsage = (statusCode: number): void => {
     runInBackground(
-      context,
-      recordApiKeyUsage(database, {
+      recordApiKeyUsage(db, {
         apiKeyId,
         provider: route.provider,
         endpoint: route.endpoint,
@@ -100,11 +88,7 @@ const proxyRequest = async (
   }
 
   const now = Date.now();
-  const account = await getPrimaryProviderAccount(
-    database,
-    route.provider,
-    now
-  );
+  const account = await getPrimaryProviderAccount(db, route.provider, now);
   if (!account) {
     recordUsage(400);
     return context.json(
@@ -199,7 +183,7 @@ const proxyRequest = async (
   return upstreamResponse;
 };
 
-const routes = new Hono<AppEnv>();
+const routes = new Hono();
 for (const route of proxyRouteTable) {
   routes.post(route.path, async (context) => proxyRequest(context, route));
 }

@@ -1,6 +1,6 @@
 import { gte, sql } from "drizzle-orm";
 
-import type { Database } from "../client";
+import type { Database } from "../index";
 import { apiKeyUsageBuckets, providers, type Provider } from "../schema";
 
 type UsageEndpoint = "chat_completions" | "responses" | "messages";

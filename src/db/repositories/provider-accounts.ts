@@ -1,6 +1,6 @@
 import { and, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 
-import type { Database } from "../client";
+import type { Database } from "../index";
 import { providerAccounts, type Provider } from "../schema";
 import {
   parseProviderAccountMetadata,

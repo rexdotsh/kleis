@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 
-import type { Database } from "../client";
+import type { Database } from "../index";
 import { oauthStates, type Provider } from "../schema";
 
 type OAuthStateRecord = {
@@ -63,7 +63,7 @@ export const consumeOAuthState = async (
       and(eq(oauthStates.state, state), eq(oauthStates.provider, provider))
     );
 
-  if ((deleteResult.meta.changes ?? 0) < 1) {
+  if (deleteResult.rowsAffected < 1) {
     return null;
   }
 
