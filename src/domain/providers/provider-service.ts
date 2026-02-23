@@ -1,4 +1,4 @@
-import type { Database } from "../../db/client";
+import type { Database } from "../../db";
 import {
   findProviderAccountById,
   findPrimaryProviderAccount,

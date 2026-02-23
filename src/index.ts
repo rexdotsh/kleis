@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 
-import type { AppEnv } from "./http/app-env";
 import { requireAdminAuth } from "./http/middleware/admin-auth";
 import { requireProxyApiKey } from "./http/middleware/api-key-auth";
 import { adminAccountsRoutes } from "./http/routes/admin-accounts";
@@ -10,7 +9,7 @@ import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
 import { proxyRoutes } from "./http/routes/proxy";
 
-const app = new Hono<AppEnv>();
+const app = new Hono();
 
 app.onError((error, context) => {
   if (error instanceof HTTPException) {
@@ -42,7 +41,7 @@ app.get("/", (context) =>
 app.route("/", healthRoutes);
 app.route("/", modelsRoutes);
 
-const adminApi = new Hono<AppEnv>();
+const adminApi = new Hono();
 adminApi.use("/*", requireAdminAuth);
 adminApi.route("/accounts", adminAccountsRoutes);
 adminApi.route("/keys", adminKeysRoutes);
@@ -53,4 +52,7 @@ app.use("/anthropic/v1/*", requireProxyApiKey);
 app.use("/copilot/v1/*", requireProxyApiKey);
 app.route("/", proxyRoutes);
 
-export default app;
+export default {
+  port: Number(process.env.PORT ?? 3000),
+  fetch: app.fetch,
+};

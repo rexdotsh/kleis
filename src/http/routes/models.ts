@@ -4,9 +4,8 @@ import {
   buildProxyModelsRegistry,
   getModelsDevRegistry,
 } from "../../domain/models/models-dev";
-import type { AppEnv } from "../app-env";
 
-const resolveProxyRegistry = async (context: Context<AppEnv>) => {
+const resolveProxyRegistry = async (context: Context) => {
   const upstreamRegistry = await getModelsDevRegistry();
   return buildProxyModelsRegistry({
     upstreamRegistry,
@@ -14,10 +13,7 @@ const resolveProxyRegistry = async (context: Context<AppEnv>) => {
   });
 };
 
-export const modelsRoutes = new Hono<AppEnv>().get(
-  "/api.json",
-  async (context) => {
-    const registry = await resolveProxyRegistry(context);
-    return context.json(registry);
-  }
-);
+export const modelsRoutes = new Hono().get("/api.json", async (context) => {
+  const registry = await resolveProxyRegistry(context);
+  return context.json(registry);
+});

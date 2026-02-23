@@ -2,7 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 
-import { dbFromContext } from "../../db/client";
+import { db } from "../../db";
 import {
   completeProviderOAuth,
   importProviderAccount,
@@ -19,7 +19,6 @@ import {
   resolveImportedProviderAccountId,
   type ProviderAccountMetadata,
 } from "../../providers/metadata";
-import type { AppEnv } from "../app-env";
 
 const accountIdParamsSchema = z.strictObject({
   id: z.string().trim().min(1).max(120),
@@ -66,10 +65,9 @@ const toAdminAccountView = (
   updatedAt: account.updatedAt,
 });
 
-export const adminAccountsRoutes = new Hono<AppEnv>()
+export const adminAccountsRoutes = new Hono()
   .get("/", async (context) => {
-    const database = dbFromContext(context);
-    const accounts = await listProviderAccounts(database);
+    const accounts = await listProviderAccounts(db);
     return context.json({ accounts: accounts.map(toAdminAccountView) });
   })
   .post(
@@ -77,8 +75,7 @@ export const adminAccountsRoutes = new Hono<AppEnv>()
     zValidator("param", accountIdParamsSchema),
     async (context) => {
       const { id } = context.req.valid("param");
-      const database = dbFromContext(context);
-      const updated = await setPrimaryProviderAccount(database, id, Date.now());
+      const updated = await setPrimaryProviderAccount(db, id, Date.now());
 
       if (!updated) {
         return context.json(
@@ -98,9 +95,7 @@ export const adminAccountsRoutes = new Hono<AppEnv>()
     zValidator("param", accountIdParamsSchema),
     async (context) => {
       const { id } = context.req.valid("param");
-      const database = dbFromContext(context);
-
-      const account = await refreshProviderAccount(database, id, Date.now());
+      const account = await refreshProviderAccount(db, id, Date.now());
       if (!account) {
         return context.json(
           {
@@ -124,10 +119,8 @@ export const adminAccountsRoutes = new Hono<AppEnv>()
     async (context) => {
       const { provider } = context.req.valid("param");
       const body = context.req.valid("json");
-      const database = dbFromContext(context);
-
       const result = await startProviderOAuth(
-        database,
+        db,
         provider,
         {
           ...(body.options ? { options: body.options } : {}),
@@ -154,10 +147,8 @@ export const adminAccountsRoutes = new Hono<AppEnv>()
         );
       }
 
-      const database = dbFromContext(context);
-
       const account = await completeProviderOAuth(
-        database,
+        db,
         provider,
         {
           state: body.state,
@@ -201,9 +192,8 @@ export const adminAccountsRoutes = new Hono<AppEnv>()
         explicitAccountId,
         metadata
       );
-      const database = dbFromContext(context);
       const account = await importProviderAccount(
-        database,
+        db,
         provider,
         {
           accessToken: body.accessToken,

@@ -2,7 +2,7 @@ import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { z } from "zod";
 
-import { dbFromContext } from "../../db/client";
+import { db } from "../../db";
 import { listApiKeyUsageSummaries } from "../../db/repositories/api-key-usage";
 import {
   createApiKey,
@@ -11,7 +11,6 @@ import {
   type CreateApiKeyInput,
 } from "../../db/repositories/api-keys";
 import { providers } from "../../db/schema";
-import type { AppEnv } from "../app-env";
 
 const createApiKeyBodySchema = z.strictObject({
   label: z.string().trim().min(1).max(120).optional(),
@@ -35,10 +34,9 @@ const listApiKeyUsageQuerySchema = z.strictObject({
 
 const DEFAULT_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
-export const adminKeysRoutes = new Hono<AppEnv>()
+export const adminKeysRoutes = new Hono()
   .get("/", async (context) => {
-    const database = dbFromContext(context);
-    const keys = await listApiKeys(database);
+    const keys = await listApiKeys(db);
     return context.json({ keys });
   })
   .get(
@@ -50,8 +48,7 @@ export const adminKeysRoutes = new Hono<AppEnv>()
       const now = Date.now();
       const since = now - windowMs;
 
-      const database = dbFromContext(context);
-      const usage = await listApiKeyUsageSummaries(database, since);
+      const usage = await listApiKeyUsageSummaries(db, since);
 
       return context.json({
         windowMs,
@@ -74,8 +71,7 @@ export const adminKeysRoutes = new Hono<AppEnv>()
       payload.modelScopes = input.modelScopes;
     }
 
-    const database = dbFromContext(context);
-    const key = await createApiKey(database, payload, Date.now());
+    const key = await createApiKey(db, payload, Date.now());
     return context.json({ key }, 201);
   })
   .post(
@@ -83,8 +79,7 @@ export const adminKeysRoutes = new Hono<AppEnv>()
     zValidator("param", revokeApiKeyParamsSchema),
     async (context) => {
       const { id } = context.req.valid("param");
-      const database = dbFromContext(context);
-      const revoked = await revokeApiKey(database, id, Date.now());
+      const revoked = await revokeApiKey(db, id, Date.now());
       if (!revoked) {
         return context.json(
           {

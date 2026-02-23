@@ -189,13 +189,13 @@ For Claude OAuth behavior in this project:
 
 ### Deployment and Runtime Decisions
 
-- Build **Cloudflare Workers-first** architecture.
+- Build **Vercel-first** architecture.
 - Keep route/service boundaries portable to other runtimes.
-- Use **Hono + Wrangler** for implementation.
+- Use **Hono + Vercel Functions** for implementation.
 
 ### Data and ORM Decisions
 
-- Use **Cloudflare D1** as the relational database.
+- Use **Turso (libSQL)** as the relational database.
 - Use **Drizzle ORM** + Drizzle migrations for schema and queries.
 - Keep all request/response and env contracts fully typed.
 
