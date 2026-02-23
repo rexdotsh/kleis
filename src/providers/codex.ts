@@ -73,8 +73,13 @@ const parseJwtClaims = (token: string): IdTokenClaims | null => {
     return null;
   }
 
+  const payloadPart = parts[1];
+  if (!payloadPart) {
+    return null;
+  }
+
   try {
-    const payload = decodeBase64Url(parts[1] ?? "");
+    const payload = decodeBase64Url(payloadPart);
     return JSON.parse(payload) as IdTokenClaims;
   } catch {
     return null;
@@ -164,8 +169,10 @@ const buildCodexMetadata = (input: {
   existing: CodexAccountMetadata | null;
 }): CodexAccountMetadata => {
   const claims =
-    parseJwtClaims(input.tokens.id_token ?? "") ??
-    parseJwtClaims(input.tokens.access_token ?? "");
+    (input.tokens.id_token ? parseJwtClaims(input.tokens.id_token) : null) ??
+    (input.tokens.access_token
+      ? parseJwtClaims(input.tokens.access_token)
+      : null);
   const chatgptAccountId =
     extractAccountIdFromClaims(claims) ??
     input.fallbackAccountId ??
@@ -196,6 +203,11 @@ const buildTokenResult = (input: {
   fallbackAccountId: string | null;
   existingMetadata: CodexAccountMetadata | null;
 }): ProviderTokenResult => {
+  const accessToken = input.tokens.access_token;
+  if (!accessToken) {
+    throw new Error("Codex OAuth response is missing access_token");
+  }
+
   const metadata = buildCodexMetadata({
     tokens: input.tokens,
     fallbackAccountId: input.fallbackAccountId,
@@ -209,7 +221,7 @@ const buildTokenResult = (input: {
   }
 
   return {
-    accessToken: input.tokens.access_token ?? "",
+    accessToken,
     refreshToken,
     expiresAt,
     accountId,

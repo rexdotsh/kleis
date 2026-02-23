@@ -132,8 +132,8 @@ const refreshClaudeTokens = async (
   await requireOkResponse(response, "Claude token refresh failed");
 
   const body = (await response.json()) as ClaudeTokenResponse;
-  if (!body.access_token || !body.refresh_token) {
-    throw new Error("Claude refresh response is missing tokens");
+  if (!body.access_token) {
+    throw new Error("Claude refresh response is missing access_token");
   }
 
   return body;
@@ -164,6 +164,11 @@ const buildTokenResult = (input: {
   existing: ClaudeAccountMetadata | null;
   fallbackRefreshToken: string | null;
 }): ProviderTokenResult => {
+  const accessToken = input.tokens.access_token;
+  if (!accessToken) {
+    throw new Error("Claude OAuth response is missing access_token");
+  }
+
   const metadata = buildClaudeMetadata({
     tokens: input.tokens,
     mode: input.mode,
@@ -176,7 +181,7 @@ const buildTokenResult = (input: {
   }
 
   return {
-    accessToken: input.tokens.access_token ?? "",
+    accessToken,
     refreshToken,
     expiresAt: input.now + (input.tokens.expires_in ?? 3600) * 1000,
     accountId: null,
