@@ -80,9 +80,9 @@ Carry over:
 ## 4) Current Repo Baseline
 
 - The project was switched to Hono + Wrangler in commit `46b86ca01a2c2a882f103dc1744e0abbe5ed726e`.
-- `src/index.ts` currently has only a basic hello route.
-- `wrangler.jsonc` exists but still needs D1 binding configuration.
-- Drizzle and validation dependencies are not yet installed.
+- Scaffold now includes route composition, typed env helpers, and Drizzle schema/repositories.
+- `wrangler.jsonc` includes D1 binding + migration directory.
+- `worker-configuration.d.ts` is generated via `bun run cf-typegen`.
 
 ---
 
@@ -190,30 +190,30 @@ Potential future optimization:
 
 ### Phase A - Foundation
 
-- [ ] Update docs (`AGENTS.md` + this plan) to Workers/Hono/D1 decisions.
-- [ ] Install dependencies: `drizzle-orm`, `zod`, `@hono/zod-validator`, `@cloudflare/workers-types`, `drizzle-kit`.
-- [ ] Configure `wrangler.jsonc` with D1 binding scaffold.
-- [ ] Add `drizzle.config.ts` and migration scripts.
+- [x] Update docs (`AGENTS.md` + this plan) to Workers/Hono/D1 decisions.
+- [x] Install dependencies: `drizzle-orm`, `zod`, `@hono/zod-validator`, `drizzle-kit`.
+- [x] Configure `wrangler.jsonc` with D1 binding scaffold.
+- [x] Add `drizzle.config.ts` and migration scripts.
 
 ### Phase B - Typed backend skeleton
 
-- [ ] Implement typed env/bindings module.
-- [ ] Add Drizzle schema and repository layer.
-- [ ] Replace hello app with route composition and global error handling.
-- [ ] Implement health endpoint and admin auth middleware.
+- [x] Implement typed env/bindings module.
+- [x] Add Drizzle schema and repository layer.
+- [x] Replace hello app with route composition and global error handling.
+- [x] Implement health endpoint and admin auth middleware.
 
 ### Phase C - Admin primitives
 
-- [ ] API key create/list/revoke endpoints.
-- [ ] Account list/set-primary endpoints.
-- [ ] Manual refresh endpoint stub wired to provider adapters.
-- [ ] Minimal `/admin` HTML page to invoke these endpoints.
+- [x] API key create/list/revoke endpoints.
+- [x] Account list/set-primary endpoints.
+- [x] Manual refresh endpoint stub wired to provider adapters.
+- [x] Minimal `/admin` HTML page to invoke these endpoints.
 
 ### Phase D - Model + proxy skeleton
 
-- [ ] Implement models.dev fetch/cache/merge module.
-- [ ] Add `/models/api.json` and `/v1/models`.
-- [ ] Add proxy route scaffolds with request auth + provider resolution.
+- [x] Implement models.dev fetch/cache/merge module.
+- [x] Add `/models/api.json` and `/v1/models`.
+- [x] Add proxy route scaffolds with request auth + provider resolution.
 - [ ] Add provider adapter interfaces and empty implementations for next phase.
 
 ### Phase E - Provider OAuth implementation
@@ -233,6 +233,11 @@ Potential future optimization:
 - Switched baseline runtime to Hono + Wrangler (existing commit by user).
 - Reconfirmed stack decisions: Workers + D1 + Drizzle + strict typing.
 - Began implementation from this plan.
+- Installed Drizzle/Zod stack and added D1 schema + generated initial migration.
+- Added admin API key and account management route skeletons.
+- Added model registry fetch/cache route and OpenAI models response.
+- Added API key auth middleware for `/v1/*` routes.
+- Added tsgo-based typecheck command and set `noEmit` to prevent accidental `.js` output.
 
 ---
 
