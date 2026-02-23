@@ -1,8 +1,7 @@
 import { z } from "zod";
 
 import {
-  deleteOAuthState,
-  findOAuthState,
+  consumeOAuthState,
   createOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
@@ -346,7 +345,7 @@ export const copilotAdapter: ProviderAdapter = {
   async completeOAuth(
     input: ProviderOAuthCompleteInput
   ): Promise<ProviderTokenResult> {
-    const stateRecord = await findOAuthState(
+    const stateRecord = await consumeOAuthState(
       input.database,
       input.state,
       "copilot",
@@ -373,7 +372,7 @@ export const copilotAdapter: ProviderAdapter = {
       githubAccessToken
     );
     const user = await requestGithubUser(metadata.domain, githubAccessToken);
-    const tokenResult = buildTokenResult({
+    return buildTokenResult({
       accessToken: copilotToken.accessToken,
       refreshToken: githubAccessToken,
       expiresAt: copilotToken.expiresAt,
@@ -385,14 +384,6 @@ export const copilotAdapter: ProviderAdapter = {
       fallbackAccountId: null,
       fallbackLabel: null,
     });
-
-    try {
-      await deleteOAuthState(input.database, input.state, "copilot");
-    } catch {
-      // non-fatal cleanup failure
-    }
-
-    return tokenResult;
   },
   async refreshAccount(
     account: ProviderAccountRecord,

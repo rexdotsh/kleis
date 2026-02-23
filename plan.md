@@ -124,6 +124,11 @@ Carry over:
 - `created_at` INTEGER NOT NULL
 - `updated_at` INTEGER NOT NULL
 
+Index invariants:
+
+- Unique partial index: one primary row per provider (`provider` where `is_primary = 1`).
+- Unique partial index: one non-null provider/account pair (`provider`, `account_id` where `account_id IS NOT NULL`).
+
 ### `api_keys`
 
 - `id` TEXT PK
@@ -251,6 +256,10 @@ Potential future optimization:
 - Added shared provider constants and OAuth helpers, enforced API key provider/model scopes, and deduplicated in-flight models.dev cache fetches.
 - Added refresh single-flight locking fields (`refresh_lock_token`, `refresh_lock_expires_at`) and lock-aware refresh flow to reduce concurrent refresh storms.
 - Added provider proxy contract tests covering Codex/Copilot/Claude request-shaping and Claude stream tool-name normalization.
+- Added `bugs.md` as an active bug backlog and fixed reported auth/routing/proxy correctness issues.
+- Enforced provider endpoint compatibility by disallowing Codex on `/v1/chat/completions` until request translation is implemented.
+- Hardened OAuth state completion with transaction-backed state consumption semantics.
+- Added account-integrity unique partial indexes and race-safe account upsert/primary switching behavior.
 
 ---
 

@@ -13,19 +13,19 @@ import {
 } from "../v1-routing";
 
 const readRequestedModel = async (request: Request): Promise<string | null> => {
-  const contentType = request.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("application/json")) {
+  const bodyText = await request.clone().text();
+  if (!bodyText.trim()) {
     return null;
   }
 
-  let body: unknown;
+  let bodyJson: unknown;
   try {
-    body = await request.clone().json();
+    bodyJson = JSON.parse(bodyText) as unknown;
   } catch {
     return null;
   }
 
-  return readModelFromBody(body);
+  return readModelFromBody(bodyJson);
 };
 
 export const requireProxyApiKey = createMiddleware<AppEnv>(

@@ -136,6 +136,16 @@ export const adminAccountsRoutes = new Hono<AppEnv>()
     async (context) => {
       const { provider } = context.req.valid("param");
       const body = context.req.valid("json");
+      if ((provider === "codex" || provider === "claude") && !body.code) {
+        return context.json(
+          {
+            error: "bad_request",
+            message: `${provider} OAuth completion requires a code`,
+          },
+          400
+        );
+      }
+
       const database = dbFromContext(context);
 
       const account = await completeProviderOAuth(

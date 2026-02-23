@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, lte, or } from "drizzle-orm";
+import { and, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
 
 import type { Database } from "../client";
 import { providerAccounts, type Provider } from "../schema";
@@ -122,6 +122,10 @@ const hasPrimaryProviderAccount = async (
   return Boolean(primary);
 };
 
+const isUniqueConstraintError = (error: unknown): boolean =>
+  error instanceof Error &&
+  error.message.toLowerCase().includes("unique constraint failed");
+
 type UpsertProviderAccountInput = {
   provider: Provider;
   accountId: string | null;
@@ -171,9 +175,8 @@ export const upsertProviderAccount = async (
     database,
     input.provider
   ));
-  const id = crypto.randomUUID();
-  await database.insert(providerAccounts).values({
-    id,
+  const insertValues: typeof providerAccounts.$inferInsert = {
+    id: crypto.randomUUID(),
     provider: input.provider,
     label: input.label === undefined ? null : input.label,
     accountId: input.accountId,
@@ -188,14 +191,62 @@ export const upsertProviderAccount = async (
     lastRefreshStatus: null,
     createdAt: input.now,
     updatedAt: input.now,
-  });
+  };
 
-  const created = await findProviderAccountById(database, id);
-  if (!created) {
-    throw new Error("Failed to load created provider account");
+  const attemptInsert = async (
+    values: typeof providerAccounts.$inferInsert
+  ): Promise<ProviderAccountRecord> => {
+    await database.insert(providerAccounts).values(values);
+    const created = await findProviderAccountById(database, values.id);
+    if (!created) {
+      throw new Error("Failed to load created provider account");
+    }
+
+    return created;
+  };
+
+  try {
+    return await attemptInsert(insertValues);
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
   }
 
-  return created;
+  if (input.accountId) {
+    const concurrent = await findProviderAccountByProviderAndAccountId(
+      database,
+      input.provider,
+      input.accountId
+    );
+    if (concurrent) {
+      await database
+        .update(providerAccounts)
+        .set({
+          label: input.label === undefined ? concurrent.label : input.label,
+          accessToken: input.accessToken,
+          refreshToken: input.refreshToken,
+          refreshLockToken: null,
+          refreshLockExpiresAt: null,
+          expiresAt: input.expiresAt,
+          metadataJson: serializeProviderAccountMetadata(input.metadata),
+          updatedAt: input.now,
+        })
+        .where(eq(providerAccounts.id, concurrent.id));
+
+      const updated = await findProviderAccountById(database, concurrent.id);
+      if (!updated) {
+        throw new Error("Failed to load updated provider account");
+      }
+      return updated;
+    }
+  }
+
+  return attemptInsert({
+    ...insertValues,
+    id: crypto.randomUUID(),
+    isPrimary: false,
+  });
 };
 
 type UpdateProviderAccountTokensInput = {
@@ -249,8 +300,6 @@ export const recordProviderAccountRefreshFailure = async (
     .set({
       lastRefreshAt: now,
       lastRefreshStatus: "failed",
-      refreshLockToken: null,
-      refreshLockExpiresAt: null,
       updatedAt: now,
     })
     .where(eq(providerAccounts.id, id));
@@ -338,23 +387,10 @@ export const setPrimaryProviderAccount = async (
   await database
     .update(providerAccounts)
     .set({
-      isPrimary: false,
+      isPrimary: sql<boolean>`CASE WHEN ${providerAccounts.id} = ${id} THEN 1 ELSE 0 END`,
       updatedAt: now,
     })
     .where(eq(providerAccounts.provider, account.provider));
-
-  await database
-    .update(providerAccounts)
-    .set({
-      isPrimary: true,
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(providerAccounts.id, id),
-        eq(providerAccounts.provider, account.provider)
-      )
-    );
 
   return findProviderAccountById(database, id);
 };

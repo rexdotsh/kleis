@@ -1,9 +1,8 @@
 import { z } from "zod";
 
 import {
+  consumeOAuthState,
   createOAuthState,
-  deleteOAuthState,
-  findOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
 import {
@@ -235,7 +234,7 @@ export const claudeAdapter: ProviderAdapter = {
       throw new Error("Claude OAuth completion requires a code");
     }
 
-    const stateRecord = await findOAuthState(
+    const stateRecord = await consumeOAuthState(
       input.database,
       input.state,
       "claude",
@@ -266,7 +265,7 @@ export const claudeAdapter: ProviderAdapter = {
       verifier: stateRecord.pkceVerifier,
     });
 
-    const tokenResult = buildTokenResult({
+    return buildTokenResult({
       tokens,
       now: input.now,
       mode: stateMetadata.mode,
@@ -274,14 +273,6 @@ export const claudeAdapter: ProviderAdapter = {
       existing: null,
       fallbackRefreshToken: null,
     });
-
-    try {
-      await deleteOAuthState(input.database, input.state, "claude");
-    } catch {
-      // non-fatal cleanup failure
-    }
-
-    return tokenResult;
   },
   async refreshAccount(
     account: ProviderAccountRecord,

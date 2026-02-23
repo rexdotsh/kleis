@@ -144,6 +144,7 @@ describe("proxy contract: claude", () => {
     const requestBody = {
       system: "OpenCode and opencode should be rewritten",
       tools: [{ name: "shell", description: "run shell commands" }],
+      tool_choice: { type: "tool", name: "shell" },
       messages: [
         {
           role: "assistant",
@@ -164,6 +165,7 @@ describe("proxy contract: claude", () => {
     const transformed = JSON.parse(result.bodyText) as {
       system: Array<{ type: string; text: string }>;
       tools: Array<{ name: string }>;
+      tool_choice: { type: string; name: string };
       messages: Array<{ content: Array<{ type: string; name?: string }> }>;
     };
 
@@ -176,10 +178,36 @@ describe("proxy contract: claude", () => {
       "https://api.anthropic.com/v1/messages"
     );
     expect(result.upstreamUrl).toContain("beta=true");
+    expect(transformed.system).toHaveLength(2);
     expect(transformed.system[0]?.text).toBe(CLAUDE_SYSTEM_IDENTITY);
-    expect(transformed.system[1]?.text).toContain("Claude Code");
+    expect(transformed.system[1]?.text).toBe(
+      "Claude Code and Claude should be rewritten"
+    );
     expect(transformed.tools[0]?.name).toBe("mcp_shell");
+    expect(transformed.tool_choice.name).toBe("mcp_shell");
     expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_shell");
+  });
+
+  test("strips tool prefix in non-streaming JSON response payload", async () => {
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: "{}",
+      bodyJson: {},
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    const sourceResponse = Response.json({
+      content: [{ type: "tool_use", name: "mcp_shell", id: "t-1", input: {} }],
+    });
+
+    const transformedResponse = await result.transformResponse(sourceResponse);
+    const transformed = (await transformedResponse.json()) as {
+      content: Array<{ type: string; name: string }>;
+    };
+
+    expect(transformed.content[0]?.name).toBe("shell");
   });
 
   test("strips tool prefix in streaming response payload", async () => {
@@ -192,12 +220,23 @@ describe("proxy contract: claude", () => {
       metadata: null,
     });
 
-    const sourceResponse = new Response('data: {"name":"mcp_shell"}\n\n', {
-      headers: {
-        "content-type": "text/event-stream",
-      },
-    });
-    const transformedResponse = result.transformResponse(sourceResponse);
+    const encoder = new TextEncoder();
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(encoder.encode('data: {"name":"mcp_'));
+          controller.enqueue(encoder.encode('shell"}\n'));
+          controller.enqueue(encoder.encode("\n"));
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }
+    );
+    const transformedResponse = await result.transformResponse(sourceResponse);
 
     const transformedText = await transformedResponse.text();
     expect(transformedText).toContain('"name": "shell"');

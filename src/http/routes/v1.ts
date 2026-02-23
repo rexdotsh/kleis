@@ -89,7 +89,8 @@ const proxyRequest = async (
   let upstreamUrl = "";
   let requestBodyJson = parsedRequestBody;
   let requestBody = requestBodyText;
-  let responseTransformer: ((response: Response) => Response) | null = null;
+  let responseTransformer: ((response: Response) => Promise<Response>) | null =
+    null;
 
   if (modelRoute.provider && modelRoute.upstreamModel) {
     requestBodyJson = {
@@ -151,7 +152,7 @@ const proxyRequest = async (
   });
 
   if (responseTransformer) {
-    return responseTransformer(upstreamResponse);
+    return await responseTransformer(upstreamResponse);
   }
 
   return upstreamResponse;

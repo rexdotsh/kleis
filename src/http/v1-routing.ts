@@ -19,7 +19,7 @@ const endpointConfigs: Record<V1ProxyEndpoint, EndpointConfig> = {
   chat_completions: {
     pathSuffix: "/chat/completions",
     defaultProvider: "copilot",
-    allowedProviders: ["copilot", "codex"],
+    allowedProviders: ["copilot"],
   },
   responses: {
     pathSuffix: "/responses",

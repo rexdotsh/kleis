@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   index,
   integer,
@@ -35,10 +36,12 @@ export const providerAccounts = sqliteTable(
   (table) => [
     index("provider_accounts_provider_idx").on(table.provider),
     index("provider_accounts_primary_idx").on(table.provider, table.isPrimary),
-    index("provider_accounts_provider_account_idx").on(
-      table.provider,
-      table.accountId
-    ),
+    uniqueIndex("provider_accounts_primary_unique")
+      .on(table.provider)
+      .where(sql`${table.isPrimary} = 1`),
+    uniqueIndex("provider_accounts_provider_account_unique")
+      .on(table.provider, table.accountId)
+      .where(sql`${table.accountId} is not null`),
   ]
 );
 

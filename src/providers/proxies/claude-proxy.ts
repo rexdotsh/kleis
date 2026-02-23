@@ -17,6 +17,9 @@ const sanitizeClaudeSystemText = (text: string): string =>
 const prefixToolName = (name: string, prefix: string): string =>
   name.startsWith(prefix) ? name : `${prefix}${name}`;
 
+const stripToolNamePrefix = (name: string, prefix: string): string =>
+  name.startsWith(prefix) ? name.slice(prefix.length) : name;
+
 const escapeRegExp = (value: string): string =>
   value.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -42,9 +45,7 @@ const transformClaudeRequestPayload = (
         text: sanitizeClaudeSystemText(transformed.system),
       },
     ];
-  }
-
-  if (Array.isArray(transformed.system)) {
+  } else if (Array.isArray(transformed.system)) {
     const systemBlocks: unknown[] = [
       {
         type: "text",
@@ -82,6 +83,17 @@ const transformClaudeRequestPayload = (
     });
   }
 
+  if (
+    isObjectRecord(transformed.tool_choice) &&
+    transformed.tool_choice.type === "tool" &&
+    typeof transformed.tool_choice.name === "string"
+  ) {
+    transformed.tool_choice = {
+      ...transformed.tool_choice,
+      name: prefixToolName(transformed.tool_choice.name, toolPrefix),
+    };
+  }
+
   if (Array.isArray(transformed.messages)) {
     transformed.messages = transformed.messages.map((message) => {
       if (!isObjectRecord(message) || !Array.isArray(message.content)) {
@@ -106,6 +118,32 @@ const transformClaudeRequestPayload = (
         }),
       };
     });
+  }
+
+  return transformed;
+};
+
+const transformClaudeResponsePayload = (
+  payload: unknown,
+  toolPrefix: string
+): unknown => {
+  if (Array.isArray(payload)) {
+    return payload.map((item) =>
+      transformClaudeResponsePayload(item, toolPrefix)
+    );
+  }
+
+  if (!isObjectRecord(payload)) {
+    return payload;
+  }
+
+  const transformed: JsonObject = {};
+  for (const [key, value] of Object.entries(payload)) {
+    transformed[key] = transformClaudeResponsePayload(value, toolPrefix);
+  }
+
+  if (transformed.type === "tool_use" && typeof transformed.name === "string") {
+    transformed.name = stripToolNamePrefix(transformed.name, toolPrefix);
   }
 
   return transformed;
@@ -142,10 +180,28 @@ const maybeTransformClaudeStreamResponse = (
   const reader = response.body.getReader();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  let pendingText = "";
+
+  const enqueueChunk = (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    chunk: string
+  ): void => {
+    if (!chunk) {
+      return;
+    }
+
+    controller.enqueue(
+      encoder.encode(chunk.replace(stripToolPrefixRegex, '"name": "$1"'))
+    );
+  };
+
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller): Promise<void> {
       const { done, value } = await reader.read();
       if (done) {
+        pendingText += decoder.decode();
+        enqueueChunk(controller, pendingText);
+        pendingText = "";
         controller.close();
         return;
       }
@@ -154,10 +210,15 @@ const maybeTransformClaudeStreamResponse = (
         return;
       }
 
-      const text = decoder
-        .decode(value, { stream: true })
-        .replace(stripToolPrefixRegex, '"name": "$1"');
-      controller.enqueue(encoder.encode(text));
+      pendingText += decoder.decode(value, { stream: true });
+      const lastLineBreak = pendingText.lastIndexOf("\n");
+      if (lastLineBreak === -1) {
+        return;
+      }
+
+      const completeChunk = pendingText.slice(0, lastLineBreak + 1);
+      pendingText = pendingText.slice(lastLineBreak + 1);
+      enqueueChunk(controller, completeChunk);
     },
     cancel(reason): Promise<void> {
       return reader.cancel(reason);
@@ -169,6 +230,55 @@ const maybeTransformClaudeStreamResponse = (
     statusText: response.statusText,
     headers: response.headers,
   });
+};
+
+const maybeTransformClaudeJsonResponse = async (
+  response: Response,
+  toolPrefix: string
+): Promise<Response> => {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    return response;
+  }
+
+  const bodyText = await response.text();
+  let jsonBody: unknown;
+  try {
+    jsonBody = JSON.parse(bodyText) as unknown;
+  } catch {
+    return new Response(bodyText, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+
+  const transformedBody = transformClaudeResponsePayload(jsonBody, toolPrefix);
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return Response.json(transformedBody, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
+
+const transformClaudeResponse = (
+  response: Response,
+  toolPrefix: string
+): Promise<Response> => {
+  if (!response.body) {
+    return Promise.resolve(response);
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+  if (contentType.toLowerCase().includes("text/event-stream")) {
+    return Promise.resolve(
+      maybeTransformClaudeStreamResponse(response, toolPrefix)
+    );
+  }
+
+  return maybeTransformClaudeJsonResponse(response, toolPrefix);
 };
 
 const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {
@@ -191,7 +301,7 @@ type ClaudeProxyPreparationInput = {
 type ClaudeProxyPreparationResult = {
   upstreamUrl: string;
   bodyText: string;
-  transformResponse(response: Response): Response;
+  transformResponse(response: Response): Promise<Response>;
 };
 
 export const prepareClaudeProxyRequest = (
@@ -225,7 +335,7 @@ export const prepareClaudeProxyRequest = (
   return {
     upstreamUrl: buildUpstreamUrl(input.requestUrl),
     bodyText,
-    transformResponse: (response: Response): Response =>
-      maybeTransformClaudeStreamResponse(response, toolPrefix),
+    transformResponse: (response: Response): Promise<Response> =>
+      transformClaudeResponse(response, toolPrefix),
   };
 };

@@ -28,11 +28,6 @@ app.onError((error, context) => {
     {
       error: "internal_error",
       message: error.message,
-      ...(error instanceof Error && error.stack
-        ? {
-            stack: error.stack,
-          }
-        : {}),
     },
     500
   );

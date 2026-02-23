@@ -40,64 +40,34 @@ export const createOAuthState = async (
   });
 };
 
-export const consumeOAuthState = async (
+export const consumeOAuthState = (
   database: Database,
   state: string,
   provider: Provider,
   now: number
 ): Promise<OAuthStateRecord | null> => {
-  const row = await database.query.oauthStates.findFirst({
-    where: and(
-      eq(oauthStates.state, state),
-      eq(oauthStates.provider, provider)
-    ),
+  return database.transaction(async (transaction) => {
+    const row = await transaction.query.oauthStates.findFirst({
+      where: and(
+        eq(oauthStates.state, state),
+        eq(oauthStates.provider, provider)
+      ),
+    });
+
+    if (!row || row.expiresAt <= now) {
+      return null;
+    }
+
+    const deleteResult = await transaction
+      .delete(oauthStates)
+      .where(
+        and(eq(oauthStates.state, state), eq(oauthStates.provider, provider))
+      );
+
+    if ((deleteResult.meta.changes ?? 0) < 1) {
+      return null;
+    }
+
+    return toRecord(row);
   });
-
-  if (!row) {
-    return null;
-  }
-
-  await database
-    .delete(oauthStates)
-    .where(
-      and(eq(oauthStates.state, state), eq(oauthStates.provider, provider))
-    );
-
-  if (row.expiresAt <= now) {
-    return null;
-  }
-
-  return toRecord(row);
-};
-
-export const findOAuthState = async (
-  database: Database,
-  state: string,
-  provider: Provider,
-  now: number
-): Promise<OAuthStateRecord | null> => {
-  const row = await database.query.oauthStates.findFirst({
-    where: and(
-      eq(oauthStates.state, state),
-      eq(oauthStates.provider, provider)
-    ),
-  });
-
-  if (!row || row.expiresAt <= now) {
-    return null;
-  }
-
-  return toRecord(row);
-};
-
-export const deleteOAuthState = async (
-  database: Database,
-  state: string,
-  provider: Provider
-): Promise<void> => {
-  await database
-    .delete(oauthStates)
-    .where(
-      and(eq(oauthStates.state, state), eq(oauthStates.provider, provider))
-    );
 };
