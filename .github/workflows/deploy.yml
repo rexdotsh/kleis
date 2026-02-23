@@ -17,11 +17,13 @@ jobs:
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          wranglerVersion: "4.4.0"
           packageManager: npm
           command: d1 migrations apply KLEIS_DB --remote
       - name: Deploy
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          wranglerVersion: "4.4.0"
           packageManager: npm
           command: deploy --minify
