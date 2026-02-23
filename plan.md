@@ -214,13 +214,14 @@ Potential future optimization:
 - [x] Implement models.dev fetch/cache/merge module.
 - [x] Add `/models/api.json` and `/v1/models`.
 - [x] Add proxy route scaffolds with request auth + provider resolution.
-- [ ] Add provider adapter interfaces and empty implementations for next phase.
+- [x] Add provider adapter interfaces and concrete OAuth/refresh implementations.
 
 ### Phase E - Provider OAuth implementation
 
-- [ ] Copilot OAuth + refresh path.
+- [x] Copilot OAuth + refresh path.
 - [x] Codex OAuth + refresh path (admin start/complete + token refresh logic).
-- [ ] Claude OAuth + workaround transforms for request/stream handling.
+- [x] Claude OAuth + refresh path.
+- [x] Claude workaround transforms for request/stream handling.
 
 ---
 
@@ -241,6 +242,11 @@ Potential future optimization:
 - Added typed provider metadata model to store provider-specific OAuth fields and header profile.
 - Implemented Codex OAuth adapter with PKCE/state persistence and account id extraction from JWT claims.
 - Updated provider account persistence to upsert by provider/accountId and track refresh success/failure.
+- Implemented Copilot device-flow OAuth adapter with enterprise domain support and profile metadata.
+- Implemented Claude OAuth adapter with typed identity/beta metadata for request normalization phase.
+- Implemented `/v1/chat/completions`, `/v1/responses`, and `/v1/messages` proxy routing with primary-account resolution and metadata-driven provider headers.
+- Moved Claude-specific request/stream normalization into `src/providers/claude-proxy.ts` to keep route logic thin.
+- Moved Copilot and Codex request-shaping logic into `src/providers/copilot-proxy.ts` and `src/providers/codex-proxy.ts`.
 
 ---
 

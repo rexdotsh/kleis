@@ -6,6 +6,7 @@ import type { ProviderAccountMetadata } from "./metadata";
 export type ProviderOAuthStartInput = {
   database: Database;
   redirectUri: string;
+  options?: Record<string, unknown>;
   now: number;
 };
 

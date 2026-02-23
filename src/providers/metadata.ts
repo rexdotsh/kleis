@@ -24,6 +24,9 @@ const copilotMetadataSchema = z
     scope: z.string().nullable(),
     enterpriseDomain: z.string().nullable(),
     copilotApiBaseUrl: z.string().nullable(),
+    githubUserId: z.string().nullable(),
+    githubLogin: z.string().nullable(),
+    githubEmail: z.string().nullable(),
     requestProfile: z.object({
       openaiIntent: z.literal("conversation-edits"),
       initiatorHeader: z.literal("x-initiator"),
@@ -37,6 +40,8 @@ const claudeMetadataSchema = z
     provider: z.literal("claude"),
     tokenType: z.string().nullable(),
     scope: z.string().nullable(),
+    oauthMode: z.enum(["max", "console"]),
+    oauthHost: z.enum(["claude.ai", "console.anthropic.com"]),
     betaHeaders: z.array(z.string()),
     userAgent: z.string(),
     systemIdentity: z.string(),

@@ -74,6 +74,38 @@ export const consumeOAuthState = async (
   return toRecord(row);
 };
 
+export const findOAuthState = async (
+  database: Database,
+  state: string,
+  provider: Provider,
+  now: number
+): Promise<OAuthStateRecord | null> => {
+  const row = await database.query.oauthStates.findFirst({
+    where: and(
+      eq(oauthStates.state, state),
+      eq(oauthStates.provider, provider)
+    ),
+  });
+
+  if (!row || row.expiresAt <= now) {
+    return null;
+  }
+
+  return toRecord(row);
+};
+
+export const deleteOAuthState = async (
+  database: Database,
+  state: string,
+  provider: Provider
+): Promise<void> => {
+  await database
+    .delete(oauthStates)
+    .where(
+      and(eq(oauthStates.state, state), eq(oauthStates.provider, provider))
+    );
+};
+
 export const deleteExpiredOAuthStates = async (
   database: Database,
   now: number

@@ -1,12 +1,13 @@
 import type { Provider } from "../db/schema";
+import { claudeAdapter } from "./claude";
+import { copilotAdapter } from "./copilot";
 import { codexAdapter } from "./codex";
 import type { ProviderAdapter } from "./types";
-import { createClaudeAdapter, createCopilotAdapter } from "./stub-adapter";
 
 const providerAdapters: Record<Provider, ProviderAdapter> = {
-  copilot: createCopilotAdapter(),
+  copilot: copilotAdapter,
   codex: codexAdapter,
-  claude: createClaudeAdapter(),
+  claude: claudeAdapter,
 };
 
 export const getProviderAdapter = (provider: Provider): ProviderAdapter =>

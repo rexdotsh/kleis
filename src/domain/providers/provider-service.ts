@@ -1,6 +1,7 @@
 import type { Database } from "../../db/client";
 import {
   findProviderAccountById,
+  findPrimaryProviderAccount,
   recordProviderAccountRefreshFailure,
   updateProviderAccountTokens,
   upsertProviderAccount,
@@ -13,15 +14,28 @@ import type { ProviderOAuthStartResult } from "../../providers/types";
 export const startProviderOAuth = (
   database: Database,
   provider: Provider,
-  redirectUri: string,
+  input: {
+    redirectUri: string;
+    options?: Record<string, unknown>;
+  },
   now: number
 ): Promise<ProviderOAuthStartResult> => {
   const adapter = getProviderAdapter(provider);
-  return adapter.startOAuth({
+  const startInput: {
+    database: Database;
+    redirectUri: string;
+    options?: Record<string, unknown>;
+    now: number;
+  } = {
     database,
-    redirectUri,
+    redirectUri: input.redirectUri,
     now,
-  });
+  };
+  if (input.options) {
+    startInput.options = input.options;
+  }
+
+  return adapter.startOAuth(startInput);
 };
 
 export const completeProviderOAuth = async (
@@ -95,4 +109,21 @@ export const refreshProviderAccount = async (
     await recordProviderAccountRefreshFailure(database, account.id, now);
     throw error;
   }
+};
+
+export const getPrimaryProviderAccount = async (
+  database: Database,
+  provider: Provider,
+  now: number
+): Promise<ProviderAccountRecord | null> => {
+  const account = await findPrimaryProviderAccount(database, provider);
+  if (!account) {
+    return null;
+  }
+
+  if (account.expiresAt > now) {
+    return account;
+  }
+
+  return refreshProviderAccount(database, account.id, now);
 };

@@ -67,6 +67,25 @@ export const findProviderAccountById = async (
   return toRecord(row);
 };
 
+export const findPrimaryProviderAccount = async (
+  database: Database,
+  provider: Provider
+): Promise<ProviderAccountRecord | null> => {
+  const row = await database.query.providerAccounts.findFirst({
+    where: and(
+      eq(providerAccounts.provider, provider),
+      eq(providerAccounts.isPrimary, true)
+    ),
+    orderBy: desc(providerAccounts.createdAt),
+  });
+
+  if (!row) {
+    return null;
+  }
+
+  return toRecord(row);
+};
+
 const findProviderAccountByProviderAndAccountId = async (
   database: Database,
   provider: Provider,
