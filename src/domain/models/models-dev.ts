@@ -1,5 +1,4 @@
 import type { RuntimeConfig } from "../../config/runtime";
-import type { Provider } from "../../db/schema";
 import {
   proxyProviderMappings,
   type ProxyProviderMapping,
@@ -16,7 +15,6 @@ type CacheEntry = {
 type BuildProxyModelsRegistryInput = {
   upstreamRegistry: ModelsDevRegistry;
   baseOrigin: string;
-  connectedProviders: Iterable<Provider>;
 };
 
 const PROXY_API_KEY_ENV = "KLEIS_API_KEY";
@@ -161,15 +159,10 @@ export const getModelsDevRegistry = (
 export const buildProxyModelsRegistry = (
   input: BuildProxyModelsRegistryInput
 ): ModelsDevRegistry => {
-  const connected = new Set(input.connectedProviders);
   const registry: ModelsDevRegistry = {};
   const baseOrigin = normalizeOrigin(input.baseOrigin);
 
   for (const mapping of proxyProviderMappings) {
-    if (!connected.has(mapping.internalProvider)) {
-      continue;
-    }
-
     const sourceProvider =
       getNestedObject(input.upstreamRegistry, mapping.canonicalProvider) ??
       null;
