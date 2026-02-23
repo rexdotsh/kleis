@@ -4,6 +4,12 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-02-23",
   "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    {
+      "pattern": "kleis.rex.wf",
+      "custom_domain": true
+    }
+  ],
   "d1_databases": [
     {
       "binding": "KLEIS_DB",
