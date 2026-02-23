@@ -21,6 +21,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Cache npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-npm-wrangler-4.4.0
+          restore-keys: |
+            ${{ runner.os }}-npm-wrangler-
       - name: Detect migration file changes
         id: changed
         uses: dorny/paths-filter@v3
