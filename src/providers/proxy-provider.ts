@@ -1,6 +1,5 @@
 import type { Provider } from "../db/schema";
-
-type CanonicalProvider = "openai" | "anthropic" | "github-copilot";
+import type { CanonicalProvider, ProxyRouteSuffix } from "./proxy-endpoints";
 
 type ProxyProviderMapping = {
   internalProvider: Provider;
@@ -48,7 +47,7 @@ export const requireProxyProviderByCanonical = (
 
 export const buildProxyRoutePath = (
   canonicalProvider: CanonicalProvider,
-  suffix: "/responses" | "/messages" | "/chat/completions"
+  suffix: ProxyRouteSuffix
 ): string => {
   const mapping = requireProxyProviderByCanonical(canonicalProvider);
   return `${mapping.routeBasePath}${suffix}`;

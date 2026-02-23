@@ -64,9 +64,6 @@ const proxyRequest = async (
   };
 
   const requestUrl = new URL(context.req.url);
-  const upstreamRequestUrl = new URL(requestUrl);
-  upstreamRequestUrl.pathname = route.upstreamPath;
-
   const requestBodyText = await context.req.text();
   const parsedRequestBody = tryParseJsonBody(requestBodyText);
   const requestedModel = readModelFromBody(parsedRequestBody);
@@ -126,7 +123,7 @@ const proxyRequest = async (
     case "copilot": {
       const copilotProxy = prepareCopilotProxyRequest({
         endpoint: route.endpoint,
-        requestUrl: upstreamRequestUrl,
+        requestUrl,
         headers,
         bodyJson: requestBodyJson,
         githubAccessToken: account.refreshToken,
@@ -139,7 +136,7 @@ const proxyRequest = async (
 
     case "claude": {
       const claudeProxy = prepareClaudeProxyRequest({
-        requestUrl: upstreamRequestUrl,
+        requestUrl,
         headers,
         bodyText: requestBody,
         bodyJson: requestBodyJson,

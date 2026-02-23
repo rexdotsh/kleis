@@ -125,9 +125,7 @@ describe("proxy contract: copilot", () => {
 
     const result = prepareCopilotProxyRequest({
       endpoint: "chat_completions",
-      requestUrl: new URL(
-        "https://kleis.local/v1/chat/completions?stream=true"
-      ),
+      requestUrl: new URL("https://kleis.local/chat/completions?stream=true"),
       headers,
       bodyJson: {
         messages: [
@@ -151,7 +149,7 @@ describe("proxy contract: copilot", () => {
     expect(headers.get(COPILOT_INITIATOR_HEADER)).toBe("user");
     expect(headers.get(COPILOT_VISION_HEADER)).toBe("true");
     expect(result.upstreamUrl).toBe(
-      "https://api.githubcopilot.com/v1/chat/completions?stream=true"
+      "https://api.githubcopilot.com/chat/completions?stream=true"
     );
   });
 
@@ -172,7 +170,7 @@ describe("proxy contract: copilot", () => {
 
     const result = prepareCopilotProxyRequest({
       endpoint: "responses",
-      requestUrl: new URL("https://kleis.local/v1/responses"),
+      requestUrl: new URL("https://kleis.local/responses"),
       headers,
       bodyJson: {
         input: [
@@ -192,7 +190,7 @@ describe("proxy contract: copilot", () => {
 
     expect(headers.get(COPILOT_INITIATOR_HEADER)).toBe("agent");
     expect(headers.get(COPILOT_VISION_HEADER)).toBeNull();
-    expect(result.upstreamUrl).toBe("https://copilot.internal/v1/responses");
+    expect(result.upstreamUrl).toBe("https://copilot.internal/responses");
   });
 });
 

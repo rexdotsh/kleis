@@ -3,16 +3,18 @@ import {
   buildProxyRoutePath,
   requireProxyProviderByCanonical,
 } from "../providers/proxy-provider";
+import {
+  proxyEndpointRoutes,
+  type CanonicalProvider,
+  type ProxyEndpoint,
+} from "../providers/proxy-endpoints";
 import { isObjectRecord } from "../utils/object";
-
-export type ProxyEndpoint = "chat_completions" | "responses" | "messages";
 
 export type ProxyRoute = {
   path: string;
-  publicProvider: "openai" | "anthropic" | "github-copilot";
+  publicProvider: CanonicalProvider;
   provider: Provider;
   endpoint: ProxyEndpoint;
-  upstreamPath: "/v1/chat/completions" | "/v1/responses" | "/v1/messages";
 };
 
 type ParsedModelRoute = {
@@ -20,40 +22,15 @@ type ParsedModelRoute = {
   upstreamModel: string | null;
 };
 
-const toProxyRoute = (input: {
-  provider: "openai" | "anthropic" | "github-copilot";
-  suffix: "/responses" | "/messages" | "/chat/completions";
-  endpoint: ProxyEndpoint;
-}): ProxyRoute => ({
-  path: buildProxyRoutePath(input.provider, input.suffix),
-  publicProvider: input.provider,
-  provider: requireProxyProviderByCanonical(input.provider).internalProvider,
-  endpoint: input.endpoint,
-  upstreamPath: `/v1${input.suffix}`,
-});
-
-export const proxyRouteTable: readonly ProxyRoute[] = [
-  toProxyRoute({
-    provider: "openai",
-    suffix: "/responses",
-    endpoint: "responses",
-  }),
-  toProxyRoute({
-    provider: "anthropic",
-    suffix: "/messages",
-    endpoint: "messages",
-  }),
-  toProxyRoute({
-    provider: "github-copilot",
-    suffix: "/chat/completions",
-    endpoint: "chat_completions",
-  }),
-  toProxyRoute({
-    provider: "github-copilot",
-    suffix: "/responses",
-    endpoint: "responses",
-  }),
-] as const;
+export const proxyRouteTable: readonly ProxyRoute[] = proxyEndpointRoutes.map(
+  (route) => ({
+    path: buildProxyRoutePath(route.publicProvider, route.publicSuffix),
+    publicProvider: route.publicProvider,
+    provider: requireProxyProviderByCanonical(route.publicProvider)
+      .internalProvider,
+    endpoint: route.endpoint,
+  })
+);
 
 const proxyRouteByPath = new Map<string, ProxyRoute>(
   proxyRouteTable.map((route) => [route.path, route])

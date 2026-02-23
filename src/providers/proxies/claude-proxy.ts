@@ -7,6 +7,7 @@ import {
   CLAUDE_SYSTEM_IDENTITY,
   CLAUDE_TOOL_PREFIX,
 } from "../constants";
+import { requireProxyEndpointRoute } from "../proxy-endpoints";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 
 const sanitizeClaudeSystemText = (text: string): string =>
@@ -149,9 +150,16 @@ const transformClaudeResponsePayload = (
   return transformed;
 };
 
-const buildUpstreamUrl = (requestUrl: URL): string => {
-  const pathWithQuery = `${requestUrl.pathname}${requestUrl.search}`;
-  const upstream = new URL(pathWithQuery, ANTHROPIC_API_BASE_URL);
+const claudeMessagesUpstreamSuffix = requireProxyEndpointRoute({
+  publicProvider: "anthropic",
+  endpoint: "messages",
+}).upstreamSuffix;
+
+const buildUpstreamUrl = (search: string): string => {
+  const upstream = new URL(
+    `${claudeMessagesUpstreamSuffix}${search}`,
+    ANTHROPIC_API_BASE_URL
+  );
   if (!upstream.searchParams.has("beta")) {
     upstream.searchParams.set("beta", "true");
   }
@@ -334,7 +342,7 @@ export const prepareClaudeProxyRequest = (
       : input.bodyText;
 
   return {
-    upstreamUrl: buildUpstreamUrl(input.requestUrl),
+    upstreamUrl: buildUpstreamUrl(input.requestUrl.search),
     bodyText,
     transformResponse: (response: Response): Promise<Response> =>
       transformClaudeResponse(response, toolPrefix),

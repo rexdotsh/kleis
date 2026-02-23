@@ -6,9 +6,11 @@ import {
   COPILOT_OPENAI_INTENT,
   COPILOT_VISION_HEADER,
 } from "../constants";
+import {
+  requireProxyEndpointRoute,
+  type ProxyEndpoint,
+} from "../proxy-endpoints";
 import { isObjectRecord } from "../../utils/object";
-
-type CopilotProxyEndpoint = "chat_completions" | "responses" | "messages";
 
 type CopilotMessageProfile = {
   isVision: boolean;
@@ -149,7 +151,7 @@ const deriveMessagesProfile = (jsonBody: unknown): CopilotMessageProfile => {
 };
 
 const deriveCopilotRequestProfile = (
-  endpoint: CopilotProxyEndpoint,
+  endpoint: ProxyEndpoint,
   jsonBody: unknown
 ): CopilotMessageProfile => {
   if (endpoint === "chat_completions") {
@@ -163,14 +165,21 @@ const deriveCopilotRequestProfile = (
   return deriveMessagesProfile(jsonBody);
 };
 
-const buildUpstreamUrl = (baseUrl: string, requestUrl: URL): string => {
-  const pathWithQuery = `${requestUrl.pathname}${requestUrl.search}`;
-  const upstream = new URL(pathWithQuery, baseUrl);
+const buildUpstreamUrl = (
+  baseUrl: string,
+  endpoint: ProxyEndpoint,
+  search: string
+): string => {
+  const upstreamSuffix = requireProxyEndpointRoute({
+    publicProvider: "github-copilot",
+    endpoint,
+  }).upstreamSuffix;
+  const upstream = new URL(`${upstreamSuffix}${search}`, baseUrl);
   return upstream.toString();
 };
 
 type CopilotProxyPreparationInput = {
-  endpoint: CopilotProxyEndpoint;
+  endpoint: ProxyEndpoint;
   requestUrl: URL;
   headers: Headers;
   bodyJson: unknown;
@@ -202,6 +211,10 @@ export const prepareCopilotProxyRequest = (
   }
 
   return {
-    upstreamUrl: buildUpstreamUrl(baseUrl, input.requestUrl),
+    upstreamUrl: buildUpstreamUrl(
+      baseUrl,
+      input.endpoint,
+      input.requestUrl.search
+    ),
   };
 };

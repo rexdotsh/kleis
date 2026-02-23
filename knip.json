@@ -1,5 +1,4 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "ignoreFiles": ["public/admin/app.js"],
-  "ignoreDependencies": ["@biomejs/biome"]
+  "ignoreFiles": ["public/admin/app.js"]
 }

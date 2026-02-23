@@ -171,13 +171,46 @@ function showLoading(containerId) {
   }
 }
 
+function metadataHtml(metadata) {
+  if (!metadata || typeof metadata !== "object") return "";
+  const entries = Object.entries(metadata);
+  if (!entries.length) return "";
+  return entries
+    .map(
+      ([k, v]) =>
+        `<span class="card-meta-item"><span style="color:var(--text-tertiary)">${escapeHtml(k)}:</span> ${escapeHtml(String(v))}</span>`
+    )
+    .join("");
+}
+
 function accountCardHtml(account) {
   const s = tokenStatus(account.expiresAt);
   const name = account.label || account.accountId || account.id;
+  const shortId =
+    account.id.length > 12
+      ? `${account.id.slice(0, 8)}...${account.id.slice(-4)}`
+      : account.id;
 
   const setPrimaryBtn = account.isPrimary
     ? ""
     : `<button class="btn btn-ghost btn-sm" data-action="set-primary" data-account-id="${account.id}" type="button">set primary</button>`;
+
+  const identityParts = [];
+  if (account.accountId && account.accountId !== name) {
+    identityParts.push(
+      `<span class="card-meta-item"><span style="color:var(--text-tertiary)">account:</span> ${escapeHtml(account.accountId)}</span>`
+    );
+  }
+  identityParts.push(
+    `<span class="card-meta-item"><span style="color:var(--text-tertiary)">id:</span> ${escapeHtml(shortId)}</span>`
+  );
+  if (account.createdAt) {
+    identityParts.push(
+      `<span class="card-meta-item"><span style="color:var(--text-tertiary)">created:</span> ${escapeHtml(relativeTime(account.createdAt))}</span>`
+    );
+  }
+
+  const meta = metadataHtml(account.metadata);
 
   return `<div class="card" data-account-id="${account.id}">
     <div class="card-top">
@@ -200,6 +233,8 @@ function accountCardHtml(account) {
       ${account.lastRefreshAt ? `<span class="dot-sep"></span><span>refreshed ${escapeHtml(relativeTime(account.lastRefreshAt))}</span>` : ""}
       ${account.lastRefreshStatus && account.lastRefreshStatus !== "success" ? `<span class="dot-sep"></span><span style="color:var(--red)">${escapeHtml(account.lastRefreshStatus)}</span>` : ""}
     </div>
+    <div class="card-meta">${identityParts.join("")}</div>
+    ${meta ? `<div class="card-meta" style="margin-top:6px">${meta}</div>` : ""}
   </div>`;
 }
 
@@ -246,15 +281,48 @@ function keyCardHtml(key) {
       `<span class="card-meta-item">${successRate}% success</span>`
     );
   }
+  if (usage?.clientErrorCount) {
+    metaParts.push(
+      `<span class="card-meta-item" style="color:var(--amber)">${usage.clientErrorCount} 4xx</span>`
+    );
+  }
+  if (usage?.serverErrorCount) {
+    metaParts.push(
+      `<span class="card-meta-item" style="color:var(--red)">${usage.serverErrorCount} 5xx</span>`
+    );
+  }
   if (usage?.avgLatencyMs) {
     metaParts.push(
       `<span class="card-meta-item">${usage.avgLatencyMs}ms avg</span>`
+    );
+  }
+  if (usage?.maxLatencyMs) {
+    metaParts.push(
+      `<span class="card-meta-item">${usage.maxLatencyMs}ms max</span>`
+    );
+  }
+  if (usage?.lastRequestAt) {
+    metaParts.push(
+      `<span class="card-meta-item">last req ${escapeHtml(relativeTime(usage.lastRequestAt))}</span>`
     );
   }
   if (!revoked && key.expiresAt) {
     metaParts.push(
       `<span class="card-meta-item"><span class="badge badge-${status}">${escapeHtml(expiryCountdown(key.expiresAt))}</span></span>`
     );
+  }
+
+  const providerUsageParts = [];
+  if (usage?.providers?.length) {
+    for (const pu of usage.providers) {
+      const puRate = pu.requestCount
+        ? Math.round((pu.successCount / pu.requestCount) * 100)
+        : null;
+      const ratePart = puRate !== null ? ` (${puRate}% ok)` : "";
+      providerUsageParts.push(
+        `<span class="card-meta-item"><span class="badge badge-${pu.provider}">${pu.provider}</span> ${pu.requestCount} reqs${ratePart}</span>`
+      );
+    }
   }
 
   return `<div class="card">
@@ -272,6 +340,7 @@ function keyCardHtml(key) {
     </div>
     <div class="card-key"><code>${escapeHtml(keyDisplay)}</code></div>
     <div class="card-meta">${metaParts.join("")}</div>
+    ${providerUsageParts.length ? `<div class="card-meta" style="margin-top:6px">${providerUsageParts.join("")}</div>` : ""}
   </div>`;
 }
 
