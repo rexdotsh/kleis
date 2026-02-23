@@ -7,6 +7,7 @@
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
     "lint": "bun x ultracite check",
+    "test": "bun test",
     "format": "bun x ultracite fix",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply KLEIS_DB --local",

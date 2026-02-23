@@ -115,6 +115,8 @@ Carry over:
 - `is_primary` INTEGER BOOLEAN NOT NULL DEFAULT 0
 - `access_token` TEXT NOT NULL
 - `refresh_token` TEXT NOT NULL
+- `refresh_lock_token` TEXT NULL
+- `refresh_lock_expires_at` INTEGER NULL
 - `expires_at` INTEGER NOT NULL
 - `metadata_json` TEXT NULL
 - `last_refresh_at` INTEGER NULL
@@ -140,7 +142,6 @@ Carry over:
 - `pkce_verifier` TEXT NULL
 - `metadata_json` TEXT NULL
 - `expires_at` INTEGER NOT NULL
-- `created_at` INTEGER NOT NULL
 
 ---
 
@@ -248,6 +249,8 @@ Potential future optimization:
 - Moved Claude-specific request/stream normalization into `src/providers/proxies/claude-proxy.ts` to keep route logic thin.
 - Moved Copilot and Codex request-shaping logic into `src/providers/proxies/copilot-proxy.ts` and `src/providers/proxies/codex-proxy.ts`.
 - Added shared provider constants and OAuth helpers, enforced API key provider/model scopes, and deduplicated in-flight models.dev cache fetches.
+- Added refresh single-flight locking fields (`refresh_lock_token`, `refresh_lock_expires_at`) and lock-aware refresh flow to reduce concurrent refresh storms.
+- Added provider proxy contract tests covering Codex/Copilot/Claude request-shaping and Claude stream tool-name normalization.
 
 ---
 
