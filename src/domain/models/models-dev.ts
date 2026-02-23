@@ -159,7 +159,7 @@ export const getModelsDevRegistry = (
 export const buildProxyModelsRegistry = (
   input: BuildProxyModelsRegistryInput
 ): ModelsDevRegistry => {
-  const registry: ModelsDevRegistry = {};
+  const registry: ModelsDevRegistry = cloneJsonValue(input.upstreamRegistry);
   const baseOrigin = normalizeOrigin(input.baseOrigin);
 
   for (const mapping of proxyProviderMappings) {

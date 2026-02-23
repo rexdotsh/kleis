@@ -5,6 +5,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      force_migrations:
+        description: Force D1 migrations apply
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   deploy:
@@ -13,7 +19,17 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect migration file changes
+        id: changed
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            migrations:
+              - 'drizzle/migrations/**/*.sql'
       - name: Apply D1 migrations
+        if: steps.changed.outputs.migrations == 'true' || (github.event_name == 'workflow_dispatch' && (inputs.force_migrations == true || github.event.inputs.force_migrations == 'true'))
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
