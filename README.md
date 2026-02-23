@@ -154,5 +154,9 @@ does not resolve extensionless TypeScript imports — a known bug
 ([vercel/vercel#14910](https://github.com/vercel/vercel/issues/14910)). Without
 it, multi-file Hono apps crash with `ERR_MODULE_NOT_FOUND`.
 
+Related upstream follow-up: I filed
+[vercel/vercel#15216](https://github.com/vercel/vercel/pull/15216) to address
+the Vercel Hono behavior we hit during deployment.
+
 `VERCEL_EXPERIMENTAL_BACKENDS=1` fixes module resolution but completely bypasses
 CDN static file serving from `public/`. Pre-bundling gives us both.
