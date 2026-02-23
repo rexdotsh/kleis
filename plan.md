@@ -219,7 +219,7 @@ Potential future optimization:
 ### Phase E - Provider OAuth implementation
 
 - [ ] Copilot OAuth + refresh path.
-- [ ] Codex OAuth + refresh path.
+- [x] Codex OAuth + refresh path (admin start/complete + token refresh logic).
 - [ ] Claude OAuth + workaround transforms for request/stream handling.
 
 ---
@@ -238,6 +238,9 @@ Potential future optimization:
 - Added model registry fetch/cache route and OpenAI models response.
 - Added API key auth middleware for `/v1/*` routes.
 - Added tsgo-based typecheck command and set `noEmit` to prevent accidental `.js` output.
+- Added typed provider metadata model to store provider-specific OAuth fields and header profile.
+- Implemented Codex OAuth adapter with PKCE/state persistence and account id extraction from JWT claims.
+- Updated provider account persistence to upsert by provider/accountId and track refresh success/failure.
 
 ---
 
