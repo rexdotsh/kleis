@@ -171,15 +171,32 @@ function showLoading(containerId) {
   }
 }
 
+const METADATA_HIDDEN_KEYS = new Set([
+  "provider",
+  "idToken",
+  "betaHeaders",
+  "userAgent",
+  "systemIdentity",
+  "toolPrefix",
+  "requestProfile",
+  "tokenType",
+  "scope",
+]);
+
 function metadataHtml(metadata) {
   if (!metadata || typeof metadata !== "object") return "";
-  const entries = Object.entries(metadata);
+  const entries = Object.entries(metadata).filter(([k, v]) => {
+    if (METADATA_HIDDEN_KEYS.has(k)) return false;
+    if (v === null || v === undefined || v === "") return false;
+    if (Array.isArray(v) && !v.length) return false;
+    return true;
+  });
   if (!entries.length) return "";
   return entries
-    .map(
-      ([k, v]) =>
-        `<span class="card-meta-item"><span style="color:var(--text-tertiary)">${escapeHtml(k)}:</span> ${escapeHtml(String(v))}</span>`
-    )
+    .map(([k, v]) => {
+      const display = Array.isArray(v) ? v.join(", ") : String(v);
+      return `<span class="card-meta-item"><span style="color:var(--text-tertiary)">${escapeHtml(k)}:</span> ${escapeHtml(display)}</span>`;
+    })
     .join("");
 }
 
