@@ -373,9 +373,7 @@ export const copilotAdapter: ProviderAdapter = {
       githubAccessToken
     );
     const user = await requestGithubUser(metadata.domain, githubAccessToken);
-    await deleteOAuthState(input.database, input.state, "copilot");
-
-    return buildTokenResult({
+    const tokenResult = buildTokenResult({
       accessToken: copilotToken.accessToken,
       refreshToken: githubAccessToken,
       expiresAt: copilotToken.expiresAt,
@@ -387,6 +385,14 @@ export const copilotAdapter: ProviderAdapter = {
       fallbackAccountId: null,
       fallbackLabel: null,
     });
+
+    try {
+      await deleteOAuthState(input.database, input.state, "copilot");
+    } catch {
+      // non-fatal cleanup failure
+    }
+
+    return tokenResult;
   },
   async refreshAccount(
     account: ProviderAccountRecord,

@@ -11,6 +11,16 @@ import type { Provider } from "../../db/schema";
 import { getProviderAdapter } from "../../providers/registry";
 import type { ProviderOAuthStartResult } from "../../providers/types";
 
+const normalizeTokenField = (value: string): string => value.trim();
+
+const assertExpiresAt = (expiresAt: number, now: number): number => {
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
+    throw new Error("Provider token expiry is invalid or already expired");
+  }
+
+  return expiresAt;
+};
+
 export const startProviderOAuth = (
   database: Database,
   provider: Provider,
@@ -46,13 +56,19 @@ export const completeProviderOAuth = async (
     now,
   });
 
+  const accessToken = normalizeTokenField(tokens.accessToken);
+  const refreshToken = normalizeTokenField(tokens.refreshToken);
+  if (!accessToken || !refreshToken) {
+    throw new Error("Provider OAuth response is missing required tokens");
+  }
+
   return upsertProviderAccount(database, {
     provider,
     accountId: tokens.accountId,
     label: tokens.label ?? null,
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken,
-    expiresAt: tokens.expiresAt,
+    accessToken,
+    refreshToken,
+    expiresAt: assertExpiresAt(tokens.expiresAt, now),
     metadata: tokens.metadata,
     now,
   });
@@ -71,11 +87,16 @@ export const refreshProviderAccount = async (
   try {
     const adapter = getProviderAdapter(account.provider);
     const tokens = await adapter.refreshAccount(account, now);
+    const accessToken = normalizeTokenField(tokens.accessToken);
+    const refreshToken = normalizeTokenField(tokens.refreshToken);
+    if (!accessToken || !refreshToken) {
+      throw new Error("Provider refresh response is missing required tokens");
+    }
 
     const updated = await updateProviderAccountTokens(database, account.id, {
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-      expiresAt: tokens.expiresAt,
+      accessToken,
+      refreshToken,
+      expiresAt: assertExpiresAt(tokens.expiresAt, now),
       accountId: tokens.accountId,
       metadata: tokens.metadata,
       lastRefreshStatus: "success",

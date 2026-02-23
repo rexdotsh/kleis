@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
-  consumeOAuthState,
   createOAuthState,
+  deleteOAuthState,
+  findOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
 import { CODEX_ORIGINATOR, CODEX_REQUEST_PROFILE } from "./constants";
@@ -257,7 +258,7 @@ export const codexAdapter: ProviderAdapter = {
       throw new Error("Codex OAuth completion requires an authorization code");
     }
 
-    const stateRecord = await consumeOAuthState(
+    const stateRecord = await findOAuthState(
       input.database,
       input.state,
       "codex",
@@ -283,13 +284,21 @@ export const codexAdapter: ProviderAdapter = {
       verifier: stateRecord.pkceVerifier,
     });
 
-    return buildTokenResult({
+    const tokenResult = buildTokenResult({
       tokens,
       now: input.now,
       fallbackRefreshToken: null,
       fallbackAccountId: null,
       existingMetadata: null,
     });
+
+    try {
+      await deleteOAuthState(input.database, input.state, "codex");
+    } catch {
+      // non-fatal cleanup failure
+    }
+
+    return tokenResult;
   },
   async refreshAccount(
     account: ProviderAccountRecord,
