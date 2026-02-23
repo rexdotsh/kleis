@@ -5,7 +5,6 @@ import {
   createOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
-import { COPILOT_REQUEST_PROFILE } from "./constants";
 import { requireOkResponse } from "./http";
 import type { CopilotAccountMetadata } from "./metadata";
 import { generateState } from "./oauth-utils";
@@ -278,7 +277,6 @@ const buildCopilotMetadata = (input: {
       : (input.existing?.githubUserId ?? null),
   githubLogin: input.user?.login ?? input.existing?.githubLogin ?? null,
   githubEmail: input.user?.email ?? input.existing?.githubEmail ?? null,
-  requestProfile: COPILOT_REQUEST_PROFILE,
 });
 
 const buildTokenResult = (input: {

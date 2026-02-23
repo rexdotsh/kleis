@@ -185,24 +185,20 @@ type CopilotProxyPreparationResult = {
 export const prepareCopilotProxyRequest = (
   input: CopilotProxyPreparationInput
 ): CopilotProxyPreparationResult => {
-  const requestProfile = input.metadata?.requestProfile;
   const profile = deriveCopilotRequestProfile(input.endpoint, input.bodyJson);
   const baseUrl =
     input.metadata?.copilotApiBaseUrl ?? COPILOT_DEFAULT_API_BASE_URL;
-  const initiatorHeader =
-    requestProfile?.initiatorHeader ?? COPILOT_INITIATOR_HEADER;
-  const visionHeader = requestProfile?.visionHeader ?? COPILOT_VISION_HEADER;
 
   input.headers.set("authorization", `Bearer ${input.githubAccessToken}`);
+  input.headers.set("Openai-Intent", COPILOT_OPENAI_INTENT);
   input.headers.set(
-    "Openai-Intent",
-    requestProfile?.openaiIntent ?? COPILOT_OPENAI_INTENT
+    COPILOT_INITIATOR_HEADER,
+    profile.isAgent ? "agent" : "user"
   );
-  input.headers.set(initiatorHeader, profile.isAgent ? "agent" : "user");
   if (profile.isVision) {
-    input.headers.set(visionHeader, "true");
+    input.headers.set(COPILOT_VISION_HEADER, "true");
   } else {
-    input.headers.delete(visionHeader);
+    input.headers.delete(COPILOT_VISION_HEADER);
   }
 
   return {

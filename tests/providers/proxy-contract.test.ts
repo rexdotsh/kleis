@@ -4,10 +4,8 @@ import {
   CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
   CODEX_ACCOUNT_ID_HEADER,
-  CODEX_REQUEST_PROFILE,
   CODEX_RESPONSE_ENDPOINT,
   COPILOT_INITIATOR_HEADER,
-  COPILOT_REQUEST_PROFILE,
   COPILOT_VISION_HEADER,
 } from "../../src/providers/constants";
 import type {
@@ -29,7 +27,6 @@ describe("proxy contract: codex", () => {
       chatgptAccountId: "acct-meta",
       organizationIds: [],
       email: null,
-      requestProfile: CODEX_REQUEST_PROFILE,
     };
 
     const result = prepareCodexProxyRequest({
@@ -107,7 +104,6 @@ describe("proxy contract: copilot", () => {
       githubUserId: null,
       githubLogin: null,
       githubEmail: null,
-      requestProfile: COPILOT_REQUEST_PROFILE,
     };
 
     const result = prepareCopilotProxyRequest({

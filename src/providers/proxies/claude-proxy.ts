@@ -307,12 +307,13 @@ type ClaudeProxyPreparationResult = {
 export const prepareClaudeProxyRequest = (
   input: ClaudeProxyPreparationInput
 ): ClaudeProxyPreparationResult => {
-  const requiredBetaHeaders =
-    input.metadata?.betaHeaders ?? CLAUDE_REQUIRED_BETA_HEADERS;
   const toolPrefix = input.metadata?.toolPrefix ?? CLAUDE_TOOL_PREFIX;
   const systemIdentity =
     input.metadata?.systemIdentity ?? CLAUDE_SYSTEM_IDENTITY;
-  const mergedBetas = mergeBetaHeaders(input.headers, requiredBetaHeaders);
+  const mergedBetas = mergeBetaHeaders(
+    input.headers,
+    CLAUDE_REQUIRED_BETA_HEADERS
+  );
 
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("anthropic-beta", mergedBetas);

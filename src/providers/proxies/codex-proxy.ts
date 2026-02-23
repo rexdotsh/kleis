@@ -20,14 +20,10 @@ export const prepareCodexProxyRequest = (
 
   const accountId = input.metadata?.chatgptAccountId ?? input.accountId;
   if (accountId) {
-    input.headers.set(
-      input.metadata?.requestProfile.accountIdHeader ?? CODEX_ACCOUNT_ID_HEADER,
-      accountId
-    );
+    input.headers.set(CODEX_ACCOUNT_ID_HEADER, accountId);
   }
 
   return {
-    upstreamUrl:
-      input.metadata?.requestProfile.endpoint ?? CODEX_RESPONSE_ENDPOINT,
+    upstreamUrl: CODEX_RESPONSE_ENDPOINT,
   };
 };

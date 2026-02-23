@@ -5,7 +5,7 @@ import {
   createOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
-import { CODEX_ORIGINATOR, CODEX_REQUEST_PROFILE } from "./constants";
+import { CODEX_ORIGINATOR } from "./constants";
 import { requireOkResponse } from "./http";
 import type { CodexAccountMetadata } from "./metadata";
 import { decodeBase64Url, generatePkce, generateState } from "./oauth-utils";
@@ -235,7 +235,6 @@ const buildCodexMetadata = (input: {
         ? organizationIds
         : (input.existing?.organizationIds ?? []),
     email: claims?.email ?? input.existing?.email ?? null,
-    requestProfile: CODEX_REQUEST_PROFILE,
   };
 };
 

@@ -1,21 +1,12 @@
 import { z } from "zod";
 
 import type { Provider } from "../db/schema";
-import { isObjectRecord } from "../utils/object";
 
 import {
   CLAUDE_CLI_USER_AGENT,
   CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
   CLAUDE_TOOL_PREFIX,
-  CODEX_ACCOUNT_ID_HEADER,
-  CODEX_REQUEST_PROFILE,
-  CODEX_RESPONSE_ENDPOINT,
-  CODEX_ORIGINATOR,
-  COPILOT_INITIATOR_HEADER,
-  COPILOT_OPENAI_INTENT,
-  COPILOT_REQUEST_PROFILE,
-  COPILOT_VISION_HEADER,
 } from "./constants";
 
 const codexMetadataSchema = z.strictObject({
@@ -26,11 +17,13 @@ const codexMetadataSchema = z.strictObject({
   chatgptAccountId: z.string().nullable(),
   organizationIds: z.array(z.string()),
   email: z.string().nullable(),
-  requestProfile: z.strictObject({
-    originator: z.literal(CODEX_ORIGINATOR),
-    accountIdHeader: z.literal(CODEX_ACCOUNT_ID_HEADER),
-    endpoint: z.literal(CODEX_RESPONSE_ENDPOINT),
-  }),
+  requestProfile: z
+    .strictObject({
+      originator: z.string().optional(),
+      accountIdHeader: z.string().optional(),
+      endpoint: z.string().optional(),
+    })
+    .optional(),
 });
 
 const copilotMetadataSchema = z.strictObject({
@@ -42,11 +35,13 @@ const copilotMetadataSchema = z.strictObject({
   githubUserId: z.string().nullable(),
   githubLogin: z.string().nullable(),
   githubEmail: z.string().nullable(),
-  requestProfile: z.strictObject({
-    openaiIntent: z.literal(COPILOT_OPENAI_INTENT),
-    initiatorHeader: z.literal(COPILOT_INITIATOR_HEADER),
-    visionHeader: z.literal(COPILOT_VISION_HEADER),
-  }),
+  requestProfile: z
+    .strictObject({
+      openaiIntent: z.string().optional(),
+      initiatorHeader: z.string().optional(),
+      visionHeader: z.string().optional(),
+    })
+    .optional(),
 });
 
 const claudeMetadataSchema = z.strictObject({
@@ -88,7 +83,6 @@ const buildDefaultProviderAccountMetadata = (
       chatgptAccountId: accountId,
       organizationIds: [],
       email: null,
-      requestProfile: CODEX_REQUEST_PROFILE,
     };
   }
 
@@ -102,7 +96,6 @@ const buildDefaultProviderAccountMetadata = (
       githubUserId: accountId,
       githubLogin: null,
       githubEmail: null,
-      requestProfile: COPILOT_REQUEST_PROFILE,
     };
   }
 
@@ -137,17 +130,6 @@ export const parseImportedProviderAccountMetadata = (input: {
     ...input.metadata,
     provider: input.provider,
   };
-  const defaultRequestProfile = isObjectRecord(
-    (defaults as Record<string, unknown>).requestProfile
-  )
-    ? (defaults as Record<string, unknown>).requestProfile
-    : null;
-  if (defaultRequestProfile && isObjectRecord(input.metadata.requestProfile)) {
-    mergedMetadata.requestProfile = {
-      ...defaultRequestProfile,
-      ...input.metadata.requestProfile,
-    };
-  }
 
   const parsed = providerAccountMetadataSchema.safeParse(mergedMetadata);
   if (!parsed.success) {
