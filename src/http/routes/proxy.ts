@@ -115,8 +115,11 @@ const proxyRequest = async (
         accountId: account.accountId,
         metadata:
           account.metadata?.provider === "codex" ? account.metadata : null,
+        bodyText: requestBody,
+        bodyJson: requestBodyJson,
       });
       upstreamUrl = codexProxy.upstreamUrl;
+      requestBody = codexProxy.bodyText;
       break;
     }
 

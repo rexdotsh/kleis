@@ -4,6 +4,7 @@ import {
   CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
   CODEX_ACCOUNT_ID_HEADER,
+  CODEX_ORIGINATOR,
   CODEX_RESPONSE_ENDPOINT,
   COPILOT_INITIATOR_HEADER,
   COPILOT_VISION_HEADER,
@@ -19,6 +20,17 @@ import { prepareCopilotProxyRequest } from "../../src/providers/proxies/copilot-
 describe("proxy contract: codex", () => {
   test("applies auth, account-id, and endpoint from metadata", () => {
     const headers = new Headers();
+    const bodyJson = {
+      model: "gpt-5-codex",
+      instructions: "Keep responses concise",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      ],
+    };
+    const bodyText = JSON.stringify(bodyJson);
     const metadata: CodexAccountMetadata = {
       provider: "codex",
       tokenType: null,
@@ -34,24 +46,76 @@ describe("proxy contract: codex", () => {
       accessToken: "codex-access",
       accountId: "acct-fallback",
       metadata,
+      bodyText,
+      bodyJson,
     });
 
     expect(headers.get("authorization")).toBe("Bearer codex-access");
     expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBe("acct-meta");
+    expect(headers.get("originator")).toBe(CODEX_ORIGINATOR);
     expect(result.upstreamUrl).toBe(CODEX_RESPONSE_ENDPOINT);
+    expect(result.bodyText).toBe(bodyText);
   });
 
   test("uses account id when metadata is absent", () => {
     const headers = new Headers();
+    const bodyJson = {
+      model: "gpt-5-codex",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      ],
+    };
 
-    prepareCodexProxyRequest({
+    const result = prepareCodexProxyRequest({
       headers,
       accessToken: "codex-access",
       accountId: "acct-fallback",
       metadata: null,
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
     });
 
     expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBe("acct-fallback");
+    const transformed = JSON.parse(result.bodyText) as {
+      instructions?: string;
+    };
+    expect(transformed.instructions).toContain(
+      "You are OpenCode, the best coding agent on the planet."
+    );
+  });
+
+  test("removes unsupported token limit params", () => {
+    const bodyJson = {
+      model: "gpt-5-codex",
+      instructions: "Keep responses concise",
+      max_output_tokens: 4096,
+      max_completion_tokens: 4096,
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      ],
+    };
+
+    const result = prepareCodexProxyRequest({
+      headers: new Headers(),
+      accessToken: "codex-access",
+      accountId: null,
+      metadata: null,
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      max_output_tokens?: number;
+      max_completion_tokens?: number;
+    };
+    expect(transformed.max_output_tokens).toBeUndefined();
+    expect(transformed.max_completion_tokens).toBeUndefined();
   });
 });
 
