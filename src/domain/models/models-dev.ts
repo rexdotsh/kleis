@@ -85,7 +85,7 @@ const cloneProviderModels = (input: {
         : upstreamModelId;
     const providerOverrides = getNestedObject(model, "provider") ?? {};
 
-    model.id = upstreamModelId;
+    model.id = prefixedModelId;
     model.name = `${baseName} (${input.sourceLabel})`;
     model.provider = {
       ...providerOverrides,
