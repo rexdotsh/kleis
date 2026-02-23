@@ -148,6 +148,7 @@ export const requireProxyApiKey = createMiddleware<AppEnv>(
       }
     }
 
+    context.set("proxyApiKeyId", apiKey.id);
     clearAuthRateLimit(PROXY_AUTH_RATE_LIMIT, context.req.raw.headers);
     await next();
   }

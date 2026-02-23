@@ -1,7 +1,11 @@
+const DEFAULT_KEY_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 const state = {
   token: sessionStorage.getItem("kleis_admin_token") || "",
   accounts: [],
   keys: [],
+  keyUsageById: new Map(),
+  keyUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   activeOAuth: null,
   revealedKeyIds: new Set(),
   setupKeyId: null,
@@ -108,6 +112,61 @@ function firstUsableKey() {
 
 function keyById(keyId) {
   return state.keys.find((key) => key.id === keyId) ?? null;
+}
+
+function usageForKey(keyId) {
+  return state.keyUsageById.get(keyId) ?? null;
+}
+
+function usageWindowLabel(windowMs) {
+  if (windowMs % 86_400_000 === 0) {
+    return `${windowMs / 86_400_000}d`;
+  }
+
+  if (windowMs % 3_600_000 === 0) {
+    return `${windowMs / 3_600_000}h`;
+  }
+
+  if (windowMs % 60_000 === 0) {
+    return `${windowMs / 60_000}m`;
+  }
+
+  return `${Math.floor(windowMs / 1000)}s`;
+}
+
+function usageSuccessRate(usage) {
+  if (!usage || !usage.requestCount) {
+    return null;
+  }
+
+  return Math.round((usage.successCount / usage.requestCount) * 100);
+}
+
+function usageProviderBreakdown(usage) {
+  if (!usage?.providers?.length) {
+    return null;
+  }
+
+  return usage.providers
+    .map((item) => `${item.provider}:${item.requestCount}`)
+    .join(" ");
+}
+
+function usageMapFromList(items) {
+  const usageById = new Map();
+  if (!Array.isArray(items)) {
+    return usageById;
+  }
+
+  for (const usage of items) {
+    if (!usage?.apiKeyId) {
+      continue;
+    }
+
+    usageById.set(usage.apiKeyId, usage);
+  }
+
+  return usageById;
 }
 
 function setupSnippetForKey(key) {
@@ -254,7 +313,12 @@ function renderKeys() {
             )
             .join(", ")
         : '<span style="color:var(--text-tertiary)">all</span>';
-      return `<div class="card"><div class="card-header"><div class="card-identity"><span class="card-label">${escapeHtml(k.label || "untitled")}</span><span class="badge badge-${badge}">${badge}</span></div><div class="card-actions">${copyAction}${revealAction}${rotateAction}${revoked ? "" : `<button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${k.id}" type="button">revoke</button>`}</div></div><div class="card-meta">${meta("key", `<span style="font-size:10px">${escapeHtml(keyValue)}</span>`)}${meta("providers", scopes)}${meta("models", models)}${meta("created", escapeHtml(formatTimeMeta(k.createdAt)))}${meta("ttl", `<span class="badge badge-${badge}">${escapeHtml(expiryCountdown(k.expiresAt))}</span>`)}${k.expiresAt ? meta("expires", escapeHtml(formatTimeMeta(k.expiresAt))) : ""}</div></div>`;
+      const usage = usageForKey(k.id);
+      const usageWindow = usageWindowLabel(state.keyUsageWindowMs);
+      const usageRate = usageSuccessRate(usage);
+      const providerBreakdown = usageProviderBreakdown(usage);
+
+      return `<div class="card"><div class="card-header"><div class="card-identity"><span class="card-label">${escapeHtml(k.label || "untitled")}</span><span class="badge badge-${badge}">${badge}</span></div><div class="card-actions">${copyAction}${revealAction}${rotateAction}${revoked ? "" : `<button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${k.id}" type="button">revoke</button>`}</div></div><div class="card-meta">${meta("key", `<span style="font-size:10px">${escapeHtml(keyValue)}</span>`)}${meta("providers", scopes)}${meta("models", models)}${meta("created", escapeHtml(formatTimeMeta(k.createdAt)))}${meta(`${usageWindow} reqs`, `<span class="card-meta-value">${usage?.requestCount ?? 0}</span>`)}${usageRate === null ? "" : meta("success", `<span class="card-meta-value">${usageRate}%</span>`)}${usage ? meta("avg latency", `<span class="card-meta-value">${usage.avgLatencyMs}ms</span>`) : ""}${usage?.lastRequestAt ? meta("last used", escapeHtml(formatTimeMeta(usage.lastRequestAt, "never"))) : ""}${providerBreakdown ? meta("traffic", escapeHtml(providerBreakdown)) : ""}${meta("ttl", `<span class="badge badge-${badge}">${escapeHtml(expiryCountdown(k.expiresAt))}</span>`)}${k.expiresAt ? meta("expires", escapeHtml(formatTimeMeta(k.expiresAt))) : ""}</div></div>`;
     })
     .join("");
 }
@@ -301,7 +365,26 @@ async function refreshAccount(id) {
 
 async function loadKeys() {
   try {
-    state.keys = (await api("/admin/keys")).keys || [];
+    const [keysResult, usageResult] = await Promise.allSettled([
+      api("/admin/keys"),
+      api(`/admin/keys/usage?windowMs=${state.keyUsageWindowMs}`),
+    ]);
+
+    if (keysResult.status !== "fulfilled") {
+      throw keysResult.reason;
+    }
+
+    state.keys = keysResult.value.keys || [];
+    if (usageResult.status === "fulfilled") {
+      if (typeof usageResult.value.windowMs === "number") {
+        state.keyUsageWindowMs = usageResult.value.windowMs;
+      }
+      state.keyUsageById = usageMapFromList(usageResult.value.usage);
+    } else {
+      state.keyUsageById = new Map();
+      toast("Failed to load API key usage analytics", "error");
+    }
+
     const activeIds = new Set(state.keys.map((key) => key.id));
     for (const keyId of state.revealedKeyIds) {
       if (!activeIds.has(keyId)) {

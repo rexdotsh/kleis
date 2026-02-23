@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
@@ -67,3 +68,47 @@ export const oauthStates = sqliteTable("oauth_states", {
   metadataJson: text("metadata_json"),
   expiresAt: integer("expires_at", { mode: "number" }).notNull(),
 });
+
+export const apiKeyUsageBuckets = sqliteTable(
+  "api_key_usage_buckets",
+  {
+    bucketStart: integer("bucket_start", { mode: "number" }).notNull(),
+    apiKeyId: text("api_key_id").notNull(),
+    provider: text("provider", { enum: providers }).notNull(),
+    endpoint: text("endpoint").notNull(),
+    requestCount: integer("request_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    successCount: integer("success_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    clientErrorCount: integer("client_error_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    serverErrorCount: integer("server_error_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    totalLatencyMs: integer("total_latency_ms", { mode: "number" })
+      .notNull()
+      .default(0),
+    maxLatencyMs: integer("max_latency_ms", { mode: "number" })
+      .notNull()
+      .default(0),
+    lastRequestAt: integer("last_request_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [
+        table.bucketStart,
+        table.apiKeyId,
+        table.provider,
+        table.endpoint,
+      ],
+    }),
+    index("api_key_usage_buckets_key_bucket_idx").on(
+      table.apiKeyId,
+      table.bucketStart
+    ),
+    index("api_key_usage_buckets_bucket_idx").on(table.bucketStart),
+  ]
+);

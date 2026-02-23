@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import { dbFromContext } from "../../db/client";
+import { listApiKeyUsageSummaries } from "../../db/repositories/api-key-usage";
 import {
   createApiKey,
   listApiKeys,
@@ -23,12 +24,43 @@ const revokeApiKeyParamsSchema = z.strictObject({
   id: z.uuid(),
 });
 
+const listApiKeyUsageQuerySchema = z.strictObject({
+  windowMs: z.coerce
+    .number()
+    .int()
+    .min(60_000)
+    .max(30 * 24 * 60 * 60 * 1000)
+    .optional(),
+});
+
+const DEFAULT_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 export const adminKeysRoutes = new Hono<AppEnv>()
   .get("/", async (context) => {
     const database = dbFromContext(context);
     const keys = await listApiKeys(database);
     return context.json({ keys });
   })
+  .get(
+    "/usage",
+    zValidator("query", listApiKeyUsageQuerySchema),
+    async (context) => {
+      const query = context.req.valid("query");
+      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
+      const now = Date.now();
+      const since = now - windowMs;
+
+      const database = dbFromContext(context);
+      const usage = await listApiKeyUsageSummaries(database, since);
+
+      return context.json({
+        windowMs,
+        since,
+        now,
+        usage,
+      });
+    }
+  )
   .post("/", zValidator("json", createApiKeyBodySchema), async (context) => {
     const input = context.req.valid("json");
     const payload: CreateApiKeyInput = {

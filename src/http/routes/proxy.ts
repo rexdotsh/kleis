@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
 
 import { dbFromContext } from "../../db/client";
+import { recordApiKeyUsage } from "../../db/repositories/api-key-usage";
 import { getPrimaryProviderAccount } from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../providers/proxies/codex-proxy";
@@ -40,10 +41,40 @@ const tryParseJsonBody = (bodyText: string | null): unknown | null => {
   }
 };
 
+const runInBackground = (
+  context: Context<AppEnv>,
+  promise: Promise<unknown>
+): void => {
+  const backgroundTask = promise.catch(() => undefined);
+
+  try {
+    context.executionCtx.waitUntil(backgroundTask);
+  } catch {
+    return;
+  }
+};
+
 const proxyRequest = async (
   context: Context<AppEnv>,
   route: ProxyRoute
 ): Promise<Response> => {
+  const startedAt = Date.now();
+  const database = dbFromContext(context);
+  const apiKeyId = context.get("proxyApiKeyId");
+  const recordUsage = (statusCode: number): void => {
+    runInBackground(
+      context,
+      recordApiKeyUsage(database, {
+        apiKeyId,
+        provider: route.provider,
+        endpoint: route.endpoint,
+        statusCode,
+        durationMs: Date.now() - startedAt,
+        occurredAt: Date.now(),
+      })
+    );
+  };
+
   const requestUrl = new URL(context.req.url);
   const upstreamRequestUrl = new URL(requestUrl);
   upstreamRequestUrl.pathname = route.upstreamPath;
@@ -68,7 +99,6 @@ const proxyRequest = async (
     requestBody = JSON.stringify(requestBodyJson);
   }
 
-  const database = dbFromContext(context);
   const now = Date.now();
   const account = await getPrimaryProviderAccount(
     database,
@@ -76,6 +106,7 @@ const proxyRequest = async (
     now
   );
   if (!account) {
+    recordUsage(400);
     return context.json(
       proxyErrorResponse(
         `No primary ${route.provider} account is configured`,
@@ -136,6 +167,7 @@ const proxyRequest = async (
     }
 
     default: {
+      recordUsage(500);
       return context.json(
         proxyErrorResponse(
           `Proxy route provider is not supported: ${route.provider}`,
@@ -146,11 +178,19 @@ const proxyRequest = async (
     }
   }
 
-  const upstreamResponse = await fetch(upstreamUrl, {
-    method: context.req.method,
-    headers,
-    body: requestBody,
-  });
+  let upstreamResponse: Response;
+  try {
+    upstreamResponse = await fetch(upstreamUrl, {
+      method: context.req.method,
+      headers,
+      body: requestBody,
+    });
+  } catch (error) {
+    recordUsage(500);
+    throw error;
+  }
+
+  recordUsage(upstreamResponse.status);
 
   if (responseTransformer) {
     return await responseTransformer(upstreamResponse);
