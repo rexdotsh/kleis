@@ -3,7 +3,7 @@ import { gte, sql } from "drizzle-orm";
 import type { Database } from "../client";
 import { apiKeyUsageBuckets, providers, type Provider } from "../schema";
 
-export type UsageEndpoint = "chat_completions" | "responses" | "messages";
+type UsageEndpoint = "chat_completions" | "responses" | "messages";
 
 const USAGE_BUCKET_MS = 60_000;
 
@@ -56,7 +56,7 @@ const statusCounters = (
   };
 };
 
-export type RecordApiKeyUsageInput = {
+type RecordApiKeyUsageInput = {
   apiKeyId: string;
   provider: Provider;
   endpoint: UsageEndpoint;
@@ -120,7 +120,7 @@ const parseProvider = (value: string): Provider | null => {
   return null;
 };
 
-export type ApiKeyUsageProviderSummary = {
+type ApiKeyUsageProviderSummary = {
   provider: Provider;
   requestCount: number;
   successCount: number;
@@ -128,7 +128,7 @@ export type ApiKeyUsageProviderSummary = {
   serverErrorCount: number;
 };
 
-export type ApiKeyUsageSummary = {
+type ApiKeyUsageSummary = {
   apiKeyId: string;
   requestCount: number;
   successCount: number;

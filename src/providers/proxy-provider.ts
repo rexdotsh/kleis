@@ -1,8 +1,8 @@
 import type { Provider } from "../db/schema";
 
-export type CanonicalProvider = "openai" | "anthropic" | "github-copilot";
+type CanonicalProvider = "openai" | "anthropic" | "github-copilot";
 
-export type ProxyProviderMapping = {
+type ProxyProviderMapping = {
   internalProvider: Provider;
   canonicalProvider: CanonicalProvider;
   routeBasePath: "/openai/v1" | "/anthropic/v1" | "/copilot/v1";

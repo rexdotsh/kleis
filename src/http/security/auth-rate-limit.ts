@@ -76,7 +76,7 @@ const currentRecord = (
   };
 };
 
-export const registerAuthFailure = (
+const registerAuthFailure = (
   input: RegisterAuthFailureInput
 ): number | null => {
   const now = input.now ?? Date.now();
@@ -101,7 +101,7 @@ export const registerAuthFailure = (
   return retryAfterSeconds(record.blockedUntil, now);
 };
 
-export const authRetryAfterSeconds = (
+const authRetryAfterSeconds = (
   key: string,
   now = Date.now()
 ): number | null => {
@@ -122,11 +122,11 @@ export const authRetryAfterSeconds = (
   return retryAfterSeconds(record.blockedUntil, now);
 };
 
-export const clearAuthFailures = (key: string): void => {
+const clearAuthFailures = (key: string): void => {
   records.delete(key);
 };
 
-export const readClientAddress = (headers: Headers): string => {
+const readClientAddress = (headers: Headers): string => {
   const cloudflareIp = headers.get("cf-connecting-ip")?.trim();
   if (cloudflareIp) {
     return cloudflareIp;
