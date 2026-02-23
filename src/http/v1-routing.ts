@@ -1,4 +1,5 @@
 import type { Provider } from "../db/schema";
+import { isObjectRecord } from "../utils/object";
 
 export type V1ProxyEndpoint = "chat_completions" | "responses" | "messages";
 
@@ -7,11 +8,6 @@ export type ParsedModelRoute = {
   provider: Provider | null;
   upstreamModel: string | null;
 };
-
-type JsonObject = Record<string, unknown>;
-
-const isObjectRecord = (value: unknown): value is JsonObject =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 type EndpointConfig = {
   pathSuffix: string;

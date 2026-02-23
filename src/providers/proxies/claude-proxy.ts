@@ -7,11 +7,7 @@ import {
   CLAUDE_SYSTEM_IDENTITY,
   CLAUDE_TOOL_PREFIX,
 } from "../constants";
-
-type JsonObject = Record<string, unknown>;
-
-const isObjectRecord = (value: unknown): value is JsonObject =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+import { isObjectRecord, type JsonObject } from "../../utils/object";
 
 const sanitizeClaudeSystemText = (text: string): string =>
   text

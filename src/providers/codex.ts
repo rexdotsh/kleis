@@ -6,8 +6,10 @@ import {
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
 import { CODEX_ORIGINATOR, CODEX_REQUEST_PROFILE } from "./constants";
+import { requireOkResponse } from "./http";
 import type { CodexAccountMetadata } from "./metadata";
 import { decodeBase64Url, generatePkce, generateState } from "./oauth-utils";
+import { parseOAuthStateMetadata } from "./oauth-state";
 import type {
   ProviderAdapter,
   ProviderOAuthCompleteInput,
@@ -133,12 +135,7 @@ const exchangeCodeForTokens = async (input: {
     }).toString(),
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `Codex token exchange failed (${response.status}): ${errorText}`
-    );
-  }
+  await requireOkResponse(response, "Codex token exchange failed");
 
   return parseTokenResponse(response);
 };
@@ -158,12 +155,7 @@ const refreshCodexTokens = async (
     }).toString(),
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `Codex token refresh failed (${response.status}): ${errorText}`
-    );
-  }
+  await requireOkResponse(response, "Codex token refresh failed");
 
   return parseTokenResponse(response);
 };
@@ -276,20 +268,11 @@ export const codexAdapter: ProviderAdapter = {
       throw new Error("Codex OAuth state is missing or expired");
     }
 
-    let stateMetadata: unknown = {};
-    if (stateRecord.metadataJson) {
-      try {
-        stateMetadata = JSON.parse(stateRecord.metadataJson);
-      } catch {
-        throw new Error("Codex OAuth state metadata is malformed");
-      }
-    }
-
-    const metadataResult =
-      codexOAuthStateMetadataSchema.safeParse(stateMetadata);
-    if (!metadataResult.success) {
-      throw new Error("Codex OAuth state metadata is invalid");
-    }
+    const stateMetadata = parseOAuthStateMetadata(
+      "Codex",
+      stateRecord.metadataJson,
+      codexOAuthStateMetadataSchema
+    );
 
     if (!stateRecord.pkceVerifier) {
       throw new Error("Codex OAuth state is missing PKCE verifier");
@@ -297,7 +280,7 @@ export const codexAdapter: ProviderAdapter = {
 
     const tokens = await exchangeCodeForTokens({
       code: input.code,
-      redirectUri: metadataResult.data.redirectUri,
+      redirectUri: stateMetadata.redirectUri,
       verifier: stateRecord.pkceVerifier,
     });
 

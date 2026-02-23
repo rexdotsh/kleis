@@ -11,8 +11,10 @@ import {
   CLAUDE_SYSTEM_IDENTITY,
   CLAUDE_TOOL_PREFIX,
 } from "./constants";
+import { requireOkResponse } from "./http";
 import type { ClaudeAccountMetadata } from "./metadata";
 import { generatePkce, generateState } from "./oauth-utils";
+import { parseOAuthStateMetadata } from "./oauth-state";
 import type {
   ProviderAdapter,
   ProviderOAuthCompleteInput,
@@ -104,12 +106,7 @@ const exchangeCodeForTokens = async (input: {
     }),
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `Claude token exchange failed (${response.status}): ${errorText}`
-    );
-  }
+  await requireOkResponse(response, "Claude token exchange failed");
 
   const body = (await response.json()) as ClaudeTokenResponse;
   if (!body.access_token || !body.refresh_token) {
@@ -134,12 +131,7 @@ const refreshClaudeTokens = async (
     }),
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `Claude token refresh failed (${response.status}): ${errorText}`
-    );
-  }
+  await requireOkResponse(response, "Claude token refresh failed");
 
   const body = (await response.json()) as ClaudeTokenResponse;
   if (!body.access_token || !body.refresh_token) {
@@ -253,19 +245,11 @@ export const claudeAdapter: ProviderAdapter = {
       throw new Error("Claude OAuth state is missing or expired");
     }
 
-    let stateMetadata: unknown = {};
-    if (stateRecord.metadataJson) {
-      try {
-        stateMetadata = JSON.parse(stateRecord.metadataJson);
-      } catch {
-        throw new Error("Claude OAuth state metadata is malformed");
-      }
-    }
-
-    const metadataResult = claudeStateMetadataSchema.safeParse(stateMetadata);
-    if (!metadataResult.success) {
-      throw new Error("Claude OAuth state metadata is invalid");
-    }
+    const stateMetadata = parseOAuthStateMetadata(
+      "Claude",
+      stateRecord.metadataJson,
+      claudeStateMetadataSchema
+    );
 
     if (!stateRecord.pkceVerifier) {
       throw new Error("Claude OAuth state is missing PKCE verifier");
@@ -285,8 +269,8 @@ export const claudeAdapter: ProviderAdapter = {
     return buildTokenResult({
       tokens,
       now: input.now,
-      mode: metadataResult.data.mode,
-      host: metadataResult.data.host,
+      mode: stateMetadata.mode,
+      host: stateMetadata.host,
       existing: null,
       fallbackRefreshToken: null,
     });

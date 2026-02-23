@@ -1,6 +1,7 @@
 import type { RuntimeConfig } from "../../config/runtime";
+import { isObjectRecord, type JsonObject } from "../../utils/object";
 
-type ModelsDevRegistry = Record<string, unknown>;
+type ModelsDevRegistry = JsonObject;
 
 type CacheEntry = {
   fetchedAt: number;
@@ -9,9 +10,6 @@ type CacheEntry = {
 
 let cache: CacheEntry | null = null;
 let inFlightFetch: Promise<ModelsDevRegistry> | null = null;
-
-const isObjectRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const parseRegistry = (value: unknown): ModelsDevRegistry => {
   if (!isObjectRecord(value)) {

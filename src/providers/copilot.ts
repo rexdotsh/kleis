@@ -7,8 +7,10 @@ import {
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
 import { COPILOT_REQUEST_PROFILE } from "./constants";
+import { requireOkResponse } from "./http";
 import type { CopilotAccountMetadata } from "./metadata";
 import { generateState } from "./oauth-utils";
+import { parseOAuthStateMetadata } from "./oauth-state";
 import type {
   ProviderAdapter,
   ProviderOAuthCompleteInput,
@@ -124,12 +126,7 @@ const requestDeviceCode = async (
     }),
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `Copilot device flow start failed (${response.status}): ${errorText}`
-    );
-  }
+  await requireOkResponse(response, "Copilot device flow start failed");
 
   const body = (await response.json()) as DeviceCodeResponse;
   if (
@@ -175,12 +172,7 @@ const pollGithubAccessToken = async (input: {
       }),
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(
-        `Copilot device token poll failed (${response.status}): ${errorText}`
-      );
-    }
+    await requireOkResponse(response, "Copilot device token poll failed");
 
     const body = (await response.json()) as DeviceTokenResponse;
     if (body.access_token) {
@@ -221,12 +213,7 @@ const requestCopilotAccessToken = async (
     },
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `Copilot token request failed (${response.status}): ${errorText}`
-    );
-  }
+  await requireOkResponse(response, "Copilot token request failed");
 
   const body = (await response.json()) as CopilotTokenResponse;
   if (!body.token || typeof body.expires_at !== "number") {
@@ -370,19 +357,11 @@ export const copilotAdapter: ProviderAdapter = {
       throw new Error("Copilot OAuth state is missing or expired");
     }
 
-    let parsedMetadata: unknown;
-    try {
-      parsedMetadata = JSON.parse(stateRecord.metadataJson ?? "{}");
-    } catch {
-      throw new Error("Copilot OAuth state metadata is malformed");
-    }
-
-    const metadataResult = copilotStateMetadataSchema.safeParse(parsedMetadata);
-    if (!metadataResult.success) {
-      throw new Error("Copilot OAuth state metadata is invalid");
-    }
-
-    const metadata = metadataResult.data;
+    const metadata = parseOAuthStateMetadata(
+      "Copilot",
+      stateRecord.metadataJson,
+      copilotStateMetadataSchema
+    );
     const githubAccessToken = await pollGithubAccessToken({
       domain: metadata.domain,
       deviceCode: metadata.deviceCode,

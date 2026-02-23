@@ -6,21 +6,17 @@ import {
   COPILOT_OPENAI_INTENT,
   COPILOT_VISION_HEADER,
 } from "../constants";
+import { isObjectRecord } from "../../utils/object";
 
 export type CopilotProxyEndpoint =
   | "chat_completions"
   | "responses"
   | "messages";
 
-type JsonObject = Record<string, unknown>;
-
 type CopilotMessageProfile = {
   isVision: boolean;
   isAgent: boolean;
 };
-
-const isObjectRecord = (value: unknown): value is JsonObject =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const getArrayField = (value: unknown, key: string): unknown[] | null => {
   if (!isObjectRecord(value)) {
