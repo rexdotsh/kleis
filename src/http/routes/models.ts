@@ -1,6 +1,5 @@
 import { Hono, type Context } from "hono";
 
-import { getRuntimeConfig } from "../../config/runtime";
 import {
   buildProxyModelsRegistry,
   getModelsDevRegistry,
@@ -8,8 +7,7 @@ import {
 import type { AppEnv } from "../app-env";
 
 const resolveProxyRegistry = async (context: Context<AppEnv>) => {
-  const config = getRuntimeConfig(context.env);
-  const upstreamRegistry = await getModelsDevRegistry(config);
+  const upstreamRegistry = await getModelsDevRegistry();
   return buildProxyModelsRegistry({
     upstreamRegistry,
     baseOrigin: new URL(context.req.url).origin,

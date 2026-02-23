@@ -1,13 +1,12 @@
 import { createMiddleware } from "hono/factory";
 
-import { getAdminToken } from "../../config/runtime";
 import type { AppEnv } from "../app-env";
 import { parseBearerToken } from "../utils/bearer";
 
 export const requireAdminAuth = createMiddleware<AppEnv>(
   async (context, next) => {
-    const configuredToken = getAdminToken(context.env);
-    if (!configuredToken) {
+    const configuredToken = context.env.ADMIN_TOKEN;
+    if (typeof configuredToken !== "string" || !configuredToken.trim()) {
       return context.json(
         {
           error: "admin_token_not_configured",

@@ -1,4 +1,3 @@
-import type { RuntimeConfig } from "../../config/runtime";
 import {
   proxyProviderMappings,
   type ProxyProviderMapping,
@@ -7,19 +6,14 @@ import { isObjectRecord, type JsonObject } from "../../utils/object";
 
 type ModelsDevRegistry = JsonObject;
 
-type CacheEntry = {
-  fetchedAt: number;
-  registry: ModelsDevRegistry;
-};
-
 type BuildProxyModelsRegistryInput = {
   upstreamRegistry: ModelsDevRegistry;
   baseOrigin: string;
 };
 
 const PROXY_API_KEY_ENV = "KLEIS_API_KEY";
+const MODELS_DEV_URL = "https://models.dev/api.json";
 
-let cache: CacheEntry | null = null;
 let inFlightFetch: Promise<ModelsDevRegistry> | null = null;
 
 const parseRegistry = (value: unknown): ModelsDevRegistry => {
@@ -28,15 +22,6 @@ const parseRegistry = (value: unknown): ModelsDevRegistry => {
   }
 
   return value;
-};
-
-const isCacheFresh = (
-  cacheEntry: CacheEntry,
-  now: number,
-  ttlSeconds: number
-): boolean => {
-  const ttlMs = ttlSeconds * 1000;
-  return now - cacheEntry.fetchedAt < ttlMs;
 };
 
 const fetchRegistry = async (url: string): Promise<ModelsDevRegistry> => {
@@ -129,29 +114,14 @@ const toProxyProviderEntry = (
   };
 };
 
-export const getModelsDevRegistry = (
-  config: RuntimeConfig
-): Promise<ModelsDevRegistry> => {
-  const now = Date.now();
-  if (cache && isCacheFresh(cache, now, config.modelsDevCacheTtlSeconds)) {
-    return Promise.resolve(cache.registry);
-  }
-
+export const getModelsDevRegistry = (): Promise<ModelsDevRegistry> => {
   if (inFlightFetch) {
     return inFlightFetch;
   }
 
-  inFlightFetch = fetchRegistry(config.modelsDevUrl)
-    .then((registry) => {
-      cache = {
-        fetchedAt: Date.now(),
-        registry,
-      };
-      return registry;
-    })
-    .finally(() => {
-      inFlightFetch = null;
-    });
+  inFlightFetch = fetchRegistry(MODELS_DEV_URL).finally(() => {
+    inFlightFetch = null;
+  });
 
   return inFlightFetch;
 };
