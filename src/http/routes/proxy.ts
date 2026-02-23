@@ -8,18 +8,11 @@ import { prepareCopilotProxyRequest } from "../../providers/proxies/copilot-prox
 import { isObjectRecord } from "../../utils/object";
 import type { AppEnv } from "../app-env";
 import {
-  getRequiredProxyRoute,
   parseModelForProxyRoute,
+  proxyRouteTable,
   readModelFromBody,
   type ProxyRoute,
 } from "../proxy-routing";
-
-const openAiResponsesRoute = getRequiredProxyRoute("/openai/v1/responses");
-const anthropicMessagesRoute = getRequiredProxyRoute("/anthropic/v1/messages");
-const copilotChatCompletionsRoute = getRequiredProxyRoute(
-  "/copilot/v1/chat/completions"
-);
-const copilotResponsesRoute = getRequiredProxyRoute("/copilot/v1/responses");
 
 const proxyErrorResponse = (message: string, type = "proxy_error") => ({
   error: {
@@ -99,49 +92,58 @@ const proxyRequest = async (
   let responseTransformer: ((response: Response) => Promise<Response>) | null =
     null;
 
-  if (route.provider === "codex") {
-    const codexMetadata =
-      account.metadata?.provider === "codex" ? account.metadata : null;
-    const codexProxy = prepareCodexProxyRequest({
-      headers,
-      accessToken: account.accessToken,
-      fallbackAccountId: account.accountId,
-      metadata: codexMetadata,
-    });
+  switch (route.provider) {
+    case "codex": {
+      const codexProxy = prepareCodexProxyRequest({
+        headers,
+        accessToken: account.accessToken,
+        accountId: account.accountId,
+        metadata:
+          account.metadata?.provider === "codex" ? account.metadata : null,
+      });
+      upstreamUrl = codexProxy.upstreamUrl;
+      break;
+    }
 
-    upstreamUrl = codexProxy.upstreamUrl;
-  }
+    case "copilot": {
+      const copilotProxy = prepareCopilotProxyRequest({
+        endpoint: route.endpoint,
+        requestUrl: upstreamRequestUrl,
+        headers,
+        bodyJson: requestBodyJson,
+        githubAccessToken: account.refreshToken,
+        metadata:
+          account.metadata?.provider === "copilot" ? account.metadata : null,
+      });
+      upstreamUrl = copilotProxy.upstreamUrl;
+      break;
+    }
 
-  if (route.provider === "copilot") {
-    const copilotMetadata =
-      account.metadata?.provider === "copilot" ? account.metadata : null;
-    const copilotProxy = prepareCopilotProxyRequest({
-      endpoint: route.endpoint,
-      requestUrl: upstreamRequestUrl,
-      headers,
-      bodyJson: requestBodyJson,
-      githubAccessToken: account.refreshToken,
-      metadata: copilotMetadata,
-    });
+    case "claude": {
+      const claudeProxy = prepareClaudeProxyRequest({
+        requestUrl: upstreamRequestUrl,
+        headers,
+        bodyText: requestBody,
+        bodyJson: requestBodyJson,
+        accessToken: account.accessToken,
+        metadata:
+          account.metadata?.provider === "claude" ? account.metadata : null,
+      });
+      upstreamUrl = claudeProxy.upstreamUrl;
+      requestBody = claudeProxy.bodyText;
+      responseTransformer = claudeProxy.transformResponse;
+      break;
+    }
 
-    upstreamUrl = copilotProxy.upstreamUrl;
-  }
-
-  if (route.provider === "claude") {
-    const claudeMetadata =
-      account.metadata?.provider === "claude" ? account.metadata : null;
-    const claudeProxy = prepareClaudeProxyRequest({
-      requestUrl: upstreamRequestUrl,
-      headers,
-      bodyText: requestBody,
-      bodyJson: requestBodyJson,
-      accessToken: account.accessToken,
-      metadata: claudeMetadata,
-    });
-
-    upstreamUrl = claudeProxy.upstreamUrl;
-    requestBody = claudeProxy.bodyText;
-    responseTransformer = claudeProxy.transformResponse;
+    default: {
+      return context.json(
+        proxyErrorResponse(
+          `Proxy route provider is not supported: ${route.provider}`,
+          "provider_not_supported"
+        ),
+        500
+      );
+    }
   }
 
   const upstreamResponse = await fetch(upstreamUrl, {
@@ -157,16 +159,9 @@ const proxyRequest = async (
   return upstreamResponse;
 };
 
-export const proxyRoutes = new Hono<AppEnv>()
-  .post(openAiResponsesRoute.path, async (context) =>
-    proxyRequest(context, openAiResponsesRoute)
-  )
-  .post(anthropicMessagesRoute.path, async (context) =>
-    proxyRequest(context, anthropicMessagesRoute)
-  )
-  .post(copilotChatCompletionsRoute.path, async (context) =>
-    proxyRequest(context, copilotChatCompletionsRoute)
-  )
-  .post(copilotResponsesRoute.path, async (context) =>
-    proxyRequest(context, copilotResponsesRoute)
-  );
+const routes = new Hono<AppEnv>();
+for (const route of proxyRouteTable) {
+  routes.post(route.path, async (context) => proxyRequest(context, route));
+}
+
+export const proxyRoutes = routes;

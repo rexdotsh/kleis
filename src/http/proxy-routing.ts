@@ -18,7 +18,6 @@ export type ProxyRoute = {
 type ParsedModelRoute = {
   rawModel: string | null;
   upstreamModel: string | null;
-  providerPrefix: string | null;
 };
 
 const toProxyRoute = (input: {
@@ -33,7 +32,7 @@ const toProxyRoute = (input: {
   upstreamPath: `/v1${input.suffix}`,
 });
 
-const proxyRoutes: readonly ProxyRoute[] = [
+export const proxyRouteTable: readonly ProxyRoute[] = [
   toProxyRoute({
     provider: "openai",
     suffix: "/responses",
@@ -57,20 +56,11 @@ const proxyRoutes: readonly ProxyRoute[] = [
 ] as const;
 
 const proxyRouteByPath = new Map<string, ProxyRoute>(
-  proxyRoutes.map((route) => [route.path, route])
+  proxyRouteTable.map((route) => [route.path, route])
 );
 
 export const resolveProxyRoute = (path: string): ProxyRoute | null =>
   proxyRouteByPath.get(path) ?? null;
-
-export const getRequiredProxyRoute = (path: string): ProxyRoute => {
-  const route = resolveProxyRoute(path);
-  if (!route) {
-    throw new Error(`Proxy route is not configured for path: ${path}`);
-  }
-
-  return route;
-};
 
 export const readModelFromBody = (body: unknown): string | null => {
   if (!isObjectRecord(body) || typeof body.model !== "string") {
@@ -90,7 +80,6 @@ export const parseModelForProxyRoute = (
     return {
       rawModel: null,
       upstreamModel: null,
-      providerPrefix: null,
     };
   }
 
@@ -104,21 +93,18 @@ export const parseModelForProxyRoute = (
       return {
         rawModel,
         upstreamModel: rawModel,
-        providerPrefix: null,
       };
     }
 
     return {
       rawModel,
       upstreamModel,
-      providerPrefix: prefix,
     };
   }
 
   return {
     rawModel,
     upstreamModel: rawModel,
-    providerPrefix: null,
   };
 };
 

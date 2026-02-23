@@ -100,6 +100,19 @@ const parseCopilotApiBaseUrl = (token: string): string | null => {
   return `https://${apiHost}`;
 };
 
+const parseGithubUserId = (value: string | null | undefined): number | null => {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  return parsed;
+};
+
 const requestDeviceCode = async (
   domain: string
 ): Promise<{
@@ -260,7 +273,7 @@ const buildCopilotMetadata = (input: {
     input.existing?.copilotApiBaseUrl ??
     null,
   githubUserId:
-    typeof input.user?.id === "number"
+    typeof input.user?.id === "number" && Number.isFinite(input.user.id)
       ? String(input.user.id)
       : (input.existing?.githubUserId ?? null),
   githubLogin: input.user?.login ?? input.existing?.githubLogin ?? null,
@@ -394,11 +407,14 @@ export const copilotAdapter: ProviderAdapter = {
       domain,
       account.refreshToken
     );
+    const existingGithubUserId = parseGithubUserId(existing?.githubUserId);
     const existingUser: GithubUserResponse | null =
-      existing?.githubUserId || existing?.githubLogin || existing?.githubEmail
+      existingGithubUserId !== null ||
+      existing?.githubLogin ||
+      existing?.githubEmail
         ? {
-            ...(existing?.githubUserId
-              ? { id: Number(existing.githubUserId) }
+            ...(existingGithubUserId !== null
+              ? { id: existingGithubUserId }
               : {}),
             ...(existing?.githubLogin ? { login: existing.githubLogin } : {}),
             ...(existing?.githubEmail ? { email: existing.githubEmail } : {}),

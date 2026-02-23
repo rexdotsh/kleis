@@ -5,7 +5,7 @@ import { CODEX_ACCOUNT_ID_HEADER, CODEX_RESPONSE_ENDPOINT } from "../constants";
 type CodexProxyPreparationInput = {
   headers: Headers;
   accessToken: string;
-  fallbackAccountId: string | null;
+  accountId: string | null;
   metadata: CodexAccountMetadata | null;
 };
 
@@ -18,7 +18,7 @@ export const prepareCodexProxyRequest = (
 ): CodexProxyPreparationResult => {
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
 
-  const accountId = input.metadata?.chatgptAccountId ?? input.fallbackAccountId;
+  const accountId = input.metadata?.chatgptAccountId ?? input.accountId;
   if (accountId) {
     input.headers.set(
       input.metadata?.requestProfile.accountIdHeader ?? CODEX_ACCOUNT_ID_HEADER,

@@ -1,12 +1,20 @@
 import { z } from "zod";
 
+import type { Provider } from "../db/schema";
+import { isObjectRecord } from "../utils/object";
+
 import {
+  CLAUDE_CLI_USER_AGENT,
+  CLAUDE_REQUIRED_BETA_HEADERS,
+  CLAUDE_SYSTEM_IDENTITY,
   CLAUDE_TOOL_PREFIX,
   CODEX_ACCOUNT_ID_HEADER,
+  CODEX_REQUEST_PROFILE,
   CODEX_RESPONSE_ENDPOINT,
   CODEX_ORIGINATOR,
   COPILOT_INITIATOR_HEADER,
   COPILOT_OPENAI_INTENT,
+  COPILOT_REQUEST_PROFILE,
   COPILOT_VISION_HEADER,
 } from "./constants";
 
@@ -66,6 +74,107 @@ export type ClaudeAccountMetadata = z.infer<typeof claudeMetadataSchema>;
 export type ProviderAccountMetadata = z.infer<
   typeof providerAccountMetadataSchema
 >;
+
+const buildDefaultProviderAccountMetadata = (
+  provider: Provider,
+  accountId: string | null
+): ProviderAccountMetadata => {
+  if (provider === "codex") {
+    return {
+      provider,
+      tokenType: null,
+      scope: null,
+      idToken: null,
+      chatgptAccountId: accountId,
+      organizationIds: [],
+      email: null,
+      requestProfile: CODEX_REQUEST_PROFILE,
+    };
+  }
+
+  if (provider === "copilot") {
+    return {
+      provider,
+      tokenType: null,
+      scope: null,
+      enterpriseDomain: null,
+      copilotApiBaseUrl: null,
+      githubUserId: accountId,
+      githubLogin: null,
+      githubEmail: null,
+      requestProfile: COPILOT_REQUEST_PROFILE,
+    };
+  }
+
+  return {
+    provider,
+    tokenType: null,
+    scope: null,
+    oauthMode: "max",
+    oauthHost: "claude.ai",
+    betaHeaders: [...CLAUDE_REQUIRED_BETA_HEADERS],
+    userAgent: CLAUDE_CLI_USER_AGENT,
+    systemIdentity: CLAUDE_SYSTEM_IDENTITY,
+    toolPrefix: CLAUDE_TOOL_PREFIX,
+  };
+};
+
+export const parseImportedProviderAccountMetadata = (input: {
+  provider: Provider;
+  accountId: string | null;
+  metadata: Record<string, unknown> | null | undefined;
+}): ProviderAccountMetadata => {
+  const defaults = buildDefaultProviderAccountMetadata(
+    input.provider,
+    input.accountId
+  );
+  if (!input.metadata) {
+    return defaults;
+  }
+
+  const mergedMetadata: Record<string, unknown> = {
+    ...defaults,
+    ...input.metadata,
+    provider: input.provider,
+  };
+  const defaultRequestProfile = isObjectRecord(
+    (defaults as Record<string, unknown>).requestProfile
+  )
+    ? (defaults as Record<string, unknown>).requestProfile
+    : null;
+  if (defaultRequestProfile && isObjectRecord(input.metadata.requestProfile)) {
+    mergedMetadata.requestProfile = {
+      ...defaultRequestProfile,
+      ...input.metadata.requestProfile,
+    };
+  }
+
+  const parsed = providerAccountMetadataSchema.safeParse(mergedMetadata);
+  if (!parsed.success) {
+    throw new Error("Invalid provider metadata payload");
+  }
+
+  return parsed.data;
+};
+
+export const resolveImportedProviderAccountId = (
+  explicitAccountId: string | null,
+  metadata: ProviderAccountMetadata
+): string | null => {
+  if (explicitAccountId) {
+    return explicitAccountId;
+  }
+
+  if (metadata.provider === "codex") {
+    return metadata.chatgptAccountId;
+  }
+
+  if (metadata.provider === "copilot") {
+    return metadata.githubUserId;
+  }
+
+  return null;
+};
 
 export const parseProviderAccountMetadata = (
   metadataJson: string | null

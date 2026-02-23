@@ -35,7 +35,7 @@ describe("proxy contract: codex", () => {
     const result = prepareCodexProxyRequest({
       headers,
       accessToken: "codex-access",
-      fallbackAccountId: "acct-fallback",
+      accountId: "acct-fallback",
       metadata,
     });
 
@@ -44,13 +44,13 @@ describe("proxy contract: codex", () => {
     expect(result.upstreamUrl).toBe(CODEX_RESPONSE_ENDPOINT);
   });
 
-  test("uses fallback account id when metadata is absent", () => {
+  test("uses account id when metadata is absent", () => {
     const headers = new Headers();
 
     prepareCodexProxyRequest({
       headers,
       accessToken: "codex-access",
-      fallbackAccountId: "acct-fallback",
+      accountId: "acct-fallback",
       metadata: null,
     });
 

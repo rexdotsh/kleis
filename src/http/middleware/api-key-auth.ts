@@ -64,7 +64,6 @@ export const requireProxyApiKey = createMiddleware<AppEnv>(
       : {
           rawModel: null,
           upstreamModel: null,
-          providerPrefix: null,
         };
 
     if (route && apiKey.providerScopes?.length) {
