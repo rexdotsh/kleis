@@ -5,12 +5,11 @@ import { findActiveApiKeyByValue } from "../../db/repositories/api-keys";
 import type { AppEnv } from "../app-env";
 import { parseBearerToken } from "../utils/bearer";
 import {
-  endpointFromPath,
-  isProviderSupportedForEndpoint,
-  parseProviderPrefixedModel,
+  modelScopeCandidates,
+  parseModelForProxyRoute,
   readModelFromBody,
-  resolveTargetProvider,
-} from "../v1-routing";
+  resolveProxyRoute,
+} from "../proxy-routing";
 
 const readRequestedModel = async (request: Request): Promise<string | null> => {
   const bodyText = await request.clone().text();
@@ -30,12 +29,15 @@ const readRequestedModel = async (request: Request): Promise<string | null> => {
 
 export const requireProxyApiKey = createMiddleware<AppEnv>(
   async (context, next) => {
-    const token = parseBearerToken(context.req.header("authorization"));
+    const token =
+      parseBearerToken(context.req.header("authorization")) ??
+      context.req.header("x-api-key")?.trim() ??
+      null;
     if (!token) {
       return context.json(
         {
           error: "unauthorized",
-          message: "Missing bearer API key",
+          message: "Missing API key",
         },
         401
       );
@@ -53,43 +55,32 @@ export const requireProxyApiKey = createMiddleware<AppEnv>(
       );
     }
 
-    const endpoint = endpointFromPath(context.req.path);
-    const requestedModel = endpoint
+    const route = resolveProxyRoute(context.req.path);
+    const requestedModel = route
       ? await readRequestedModel(context.req.raw)
       : null;
-    const requestedModelRoute = parseProviderPrefixedModel(requestedModel);
+    const requestedModelRoute = route
+      ? parseModelForProxyRoute(requestedModel, route)
+      : {
+          rawModel: null,
+          upstreamModel: null,
+          providerPrefix: null,
+        };
 
-    if (endpoint && apiKey.providerScopes?.length) {
-      const targetProvider = resolveTargetProvider(
-        endpoint,
-        requestedModelRoute.provider
-      );
-      if (!isProviderSupportedForEndpoint(endpoint, targetProvider)) {
-        return context.json(
-          {
-            error: "bad_request",
-            message: `Provider ${targetProvider} is not valid for this endpoint`,
-          },
-          400
-        );
-      }
-
-      if (!apiKey.providerScopes.includes(targetProvider)) {
+    if (route && apiKey.providerScopes?.length) {
+      if (!apiKey.providerScopes.includes(route.provider)) {
         return context.json(
           {
             error: "forbidden",
-            message: `API key is not allowed to access provider: ${targetProvider}`,
+            message: `API key is not allowed to access provider: ${route.provider}`,
           },
           403
         );
       }
     }
 
-    if (endpoint && apiKey.modelScopes?.length) {
-      const modelCandidates = [
-        requestedModelRoute.rawModel,
-        requestedModelRoute.upstreamModel,
-      ].filter((value): value is string => Boolean(value));
+    if (route && apiKey.modelScopes?.length) {
+      const modelCandidates = modelScopeCandidates(requestedModelRoute, route);
       const allowed = modelCandidates.some((candidate) =>
         apiKey.modelScopes?.includes(candidate)
       );

@@ -331,6 +331,72 @@ async function completeOAuth() {
   }
 }
 
+async function importAccount() {
+  const provider = $("#import-provider").value;
+  const accessToken = $("#import-access-token").value.trim();
+  const refreshToken = $("#import-refresh-token").value.trim();
+  const expiresAtRaw = $("#import-expires-at").value.trim();
+  const accountId = $("#import-account-id").value.trim();
+  const label = $("#import-label").value.trim();
+  const metadataRaw = $("#import-metadata").value.trim();
+
+  if (!accessToken || !refreshToken) {
+    toast("Access and refresh tokens are required", "error");
+    return;
+  }
+
+  const expiresAt = expiresAtRaw
+    ? Number(expiresAtRaw)
+    : Date.now() + 60 * 60 * 1000;
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
+    toast("Expires At must be a valid unix timestamp", "error");
+    return;
+  }
+
+  let metadata;
+  if (metadataRaw) {
+    try {
+      metadata = JSON.parse(metadataRaw);
+    } catch {
+      toast("Metadata must be valid JSON", "error");
+      return;
+    }
+  }
+
+  const body = {
+    accessToken,
+    refreshToken,
+    expiresAt,
+  };
+  if (accountId) body.accountId = accountId;
+  if (label) body.label = label;
+  if (metadata) body.metadata = metadata;
+
+  const btn = $("#btn-import-account");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> importing...';
+  try {
+    await api(`/admin/accounts/${provider}/import`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    toast("Account imported");
+    $("#import-access-token").value = "";
+    $("#import-refresh-token").value = "";
+    $("#import-expires-at").value = "";
+    $("#import-account-id").value = "";
+    $("#import-label").value = "";
+    $("#import-metadata").value = "";
+    await loadAccounts();
+    switchToTab("accounts");
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "import account";
+  }
+}
+
 async function verifyToken(token) {
   state.token = token;
   await api("/admin/accounts");
@@ -395,6 +461,7 @@ $("#btn-refresh-keys").addEventListener("click", loadKeys);
 $("#btn-create-key").addEventListener("click", openCreateKeyModal);
 $("#btn-modal-create-key").addEventListener("click", createKey);
 $("#btn-oauth-start").addEventListener("click", startOAuth);
+$("#btn-import-account").addEventListener("click", importAccount);
 
 for (const tab of $$(".tab")) {
   tab.addEventListener("click", () => {

@@ -11,6 +11,7 @@ import {
   type ProviderAccountRecord,
 } from "../../db/repositories/provider-accounts";
 import type { Provider } from "../../db/schema";
+import type { ProviderAccountMetadata } from "../../providers/metadata";
 import { getProviderAdapter } from "../../providers/registry";
 import type { ProviderOAuthStartResult } from "../../providers/types";
 
@@ -164,6 +165,39 @@ export const completeProviderOAuth = async (
     refreshToken,
     expiresAt: assertExpiresAt(tokens.expiresAt, now),
     metadata: tokens.metadata,
+    now,
+  });
+};
+
+export const importProviderAccount = (
+  database: Database,
+  provider: Provider,
+  input: {
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: number;
+    accountId: string | null;
+    label?: string | null;
+    metadata: ProviderAccountMetadata | null;
+  },
+  now: number
+): Promise<ProviderAccountRecord> => {
+  const accessToken = normalizeTokenField(input.accessToken);
+  const refreshToken = normalizeTokenField(input.refreshToken);
+  if (!accessToken || !refreshToken) {
+    throw new Error(
+      "Provider account import requires access and refresh tokens"
+    );
+  }
+
+  return upsertProviderAccount(database, {
+    provider,
+    accountId: input.accountId,
+    label: input.label ?? null,
+    accessToken,
+    refreshToken,
+    expiresAt: assertExpiresAt(input.expiresAt, now),
+    metadata: input.metadata,
     now,
   });
 };

@@ -1,4 +1,9 @@
 import type { RuntimeConfig } from "../../config/runtime";
+import type { Provider } from "../../db/schema";
+import {
+  proxyProviderMappings,
+  type ProxyProviderMapping,
+} from "../../providers/proxy-provider";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 
 type ModelsDevRegistry = JsonObject;
@@ -7,6 +12,14 @@ type CacheEntry = {
   fetchedAt: number;
   registry: ModelsDevRegistry;
 };
+
+type BuildProxyModelsRegistryInput = {
+  upstreamRegistry: ModelsDevRegistry;
+  baseOrigin: string;
+  connectedProviders: Iterable<Provider>;
+};
+
+const PROXY_API_KEY_ENV = "KLEIS_API_KEY";
 
 let cache: CacheEntry | null = null;
 let inFlightFetch: Promise<ModelsDevRegistry> | null = null;
@@ -43,6 +56,81 @@ const fetchRegistry = async (url: string): Promise<ModelsDevRegistry> => {
   return parseRegistry(await response.json());
 };
 
+const normalizeOrigin = (value: string): string => value.replace(/\/+$/u, "");
+
+const getNestedObject = (
+  value: unknown,
+  key: string
+): Record<string, unknown> | null => {
+  if (!isObjectRecord(value)) {
+    return null;
+  }
+
+  const nested = value[key];
+  return isObjectRecord(nested) ? nested : null;
+};
+
+const cloneJsonValue = <T>(value: T): T => {
+  if (typeof structuredClone === "function") {
+    return structuredClone(value);
+  }
+
+  return JSON.parse(JSON.stringify(value)) as T;
+};
+
+const cloneProviderModels = (
+  sourceModels: Record<string, unknown>,
+  apiUrl: string,
+  npm: string
+): JsonObject => {
+  const models: JsonObject = {};
+  for (const [modelId, modelValue] of Object.entries(sourceModels)) {
+    if (!isObjectRecord(modelValue)) {
+      models[modelId] = modelValue;
+      continue;
+    }
+
+    const model = cloneJsonValue(modelValue);
+    const providerOverrides = getNestedObject(model, "provider") ?? {};
+    model.provider = {
+      ...providerOverrides,
+      api: apiUrl,
+      npm,
+    };
+    models[modelId] = model;
+  }
+
+  return models;
+};
+
+const toProxyProviderEntry = (
+  mapping: ProxyProviderMapping,
+  sourceProvider: Record<string, unknown> | null,
+  baseOrigin: string
+): JsonObject => {
+  const apiUrl = `${baseOrigin}${mapping.routeBasePath}`;
+  const models = cloneProviderModels(
+    getNestedObject(sourceProvider, "models") ?? {},
+    apiUrl,
+    mapping.npm
+  );
+  const cloned = sourceProvider ? cloneJsonValue(sourceProvider) : {};
+  const name =
+    typeof sourceProvider?.name === "string" && sourceProvider.name.trim()
+      ? sourceProvider.name
+      : mapping.defaultName;
+
+  return {
+    ...cloned,
+    id: mapping.canonicalProvider,
+    name,
+    env: [PROXY_API_KEY_ENV],
+    npm: mapping.npm,
+    api: apiUrl,
+    models,
+  };
+};
+
 export const getModelsDevRegistry = (
   config: RuntimeConfig
 ): Promise<ModelsDevRegistry> => {
@@ -70,73 +158,27 @@ export const getModelsDevRegistry = (
   return inFlightFetch;
 };
 
-type OpenAiModelList = {
-  object: "list";
-  data: Array<{
-    id: string;
-    object: "model";
-    created: number;
-    owned_by: string;
-  }>;
-};
+export const buildProxyModelsRegistry = (
+  input: BuildProxyModelsRegistryInput
+): ModelsDevRegistry => {
+  const connected = new Set(input.connectedProviders);
+  const registry: ModelsDevRegistry = {};
+  const baseOrigin = normalizeOrigin(input.baseOrigin);
 
-const getNestedObject = (
-  value: unknown,
-  key: string
-): Record<string, unknown> | null => {
-  if (!isObjectRecord(value)) {
-    return null;
-  }
-
-  const nested = value[key];
-  return isObjectRecord(nested) ? nested : null;
-};
-
-const getModelId = (modelKey: string, modelValue: unknown): string => {
-  if (
-    isObjectRecord(modelValue) &&
-    typeof modelValue.id === "string" &&
-    modelValue.id.trim()
-  ) {
-    return modelValue.id;
-  }
-
-  return modelKey;
-};
-
-export const toOpenAiModelList = (
-  registry: ModelsDevRegistry
-): OpenAiModelList => {
-  const unique = new Map<string, { id: string; ownedBy: string }>();
-  for (const [providerId, providerValue] of Object.entries(registry)) {
-    const models = getNestedObject(providerValue, "models");
-    if (!models) {
+  for (const mapping of proxyProviderMappings) {
+    if (!connected.has(mapping.internalProvider)) {
       continue;
     }
 
-    for (const [modelKey, modelValue] of Object.entries(models)) {
-      const modelId = getModelId(modelKey, modelValue);
-      if (!unique.has(modelId)) {
-        unique.set(modelId, {
-          id: modelId,
-          ownedBy: providerId,
-        });
-      }
-    }
+    const sourceProvider =
+      getNestedObject(input.upstreamRegistry, mapping.canonicalProvider) ??
+      null;
+    registry[mapping.canonicalProvider] = toProxyProviderEntry(
+      mapping,
+      sourceProvider,
+      baseOrigin
+    );
   }
 
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  const data = Array.from(unique.values())
-    .sort((left, right) => left.id.localeCompare(right.id))
-    .map((entry) => ({
-      id: entry.id,
-      object: "model" as const,
-      created: nowSeconds,
-      owned_by: entry.ownedBy,
-    }));
-
-  return {
-    object: "list",
-    data,
-  };
+  return registry;
 };

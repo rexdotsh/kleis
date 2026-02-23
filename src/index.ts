@@ -8,7 +8,7 @@ import { adminAccountsRoutes } from "./http/routes/admin-accounts";
 import { adminKeysRoutes } from "./http/routes/admin-keys";
 import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
-import { v1Routes } from "./http/routes/v1";
+import { proxyRoutes } from "./http/routes/proxy";
 
 const app = new Hono<AppEnv>();
 
@@ -48,9 +48,9 @@ adminApi.route("/accounts", adminAccountsRoutes);
 adminApi.route("/keys", adminKeysRoutes);
 app.route("/admin", adminApi);
 
-const api = new Hono<AppEnv>();
-api.use("/*", requireProxyApiKey);
-api.route("/", v1Routes);
-app.route("/v1", api);
+app.use("/openai/v1/*", requireProxyApiKey);
+app.use("/anthropic/v1/*", requireProxyApiKey);
+app.use("/copilot/v1/*", requireProxyApiKey);
+app.route("/", proxyRoutes);
 
 export default app;

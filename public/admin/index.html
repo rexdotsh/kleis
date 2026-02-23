@@ -490,6 +490,11 @@
     .field-input::placeholder {
       color: var(--text-tertiary);
     }
+    textarea.field-input {
+      resize: vertical;
+      min-height: 100px;
+      line-height: 1.45;
+    }
     select.field-input {
       cursor: pointer;
       appearance: none;
@@ -782,6 +787,9 @@
             <span class="section-title">Connect Provider</span>
           </div>
           <div class="card">
+            <div class="field-hint" style="margin-bottom:14px">
+              OAuth flow (recommended)
+            </div>
             <div class="field">
               <label class="field-label" for="oauth-provider">Provider</label>
               <select id="oauth-provider" class="field-input">
@@ -827,6 +835,102 @@
             </button>
           </div>
           <div id="oauth-flow-active" style="display:none"></div>
+
+          <div class="card" style="margin-top:14px">
+            <div class="field-hint" style="margin-bottom:14px">
+              Manual token import
+            </div>
+            <div class="field">
+              <label class="field-label" for="import-provider">Provider</label>
+              <select id="import-provider" class="field-input">
+                <option value="copilot">Copilot (GitHub)</option>
+                <option value="codex">Codex (OpenAI)</option>
+                <option value="claude">Claude (Anthropic)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="import-access-token"
+                >Access Token</label
+              >
+              <input
+                id="import-access-token"
+                class="field-input"
+                type="text"
+                placeholder="access token"
+                autocomplete="off"
+                spellcheck="false"
+              >
+            </div>
+            <div class="field">
+              <label class="field-label" for="import-refresh-token"
+                >Refresh Token</label
+              >
+              <input
+                id="import-refresh-token"
+                class="field-input"
+                type="text"
+                placeholder="refresh token"
+                autocomplete="off"
+                spellcheck="false"
+              >
+            </div>
+            <div class="field">
+              <label class="field-label" for="import-expires-at"
+                >Expires At (unix seconds or ms)</label
+              >
+              <input
+                id="import-expires-at"
+                class="field-input"
+                type="number"
+                placeholder="1767225600000"
+              >
+              <div class="field-hint">
+                If omitted, defaults to one hour from now.
+              </div>
+            </div>
+            <div class="field">
+              <label class="field-label" for="import-account-id"
+                >Account ID (optional)</label
+              >
+              <input
+                id="import-account-id"
+                class="field-input"
+                type="text"
+                placeholder="chatgpt-org-id or github user id"
+              >
+            </div>
+            <div class="field">
+              <label class="field-label" for="import-label"
+                >Label (optional)</label
+              >
+              <input
+                id="import-label"
+                class="field-input"
+                type="text"
+                placeholder="my-main-account"
+              >
+            </div>
+            <div class="field">
+              <label class="field-label" for="import-metadata"
+                >Metadata JSON (optional)</label
+              >
+              <textarea
+                id="import-metadata"
+                class="field-input"
+                placeholder='{"chatgptAccountId":"org_123"}'
+              ></textarea>
+              <div class="field-hint">
+                Optional provider metadata. Leave empty to apply sane defaults.
+              </div>
+            </div>
+            <button
+              id="btn-import-account"
+              class="btn btn-primary"
+              type="button"
+            >
+              import account
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -851,15 +955,15 @@
           </div>
           <label class="scope-check"
             ><input type="checkbox" value="copilot" class="key-scope-provider">
-            copilot</label
+            copilot (github-copilot)</label
           >
           <label class="scope-check"
             ><input type="checkbox" value="codex" class="key-scope-provider">
-            codex</label
+            codex (openai)</label
           >
           <label class="scope-check"
             ><input type="checkbox" value="claude" class="key-scope-provider">
-            claude</label
+            claude (anthropic)</label
           >
         </div>
         <div class="field">
@@ -868,7 +972,7 @@
             id="key-model-scopes"
             class="field-input"
             type="text"
-            placeholder="copilot/gpt-4o, claude/opus"
+            placeholder="github-copilot/gpt-5-mini, anthropic/claude-sonnet-4-5"
           >
           <div class="field-hint">
             Comma-separated model patterns. Leave empty for all.

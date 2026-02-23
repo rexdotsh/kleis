@@ -1,24 +1,25 @@
 import { Hono, type Context } from "hono";
 
-import { getRuntimeConfig } from "../../config/runtime";
 import { dbFromContext } from "../../db/client";
-import {
-  getModelsDevRegistry,
-  toOpenAiModelList,
-} from "../../domain/models/models-dev";
-import {
-  endpointPathSuffix,
-  isProviderSupportedForEndpoint,
-  parseProviderPrefixedModel,
-  readModelFromBody,
-  resolveTargetProvider,
-  type V1ProxyEndpoint,
-} from "../v1-routing";
 import { getPrimaryProviderAccount } from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../providers/proxies/codex-proxy";
 import { prepareCopilotProxyRequest } from "../../providers/proxies/copilot-proxy";
+import { isObjectRecord } from "../../utils/object";
 import type { AppEnv } from "../app-env";
+import {
+  getRequiredProxyRoute,
+  parseModelForProxyRoute,
+  readModelFromBody,
+  type ProxyRoute,
+} from "../proxy-routing";
+
+const openAiResponsesRoute = getRequiredProxyRoute("/openai/v1/responses");
+const anthropicMessagesRoute = getRequiredProxyRoute("/anthropic/v1/messages");
+const copilotChatCompletionsRoute = getRequiredProxyRoute(
+  "/copilot/v1/chat/completions"
+);
+const copilotResponsesRoute = getRequiredProxyRoute("/copilot/v1/responses");
 
 const proxyErrorResponse = (message: string, type = "proxy_error") => ({
   error: {
@@ -48,35 +49,43 @@ const tryParseJsonBody = (bodyText: string | null): unknown | null => {
 
 const proxyRequest = async (
   context: Context<AppEnv>,
-  endpoint: V1ProxyEndpoint
+  route: ProxyRoute
 ): Promise<Response> => {
   const requestUrl = new URL(context.req.url);
+  const upstreamRequestUrl = new URL(requestUrl);
+  upstreamRequestUrl.pathname = route.upstreamPath;
+
   const requestBodyText = await context.req.text();
   const parsedRequestBody = tryParseJsonBody(requestBodyText);
   const requestedModel = readModelFromBody(parsedRequestBody);
-  const modelRoute = parseProviderPrefixedModel(requestedModel);
-  const targetProvider = resolveTargetProvider(endpoint, modelRoute.provider);
-  if (!isProviderSupportedForEndpoint(endpoint, targetProvider)) {
-    return context.json(
-      proxyErrorResponse(
-        `Provider ${targetProvider} does not support /v1${endpointPathSuffix(endpoint)}`,
-        "provider_endpoint_mismatch"
-      ),
-      400
-    );
+  const parsedModel = parseModelForProxyRoute(requestedModel, route);
+
+  let requestBodyJson = parsedRequestBody;
+  let requestBody = requestBodyText;
+  if (
+    parsedModel.rawModel &&
+    parsedModel.upstreamModel &&
+    parsedModel.rawModel !== parsedModel.upstreamModel &&
+    isObjectRecord(parsedRequestBody)
+  ) {
+    requestBodyJson = {
+      ...parsedRequestBody,
+      model: parsedModel.upstreamModel,
+    };
+    requestBody = JSON.stringify(requestBodyJson);
   }
 
   const database = dbFromContext(context);
   const now = Date.now();
   const account = await getPrimaryProviderAccount(
     database,
-    targetProvider,
+    route.provider,
     now
   );
   if (!account) {
     return context.json(
       proxyErrorResponse(
-        `No primary ${targetProvider} account is configured`,
+        `No primary ${route.provider} account is configured`,
         "account_missing"
       ),
       400
@@ -87,20 +96,10 @@ const proxyRequest = async (
   removeProxyAuthHeaders(headers);
 
   let upstreamUrl = "";
-  let requestBodyJson = parsedRequestBody;
-  let requestBody = requestBodyText;
   let responseTransformer: ((response: Response) => Promise<Response>) | null =
     null;
 
-  if (modelRoute.provider && modelRoute.upstreamModel) {
-    requestBodyJson = {
-      ...(parsedRequestBody as Record<string, unknown>),
-      model: modelRoute.upstreamModel,
-    };
-    requestBody = JSON.stringify(requestBodyJson);
-  }
-
-  if (targetProvider === "codex") {
+  if (route.provider === "codex") {
     const codexMetadata =
       account.metadata?.provider === "codex" ? account.metadata : null;
     const codexProxy = prepareCodexProxyRequest({
@@ -113,12 +112,12 @@ const proxyRequest = async (
     upstreamUrl = codexProxy.upstreamUrl;
   }
 
-  if (targetProvider === "copilot") {
+  if (route.provider === "copilot") {
     const copilotMetadata =
       account.metadata?.provider === "copilot" ? account.metadata : null;
     const copilotProxy = prepareCopilotProxyRequest({
-      endpoint,
-      requestUrl,
+      endpoint: route.endpoint,
+      requestUrl: upstreamRequestUrl,
       headers,
       bodyJson: requestBodyJson,
       githubAccessToken: account.refreshToken,
@@ -128,11 +127,11 @@ const proxyRequest = async (
     upstreamUrl = copilotProxy.upstreamUrl;
   }
 
-  if (targetProvider === "claude") {
+  if (route.provider === "claude") {
     const claudeMetadata =
       account.metadata?.provider === "claude" ? account.metadata : null;
     const claudeProxy = prepareClaudeProxyRequest({
-      requestUrl,
+      requestUrl: upstreamRequestUrl,
       headers,
       bodyText: requestBody,
       bodyJson: requestBodyJson,
@@ -158,14 +157,16 @@ const proxyRequest = async (
   return upstreamResponse;
 };
 
-export const v1Routes = new Hono<AppEnv>()
-  .get("/models", async (context) => {
-    const config = getRuntimeConfig(context.env);
-    const registry = await getModelsDevRegistry(config);
-    return context.json(toOpenAiModelList(registry));
-  })
-  .post("/chat/completions", async (context) =>
-    proxyRequest(context, "chat_completions")
+export const proxyRoutes = new Hono<AppEnv>()
+  .post(openAiResponsesRoute.path, async (context) =>
+    proxyRequest(context, openAiResponsesRoute)
   )
-  .post("/responses", async (context) => proxyRequest(context, "responses"))
-  .post("/messages", async (context) => proxyRequest(context, "messages"));
+  .post(anthropicMessagesRoute.path, async (context) =>
+    proxyRequest(context, anthropicMessagesRoute)
+  )
+  .post(copilotChatCompletionsRoute.path, async (context) =>
+    proxyRequest(context, copilotChatCompletionsRoute)
+  )
+  .post(copilotResponsesRoute.path, async (context) =>
+    proxyRequest(context, copilotResponsesRoute)
+  );

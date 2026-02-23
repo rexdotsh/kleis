@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import { parseBearerToken } from "../../src/http/utils/bearer";
-import { isProviderSupportedForEndpoint } from "../../src/http/v1-routing";
+import {
+  modelScopeCandidates,
+  parseModelForProxyRoute,
+  resolveProxyRoute,
+} from "../../src/http/proxy-routing";
 
 describe("bearer parsing", () => {
   test("accepts case-insensitive bearer scheme", () => {
@@ -18,14 +22,36 @@ describe("bearer parsing", () => {
   });
 });
 
-describe("v1 provider endpoint compatibility", () => {
-  test("disallows codex on chat_completions endpoint", () => {
-    expect(isProviderSupportedForEndpoint("chat_completions", "codex")).toBe(
-      false
-    );
+describe("proxy route mapping", () => {
+  test("maps anthropic messages to claude provider", () => {
+    const route = resolveProxyRoute("/anthropic/v1/messages");
+    expect(route?.provider).toBe("claude");
+    expect(route?.endpoint).toBe("messages");
   });
 
-  test("keeps codex enabled for responses endpoint", () => {
-    expect(isProviderSupportedForEndpoint("responses", "codex")).toBe(true);
+  test("maps openai responses to codex provider", () => {
+    const route = resolveProxyRoute("/openai/v1/responses");
+    expect(route?.provider).toBe("codex");
+    expect(route?.endpoint).toBe("responses");
+  });
+
+  test("does not match legacy generic v1 paths", () => {
+    expect(resolveProxyRoute("/v1/chat/completions")).toBeNull();
+  });
+
+  test("strips route-specific model prefixes", () => {
+    const route = resolveProxyRoute("/openai/v1/responses");
+    expect(route).not.toBeNull();
+    if (!route) {
+      throw new Error("route missing");
+    }
+
+    const parsed = parseModelForProxyRoute("openai/gpt-5", route);
+    expect(parsed.upstreamModel).toBe("gpt-5");
+    expect(modelScopeCandidates(parsed, route)).toEqual([
+      "openai/gpt-5",
+      "gpt-5",
+      "codex/gpt-5",
+    ]);
   });
 });
