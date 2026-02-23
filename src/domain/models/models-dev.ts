@@ -65,6 +65,7 @@ const cloneProviderModels = (input: {
   apiUrl: string;
   npm: string;
   modelPrefix: string;
+  sourceLabel: string;
 }): JsonObject => {
   const models: JsonObject = {};
   for (const [modelId, modelValue] of Object.entries(input.sourceModels)) {
@@ -78,9 +79,14 @@ const cloneProviderModels = (input: {
     const model = cloneJsonValue(modelValue);
     const upstreamModelId =
       typeof model.id === "string" && model.id.trim() ? model.id : modelId;
+    const baseName =
+      typeof model.name === "string" && model.name.trim()
+        ? model.name
+        : upstreamModelId;
     const providerOverrides = getNestedObject(model, "provider") ?? {};
 
     model.id = upstreamModelId;
+    model.name = `${baseName} (${input.sourceLabel})`;
     model.provider = {
       ...providerOverrides,
       api: input.apiUrl,
@@ -110,6 +116,7 @@ const mergeKleisProviderModels = (
       apiUrl: `${baseOrigin}${mapping.routeBasePath}`,
       npm: mapping.npm,
       modelPrefix: mapping.canonicalProvider,
+      sourceLabel: mapping.canonicalProvider,
     });
     Object.assign(models, providerModels);
   }
