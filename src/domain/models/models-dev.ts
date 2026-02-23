@@ -1,7 +1,4 @@
-import {
-  proxyProviderMappings,
-  type ProxyProviderMapping,
-} from "../../providers/proxy-provider";
+import { proxyProviderMappings } from "../../providers/proxy-provider";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 
 type ModelsDevRegistry = JsonObject;
@@ -11,6 +8,8 @@ type BuildProxyModelsRegistryInput = {
   baseOrigin: string;
 };
 
+const KLEIS_PROVIDER_ID = "kleis";
+const KLEIS_PROVIDER_NAME = "Kleis";
 const PROXY_API_KEY_ENV = "KLEIS_API_KEY";
 const MODELS_DEV_URL = "https://models.dev/api.json";
 
@@ -61,56 +60,74 @@ const cloneJsonValue = <T>(value: T): T => {
   return JSON.parse(JSON.stringify(value)) as T;
 };
 
-const cloneProviderModels = (
-  sourceModels: Record<string, unknown>,
-  apiUrl: string,
-  npm: string
-): JsonObject => {
+const cloneProviderModels = (input: {
+  sourceModels: Record<string, unknown>;
+  apiUrl: string;
+  npm: string;
+  modelPrefix: string;
+}): JsonObject => {
   const models: JsonObject = {};
-  for (const [modelId, modelValue] of Object.entries(sourceModels)) {
+  for (const [modelId, modelValue] of Object.entries(input.sourceModels)) {
+    const prefixedModelId = `${input.modelPrefix}/${modelId}`;
+
     if (!isObjectRecord(modelValue)) {
-      models[modelId] = modelValue;
+      models[prefixedModelId] = modelValue;
       continue;
     }
 
     const model = cloneJsonValue(modelValue);
+    const upstreamModelId =
+      typeof model.id === "string" && model.id.trim() ? model.id : modelId;
     const providerOverrides = getNestedObject(model, "provider") ?? {};
+
+    model.id = upstreamModelId;
     model.provider = {
       ...providerOverrides,
-      api: apiUrl,
-      npm,
+      api: input.apiUrl,
+      npm: input.npm,
     };
-    models[modelId] = model;
+    models[prefixedModelId] = model;
   }
 
   return models;
 };
 
-const toProxyProviderEntry = (
-  mapping: ProxyProviderMapping,
-  sourceProvider: Record<string, unknown> | null,
+const mergeKleisProviderModels = (
+  upstreamRegistry: ModelsDevRegistry,
   baseOrigin: string
 ): JsonObject => {
-  const apiUrl = `${baseOrigin}${mapping.routeBasePath}`;
-  const models = cloneProviderModels(
-    getNestedObject(sourceProvider, "models") ?? {},
-    apiUrl,
-    mapping.npm
-  );
-  const cloned = sourceProvider ? cloneJsonValue(sourceProvider) : {};
-  const name =
-    typeof sourceProvider?.name === "string" && sourceProvider.name.trim()
-      ? sourceProvider.name
-      : mapping.defaultName;
+  const models: JsonObject = {};
+
+  for (const mapping of proxyProviderMappings) {
+    const sourceProvider =
+      getNestedObject(upstreamRegistry, mapping.canonicalProvider) ?? null;
+    if (!sourceProvider) {
+      continue;
+    }
+
+    const providerModels = cloneProviderModels({
+      sourceModels: getNestedObject(sourceProvider, "models") ?? {},
+      apiUrl: `${baseOrigin}${mapping.routeBasePath}`,
+      npm: mapping.npm,
+      modelPrefix: mapping.canonicalProvider,
+    });
+    Object.assign(models, providerModels);
+  }
+
+  return models;
+};
+
+const toKleisProviderEntry = (input: {
+  upstreamRegistry: ModelsDevRegistry;
+  baseOrigin: string;
+}): JsonObject => {
+  const baseOrigin = normalizeOrigin(input.baseOrigin);
 
   return {
-    ...cloned,
-    id: mapping.canonicalProvider,
-    name,
+    id: KLEIS_PROVIDER_ID,
+    name: KLEIS_PROVIDER_NAME,
     env: [PROXY_API_KEY_ENV],
-    npm: mapping.npm,
-    api: apiUrl,
-    models,
+    models: mergeKleisProviderModels(input.upstreamRegistry, baseOrigin),
   };
 };
 
@@ -130,18 +147,11 @@ export const buildProxyModelsRegistry = (
   input: BuildProxyModelsRegistryInput
 ): ModelsDevRegistry => {
   const registry: ModelsDevRegistry = cloneJsonValue(input.upstreamRegistry);
-  const baseOrigin = normalizeOrigin(input.baseOrigin);
 
-  for (const mapping of proxyProviderMappings) {
-    const sourceProvider =
-      getNestedObject(input.upstreamRegistry, mapping.canonicalProvider) ??
-      null;
-    registry[mapping.canonicalProvider] = toProxyProviderEntry(
-      mapping,
-      sourceProvider,
-      baseOrigin
-    );
-  }
+  registry[KLEIS_PROVIDER_ID] = toKleisProviderEntry({
+    upstreamRegistry: input.upstreamRegistry,
+    baseOrigin: input.baseOrigin,
+  });
 
   return registry;
 };
