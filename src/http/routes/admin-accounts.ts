@@ -10,6 +10,7 @@ import {
   startProviderOAuth,
 } from "../../domain/providers/provider-service";
 import {
+  deleteProviderAccount,
   listProviderAccounts,
   setPrimaryProviderAccount,
 } from "../../db/repositories/provider-accounts";
@@ -70,6 +71,26 @@ export const adminAccountsRoutes = new Hono()
     const accounts = await listProviderAccounts(db);
     return context.json({ accounts: accounts.map(toAdminAccountView) });
   })
+  .delete(
+    "/:id",
+    zValidator("param", accountIdParamsSchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const deleted = await deleteProviderAccount(db, id);
+
+      if (!deleted) {
+        return context.json(
+          {
+            error: "not_found",
+            message: "Account not found",
+          },
+          404
+        );
+      }
+
+      return context.json({ deleted: true });
+    }
+  )
   .post(
     "/:id/primary",
     zValidator("param", accountIdParamsSchema),

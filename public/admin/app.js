@@ -189,6 +189,7 @@ function accountCardHtml(account) {
       <div class="card-actions">
         ${setPrimaryBtn}
         <button class="btn btn-ghost btn-sm" data-action="refresh-account" data-account-id="${account.id}" type="button">refresh</button>
+        <button class="btn btn-danger btn-sm" data-action="delete-account" data-account-id="${account.id}" type="button">delete</button>
       </div>
     </div>
     <div class="card-status">
@@ -427,6 +428,25 @@ async function setPrimary(id) {
   try {
     await api(`/admin/accounts/${id}/primary`, { method: "POST" });
     toast("Account set as primary");
+    await loadAccounts();
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+async function deleteAccount(id) {
+  const account = state.accounts.find((a) => a.id === id);
+  const name = account?.label || account?.accountId || id;
+  const confirmed = await showConfirm(
+    "Delete Account",
+    `Delete "${name}"? This will remove all stored tokens for this account. This cannot be undone.`,
+    "delete"
+  );
+  if (!confirmed) return;
+
+  try {
+    await api(`/admin/accounts/${id}`, { method: "DELETE" });
+    toast("Account deleted");
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
@@ -764,6 +784,7 @@ $("#accounts-list").addEventListener("click", (e) => {
   if (!accountId) return;
   if (action === "set-primary") setPrimary(accountId);
   if (action === "refresh-account") refreshAccount(accountId);
+  if (action === "delete-account") deleteAccount(accountId);
 });
 
 $("#keys-list").addEventListener("click", (e) => {
