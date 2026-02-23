@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, lte, or } from "drizzle-orm";
 
 import type { Database } from "../client";
 import { providerAccounts, type Provider } from "../schema";
@@ -16,6 +16,8 @@ export type ProviderAccountRecord = {
   isPrimary: boolean;
   accessToken: string;
   refreshToken: string;
+  refreshLockToken: string | null;
+  refreshLockExpiresAt: number | null;
   expiresAt: number;
   metadata: ProviderAccountMetadata | null;
   lastRefreshAt: number | null;
@@ -34,6 +36,8 @@ const toRecord = (
   isPrimary: row.isPrimary,
   accessToken: row.accessToken,
   refreshToken: row.refreshToken,
+  refreshLockToken: row.refreshLockToken,
+  refreshLockExpiresAt: row.refreshLockExpiresAt,
   expiresAt: row.expiresAt,
   metadata: parseProviderAccountMetadata(row.metadataJson),
   lastRefreshAt: row.lastRefreshAt,
@@ -148,6 +152,8 @@ export const upsertProviderAccount = async (
         label: input.label === undefined ? existing.label : input.label,
         accessToken: input.accessToken,
         refreshToken: input.refreshToken,
+        refreshLockToken: null,
+        refreshLockExpiresAt: null,
         expiresAt: input.expiresAt,
         metadataJson: serializeProviderAccountMetadata(input.metadata),
         updatedAt: input.now,
@@ -174,6 +180,8 @@ export const upsertProviderAccount = async (
     isPrimary,
     accessToken: input.accessToken,
     refreshToken: input.refreshToken,
+    refreshLockToken: null,
+    refreshLockExpiresAt: null,
     expiresAt: input.expiresAt,
     metadataJson: serializeProviderAccountMetadata(input.metadata),
     lastRefreshAt: null,
@@ -241,9 +249,80 @@ export const recordProviderAccountRefreshFailure = async (
     .set({
       lastRefreshAt: now,
       lastRefreshStatus: "failed",
+      refreshLockToken: null,
+      refreshLockExpiresAt: null,
       updatedAt: now,
     })
     .where(eq(providerAccounts.id, id));
+};
+
+export const hasActiveProviderAccountRefreshLock = (
+  account: ProviderAccountRecord,
+  now: number
+): boolean =>
+  Boolean(
+    account.refreshLockToken &&
+      account.refreshLockExpiresAt &&
+      account.refreshLockExpiresAt > now
+  );
+
+type TryAcquireProviderAccountRefreshLockInput = {
+  token: string;
+  now: number;
+  expiresAt: number;
+};
+
+export const tryAcquireProviderAccountRefreshLock = async (
+  database: Database,
+  id: string,
+  input: TryAcquireProviderAccountRefreshLockInput
+): Promise<boolean> => {
+  await database
+    .update(providerAccounts)
+    .set({
+      refreshLockToken: input.token,
+      refreshLockExpiresAt: input.expiresAt,
+      updatedAt: input.now,
+    })
+    .where(
+      and(
+        eq(providerAccounts.id, id),
+        or(
+          isNull(providerAccounts.refreshLockToken),
+          isNull(providerAccounts.refreshLockExpiresAt),
+          lte(providerAccounts.refreshLockExpiresAt, input.now)
+        )
+      )
+    );
+
+  const account = await findProviderAccountById(database, id);
+  return Boolean(
+    account &&
+      account.refreshLockToken === input.token &&
+      account.refreshLockExpiresAt !== null &&
+      account.refreshLockExpiresAt > input.now
+  );
+};
+
+export const releaseProviderAccountRefreshLock = async (
+  database: Database,
+  id: string,
+  token: string,
+  now: number
+): Promise<void> => {
+  await database
+    .update(providerAccounts)
+    .set({
+      refreshLockToken: null,
+      refreshLockExpiresAt: null,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(providerAccounts.id, id),
+        eq(providerAccounts.refreshLockToken, token)
+      )
+    );
 };
 
 export const setPrimaryProviderAccount = async (

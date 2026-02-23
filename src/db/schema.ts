@@ -21,6 +21,10 @@ export const providerAccounts = sqliteTable(
       .default(false),
     accessToken: text("access_token").notNull(),
     refreshToken: text("refresh_token").notNull(),
+    refreshLockToken: text("refresh_lock_token"),
+    refreshLockExpiresAt: integer("refresh_lock_expires_at", {
+      mode: "number",
+    }),
     expiresAt: integer("expires_at", { mode: "number" }).notNull(),
     metadataJson: text("metadata_json"),
     lastRefreshAt: integer("last_refresh_at", { mode: "number" }),

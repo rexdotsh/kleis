@@ -2,7 +2,10 @@ import type { Database } from "../../db/client";
 import {
   findProviderAccountById,
   findPrimaryProviderAccount,
+  hasActiveProviderAccountRefreshLock,
   recordProviderAccountRefreshFailure,
+  releaseProviderAccountRefreshLock,
+  tryAcquireProviderAccountRefreshLock,
   updateProviderAccountTokens,
   upsertProviderAccount,
   type ProviderAccountRecord,
@@ -13,12 +16,103 @@ import type { ProviderOAuthStartResult } from "../../providers/types";
 
 const normalizeTokenField = (value: string): string => value.trim();
 
+const REFRESH_LOCK_LEASE_MS = 20_000;
+const REFRESH_WAIT_TIMEOUT_MS = 3000;
+const REFRESH_WAIT_POLL_INTERVAL_MS = 150;
+
 const assertExpiresAt = (expiresAt: number, now: number): number => {
   if (!Number.isFinite(expiresAt) || expiresAt <= now) {
     throw new Error("Provider token expiry is invalid or already expired");
   }
 
   return expiresAt;
+};
+
+const sleep = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+
+const waitForInFlightRefresh = async (
+  database: Database,
+  accountId: string,
+  now: number
+): Promise<ProviderAccountRecord | null> => {
+  const deadline = Date.now() + REFRESH_WAIT_TIMEOUT_MS;
+  let account = await findProviderAccountById(database, accountId);
+
+  while (account && Date.now() < deadline) {
+    if (account.expiresAt > now) {
+      return account;
+    }
+
+    if (!hasActiveProviderAccountRefreshLock(account, Date.now())) {
+      return account;
+    }
+
+    await sleep(REFRESH_WAIT_POLL_INTERVAL_MS);
+    account = await findProviderAccountById(database, accountId);
+  }
+
+  return account;
+};
+
+const refreshProviderAccountWithLock = async (
+  database: Database,
+  accountId: string,
+  lockToken: string
+): Promise<ProviderAccountRecord | null> => {
+  try {
+    const account = await findProviderAccountById(database, accountId);
+    if (!account) {
+      return null;
+    }
+
+    const refreshNow = Date.now();
+    if (account.expiresAt > refreshNow) {
+      return account;
+    }
+
+    try {
+      const adapter = getProviderAdapter(account.provider);
+      const tokens = await adapter.refreshAccount(account, refreshNow);
+      const accessToken = normalizeTokenField(tokens.accessToken);
+      const refreshToken = normalizeTokenField(tokens.refreshToken);
+      if (!accessToken || !refreshToken) {
+        throw new Error("Provider refresh response is missing required tokens");
+      }
+
+      const updated = await updateProviderAccountTokens(database, account.id, {
+        accessToken,
+        refreshToken,
+        expiresAt: assertExpiresAt(tokens.expiresAt, refreshNow),
+        accountId: tokens.accountId,
+        metadata: tokens.metadata,
+        lastRefreshStatus: "success",
+        now: refreshNow,
+      });
+
+      if (!updated) {
+        throw new Error("Failed to load refreshed provider account");
+      }
+
+      return updated;
+    } catch (error) {
+      await recordProviderAccountRefreshFailure(
+        database,
+        account.id,
+        refreshNow
+      );
+      throw error;
+    }
+  } finally {
+    await releaseProviderAccountRefreshLock(
+      database,
+      accountId,
+      lockToken,
+      Date.now()
+    ).catch(() => undefined);
+  }
 };
 
 export const startProviderOAuth = (
@@ -84,34 +178,48 @@ export const refreshProviderAccount = async (
     return null;
   }
 
-  try {
-    const adapter = getProviderAdapter(account.provider);
-    const tokens = await adapter.refreshAccount(account, now);
-    const accessToken = normalizeTokenField(tokens.accessToken);
-    const refreshToken = normalizeTokenField(tokens.refreshToken);
-    if (!accessToken || !refreshToken) {
-      throw new Error("Provider refresh response is missing required tokens");
+  const lockToken = crypto.randomUUID();
+  const lockClaimedAt = Date.now();
+  const lockAcquired = await tryAcquireProviderAccountRefreshLock(
+    database,
+    account.id,
+    {
+      token: lockToken,
+      now: lockClaimedAt,
+      expiresAt: lockClaimedAt + REFRESH_LOCK_LEASE_MS,
     }
+  );
 
-    const updated = await updateProviderAccountTokens(database, account.id, {
-      accessToken,
-      refreshToken,
-      expiresAt: assertExpiresAt(tokens.expiresAt, now),
-      accountId: tokens.accountId,
-      metadata: tokens.metadata,
-      lastRefreshStatus: "success",
-      now,
-    });
-
-    if (!updated) {
-      throw new Error("Failed to load refreshed provider account");
-    }
-
-    return updated;
-  } catch (error) {
-    await recordProviderAccountRefreshFailure(database, account.id, now);
-    throw error;
+  if (lockAcquired) {
+    return refreshProviderAccountWithLock(database, account.id, lockToken);
   }
+
+  const waited = await waitForInFlightRefresh(database, account.id, now);
+  if (!waited) {
+    return null;
+  }
+
+  if (waited.expiresAt > now) {
+    return waited;
+  }
+
+  const retryLockToken = crypto.randomUUID();
+  const retryClaimedAt = Date.now();
+  const retryLockAcquired = await tryAcquireProviderAccountRefreshLock(
+    database,
+    account.id,
+    {
+      token: retryLockToken,
+      now: retryClaimedAt,
+      expiresAt: retryClaimedAt + REFRESH_LOCK_LEASE_MS,
+    }
+  );
+
+  if (!retryLockAcquired) {
+    throw new Error("Provider account refresh is already in progress");
+  }
+
+  return refreshProviderAccountWithLock(database, account.id, retryLockToken);
 };
 
 export const getPrimaryProviderAccount = async (

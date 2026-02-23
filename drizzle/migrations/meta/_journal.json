@@ -15,6 +15,13 @@
       "when": 1771856158785,
       "tag": "0001_wild_red_hulk",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1771857228385,
+      "tag": "0002_small_killraven",
+      "breakpoints": true
     }
   ]
 }
