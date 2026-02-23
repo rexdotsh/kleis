@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { serveStatic } from "hono/bun";
 
 import { requireAdminAuth } from "./http/middleware/admin-auth";
 import { requireProxyApiKey } from "./http/middleware/api-key-auth";
@@ -10,6 +11,7 @@ import { modelsRoutes } from "./http/routes/models";
 import { proxyRoutes } from "./http/routes/proxy";
 
 const app = new Hono();
+const isVercel = process.env.VERCEL === "1";
 
 app.onError((error, context) => {
   if (error instanceof HTTPException) {
@@ -40,6 +42,29 @@ app.get("/", (context) =>
 
 app.route("/", healthRoutes);
 app.route("/", modelsRoutes);
+
+if (!isVercel) {
+  app.get(
+    "/admin",
+    serveStatic({
+      root: "./public",
+      path: "admin/index.html",
+    })
+  );
+  app.get(
+    "/admin/",
+    serveStatic({
+      root: "./public",
+      path: "admin/index.html",
+    })
+  );
+  app.use(
+    "/admin/*",
+    serveStatic({
+      root: "./public",
+    })
+  );
+}
 
 const adminApi = new Hono();
 adminApi.use("/*", requireAdminAuth);
