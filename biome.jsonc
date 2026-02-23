@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "files": {
-    "includes": ["**/*", "!bun.lock", "!vercel.json"]
+    "includes": ["**/*", "!bun.lock", "!vercel.json", "!dist"]
   },
   "linter": {
     "rules": {

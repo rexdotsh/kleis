@@ -3,7 +3,8 @@
   "type": "module",
   "scripts": {
     "dev": "bun --hot --no-clear-screen run src/index.ts",
-    "build": "bun run db:migrate && bun run typecheck && bun run lint",
+    "build": "bun run db:migrate && bun run bundle",
+    "bundle": "bun build src/index.ts --target=node --format=esm --outdir=dist --packages=external",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
     "lint": "bun x ultracite check",
     "fix": "bun x ultracite fix",
