@@ -1,285 +1,257 @@
 ## Kleis Build Plan
 
-This document is the project source of truth for implementation status, decisions, and architecture.
+This file is the canonical project handoff document for architecture, progress, and next actions.
 
-It is intentionally detailed so a later model can continue work without missing context.
+It must be kept current so a later model can continue implementation without missing context.
 
 ### Last Updated
 
 - Date: 2026-02-23
 - Branch: `feat/scaffolding`
-- Focus: v1 scaffold + core provider/auth/model/admin architecture
+- Runtime direction: Cloudflare Workers + Hono + D1 + Drizzle
 
 ---
 
-## 1) Product Scope (Confirmed)
+## 1) Product Scope (Locked)
 
-Build a Vercel-first OAuth account proxy that provides:
+Build a single OAuth account proxy for coding agents with one reusable base URL.
 
-1. one reusable base URL for coding agents,
-2. admin-issued API keys for client access,
-3. centralized OAuth account/token management for Copilot, Codex, Claude,
-4. automatic access token refresh,
-5. model discovery endpoints compatible with OpenCode expectations,
-6. minimal admin UI for accounts/keys/primary selection/manual refresh.
+v1 requirements:
 
-### Required behavior by provider
+1. Admin-managed API keys.
+2. Centralized OAuth token storage and refresh.
+3. Multi-account support for Copilot, Codex, Claude.
+4. Primary account selection per provider.
+5. OpenCode-compatible model discovery.
+6. Simple admin UI for account/key operations.
 
-- Copilot: first-party flow, no workaround hacks.
-- Codex: first-party flow, no workaround hacks.
-- Claude: include workaround patterns from `opencode-anthropic-auth` and `pi-mono` (no feature flag).
+Non-goals (v1): billing, advanced telemetry, enterprise auth, complex dashboards.
 
 ---
 
-## 2) Decisions Log (User Confirmed)
+## 2) Final Technical Decisions (Confirmed)
 
-1. Deployment: **Vercel-first** architecture.
-2. Storage: **database** (not FS, not KV-only).
-3. Security posture for v1: plaintext token and API key storage acceptable for personal use.
-4. Compatibility target: OpenCode-first behavior (including anthropic workaround patterns).
-5. Providers in v1: Copilot, Codex, Claude.
-6. Routing policy: manual primary per provider + failover-ready design.
-7. Admin auth: simple single-admin secret for v1.
-8. API keys: plain storage, create/revoke/list, optional scope/expiry.
-9. Model registry: fetch `models.dev` upstream and merge in proxy custom models; keep fresh.
-10. Claude workaround: required headers/user-agent/system/tool normalization always on.
+1. Framework/runtime: **Hono on Cloudflare Workers**.
+2. Database: **Cloudflare D1**.
+3. ORM/migrations: **Drizzle ORM + Drizzle Kit**.
+4. Validation: **Zod + @hono/zod-validator**.
+5. Types: strict, explicit, Workers bindings typed.
+6. Security posture for v1: plaintext token and API key storage is acceptable (personal project).
+7. Claude behavior: include workaround patterns from `opencode-anthropic-auth` and `pi-mono`; not feature-flagged.
 
 ---
 
-## 3) Reference Repo Survey Notes
+## 3) Reference Implementations Survey
 
 ### `opensrc/repos/github.com/anomalyco/opencode-anthropic-auth`
 
-Key patterns to carry:
+Carry over:
 
-- Anthropic OAuth client id and authorize/token endpoints.
-- Token refresh on expiry.
-- Required betas: `oauth-2025-04-20`, `interleaved-thinking-2025-05-14`.
-- User-agent identity: `claude-cli/2.1.2 (external, cli)`.
-- System prompt identity: `You are Claude Code, Anthropic's official CLI for Claude.`
-- Request sanitization (`OpenCode`/`opencode` replacement) and tool prefixing (`mcp_`).
-- Streaming response transformation back from prefixed tool names.
+- Anthropic OAuth flow and refresh behavior.
+- Required `anthropic-beta` values (`oauth-2025-04-20`, `interleaved-thinking-2025-05-14`).
+- Claude Code identity behavior (`user-agent`, system prompt text).
+- Tool name normalization (`mcp_` prefix in request + reverse mapping in stream).
 
 ### `opensrc/repos/github.com/sst/opencode`
 
-Key patterns to carry:
+Carry over:
 
-- Copilot device flow and headers (`x-initiator`, `Openai-Intent`, vision header).
-- Codex OAuth flow with PKCE/state and account id extraction from JWT claims.
-- Codex routing to `https://chatgpt.com/backend-api/codex/responses`.
-- Models.dev fetch and cache pattern (`/api.json` source).
+- Copilot first-party auth/device flow conventions.
+- Codex first-party OAuth/PKCE/state/account-id extraction behavior.
+- Models.dev data fetch + caching pattern.
 
 ### `opensrc/repos/github.com/badlogic/pi-mono`
 
-Key patterns to carry:
+Carry over:
 
-- Provider modules separated by responsibility.
-- Anthropic OAuth + Claude identity + beta header behavior.
-- Claude canonical tool name normalization and reverse mapping.
-- Copilot helper patterns for dynamic headers.
-- Codex provider with account header and responses endpoint compatibility.
+- Provider-specific module separation.
+- Claude request/stream transformation logic patterns.
+- Header handling specifics for Copilot and Codex paths.
 
 ### `opensrc/repos/github.com/kaitranntt/ccs`
 
-Key patterns to carry:
+Carry over:
 
-- Minimal account management operations and default account selection.
-- Operational status endpoints and practical admin flows.
-- Keep UX practical and avoid over-engineering.
-
----
-
-## 4) Runtime and Framework Direction
-
-### Primary direction
-
-- Keep **Bun + Elysia** for implementation and learning goal.
-- Use Elysia deployment mode compatible with Vercel Functions.
-- Export app in a Vercel-detectable entrypoint.
-
-### Notes on Hono question
-
-- Hono is excellent for Cloudflare Workers portability.
-- Current user priority is Vercel-first + Elysia learning; no framework switch during scaffold.
-- Keep route/service boundaries clean so future Hono migration is possible if needed.
+- Practical account administration UX patterns.
+- Minimal surface area and operational simplicity.
 
 ---
 
-## 5) v1 Architecture
+## 4) Current Repo Baseline
 
-### Layers
-
-1. `config`: env parsing + runtime flags.
-2. `db`: connection + migration runner + repository helpers.
-3. `domain`: account/key/model services.
-4. `providers`: OAuth flows + token refresh + request transformation.
-5. `routes`: admin, oauth callbacks, model discovery, proxy endpoints.
-6. `ui`: minimal server-rendered HTML + lightweight JS fetch calls.
-
-### Data model (initial)
-
-- `provider_accounts`
-  - provider (`copilot` | `codex` | `claude`)
-  - label/nickname
-  - primary flag
-  - oauth access/refresh/expires + provider metadata
-  - last refresh status/time
-
-- `api_keys`
-  - raw key (plaintext, unique)
-  - label
-  - optional provider/model scopes
-  - optional expiry
-  - revoked timestamp
-
-- `oauth_states`
-  - provider
-  - state
-  - PKCE verifier
-  - flow metadata
-  - expiry timestamp
-
-- `system_settings` (optional)
-  - key/value json for lightweight mutable config.
+- The project was switched to Hono + Wrangler in commit `46b86ca01a2c2a882f103dc1744e0abbe5ed726e`.
+- `src/index.ts` currently has only a basic hello route.
+- `wrangler.jsonc` exists but still needs D1 binding configuration.
+- Drizzle and validation dependencies are not yet installed.
 
 ---
 
-## 6) API Surface (v1)
+## 5) Target Runtime Architecture
 
-### Public/client endpoints
+### Layering
+
+1. `src/config`: env/binding parsing and typed runtime config.
+2. `src/db`: Drizzle schema, D1 client helper, repositories.
+3. `src/domain`: account/key/model services.
+4. `src/providers`: provider adapters (copilot/codex/claude) with OAuth+refresh logic.
+5. `src/http`: route modules + middleware.
+6. `src/ui`: minimal admin HTML route.
+
+### Core portability rule
+
+- Provider and domain logic must not depend directly on Hono context.
+- Hono handlers should be thin wrappers around domain services.
+
+---
+
+## 6) D1 Schema Plan (v1)
+
+### `provider_accounts`
+
+- `id` TEXT PK
+- `provider` TEXT NOT NULL (`copilot` | `codex` | `claude`)
+- `label` TEXT NULL
+- `account_id` TEXT NULL
+- `is_primary` INTEGER BOOLEAN NOT NULL DEFAULT 0
+- `access_token` TEXT NOT NULL
+- `refresh_token` TEXT NOT NULL
+- `expires_at` INTEGER NOT NULL
+- `metadata_json` TEXT NULL
+- `last_refresh_at` INTEGER NULL
+- `last_refresh_status` TEXT NULL
+- `created_at` INTEGER NOT NULL
+- `updated_at` INTEGER NOT NULL
+
+### `api_keys`
+
+- `id` TEXT PK
+- `key` TEXT UNIQUE NOT NULL (plaintext by decision)
+- `label` TEXT NULL
+- `provider_scope_json` TEXT NULL
+- `model_scope_json` TEXT NULL
+- `expires_at` INTEGER NULL
+- `revoked_at` INTEGER NULL
+- `created_at` INTEGER NOT NULL
+
+### `oauth_states`
+
+- `state` TEXT PK
+- `provider` TEXT NOT NULL
+- `pkce_verifier` TEXT NULL
+- `metadata_json` TEXT NULL
+- `expires_at` INTEGER NOT NULL
+- `created_at` INTEGER NOT NULL
+
+---
+
+## 7) HTTP Surface Plan (v1)
+
+### Public proxy routes
 
 - `GET /healthz`
-- `GET /v1/models` (OpenAI-compatible list)
+- `GET /v1/models`
+- `GET /models/api.json`
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
-- `POST /v1/messages` (Anthropic-compatible)
-- `GET /models/api.json` (models.dev-compatible merged registry)
+- `POST /v1/messages`
 
-### Admin endpoints (secret-protected)
+### Admin routes (`Authorization: Bearer <ADMIN_TOKEN>`)
 
 - `GET /admin/accounts`
-- `POST /admin/accounts/:provider/oauth/start`
-- `POST /admin/accounts/:provider/oauth/complete`
 - `POST /admin/accounts/:id/primary`
 - `POST /admin/accounts/:id/refresh`
+- `POST /admin/accounts/:provider/oauth/start`
+- `POST /admin/accounts/:provider/oauth/complete`
 - `GET /admin/keys`
 - `POST /admin/keys`
 - `POST /admin/keys/:id/revoke`
 
-### UI routes
+### Admin UI route
 
-- `GET /admin` (minimal dashboard)
-
----
-
-## 7) Request Routing Strategy
-
-### Model-to-provider resolution
-
-Priority order:
-
-1. explicit provider metadata in model registry,
-2. model prefix convention (e.g. `copilot/`, `codex/`, `claude/`),
-3. fallback mapping by known model id families.
-
-### Account selection
-
-1. use primary active account for provider,
-2. if missing, use newest active account,
-3. if none, return provider-not-configured error.
-
-### Token refresh
-
-- refresh on request when expired/near-expiry,
-- persist refreshed tokens + last refresh metadata,
-- expose manual refresh endpoint for admin.
+- `GET /admin` (minimal HTML dashboard, no heavy frontend framework)
 
 ---
 
-## 8) Models.dev Merge Strategy
+## 8) Models.dev Strategy
 
-1. fetch `https://models.dev/api.json` with timeout,
-2. cache in-memory with short TTL (for request latency control),
-3. merge custom proxy provider/model entries,
-4. expose merged data in models.dev-compatible shape,
-5. derive `/v1/models` from merged + configured account availability.
+1. Fetch `https://models.dev/api.json` (or env override).
+2. Cache in worker isolate memory with TTL.
+3. Merge custom proxy models for configured providers/accounts.
+4. Expose a models.dev-compatible JSON route.
+5. Derive `/v1/models` from merged output + configured provider availability.
 
----
+Potential future optimization:
 
-## 9) Simplicity and Maintainability Rules for This Repo
-
-- No framework-level over-abstraction.
-- Keep provider-specific quirks isolated in provider modules.
-- Keep route handlers thin and side-effect free where possible.
-- Reuse shared helpers for headers/body parsing/stream pass-through.
-- Avoid introducing optional infrastructure (queues/workers/cache stores) in v1.
+- Add KV-backed cache or scheduled refresh job if needed.
 
 ---
 
-## 10) Implementation Phases
+## 9) Immediate Work Plan (Execution)
 
-### Phase A - Scaffold (current)
+### Phase A - Foundation
 
-- [ ] project layout and config foundation
-- [ ] database connector and migration runner
-- [ ] domain types and repositories
-- [ ] base Elysia app wiring and health route
+- [ ] Update docs (`AGENTS.md` + this plan) to Workers/Hono/D1 decisions.
+- [ ] Install dependencies: `drizzle-orm`, `zod`, `@hono/zod-validator`, `@cloudflare/workers-types`, `drizzle-kit`.
+- [ ] Configure `wrangler.jsonc` with D1 binding scaffold.
+- [ ] Add `drizzle.config.ts` and migration scripts.
 
-### Phase B - Admin foundation
+### Phase B - Typed backend skeleton
 
-- [ ] admin secret auth middleware
-- [ ] API key CRUD and request auth
-- [ ] account CRUD + primary selection + refresh metadata
-- [ ] minimal admin UI shell
+- [ ] Implement typed env/bindings module.
+- [ ] Add Drizzle schema and repository layer.
+- [ ] Replace hello app with route composition and global error handling.
+- [ ] Implement health endpoint and admin auth middleware.
 
-### Phase C - OAuth providers
+### Phase C - Admin primitives
 
-- [ ] Copilot OAuth + token handling
-- [ ] Codex OAuth + account id extraction + refresh
-- [ ] Claude OAuth + workaround request/response transforms
+- [ ] API key create/list/revoke endpoints.
+- [ ] Account list/set-primary endpoints.
+- [ ] Manual refresh endpoint stub wired to provider adapters.
+- [ ] Minimal `/admin` HTML page to invoke these endpoints.
 
-### Phase D - Proxy and models
+### Phase D - Model + proxy skeleton
 
-- [ ] `/v1/chat/completions` proxy routing
-- [ ] `/v1/responses` proxy routing
-- [ ] `/v1/messages` anthropic-compatible proxy
-- [ ] merged `models.dev` endpoint + OpenAI models list endpoint
+- [ ] Implement models.dev fetch/cache/merge module.
+- [ ] Add `/models/api.json` and `/v1/models`.
+- [ ] Add proxy route scaffolds with request auth + provider resolution.
+- [ ] Add provider adapter interfaces and empty implementations for next phase.
 
-### Phase E - polish
+### Phase E - Provider OAuth implementation
 
-- [ ] ultracite check/fix clean
-- [ ] docs updates (README + plan progress)
-- [ ] small resilience improvements (timeouts/errors)
+- [ ] Copilot OAuth + refresh path.
+- [ ] Codex OAuth + refresh path.
+- [ ] Claude OAuth + workaround transforms for request/stream handling.
 
 ---
 
-## 11) Progress Log
+## 10) Progress Log
 
 ### 2026-02-23
 
-- Captured requirements and constraints.
-- Surveyed referenced repos and extracted implementation patterns.
-- Confirmed branch and commit strategy.
-- Started scaffold implementation.
+- Captured product charter and initial architecture in repo docs.
+- Surveyed reference repos and extracted provider behavior patterns.
+- Switched baseline runtime to Hono + Wrangler (existing commit by user).
+- Reconfirmed stack decisions: Workers + D1 + Drizzle + strict typing.
+- Began implementation from this plan.
 
 ---
 
-## 12) Known Risks and Mitigations
+## 11) Risks and Mitigation
 
-1. Serverless callback/state continuity
-   - Mitigation: store OAuth state + verifier in DB, not memory only.
-2. Provider behavior drift
-   - Mitigation: keep provider-specific constants isolated and easy to patch.
-3. DB latency concern
-   - Mitigation: keep query count low and add short in-memory caches for read-heavy paths.
-4. Stream transformation bugs
-   - Mitigation: central stream passthrough helper and focused tests later.
+1. OAuth callback continuity on serverless isolates
+   - Mitigation: store state/verifier in D1, never in memory only.
+2. Provider API behavior drift
+   - Mitigation: isolate constants/headers/parsers in provider modules.
+3. Added latency from DB checks
+   - Mitigation: small in-memory TTL cache for API key/account metadata.
+4. Stream transformation complexity (Claude)
+   - Mitigation: central stream transform utility + narrow interfaces.
 
 ---
 
-## 13) Deferred (explicitly out of v1)
+## 12) Handoff Notes for Future Model
 
-- telemetry dashboard and usage analytics,
-- quota management and auto account rotation,
-- encryption/hashing hardening,
-- enterprise auth/RBAC.
+- Use this file as the authoritative implementation tracker.
+- Keep changes incremental and commit frequently with conventional messages.
+- Preserve minimalism: prefer small explicit modules over abstractions.
+- Do not introduce extra infra (queues, DO, telemetry pipelines) in v1.

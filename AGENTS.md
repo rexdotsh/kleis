@@ -189,9 +189,15 @@ For Claude OAuth behavior in this project:
 
 ### Deployment and Runtime Decisions
 
-- Build **Vercel-first** architecture.
-- Keep runtime/server design portable to long-running hosts.
-- Use **Bun + Elysia** for implementation.
+- Build **Cloudflare Workers-first** architecture.
+- Keep route/service boundaries portable to other runtimes.
+- Use **Hono + Wrangler** for implementation.
+
+### Data and ORM Decisions
+
+- Use **Cloudflare D1** as the relational database.
+- Use **Drizzle ORM** + Drizzle migrations for schema and queries.
+- Keep all request/response and env contracts fully typed.
 
 ### Storage Decisions
 
@@ -212,6 +218,7 @@ For Claude OAuth behavior in this project:
 - Provide endpoint(s) compatible with OpenCode model discovery.
 - Merge custom proxy models with latest `models.dev` data.
 - Keep `models.dev` data fresh by fetching upstream.
+- Expose a models.dev-compatible JSON route that OpenCode can consume directly.
 
 ### Admin UI Requirements (v1)
 
