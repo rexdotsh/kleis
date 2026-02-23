@@ -1,6 +1,58 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
-  "extends": [
-    "ultracite/biome/core"
-  ]
+  "files": {
+    "includes": ["**/*", "!bun.lock"]
+  },
+  "linter": {
+    "rules": {
+      "suspicious": {
+        "noUnknownAtRules": "off",
+        "noDocumentCookie": "off",
+        "noArrayIndexKey": "off",
+        "noConsole": "off"
+      },
+      "style": {
+        "useBlockStatements": "off",
+        "noMagicNumbers": "off",
+        "useCollapsedIf": "off",
+        "noNestedTernary": "off",
+        "useConsistentTypeDefinitions": {
+          "options": {
+            "style": "type"
+          },
+          "level": "error"
+        }
+      },
+      "correctness": {
+        "noUnknownTypeSelector": "off",
+        "noUnusedImports": { "level": "error", "fix": "none" }
+      },
+      "complexity": {
+        "noExcessiveCognitiveComplexity": "off",
+        "useSimplifiedLogicExpression": "off"
+      },
+      "nursery": {
+        "useSortedClasses": "off",
+        "noShadow": "off"
+      },
+      "performance": {
+        "noNamespaceImport": "off",
+        "useTopLevelRegex": "off"
+      },
+      "a11y": {
+        "useSemanticElements": "off"
+      }
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "off",
+        "useSortedAttributes": "off",
+        "useSortedKeys": "off",
+        "useSortedProperties": "off"
+      }
+    }
+  },
+  "extends": ["ultracite/biome/core"]
 }
