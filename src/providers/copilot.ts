@@ -334,7 +334,6 @@ export const copilotAdapter: ProviderAdapter = {
         expiresIn: deviceFlow.expiresIn,
       }),
       expiresAt: input.now + deviceFlow.expiresIn * 1000,
-      createdAt: input.now,
     });
 
     return {

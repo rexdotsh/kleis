@@ -9,7 +9,6 @@ type OAuthStateRecord = {
   pkceVerifier: string | null;
   metadataJson: string | null;
   expiresAt: number;
-  createdAt: number;
 };
 
 const toRecord = (row: typeof oauthStates.$inferSelect): OAuthStateRecord => ({
@@ -18,7 +17,6 @@ const toRecord = (row: typeof oauthStates.$inferSelect): OAuthStateRecord => ({
   pkceVerifier: row.pkceVerifier,
   metadataJson: row.metadataJson,
   expiresAt: row.expiresAt,
-  createdAt: row.createdAt,
 });
 
 type CreateOAuthStateInput = {
@@ -27,7 +25,6 @@ type CreateOAuthStateInput = {
   pkceVerifier: string | null;
   metadataJson: string | null;
   expiresAt: number;
-  createdAt: number;
 };
 
 export const createOAuthState = async (
@@ -40,7 +37,6 @@ export const createOAuthState = async (
     pkceVerifier: input.pkceVerifier,
     metadataJson: input.metadataJson,
     expiresAt: input.expiresAt,
-    createdAt: input.createdAt,
   });
 };
 

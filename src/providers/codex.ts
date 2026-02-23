@@ -236,7 +236,6 @@ export const codexAdapter: ProviderAdapter = {
         redirectUri: input.redirectUri,
       }),
       expiresAt: input.now + CODEX_OAUTH_STATE_TTL_MS,
-      createdAt: input.now,
     });
 
     return {

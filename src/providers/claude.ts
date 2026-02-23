@@ -206,7 +206,6 @@ export const claudeAdapter: ProviderAdapter = {
         host,
       }),
       expiresAt: input.now + CLAUDE_STATE_TTL_MS,
-      createdAt: input.now,
     });
 
     const query = new URLSearchParams({

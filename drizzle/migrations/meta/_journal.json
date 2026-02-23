@@ -8,6 +8,13 @@
       "when": 1771850493381,
       "tag": "0000_clear_dazzler",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1771856158785,
+      "tag": "0001_wild_red_hulk",
+      "breakpoints": true
     }
   ]
 }
