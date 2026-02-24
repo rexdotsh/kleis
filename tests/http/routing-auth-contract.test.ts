@@ -35,10 +35,8 @@ describe("proxy route mapping", () => {
     expect(route?.endpoint).toBe("responses");
   });
 
-  test("maps openai chat completions to codex provider", () => {
-    const route = resolveProxyRoute("/openai/v1/chat/completions");
-    expect(route?.provider).toBe("codex");
-    expect(route?.endpoint).toBe("chat_completions");
+  test("does not match openai chat completions", () => {
+    expect(resolveProxyRoute("/openai/v1/chat/completions")).toBeNull();
   });
 
   test("does not match legacy generic v1 paths", () => {
