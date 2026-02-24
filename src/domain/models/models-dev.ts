@@ -64,49 +64,79 @@ const cloneProviderModels = (input: {
   sourceModels: Record<string, unknown>;
   apiUrl: string;
   npm: string;
-  modelPrefix: string;
-  sourceLabel: string;
+  modelPrefix?: string;
+  sourceLabel?: string;
 }): JsonObject => {
   const models: JsonObject = {};
   for (const [modelId, modelValue] of Object.entries(input.sourceModels)) {
-    const prefixedModelId = `${input.modelPrefix}/${modelId}`;
+    const proxyModelId = input.modelPrefix
+      ? `${input.modelPrefix}/${modelId}`
+      : modelId;
 
     if (!isObjectRecord(modelValue)) {
-      models[prefixedModelId] = modelValue;
+      models[proxyModelId] = modelValue;
       continue;
     }
 
     const model = cloneJsonValue(modelValue);
-    const upstreamModelId =
-      typeof model.id === "string" && model.id.trim() ? model.id : modelId;
     const baseName =
       typeof model.name === "string" && model.name.trim()
         ? model.name
-        : upstreamModelId;
+        : modelId;
     const providerOverrides = getNestedObject(model, "provider") ?? {};
 
-    model.id = prefixedModelId;
-    model.name = `${baseName} (${input.sourceLabel})`;
+    model.id = proxyModelId;
+    if (input.sourceLabel) {
+      model.name = `${baseName} (${input.sourceLabel})`;
+    }
     model.provider = {
       ...providerOverrides,
       api: input.apiUrl,
       npm: input.npm,
     };
-    models[prefixedModelId] = model;
+    models[proxyModelId] = model;
   }
 
   return models;
 };
 
+const patchCanonicalProviders = (input: {
+  registry: ModelsDevRegistry;
+  upstreamRegistry: ModelsDevRegistry;
+  baseOrigin: string;
+}): void => {
+  for (const mapping of proxyProviderMappings) {
+    const sourceProvider = getNestedObject(
+      input.upstreamRegistry,
+      mapping.canonicalProvider
+    );
+    if (!sourceProvider) {
+      continue;
+    }
+
+    const apiUrl = `${input.baseOrigin}${mapping.routeBasePath}`;
+    const provider = cloneJsonValue(sourceProvider);
+    provider.id = mapping.canonicalProvider;
+    provider.env = [PROXY_API_KEY_ENV];
+    provider.api = apiUrl;
+    provider.npm = mapping.npm;
+    provider.models = cloneProviderModels({
+      sourceModels: getNestedObject(sourceProvider, "models") ?? {},
+      apiUrl,
+      npm: mapping.npm,
+    });
+    input.registry[mapping.canonicalProvider] = provider;
+  }
+};
+
 const mergeKleisProviderModels = (
-  upstreamRegistry: ModelsDevRegistry,
+  registry: ModelsDevRegistry,
   baseOrigin: string
 ): JsonObject => {
   const models: JsonObject = {};
 
   for (const mapping of proxyProviderMappings) {
-    const sourceProvider =
-      getNestedObject(upstreamRegistry, mapping.canonicalProvider) ?? null;
+    const sourceProvider = getNestedObject(registry, mapping.canonicalProvider);
     if (!sourceProvider) {
       continue;
     }
@@ -125,16 +155,14 @@ const mergeKleisProviderModels = (
 };
 
 const toKleisProviderEntry = (input: {
-  upstreamRegistry: ModelsDevRegistry;
+  registry: ModelsDevRegistry;
   baseOrigin: string;
 }): JsonObject => {
-  const baseOrigin = normalizeOrigin(input.baseOrigin);
-
   return {
     id: KLEIS_PROVIDER_ID,
     name: KLEIS_PROVIDER_NAME,
     env: [PROXY_API_KEY_ENV],
-    models: mergeKleisProviderModels(input.upstreamRegistry, baseOrigin),
+    models: mergeKleisProviderModels(input.registry, input.baseOrigin),
   };
 };
 
@@ -154,10 +182,17 @@ export const buildProxyModelsRegistry = (
   input: BuildProxyModelsRegistryInput
 ): ModelsDevRegistry => {
   const registry: ModelsDevRegistry = cloneJsonValue(input.upstreamRegistry);
+  const baseOrigin = normalizeOrigin(input.baseOrigin);
+
+  patchCanonicalProviders({
+    registry,
+    upstreamRegistry: input.upstreamRegistry,
+    baseOrigin,
+  });
 
   registry[KLEIS_PROVIDER_ID] = toKleisProviderEntry({
-    upstreamRegistry: input.upstreamRegistry,
-    baseOrigin: input.baseOrigin,
+    registry,
+    baseOrigin,
   });
 
   return registry;
