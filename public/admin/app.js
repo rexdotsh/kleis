@@ -117,14 +117,12 @@ function maskKey(k) {
   return k.length <= 12 ? k : `${k.slice(0, 8)}...${k.slice(-4)}`;
 }
 
+function isActiveKey(key, now = Date.now()) {
+  return !key.revokedAt && (!key.expiresAt || key.expiresAt > now);
+}
+
 function firstUsableKey() {
-  const now = Date.now();
-  const active = state.keys.find(
-    (key) => !key.revokedAt && (!key.expiresAt || key.expiresAt > now)
-  );
-  return (
-    active || state.keys.find((key) => !key.revokedAt) || state.keys[0] || null
-  );
+  return state.keys.find((key) => isActiveKey(key)) || null;
 }
 
 function keyById(keyId) {
@@ -470,7 +468,10 @@ async function openKeyDetail(keyId) {
 }
 
 function setupSnippetForKey(key) {
-  if (!key) return "# create an API key to generate setup snippet";
+  if (!key || !isActiveKey(key)) {
+    return "# create an active API key to generate setup snippet";
+  }
+
   return [
     "# kleis models live under kleis/* alongside built-in providers",
     `export OPENCODE_MODELS_URL=${APP_ORIGIN}`,
@@ -485,21 +486,21 @@ function renderSetupSnippet() {
   const copyBtn = $("#btn-copy-setup");
   if (!keySelect || !snippet || !copyBtn) return;
 
+  const now = Date.now();
   const fallback = firstUsableKey();
+  const selectedById = state.setupKeyId ? keyById(state.setupKeyId) : null;
   const selected =
-    (state.setupKeyId ? keyById(state.setupKeyId) : null) || fallback;
+    selectedById && isActiveKey(selectedById, now) ? selectedById : fallback;
   state.setupKeyId = selected?.id || null;
 
   keySelect.innerHTML = state.keys
     .map((key) => {
-      const status = key.revokedAt
-        ? "revoked"
-        : key.expiresAt && key.expiresAt <= Date.now()
-          ? "expired"
-          : "active";
+      const active = isActiveKey(key, now);
+      const status = active ? "active" : key.revokedAt ? "revoked" : "expired";
+      const disabled = active ? "" : " disabled";
       const label = key.label || maskKey(key.key);
       const sel = key.id === state.setupKeyId ? " selected" : "";
-      return `<option value="${key.id}"${sel}>${escapeHtml(label)} (${status})</option>`;
+      return `<option value="${key.id}"${sel}${disabled}>${escapeHtml(label)} (${status})</option>`;
     })
     .join("");
 
@@ -708,7 +709,7 @@ async function rotateKey(id, button) {
     providerScopes: existing.providerScopes || undefined,
     modelScopes: existing.modelScopes || undefined,
   };
-  if (existing.expiresAt && existing.expiresAt > Date.now()) {
+  if (existing.expiresAt !== null && existing.expiresAt !== undefined) {
     payload.expiresAt = existing.expiresAt;
   }
 
@@ -1030,8 +1031,8 @@ $("#btn-copy-setup").addEventListener("click", (e) => {
   const selected = state.setupKeyId
     ? keyById(state.setupKeyId)
     : firstUsableKey();
-  if (!selected) {
-    toast("Create an API key first", "error");
+  if (!selected || !isActiveKey(selected)) {
+    toast("Create an active API key first", "error");
     return;
   }
   copyToClipboard(setupSnippetForKey(selected), e.currentTarget);
