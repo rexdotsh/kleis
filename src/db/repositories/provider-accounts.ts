@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
 
 import type { Database } from "../index";
 import { providerAccounts, type Provider } from "../schema";
@@ -255,6 +255,7 @@ type UpdateProviderAccountTokensInput = {
   expiresAt: number;
   accountId?: string | null;
   metadata?: ProviderAccountMetadata | null;
+  refreshLockToken?: string;
   lastRefreshStatus: "success" | "failed";
   now: number;
 };
@@ -283,18 +284,39 @@ export const updateProviderAccountTokens = async (
     );
   }
 
-  await database
+  const whereClause = input.refreshLockToken
+    ? and(
+        eq(providerAccounts.id, id),
+        eq(providerAccounts.refreshLockToken, input.refreshLockToken),
+        gt(providerAccounts.refreshLockExpiresAt, input.now)
+      )
+    : eq(providerAccounts.id, id);
+
+  const result = await database
     .update(providerAccounts)
     .set(setValues)
-    .where(eq(providerAccounts.id, id));
+    .where(whereClause);
+  if (result.rowsAffected === 0) {
+    return null;
+  }
+
   return findProviderAccountById(database, id);
 };
 
 export const recordProviderAccountRefreshFailure = async (
   database: Database,
   id: string,
-  now: number
+  now: number,
+  refreshLockToken?: string
 ): Promise<void> => {
+  const whereClause = refreshLockToken
+    ? and(
+        eq(providerAccounts.id, id),
+        eq(providerAccounts.refreshLockToken, refreshLockToken),
+        gt(providerAccounts.refreshLockExpiresAt, now)
+      )
+    : eq(providerAccounts.id, id);
+
   await database
     .update(providerAccounts)
     .set({
@@ -302,7 +324,7 @@ export const recordProviderAccountRefreshFailure = async (
       lastRefreshStatus: "failed",
       updatedAt: now,
     })
-    .where(eq(providerAccounts.id, id));
+    .where(whereClause);
 };
 
 export const hasActiveProviderAccountRefreshLock = (

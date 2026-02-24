@@ -91,12 +91,13 @@ const refreshProviderAccountWithLock = async (
         expiresAt: assertExpiresAt(tokens.expiresAt, refreshNow),
         accountId: tokens.accountId,
         metadata: tokens.metadata,
+        refreshLockToken: lockToken,
         lastRefreshStatus: "success",
         now: refreshNow,
       });
 
       if (!updated) {
-        throw new Error("Failed to load refreshed provider account");
+        return await findProviderAccountById(database, account.id);
       }
 
       return updated;
@@ -104,7 +105,8 @@ const refreshProviderAccountWithLock = async (
       await recordProviderAccountRefreshFailure(
         database,
         account.id,
-        refreshNow
+        refreshNow,
+        lockToken
       );
       throw error;
     }
