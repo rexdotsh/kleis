@@ -8,9 +8,25 @@ const upstreamRegistry = {
     name: "OpenAI",
     env: ["OPENAI_API_KEY"],
     models: {
+      "gpt-5.3-codex": {
+        id: "gpt-5.3-codex",
+        name: "GPT-5.3 Codex",
+        provider: {
+          api: "https://api.openai.com/v1",
+          npm: "@ai-sdk/openai",
+        },
+      },
       "gpt-5": {
         id: "gpt-5",
         name: "GPT-5",
+        provider: {
+          api: "https://api.openai.com/v1",
+          npm: "@ai-sdk/openai",
+        },
+      },
+      "text-embedding-3-large": {
+        id: "text-embedding-3-large",
+        name: "text-embedding-3-large",
         provider: {
           api: "https://api.openai.com/v1",
           npm: "@ai-sdk/openai",
@@ -80,9 +96,11 @@ describe("models registry contract", () => {
       models?: Record<string, { provider?: { api?: string } }>;
     };
     expect(openai.env).toEqual(["KLEIS_API_KEY"]);
-    expect(openai.models?.["gpt-5"]?.provider?.api).toBe(
+    expect(openai.models?.["gpt-5.3-codex"]?.provider?.api).toBe(
       "https://kleis.example/openai/v1"
     );
+    expect(openai.models?.["gpt-5"]).toBeUndefined();
+    expect(openai.models?.["text-embedding-3-large"]).toBeUndefined();
   });
 
   test("keeps kleis aggregate provider with prefixed ids", () => {
@@ -102,5 +120,6 @@ describe("models registry contract", () => {
     expect(kleis.models?.["github-copilot/gpt-5"]?.provider?.api).toBe(
       "https://kleis.example/copilot/v1"
     );
+    expect(kleis.models?.["openai/text-embedding-3-large"]).toBeUndefined();
   });
 });

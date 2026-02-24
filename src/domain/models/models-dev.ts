@@ -12,6 +12,14 @@ const KLEIS_PROVIDER_ID = "kleis";
 const KLEIS_PROVIDER_NAME = "Kleis";
 const PROXY_API_KEY_ENV = "KLEIS_API_KEY";
 const MODELS_DEV_URL = "https://models.dev/api.json";
+const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
+  "gpt-5.1-codex-max",
+  "gpt-5.1-codex-mini",
+  "gpt-5.2",
+  "gpt-5.2-codex",
+  "gpt-5.3-codex",
+  "gpt-5.1-codex",
+]);
 
 let inFlightFetch: Promise<ModelsDevRegistry> | null = null;
 
@@ -66,9 +74,14 @@ const cloneProviderModels = (input: {
   npm: string;
   modelPrefix?: string;
   sourceLabel?: string;
+  shouldIncludeModel?: (modelId: string) => boolean;
 }): JsonObject => {
   const models: JsonObject = {};
   for (const [modelId, modelValue] of Object.entries(input.sourceModels)) {
+    if (input.shouldIncludeModel && !input.shouldIncludeModel(modelId)) {
+      continue;
+    }
+
     const proxyModelId = input.modelPrefix
       ? `${input.modelPrefix}/${modelId}`
       : modelId;
@@ -100,6 +113,21 @@ const cloneProviderModels = (input: {
   return models;
 };
 
+const isModelSupportedByProxyProvider = (
+  internalProvider: (typeof proxyProviderMappings)[number]["internalProvider"],
+  modelId: string
+): boolean => {
+  if (internalProvider !== "codex") {
+    return true;
+  }
+
+  const normalizedModelId = modelId.toLowerCase();
+  return (
+    normalizedModelId.includes("codex") ||
+    CODEX_ALLOWED_OPENAI_MODEL_IDS.has(normalizedModelId)
+  );
+};
+
 const patchCanonicalProviders = (input: {
   registry: ModelsDevRegistry;
   upstreamRegistry: ModelsDevRegistry;
@@ -124,6 +152,8 @@ const patchCanonicalProviders = (input: {
       sourceModels: getNestedObject(sourceProvider, "models") ?? {},
       apiUrl,
       npm: mapping.npm,
+      shouldIncludeModel: (modelId) =>
+        isModelSupportedByProxyProvider(mapping.internalProvider, modelId),
     });
     input.registry[mapping.canonicalProvider] = provider;
   }
@@ -147,6 +177,8 @@ const mergeKleisProviderModels = (
       npm: mapping.npm,
       modelPrefix: mapping.canonicalProvider,
       sourceLabel: mapping.canonicalProvider,
+      shouldIncludeModel: (modelId) =>
+        isModelSupportedByProxyProvider(mapping.internalProvider, modelId),
     });
     Object.assign(models, providerModels);
   }
