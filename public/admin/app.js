@@ -559,6 +559,9 @@ async function loadAccounts() {
     state.accounts = (await api("/admin/accounts")).accounts || [];
     renderAccounts();
   } catch (e) {
+    state.accounts = [];
+    $("#accounts-list").innerHTML =
+      `<div class="empty-state"><div class="empty-state-text" style="color:var(--red)">${escapeHtml(e.message)}</div></div>`;
     toast(e.message, "error");
   }
 }
@@ -588,6 +591,11 @@ async function loadKeys() {
     renderKeys();
     renderSetupSnippet();
   } catch (e) {
+    state.keys = [];
+    state.keyUsageById = new Map();
+    $("#keys-list").innerHTML =
+      `<div class="empty-state"><div class="empty-state-text" style="color:var(--red)">${escapeHtml(e.message)}</div></div>`;
+    renderSetupSnippet();
     toast(e.message, "error");
   }
 }
@@ -706,8 +714,14 @@ async function rotateKey(id, button) {
 
   const payload = {
     label: existing.label || undefined,
-    providerScopes: existing.providerScopes || undefined,
-    modelScopes: existing.modelScopes || undefined,
+    providerScopes:
+      existing.providerScopes && existing.providerScopes.length > 0
+        ? existing.providerScopes
+        : undefined,
+    modelScopes:
+      existing.modelScopes && existing.modelScopes.length > 0
+        ? existing.modelScopes
+        : undefined,
   };
   if (existing.expiresAt !== null && existing.expiresAt !== undefined) {
     payload.expiresAt = existing.expiresAt;
@@ -951,6 +965,12 @@ function logout() {
   state.token = "";
   state.accounts = [];
   state.keys = [];
+  state.keyUsageById = new Map();
+  state.activeOAuth = null;
+  state.revealedKeyIds.clear();
+  state.setupKeyId = null;
+  $("#oauth-flow-active").style.display = "none";
+  $("#oauth-flow-active").innerHTML = "";
   $("#login-gate").classList.remove("hidden");
   $("#app").classList.remove("visible");
   $("#login-token").value = "";
