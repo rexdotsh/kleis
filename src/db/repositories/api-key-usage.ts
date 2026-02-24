@@ -1,4 +1,4 @@
-import { gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 
 import type { Database } from "../index";
 import { apiKeyUsageBuckets, providers, type Provider } from "../schema";
@@ -6,6 +6,7 @@ import { apiKeyUsageBuckets, providers, type Provider } from "../schema";
 type UsageEndpoint = "chat_completions" | "responses" | "messages";
 
 const USAGE_BUCKET_MS = 60_000;
+const DETAIL_BUCKET_LIMIT = 60;
 
 const toInteger = (value: unknown): number => {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -235,4 +236,143 @@ export const listApiKeyUsageSummaries = async (
   }
 
   return Array.from(summariesByKey.values()).sort(summarySort);
+};
+
+type ApiKeyUsageEndpointBreakdown = {
+  provider: Provider;
+  endpoint: string;
+  requestCount: number;
+  successCount: number;
+  clientErrorCount: number;
+  serverErrorCount: number;
+  avgLatencyMs: number;
+  maxLatencyMs: number;
+  lastRequestAt: number | null;
+};
+
+type ApiKeyUsageBucketRow = {
+  bucketStart: number;
+  requestCount: number;
+  successCount: number;
+  clientErrorCount: number;
+  serverErrorCount: number;
+};
+
+type ApiKeyUsageDetail = {
+  apiKeyId: string;
+  totals: Omit<ApiKeyUsageSummary, "apiKeyId" | "providers">;
+  endpoints: ApiKeyUsageEndpointBreakdown[];
+  buckets: ApiKeyUsageBucketRow[];
+};
+
+export const getApiKeyUsageDetail = async (
+  database: Database,
+  apiKeyId: string,
+  sinceMs: number
+): Promise<ApiKeyUsageDetail> => {
+  const sinceBucket = toUsageBucketStart(toNonNegativeInteger(sinceMs));
+  const windowFilter = and(
+    eq(apiKeyUsageBuckets.apiKeyId, apiKeyId),
+    gte(apiKeyUsageBuckets.bucketStart, sinceBucket)
+  );
+
+  const [totalsRows, endpointRows, bucketRows] = await Promise.all([
+    database
+      .select({
+        requestCount: sql<number>`sum(${apiKeyUsageBuckets.requestCount})`,
+        successCount: sql<number>`sum(${apiKeyUsageBuckets.successCount})`,
+        clientErrorCount: sql<number>`sum(${apiKeyUsageBuckets.clientErrorCount})`,
+        serverErrorCount: sql<number>`sum(${apiKeyUsageBuckets.serverErrorCount})`,
+        totalLatencyMs: sql<number>`sum(${apiKeyUsageBuckets.totalLatencyMs})`,
+        maxLatencyMs: sql<number>`max(${apiKeyUsageBuckets.maxLatencyMs})`,
+        lastRequestAt: sql<number>`max(${apiKeyUsageBuckets.lastRequestAt})`,
+      })
+      .from(apiKeyUsageBuckets)
+      .where(windowFilter),
+    database
+      .select({
+        provider: apiKeyUsageBuckets.provider,
+        endpoint: apiKeyUsageBuckets.endpoint,
+        requestCount: sql<number>`sum(${apiKeyUsageBuckets.requestCount})`,
+        successCount: sql<number>`sum(${apiKeyUsageBuckets.successCount})`,
+        clientErrorCount: sql<number>`sum(${apiKeyUsageBuckets.clientErrorCount})`,
+        serverErrorCount: sql<number>`sum(${apiKeyUsageBuckets.serverErrorCount})`,
+        totalLatencyMs: sql<number>`sum(${apiKeyUsageBuckets.totalLatencyMs})`,
+        maxLatencyMs: sql<number>`max(${apiKeyUsageBuckets.maxLatencyMs})`,
+        lastRequestAt: sql<number>`max(${apiKeyUsageBuckets.lastRequestAt})`,
+      })
+      .from(apiKeyUsageBuckets)
+      .where(windowFilter)
+      .groupBy(apiKeyUsageBuckets.provider, apiKeyUsageBuckets.endpoint),
+    database
+      .select({
+        bucketStart: apiKeyUsageBuckets.bucketStart,
+        requestCount: sql<number>`sum(${apiKeyUsageBuckets.requestCount})`,
+        successCount: sql<number>`sum(${apiKeyUsageBuckets.successCount})`,
+        clientErrorCount: sql<number>`sum(${apiKeyUsageBuckets.clientErrorCount})`,
+        serverErrorCount: sql<number>`sum(${apiKeyUsageBuckets.serverErrorCount})`,
+      })
+      .from(apiKeyUsageBuckets)
+      .where(windowFilter)
+      .groupBy(apiKeyUsageBuckets.bucketStart)
+      .orderBy(desc(apiKeyUsageBuckets.bucketStart))
+      .limit(DETAIL_BUCKET_LIMIT),
+  ]);
+
+  const totals = totalsRows[0];
+  const requestCount = toNonNegativeInteger(totals?.requestCount);
+  const totalLatencyMs = toNonNegativeInteger(totals?.totalLatencyMs);
+
+  const endpoints: ApiKeyUsageEndpointBreakdown[] = [];
+  for (const row of endpointRows) {
+    const provider = parseProvider(row.provider);
+    if (!provider) continue;
+    const rc = toNonNegativeInteger(row.requestCount);
+    const tl = toNonNegativeInteger(row.totalLatencyMs);
+    endpoints.push({
+      provider,
+      endpoint: row.endpoint,
+      requestCount: rc,
+      successCount: toNonNegativeInteger(row.successCount),
+      clientErrorCount: toNonNegativeInteger(row.clientErrorCount),
+      serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
+      avgLatencyMs: rc ? Math.round(tl / rc) : 0,
+      maxLatencyMs: toNonNegativeInteger(row.maxLatencyMs),
+      lastRequestAt:
+        row.lastRequestAt === null
+          ? null
+          : toNonNegativeInteger(row.lastRequestAt),
+    });
+  }
+  endpoints.sort((a, b) => b.requestCount - a.requestCount);
+
+  const buckets: ApiKeyUsageBucketRow[] = bucketRows
+    .map((row) => ({
+      bucketStart: toNonNegativeInteger(row.bucketStart),
+      requestCount: toNonNegativeInteger(row.requestCount),
+      successCount: toNonNegativeInteger(row.successCount),
+      clientErrorCount: toNonNegativeInteger(row.clientErrorCount),
+      serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
+    }))
+    .reverse();
+
+  return {
+    apiKeyId,
+    totals: {
+      requestCount,
+      successCount: toNonNegativeInteger(totals?.successCount),
+      clientErrorCount: toNonNegativeInteger(totals?.clientErrorCount),
+      serverErrorCount: toNonNegativeInteger(totals?.serverErrorCount),
+      avgLatencyMs: requestCount
+        ? Math.round(totalLatencyMs / requestCount)
+        : 0,
+      maxLatencyMs: toNonNegativeInteger(totals?.maxLatencyMs),
+      lastRequestAt:
+        totals?.lastRequestAt === null || totals?.lastRequestAt === undefined
+          ? null
+          : toNonNegativeInteger(totals.lastRequestAt),
+    },
+    endpoints,
+    buckets,
+  };
 };

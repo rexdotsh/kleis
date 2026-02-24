@@ -342,7 +342,7 @@ function keyCardHtml(key) {
     }
   }
 
-  return `<div class="card">
+  return `<div class="card" data-key-id="${key.id}" style="cursor:pointer">
     <div class="card-top">
       <div class="card-identity">
         <span class="card-label">${escapeHtml(key.label || "untitled")}</span>
@@ -377,6 +377,96 @@ function renderKeys() {
   }
 
   $("#keys-list").innerHTML = keys.map(keyCardHtml).join("");
+}
+
+function renderKeyDetailBody(data) {
+  const t = data.totals;
+  const successRate = t.requestCount
+    ? Math.round((t.successCount / t.requestCount) * 100)
+    : 0;
+
+  let html = `<div class="detail-stats">
+    <div class="detail-stat"><div class="detail-stat-value">${t.requestCount}</div><div class="detail-stat-label">requests</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${successRate}%</div><div class="detail-stat-label">success</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${t.clientErrorCount}</div><div class="detail-stat-label">4xx</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${t.serverErrorCount}</div><div class="detail-stat-label">5xx</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${t.avgLatencyMs}ms</div><div class="detail-stat-label">avg latency</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${t.maxLatencyMs}ms</div><div class="detail-stat-label">max latency</div></div>
+  </div>`;
+
+  if (t.lastRequestAt) {
+    html += `<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:16px">last request: ${escapeHtml(new Date(t.lastRequestAt).toLocaleString())}</div>`;
+  }
+
+  if (data.endpoints.length) {
+    html += '<div class="detail-section-title">by provider / endpoint</div>';
+    html +=
+      '<table class="detail-table"><thead><tr><th>provider</th><th>endpoint</th><th>reqs</th><th>ok</th><th>4xx</th><th>5xx</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
+    for (const ep of data.endpoints) {
+      html += `<tr>
+        <td><span class="badge badge-${ep.provider}">${ep.provider}</span></td>
+        <td>${escapeHtml(ep.endpoint)}</td>
+        <td>${ep.requestCount}</td>
+        <td>${ep.successCount}</td>
+        <td>${ep.clientErrorCount || "-"}</td>
+        <td>${ep.serverErrorCount || "-"}</td>
+        <td>${ep.avgLatencyMs}</td>
+        <td>${ep.maxLatencyMs}</td>
+      </tr>`;
+    }
+    html += "</tbody></table>";
+  }
+
+  if (data.buckets.length > 1) {
+    const maxReqs = Math.max(...data.buckets.map((b) => b.requestCount));
+    html +=
+      '<div class="detail-section-title">request timeline (1m buckets)</div>';
+    for (const b of data.buckets) {
+      const pct = maxReqs ? (b.requestCount / maxReqs) * 100 : 0;
+      const errPct = b.requestCount
+        ? ((b.clientErrorCount + b.serverErrorCount) / b.requestCount) * 100
+        : 0;
+      const okPct = 100 - errPct;
+      const time = new Date(b.bucketStart).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      html += `<div class="detail-bar-row">
+        <span class="detail-bar-label">${time}</span>
+        <div class="detail-bar-track">
+          <div class="detail-bar-fill" style="width:${pct * (okPct / 100)}%;background:var(--green)"></div>
+          <div class="detail-bar-fill" style="width:${pct * (errPct / 100)}%;background:var(--red)"></div>
+        </div>
+        <span class="detail-bar-count">${b.requestCount}</span>
+      </div>`;
+    }
+  }
+
+  if (!t.requestCount) {
+    html =
+      '<div class="empty-state"><div class="empty-state-text">No usage data in this window.</div></div>';
+  }
+
+  return html;
+}
+
+async function openKeyDetail(keyId) {
+  const key = keyById(keyId);
+  const label = key?.label || maskKey(key?.key || keyId);
+  $("#key-detail-title").textContent = label;
+  $("#key-detail-body").innerHTML =
+    '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
+  $("#modal-key-detail").classList.add("open");
+
+  try {
+    const data = await api(
+      `/admin/keys/${keyId}/usage?windowMs=${state.keyUsageWindowMs}`
+    );
+    $("#key-detail-body").innerHTML = renderKeyDetailBody(data);
+  } catch (e) {
+    $("#key-detail-body").innerHTML =
+      `<div class="empty-state"><div class="empty-state-text" style="color:var(--red)">${escapeHtml(e.message)}</div></div>`;
+  }
 }
 
 function setupSnippetForKey(key) {
@@ -885,31 +975,35 @@ $("#accounts-list").addEventListener("click", (e) => {
 
 $("#keys-list").addEventListener("click", (e) => {
   const button = e.target.closest("button[data-action]");
-  if (!button) return;
+  if (button) {
+    const action = button.dataset.action;
+    const keyId = button.dataset.keyId;
 
-  const action = button.dataset.action;
-  const keyId = button.dataset.keyId;
+    if (action === "open-create-key") {
+      openCreateKeyModal();
+      return;
+    }
+    if (!keyId) return;
 
-  if (action === "open-create-key") {
-    openCreateKeyModal();
+    if (action === "copy-key") {
+      const key = keyById(keyId);
+      if (key) copyToClipboard(key.key, button);
+      else toast("Key unavailable", "error");
+      return;
+    }
+    if (action === "toggle-key") {
+      if (state.revealedKeyIds.has(keyId)) state.revealedKeyIds.delete(keyId);
+      else state.revealedKeyIds.add(keyId);
+      renderKeys();
+      return;
+    }
+    if (action === "rotate-key") rotateKey(keyId, button);
+    if (action === "revoke-key") revokeKey(keyId);
     return;
   }
-  if (!keyId) return;
 
-  if (action === "copy-key") {
-    const key = keyById(keyId);
-    if (key) copyToClipboard(key.key, button);
-    else toast("Key unavailable", "error");
-    return;
-  }
-  if (action === "toggle-key") {
-    if (state.revealedKeyIds.has(keyId)) state.revealedKeyIds.delete(keyId);
-    else state.revealedKeyIds.add(keyId);
-    renderKeys();
-    return;
-  }
-  if (action === "rotate-key") rotateKey(keyId, button);
-  if (action === "revoke-key") revokeKey(keyId);
+  const card = e.target.closest(".card[data-key-id]");
+  if (card) openKeyDetail(card.dataset.keyId);
 });
 
 $("#login-btn").addEventListener("click", handleLogin);

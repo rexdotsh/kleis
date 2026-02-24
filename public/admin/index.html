@@ -799,6 +799,95 @@
         gap: 8px;
       }
     }
+
+    .detail-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .detail-stat {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+    }
+    .detail-stat-value {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-primary);
+      line-height: 1.2;
+    }
+    .detail-stat-label {
+      font-size: 10px;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-top: 2px;
+    }
+
+    .detail-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11px;
+    }
+    .detail-table th {
+      text-align: left;
+      color: var(--text-tertiary);
+      font-weight: 500;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .detail-table td {
+      padding: 7px 8px;
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .detail-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .detail-section-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin: 20px 0 10px;
+    }
+
+    .detail-bar-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 3px;
+      font-size: 10px;
+      color: var(--text-tertiary);
+    }
+    .detail-bar-label {
+      width: 44px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+    .detail-bar-track {
+      flex: 1;
+      height: 14px;
+      background: var(--bg-input);
+      border-radius: 2px;
+      overflow: hidden;
+      display: flex;
+    }
+    .detail-bar-fill {
+      height: 100%;
+      min-width: 1px;
+    }
+    .detail-bar-count {
+      width: 36px;
+      flex-shrink: 0;
+    }
     </style>
   </head>
   <body>
@@ -1129,6 +1218,28 @@
           <button class="btn btn-danger" id="btn-confirm-action" type="button">
             confirm
           </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-key-detail" class="modal-backdrop">
+      <div class="modal" style="width:560px">
+        <div
+          style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px"
+        >
+          <div
+            class="modal-title"
+            id="key-detail-title"
+            style="margin-bottom:0"
+          ></div>
+          <button class="btn btn-ghost btn-sm modal-close" type="button">
+            close
+          </button>
+        </div>
+        <div id="key-detail-body">
+          <div class="loading-indicator">
+            <span class="spinner spinner-lg"></span>
+          </div>
         </div>
       </div>
     </div>

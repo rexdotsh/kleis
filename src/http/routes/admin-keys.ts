@@ -3,7 +3,10 @@ import { Hono } from "hono";
 import { z } from "zod";
 
 import { db } from "../../db";
-import { listApiKeyUsageSummaries } from "../../db/repositories/api-key-usage";
+import {
+  getApiKeyUsageDetail,
+  listApiKeyUsageSummaries,
+} from "../../db/repositories/api-key-usage";
 import {
   createApiKey,
   listApiKeys,
@@ -19,7 +22,7 @@ const createApiKeyBodySchema = z.strictObject({
   expiresAt: z.int().positive().nullable().optional(),
 });
 
-const revokeApiKeyParamsSchema = z.strictObject({
+const keyIdParamsSchema = z.strictObject({
   id: z.uuid(),
 });
 
@@ -76,7 +79,7 @@ export const adminKeysRoutes = new Hono()
   })
   .post(
     "/:id/revoke",
-    zValidator("param", revokeApiKeyParamsSchema),
+    zValidator("param", keyIdParamsSchema),
     async (context) => {
       const { id } = context.req.valid("param");
       const revoked = await revokeApiKey(db, id, Date.now());
@@ -91,5 +94,26 @@ export const adminKeysRoutes = new Hono()
       }
 
       return context.json({ revoked: true });
+    }
+  )
+  .get(
+    "/:id/usage",
+    zValidator("param", keyIdParamsSchema),
+    zValidator("query", listApiKeyUsageQuerySchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const query = context.req.valid("query");
+      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
+      const now = Date.now();
+      const since = now - windowMs;
+
+      const detail = await getApiKeyUsageDetail(db, id, since);
+
+      return context.json({
+        windowMs,
+        since,
+        now,
+        ...detail,
+      });
     }
   );
