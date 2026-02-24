@@ -433,18 +433,26 @@ export const deleteProviderAccount = async (
     return false;
   }
 
-  await database.delete(providerAccounts).where(eq(providerAccounts.id, id));
+  const result = await database
+    .delete(providerAccounts)
+    .where(eq(providerAccounts.id, id));
+  if (result.rowsAffected === 0) {
+    return false;
+  }
 
   if (account.isPrimary) {
-    const next = await database.query.providerAccounts.findFirst({
-      where: eq(providerAccounts.provider, account.provider),
-      orderBy: desc(providerAccounts.createdAt),
-    });
-    if (next) {
-      await database
-        .update(providerAccounts)
-        .set({ isPrimary: true, updatedAt: Date.now() })
-        .where(eq(providerAccounts.id, next.id));
+    const currentPrimary = await findPrimaryProviderAccount(
+      database,
+      account.provider
+    );
+    if (!currentPrimary) {
+      const next = await database.query.providerAccounts.findFirst({
+        where: eq(providerAccounts.provider, account.provider),
+        orderBy: desc(providerAccounts.createdAt),
+      });
+      if (next) {
+        await setPrimaryProviderAccount(database, next.id, Date.now());
+      }
     }
   }
 
