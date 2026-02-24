@@ -1,5 +1,6 @@
 import type { Database } from "../../db";
 import {
+  extendProviderAccountRefreshLock,
   findProviderAccountById,
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
@@ -18,6 +19,7 @@ import type { ProviderOAuthStartResult } from "../../providers/types";
 const normalizeTokenField = (value: string): string => value.trim();
 
 const REFRESH_LOCK_LEASE_MS = 20_000;
+const REFRESH_LOCK_HEARTBEAT_MS = 5000;
 const REFRESH_WAIT_TIMEOUT_MS = 3000;
 const REFRESH_WAIT_POLL_INTERVAL_MS = 150;
 
@@ -33,6 +35,25 @@ const sleep = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
   });
+
+const startRefreshLockHeartbeat = (
+  database: Database,
+  accountId: string,
+  lockToken: string
+): (() => void) => {
+  const timer = setInterval(() => {
+    const now = Date.now();
+    extendProviderAccountRefreshLock(database, accountId, {
+      token: lockToken,
+      now,
+      expiresAt: now + REFRESH_LOCK_LEASE_MS,
+    }).catch(() => undefined);
+  }, REFRESH_LOCK_HEARTBEAT_MS);
+
+  return () => {
+    clearInterval(timer);
+  };
+};
 
 const waitForInFlightRefresh = async (
   database: Database,
@@ -76,6 +97,11 @@ const refreshProviderAccountWithLock = async (
       return account;
     }
 
+    const stopRefreshLockHeartbeat = startRefreshLockHeartbeat(
+      database,
+      account.id,
+      lockToken
+    );
     try {
       const adapter = getProviderAdapter(account.provider);
       const tokens = await adapter.refreshAccount(account, refreshNow);
@@ -109,6 +135,8 @@ const refreshProviderAccountWithLock = async (
         lockToken
       );
       throw error;
+    } finally {
+      stopRefreshLockHeartbeat();
     }
   } finally {
     await releaseProviderAccountRefreshLock(

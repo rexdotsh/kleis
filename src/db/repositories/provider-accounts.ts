@@ -375,6 +375,34 @@ export const tryAcquireProviderAccountRefreshLock = async (
   );
 };
 
+type ExtendProviderAccountRefreshLockInput = {
+  token: string;
+  now: number;
+  expiresAt: number;
+};
+
+export const extendProviderAccountRefreshLock = async (
+  database: Database,
+  id: string,
+  input: ExtendProviderAccountRefreshLockInput
+): Promise<boolean> => {
+  const result = await database
+    .update(providerAccounts)
+    .set({
+      refreshLockExpiresAt: input.expiresAt,
+      updatedAt: input.now,
+    })
+    .where(
+      and(
+        eq(providerAccounts.id, id),
+        eq(providerAccounts.refreshLockToken, input.token),
+        gt(providerAccounts.refreshLockExpiresAt, input.now)
+      )
+    );
+
+  return result.rowsAffected > 0;
+};
+
 export const releaseProviderAccountRefreshLock = async (
   database: Database,
   id: string,
@@ -433,13 +461,27 @@ export const setPrimaryProviderAccount = async (
     return null;
   }
 
-  await database
+  const result = await database
     .update(providerAccounts)
     .set({
       isPrimary: sql<boolean>`CASE WHEN ${providerAccounts.id} = ${id} THEN 1 ELSE 0 END`,
       updatedAt: now,
     })
-    .where(eq(providerAccounts.provider, account.provider));
+    .where(
+      and(
+        eq(providerAccounts.provider, account.provider),
+        sql`exists (
+          select 1
+          from ${providerAccounts}
+          where ${providerAccounts.id} = ${id}
+            and ${providerAccounts.provider} = ${account.provider}
+        )`
+      )
+    );
+
+  if (result.rowsAffected === 0) {
+    return null;
+  }
 
   return findProviderAccountById(database, id);
 };
