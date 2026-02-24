@@ -116,9 +116,28 @@ export const adminAccountsRoutes = new Hono()
     zValidator("param", accountIdParamsSchema),
     async (context) => {
       const { id } = context.req.valid("param");
-      const account = await refreshProviderAccount(db, id, Date.now(), {
-        force: true,
-      });
+      let account: Awaited<ReturnType<typeof refreshProviderAccount>>;
+      try {
+        account = await refreshProviderAccount(db, id, Date.now(), {
+          force: true,
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes("already in progress")
+        ) {
+          return context.json(
+            {
+              error: "conflict",
+              message: "Provider account refresh is already in progress",
+            },
+            409
+          );
+        }
+
+        throw error;
+      }
+
       if (!account) {
         return context.json(
           {
