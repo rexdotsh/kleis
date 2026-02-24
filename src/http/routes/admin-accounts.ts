@@ -215,18 +215,30 @@ export const adminAccountsRoutes = new Hono()
         explicitAccountId,
         metadata
       );
+      const now = Date.now();
+      const expiresAt = toMillisecondsTimestamp(body.expiresAt);
+      if (expiresAt <= now) {
+        return context.json(
+          {
+            error: "bad_request",
+            message: "expiresAt must be in the future",
+          },
+          400
+        );
+      }
+
       const account = await importProviderAccount(
         db,
         provider,
         {
           accessToken: body.accessToken,
           refreshToken: body.refreshToken,
-          expiresAt: toMillisecondsTimestamp(body.expiresAt),
+          expiresAt,
           accountId,
           label: body.label ?? null,
           metadata,
         },
-        Date.now()
+        now
       );
 
       return context.json({
