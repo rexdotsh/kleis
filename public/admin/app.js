@@ -247,7 +247,7 @@ function accountCardHtml(account) {
       <span>${s.label}</span>
       <span class="dot-sep"></span>
       <span>${escapeHtml(expiryCountdown(account.expiresAt))}</span>
-      ${account.lastRefreshAt ? `<span class="dot-sep"></span><span>refreshed ${escapeHtml(relativeTime(account.lastRefreshAt))}</span>` : ""}
+      ${account.lastRefreshAt ? `<span class="dot-sep"></span><span title="${escapeHtml(new Date(account.lastRefreshAt).toLocaleString())}">refreshed ${escapeHtml(relativeTime(account.lastRefreshAt))}</span>` : ""}
       ${account.lastRefreshStatus && account.lastRefreshStatus !== "success" ? `<span class="dot-sep"></span><span style="color:var(--red)">${escapeHtml(account.lastRefreshStatus)}</span>` : ""}
     </div>
     <div class="card-meta">${identityParts.join("")}</div>
