@@ -35,6 +35,12 @@ describe("proxy route mapping", () => {
     expect(route?.endpoint).toBe("responses");
   });
 
+  test("maps openai chat completions to codex provider", () => {
+    const route = resolveProxyRoute("/openai/v1/chat/completions");
+    expect(route?.provider).toBe("codex");
+    expect(route?.endpoint).toBe("chat_completions");
+  });
+
   test("does not match legacy generic v1 paths", () => {
     expect(resolveProxyRoute("/v1/chat/completions")).toBeNull();
   });
@@ -53,5 +59,16 @@ describe("proxy route mapping", () => {
       "gpt-5",
       "codex/gpt-5",
     ]);
+  });
+
+  test("rejects foreign prefixed model candidates", () => {
+    const route = resolveProxyRoute("/copilot/v1/responses");
+    expect(route).not.toBeNull();
+    if (!route) {
+      throw new Error("route missing");
+    }
+
+    const parsed = parseModelForProxyRoute("openai/gpt-5", route);
+    expect(modelScopeCandidates(parsed, route)).toEqual([]);
   });
 });

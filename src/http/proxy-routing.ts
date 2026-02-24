@@ -90,12 +90,19 @@ export const modelScopeCandidates = (
   route: ProxyRoute
 ): string[] => {
   const candidates = new Set<string>();
+  const rawModel = parsedModel.rawModel;
+  const rawParts = rawModel?.split("/") ?? [];
+  const rawPrefix = rawParts[0] ?? "";
+  const rawHasPrefix = rawParts.length > 1;
+  const rawMatchesRoutePrefix =
+    rawPrefix === route.publicProvider || rawPrefix === route.provider;
+  const allowRawCandidates = !rawHasPrefix || rawMatchesRoutePrefix;
 
-  if (parsedModel.rawModel) {
-    candidates.add(parsedModel.rawModel);
+  if (rawModel && allowRawCandidates) {
+    candidates.add(rawModel);
   }
 
-  if (parsedModel.upstreamModel) {
+  if (parsedModel.upstreamModel && allowRawCandidates) {
     candidates.add(parsedModel.upstreamModel);
     candidates.add(`${route.publicProvider}/${parsedModel.upstreamModel}`);
     candidates.add(`${route.provider}/${parsedModel.upstreamModel}`);

@@ -19,6 +19,12 @@ export const proxyEndpointRoutes: readonly ProxyEndpointRoute[] = [
     upstreamSuffix: "/responses",
   },
   {
+    publicProvider: "openai",
+    endpoint: "chat_completions",
+    publicSuffix: "/chat/completions",
+    upstreamSuffix: "/chat/completions",
+  },
+  {
     publicProvider: "anthropic",
     endpoint: "messages",
     publicSuffix: "/messages",
