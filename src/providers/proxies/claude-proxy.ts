@@ -21,9 +21,6 @@ const prefixToolName = (name: string, prefix: string): string =>
 const stripToolNamePrefix = (name: string, prefix: string): string =>
   name.startsWith(prefix) ? name.slice(prefix.length) : name;
 
-const escapeRegExp = (value: string): string =>
-  value.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
 const transformClaudeRequestPayload = (
   payload: unknown,
   toolPrefix: string,
@@ -180,15 +177,29 @@ const maybeTransformClaudeStreamResponse = (
     return response;
   }
 
-  const escapedPrefix = escapeRegExp(toolPrefix);
-  const stripToolPrefixRegex = new RegExp(
-    `"name"\\s*:\\s*"${escapedPrefix}([^"]+)"`,
-    "g"
-  );
   const reader = response.body.getReader();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   let pendingText = "";
+
+  const transformSseLine = (line: string): string => {
+    if (!line.startsWith("data:")) {
+      return line;
+    }
+
+    const payload = line.slice(5).trimStart();
+    if (!payload || payload === "[DONE]") {
+      return line;
+    }
+
+    try {
+      const jsonBody = JSON.parse(payload) as unknown;
+      const transformed = transformClaudeResponsePayload(jsonBody, toolPrefix);
+      return `data: ${JSON.stringify(transformed)}`;
+    } catch {
+      return line;
+    }
+  };
 
   const enqueueChunk = (
     controller: ReadableStreamDefaultController<Uint8Array>,
@@ -197,10 +208,12 @@ const maybeTransformClaudeStreamResponse = (
     if (!chunk) {
       return;
     }
+    const transformedChunk = chunk
+      .split("\n")
+      .map((line) => transformSseLine(line))
+      .join("\n");
 
-    controller.enqueue(
-      encoder.encode(chunk.replace(stripToolPrefixRegex, '"name": "$1"'))
-    );
+    controller.enqueue(encoder.encode(transformedChunk));
   };
 
   const stream = new ReadableStream<Uint8Array>({

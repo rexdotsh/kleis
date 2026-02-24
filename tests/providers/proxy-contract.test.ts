@@ -282,7 +282,9 @@ describe("proxy contract: claude", () => {
     const sourceResponse = new Response(
       new ReadableStream<Uint8Array>({
         start(controller): void {
-          controller.enqueue(encoder.encode('data: {"name":"mcp_'));
+          controller.enqueue(
+            encoder.encode('data: {"type":"tool_use","name":"mcp_')
+          );
           controller.enqueue(encoder.encode('shell"}\n'));
           controller.enqueue(encoder.encode("\n"));
           controller.close();
@@ -297,6 +299,39 @@ describe("proxy contract: claude", () => {
     const transformedResponse = await result.transformResponse(sourceResponse);
 
     const transformedText = await transformedResponse.text();
-    expect(transformedText).toContain('"name": "shell"');
+    expect(transformedText).toContain('"name":"shell"');
+  });
+
+  test("does not rewrite non-tool SSE name fields", async () => {
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: "{}",
+      bodyJson: {},
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    const encoder = new TextEncoder();
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(
+            encoder.encode('data: {"type":"status","name":"mcp_shell"}\n')
+          );
+          controller.enqueue(encoder.encode("\n"));
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }
+    );
+
+    const transformedResponse = await result.transformResponse(sourceResponse);
+    const transformedText = await transformedResponse.text();
+    expect(transformedText).toContain('"name":"mcp_shell"');
   });
 });
