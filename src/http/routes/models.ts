@@ -5,15 +5,28 @@ import {
   getModelsDevRegistry,
 } from "../../domain/models/models-dev";
 
+const MODELS_ROUTE_PATH = "/api.json";
+
+const resolveBaseOriginWithPath = (requestUrl: URL): string => {
+  const basePath = requestUrl.pathname.endsWith(MODELS_ROUTE_PATH)
+    ? requestUrl.pathname.slice(0, -MODELS_ROUTE_PATH.length)
+    : "";
+  return `${requestUrl.origin}${basePath}`;
+};
+
 const resolveProxyRegistry = async (context: Context) => {
   const upstreamRegistry = await getModelsDevRegistry();
+  const requestUrl = new URL(context.req.url);
   return buildProxyModelsRegistry({
     upstreamRegistry,
-    baseOrigin: new URL(context.req.url).origin,
+    baseOrigin: resolveBaseOriginWithPath(requestUrl),
   });
 };
 
-export const modelsRoutes = new Hono().get("/api.json", async (context) => {
-  const registry = await resolveProxyRegistry(context);
-  return context.json(registry);
-});
+export const modelsRoutes = new Hono().get(
+  MODELS_ROUTE_PATH,
+  async (context) => {
+    const registry = await resolveProxyRegistry(context);
+    return context.json(registry);
+  }
+);
