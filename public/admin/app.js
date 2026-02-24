@@ -625,21 +625,31 @@ async function rotateKey(id, button) {
   const previousText = button.textContent;
   button.disabled = true;
   button.innerHTML = '<span class="spinner"></span>';
+  const revokeOld = $("#rotate-revoke-old")?.checked ?? false;
+  let keyCreated = false;
   try {
     const data = await api("/admin/keys", {
       method: "POST",
       body: JSON.stringify(payload),
     });
     showKeyReveal(data.key.key);
-    toast("API key rotated");
-    const revokeOld = $("#rotate-revoke-old")?.checked ?? false;
+    keyCreated = true;
     if (revokeOld) {
       await api(`/admin/keys/${id}/revoke`, { method: "POST" });
-      toast("Previous key revoked");
     }
+    toast(
+      revokeOld ? "API key rotated and previous key revoked" : "API key rotated"
+    );
     await loadKeys();
   } catch (e) {
-    toast(e.message, "error");
+    if (keyCreated && revokeOld) {
+      toast(
+        `New key created, but old key revoke failed: ${e.message}`,
+        "error"
+      );
+    } else {
+      toast(e.message, "error");
+    }
   } finally {
     button.disabled = false;
     button.textContent = previousText || "rotate";
