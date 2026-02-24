@@ -9,6 +9,7 @@ import {
 } from "../../db/repositories/api-key-usage";
 import {
   createApiKey,
+  findApiKeyById,
   listApiKeys,
   revokeApiKey,
   type CreateApiKeyInput,
@@ -17,8 +18,16 @@ import { providers } from "../../db/schema";
 
 const createApiKeyBodySchema = z.strictObject({
   label: z.string().trim().min(1).max(120).optional(),
-  providerScopes: z.array(z.enum(providers)).max(providers.length).optional(),
-  modelScopes: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+  providerScopes: z
+    .array(z.enum(providers))
+    .min(1)
+    .max(providers.length)
+    .optional(),
+  modelScopes: z
+    .array(z.string().trim().min(1).max(200))
+    .min(1)
+    .max(200)
+    .optional(),
   expiresAt: z.int().positive().nullable().optional(),
 });
 
@@ -106,6 +115,17 @@ export const adminKeysRoutes = new Hono()
       const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
       const now = Date.now();
       const since = now - windowMs;
+
+      const key = await findApiKeyById(db, id);
+      if (!key) {
+        return context.json(
+          {
+            error: "not_found",
+            message: "API key was not found",
+          },
+          404
+        );
+      }
 
       const detail = await getApiKeyUsageDetail(db, id, since);
 

@@ -70,6 +70,21 @@ export const listApiKeys = async (
   return rows.map(toRecord);
 };
 
+export const findApiKeyById = async (
+  database: Database,
+  id: string
+): Promise<ApiKeyRecord | null> => {
+  const row = await database.query.apiKeys.findFirst({
+    where: eq(apiKeys.id, id),
+  });
+
+  if (!row) {
+    return null;
+  }
+
+  return toRecord(row);
+};
+
 const generateApiKeyValue = (): string =>
   `kleis_${crypto.randomUUID().replaceAll("-", "")}`;
 
