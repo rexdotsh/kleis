@@ -1,7 +1,19 @@
 const DEFAULT_KEY_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const ADMIN_TOKEN_STORAGE_KEY = "kleis_admin_token";
+
+const readPersistedToken = () =>
+  localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || "";
+
+function persistToken(token) {
+  localStorage.setItem(ADMIN_TOKEN_STORAGE_KEY, token);
+}
+
+function clearPersistedToken() {
+  localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
+}
 
 const state = {
-  token: sessionStorage.getItem("kleis_admin_token") || "",
+  token: readPersistedToken(),
   accounts: [],
   accountUsageById: new Map(),
   accountUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
@@ -1137,10 +1149,11 @@ async function handleLogin() {
   $("#login-error").textContent = "";
   try {
     await verifyToken(token);
-    sessionStorage.setItem("kleis_admin_token", token);
+    persistToken(token);
     enterApp();
   } catch {
     $("#login-error").textContent = "Invalid admin token";
+    clearPersistedToken();
     state.token = "";
   } finally {
     btn.disabled = false;
@@ -1156,7 +1169,7 @@ function enterApp() {
 }
 
 function logout() {
-  sessionStorage.removeItem("kleis_admin_token");
+  clearPersistedToken();
   state.token = "";
   state.accounts = [];
   state.accountUsageById = new Map();
@@ -1302,14 +1315,14 @@ document.addEventListener("keydown", (e) => {
 });
 
 (async () => {
-  const saved = sessionStorage.getItem("kleis_admin_token");
+  const saved = readPersistedToken();
   if (!saved) return;
   $("#login-gate").classList.add("hidden");
   try {
     await verifyToken(saved);
     enterApp();
   } catch {
-    sessionStorage.removeItem("kleis_admin_token");
+    clearPersistedToken();
     $("#login-gate").classList.remove("hidden");
   }
 })();
