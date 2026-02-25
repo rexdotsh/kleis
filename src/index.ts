@@ -32,12 +32,7 @@ app.onError((error, context) => {
   );
 });
 
-app.get("/", (context) =>
-  context.json({
-    service: "kleis",
-    status: "ok",
-  })
-);
+app.get("/", (context) => context.redirect("/admin"));
 
 app.route("/", healthRoutes);
 app.route("/", modelsRoutes);
