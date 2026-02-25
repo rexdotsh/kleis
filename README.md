@@ -2,7 +2,7 @@
   <img src="./assets/hero.png" alt="Kleis" width="100%" />
 </p>
 
-OAuth account proxy for [OpenCode](https://github.com/sst/opencode). One base URL for Copilot, Codex, and Claude.
+OAuth account proxy for [OpenCode](https://github.com/anomalyco/opencode). One base URL for Copilot, Codex, and Claude.
 
 > [!NOTE]
 > "Kleis" is named from the idea of a key that can unlock many paths with one handle.
@@ -85,3 +85,9 @@ Build pre-bundles everything into `dist/index.js` because Vercel's `@vercel/node
 ## Stack
 
 Hono &middot; Turso (libSQL) &middot; Drizzle ORM &middot; Zod &middot; Bun
+
+---
+
+## Acknowledgments
+
+Provider proxy behavior is derived from [OpenCode](https://github.com/anomalyco/opencode) and [pi-mono](https://github.com/badlogic/pi-mono). Source references are pinned to specific commits throughout the codebase.
