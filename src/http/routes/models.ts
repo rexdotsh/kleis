@@ -1,5 +1,7 @@
 import { Hono, type Context } from "hono";
 
+import { db } from "../../db";
+import { listConfiguredProviders } from "../../db/repositories/provider-accounts";
 import {
   buildProxyModelsRegistry,
   getModelsDevRegistry,
@@ -16,10 +18,12 @@ const resolveBaseOriginWithPath = (requestUrl: URL): string => {
 
 const resolveProxyRegistry = async (context: Context) => {
   const upstreamRegistry = await getModelsDevRegistry();
+  const configuredProviders = await listConfiguredProviders(db);
   const requestUrl = new URL(context.req.url);
   return buildProxyModelsRegistry({
     upstreamRegistry,
     baseOrigin: resolveBaseOriginWithPath(requestUrl),
+    configuredProviders,
   });
 };
 

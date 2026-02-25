@@ -1,4 +1,5 @@
 import { proxyProviderMappings } from "../../providers/proxy-provider";
+import type { Provider } from "../../db/schema";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 
 type ModelsDevRegistry = JsonObject;
@@ -6,6 +7,7 @@ type ModelsDevRegistry = JsonObject;
 type BuildProxyModelsRegistryInput = {
   upstreamRegistry: ModelsDevRegistry;
   baseOrigin: string;
+  configuredProviders: readonly Provider[];
 };
 
 const KLEIS_PROVIDER_ID = "kleis";
@@ -132,13 +134,20 @@ const patchCanonicalProviders = (input: {
   registry: ModelsDevRegistry;
   upstreamRegistry: ModelsDevRegistry;
   baseOrigin: string;
+  configuredProviders: ReadonlySet<Provider>;
 }): void => {
   for (const mapping of proxyProviderMappings) {
+    if (!input.configuredProviders.has(mapping.internalProvider)) {
+      delete input.registry[mapping.canonicalProvider];
+      continue;
+    }
+
     const sourceProvider = getNestedObject(
       input.upstreamRegistry,
       mapping.canonicalProvider
     );
     if (!sourceProvider) {
+      delete input.registry[mapping.canonicalProvider];
       continue;
     }
 
@@ -161,11 +170,16 @@ const patchCanonicalProviders = (input: {
 
 const mergeKleisProviderModels = (
   registry: ModelsDevRegistry,
-  baseOrigin: string
+  baseOrigin: string,
+  configuredProviders: ReadonlySet<Provider>
 ): JsonObject => {
   const models: JsonObject = {};
 
   for (const mapping of proxyProviderMappings) {
+    if (!configuredProviders.has(mapping.internalProvider)) {
+      continue;
+    }
+
     const sourceProvider = getNestedObject(registry, mapping.canonicalProvider);
     if (!sourceProvider) {
       continue;
@@ -189,12 +203,17 @@ const mergeKleisProviderModels = (
 const toKleisProviderEntry = (input: {
   registry: ModelsDevRegistry;
   baseOrigin: string;
+  configuredProviders: ReadonlySet<Provider>;
 }): JsonObject => {
   return {
     id: KLEIS_PROVIDER_ID,
     name: KLEIS_PROVIDER_NAME,
     env: [PROXY_API_KEY_ENV],
-    models: mergeKleisProviderModels(input.registry, input.baseOrigin),
+    models: mergeKleisProviderModels(
+      input.registry,
+      input.baseOrigin,
+      input.configuredProviders
+    ),
   };
 };
 
@@ -215,16 +234,19 @@ export const buildProxyModelsRegistry = (
 ): ModelsDevRegistry => {
   const registry: ModelsDevRegistry = cloneJsonValue(input.upstreamRegistry);
   const baseOrigin = normalizeOrigin(input.baseOrigin);
+  const configuredProviders = new Set(input.configuredProviders);
 
   patchCanonicalProviders({
     registry,
     upstreamRegistry: input.upstreamRegistry,
     baseOrigin,
+    configuredProviders,
   });
 
   registry[KLEIS_PROVIDER_ID] = toKleisProviderEntry({
     registry,
     baseOrigin,
+    configuredProviders,
   });
 
   return registry;
