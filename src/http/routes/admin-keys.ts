@@ -6,7 +6,7 @@ import { db } from "../../db";
 import {
   getApiKeyUsageDetail,
   listApiKeyUsageSummaries,
-} from "../../db/repositories/api-key-usage";
+} from "../../db/repositories/request-usage";
 import {
   createApiKey,
   findApiKeyById,

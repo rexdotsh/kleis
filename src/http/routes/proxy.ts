@@ -1,7 +1,10 @@
 import { Hono, type Context } from "hono";
 
 import { db } from "../../db";
-import { recordApiKeyUsage } from "../../db/repositories/api-key-usage";
+import {
+  MISSING_PROVIDER_ACCOUNT_ID,
+  recordRequestUsage,
+} from "../../db/repositories/request-usage";
 import { getPrimaryProviderAccount } from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../providers/proxies/codex-proxy";
@@ -50,10 +53,13 @@ const proxyRequest = async (
 ): Promise<Response> => {
   const startedAt = Date.now();
   const apiKeyId = context.get("proxyApiKeyId");
+  let providerAccountId = MISSING_PROVIDER_ACCOUNT_ID;
+
   const recordUsage = (statusCode: number): void => {
     runInBackground(
-      recordApiKeyUsage(db, {
+      recordRequestUsage(db, {
         apiKeyId,
+        providerAccountId,
         provider: route.provider,
         endpoint: route.endpoint,
         statusCode,
@@ -96,6 +102,8 @@ const proxyRequest = async (
       400
     );
   }
+
+  providerAccountId = account.id;
 
   const headers = new Headers(context.req.raw.headers);
   removeProxyAuthHeaders(headers);

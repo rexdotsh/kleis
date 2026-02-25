@@ -15,7 +15,7 @@ Each provider has its own proxy adapter because none of them behave the same way
 
 `GET /api.json` serves a models.dev-compatible registry that merges upstream model data with Kleis routing info, so OpenCode auto-discovers everything without manual model config.
 
-There's also per-key usage analytics (minute-bucketed, non-blocking on the proxy path), and a small admin panel for managing accounts, keys, and token refreshes.
+There's also minute-bucketed request analytics across both API keys and provider accounts (non-blocking on the proxy path), and a small admin panel for managing accounts, keys, and token refreshes.
 
 ### Proxy routes
 

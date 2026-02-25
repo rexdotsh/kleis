@@ -3,6 +3,8 @@ const DEFAULT_KEY_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const state = {
   token: sessionStorage.getItem("kleis_admin_token") || "",
   accounts: [],
+  accountUsageById: new Map(),
+  accountUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   keys: [],
   keyUsageById: new Map(),
   keyUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
@@ -129,6 +131,10 @@ function keyById(keyId) {
   return state.keys.find((key) => key.id === keyId) || null;
 }
 
+function accountUsageForId(accountId) {
+  return state.accountUsageById.get(accountId) || null;
+}
+
 function usageForKey(keyId) {
   return state.keyUsageById.get(keyId) || null;
 }
@@ -145,11 +151,65 @@ function usageSuccessRate(usage) {
   return Math.round((usage.successCount / usage.requestCount) * 100);
 }
 
-function usageMapFromList(items) {
+function usageMetaParts(
+  usage,
+  { windowLabel = null, includeMaxLatency = false } = {}
+) {
+  const parts = [];
+  const successRate = usageSuccessRate(usage);
+
+  if (usage?.requestCount) {
+    parts.push(
+      `<span class="card-meta-item">${usage.requestCount} reqs${windowLabel ? ` (${windowLabel})` : ""}</span>`
+    );
+  }
+  if (successRate !== null) {
+    parts.push(`<span class="card-meta-item">${successRate}% success</span>`);
+  }
+  if (usage?.clientErrorCount) {
+    parts.push(
+      `<span class="card-meta-item" style="color:var(--amber)">${usage.clientErrorCount} 4xx</span>`
+    );
+  }
+  if (usage?.serverErrorCount) {
+    parts.push(
+      `<span class="card-meta-item" style="color:var(--red)">${usage.serverErrorCount} 5xx</span>`
+    );
+  }
+  if (usage?.authErrorCount) {
+    parts.push(
+      `<span class="card-meta-item" style="color:var(--amber)">${usage.authErrorCount} auth</span>`
+    );
+  }
+  if (usage?.rateLimitCount) {
+    parts.push(
+      `<span class="card-meta-item" style="color:var(--amber)">${usage.rateLimitCount} 429</span>`
+    );
+  }
+  if (usage?.avgLatencyMs) {
+    parts.push(
+      `<span class="card-meta-item">${usage.avgLatencyMs}ms avg</span>`
+    );
+  }
+  if (includeMaxLatency && usage?.maxLatencyMs) {
+    parts.push(
+      `<span class="card-meta-item">${usage.maxLatencyMs}ms max</span>`
+    );
+  }
+  if (usage?.lastRequestAt) {
+    parts.push(
+      `<span class="card-meta-item">last req ${escapeHtml(relativeTime(usage.lastRequestAt))}</span>`
+    );
+  }
+
+  return parts;
+}
+
+function usageMapFromList(items, idField) {
   const map = new Map();
   if (!Array.isArray(items)) return map;
   for (const u of items) {
-    if (u?.apiKeyId) map.set(u.apiKeyId, u);
+    if (u?.[idField]) map.set(u[idField], u);
   }
   return map;
 }
@@ -201,6 +261,8 @@ function metadataHtml(metadata) {
 function accountCardHtml(account) {
   const s = tokenStatus(account.expiresAt);
   const name = account.label || account.accountId || account.id;
+  const usage = accountUsageForId(account.id);
+  const windowLabel = usageWindowLabel(state.accountUsageWindowMs);
   const shortId =
     account.id.length > 12
       ? `${account.id.slice(0, 8)}...${account.id.slice(-4)}`
@@ -225,9 +287,11 @@ function accountCardHtml(account) {
     );
   }
 
+  const usageParts = usageMetaParts(usage, { windowLabel });
+
   const meta = metadataHtml(account.metadata);
 
-  return `<div class="card" data-account-id="${account.id}">
+  return `<div class="card" data-account-id="${account.id}" style="cursor:pointer">
     <div class="card-top">
       <div class="card-identity">
         <span class="badge badge-${account.provider}">${account.provider}</span>
@@ -249,6 +313,7 @@ function accountCardHtml(account) {
       ${account.lastRefreshStatus && account.lastRefreshStatus !== "success" ? `<span class="dot-sep"></span><span style="color:var(--red)">${escapeHtml(account.lastRefreshStatus)}</span>` : ""}
     </div>
     <div class="card-meta">${identityParts.join("")}</div>
+    ${usageParts.length ? `<div class="card-meta" style="margin-top:6px">${usageParts.join("")}</div>` : ""}
     ${meta ? `<div class="card-meta" style="margin-top:6px">${meta}</div>` : ""}
   </div>`;
 }
@@ -275,7 +340,6 @@ function keyCardHtml(key) {
   const isRevealed = state.revealedKeyIds.has(key.id);
   const keyDisplay = isRevealed ? key.key : maskKey(key.key);
   const usage = usageForKey(key.id);
-  const successRate = usageSuccessRate(usage);
   const windowLabel = usageWindowLabel(state.keyUsageWindowMs);
 
   const scopeBadges = key.providerScopes
@@ -286,41 +350,12 @@ function keyCardHtml(key) {
 
   const metaParts = [`<span class="card-meta-item">${scopeBadges}</span>`];
 
-  if (usage?.requestCount) {
-    metaParts.push(
-      `<span class="card-meta-item">${usage.requestCount} reqs (${windowLabel})</span>`
-    );
-  }
-  if (successRate !== null) {
-    metaParts.push(
-      `<span class="card-meta-item">${successRate}% success</span>`
-    );
-  }
-  if (usage?.clientErrorCount) {
-    metaParts.push(
-      `<span class="card-meta-item" style="color:var(--amber)">${usage.clientErrorCount} 4xx</span>`
-    );
-  }
-  if (usage?.serverErrorCount) {
-    metaParts.push(
-      `<span class="card-meta-item" style="color:var(--red)">${usage.serverErrorCount} 5xx</span>`
-    );
-  }
-  if (usage?.avgLatencyMs) {
-    metaParts.push(
-      `<span class="card-meta-item">${usage.avgLatencyMs}ms avg</span>`
-    );
-  }
-  if (usage?.maxLatencyMs) {
-    metaParts.push(
-      `<span class="card-meta-item">${usage.maxLatencyMs}ms max</span>`
-    );
-  }
-  if (usage?.lastRequestAt) {
-    metaParts.push(
-      `<span class="card-meta-item">last req ${escapeHtml(relativeTime(usage.lastRequestAt))}</span>`
-    );
-  }
+  metaParts.push(
+    ...usageMetaParts(usage, {
+      windowLabel,
+      includeMaxLatency: true,
+    })
+  );
   if (!revoked && key.expiresAt) {
     metaParts.push(
       `<span class="card-meta-item"><span class="badge badge-${status}">${escapeHtml(expiryCountdown(key.expiresAt))}</span></span>`
@@ -377,94 +412,183 @@ function renderKeys() {
   $("#keys-list").innerHTML = keys.map(keyCardHtml).join("");
 }
 
-function renderKeyDetailBody(data) {
-  const t = data.totals;
-  const successRate = t.requestCount
-    ? Math.round((t.successCount / t.requestCount) * 100)
+const DETAIL_EMPTY_STATE_HTML =
+  '<div class="empty-state"><div class="empty-state-text">No usage data in this window.</div></div>';
+
+const DETAIL_LOADING_HTML =
+  '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
+
+function renderDetailStats(totals) {
+  const successRate = totals.requestCount
+    ? Math.round((totals.successCount / totals.requestCount) * 100)
     : 0;
 
   let html = `<div class="detail-stats">
-    <div class="detail-stat"><div class="detail-stat-value">${t.requestCount}</div><div class="detail-stat-label">requests</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${totals.requestCount}</div><div class="detail-stat-label">requests</div></div>
     <div class="detail-stat"><div class="detail-stat-value">${successRate}%</div><div class="detail-stat-label">success</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${t.clientErrorCount}</div><div class="detail-stat-label">4xx</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${t.serverErrorCount}</div><div class="detail-stat-label">5xx</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${t.avgLatencyMs}ms</div><div class="detail-stat-label">avg latency</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${t.maxLatencyMs}ms</div><div class="detail-stat-label">max latency</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${totals.clientErrorCount}</div><div class="detail-stat-label">4xx</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${totals.serverErrorCount}</div><div class="detail-stat-label">5xx</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${totals.authErrorCount || 0}</div><div class="detail-stat-label">auth</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${totals.rateLimitCount || 0}</div><div class="detail-stat-label">429</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${totals.avgLatencyMs}ms</div><div class="detail-stat-label">avg latency</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${totals.maxLatencyMs}ms</div><div class="detail-stat-label">max latency</div></div>
   </div>`;
 
-  if (t.lastRequestAt) {
-    html += `<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:16px">last request: ${escapeHtml(new Date(t.lastRequestAt).toLocaleString())}</div>`;
-  }
-
-  if (data.endpoints.length) {
-    html += '<div class="detail-section-title">by provider / endpoint</div>';
-    html +=
-      '<table class="detail-table"><thead><tr><th>provider</th><th>endpoint</th><th>reqs</th><th>ok</th><th>4xx</th><th>5xx</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
-    for (const ep of data.endpoints) {
-      html += `<tr>
-        <td><span class="badge badge-${ep.provider}">${ep.provider}</span></td>
-        <td>${escapeHtml(ep.endpoint)}</td>
-        <td>${ep.requestCount}</td>
-        <td>${ep.successCount}</td>
-        <td>${ep.clientErrorCount || "-"}</td>
-        <td>${ep.serverErrorCount || "-"}</td>
-        <td>${ep.avgLatencyMs}</td>
-        <td>${ep.maxLatencyMs}</td>
-      </tr>`;
-    }
-    html += "</tbody></table>";
-  }
-
-  if (data.buckets.length > 1) {
-    const maxReqs = Math.max(...data.buckets.map((b) => b.requestCount));
-    html +=
-      '<div class="detail-section-title">request timeline (1m buckets)</div>';
-    for (const b of data.buckets) {
-      const pct = maxReqs ? (b.requestCount / maxReqs) * 100 : 0;
-      const errPct = b.requestCount
-        ? ((b.clientErrorCount + b.serverErrorCount) / b.requestCount) * 100
-        : 0;
-      const okPct = 100 - errPct;
-      const time = new Date(b.bucketStart).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-      html += `<div class="detail-bar-row">
-        <span class="detail-bar-label">${time}</span>
-        <div class="detail-bar-track">
-          <div class="detail-bar-fill" style="width:${pct * (okPct / 100)}%;background:var(--green)"></div>
-          <div class="detail-bar-fill" style="width:${pct * (errPct / 100)}%;background:var(--red)"></div>
-        </div>
-        <span class="detail-bar-count">${b.requestCount}</span>
-      </div>`;
-    }
-  }
-
-  if (!t.requestCount) {
-    html =
-      '<div class="empty-state"><div class="empty-state-text">No usage data in this window.</div></div>';
+  if (totals.lastRequestAt) {
+    html += `<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:16px">last request: ${escapeHtml(new Date(totals.lastRequestAt).toLocaleString())}</div>`;
   }
 
   return html;
 }
 
-async function openKeyDetail(keyId) {
-  const key = keyById(keyId);
-  const label = key?.label || maskKey(key?.key || keyId);
-  $("#key-detail-title").textContent = label;
-  $("#key-detail-body").innerHTML =
-    '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
+function renderEndpointDetailTable(endpoints) {
+  if (!endpoints.length) {
+    return "";
+  }
+
+  let html = '<div class="detail-section-title">by provider / endpoint</div>';
+  html +=
+    '<table class="detail-table"><thead><tr><th>provider</th><th>endpoint</th><th>reqs</th><th>ok</th><th>4xx</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
+  for (const ep of endpoints) {
+    html += `<tr>
+      <td><span class="badge badge-${ep.provider}">${ep.provider}</span></td>
+      <td>${escapeHtml(ep.endpoint)}</td>
+      <td>${ep.requestCount}</td>
+      <td>${ep.successCount}</td>
+      <td>${ep.clientErrorCount || "-"}</td>
+      <td>${ep.serverErrorCount || "-"}</td>
+      <td>${ep.authErrorCount || "-"}</td>
+      <td>${ep.rateLimitCount || "-"}</td>
+      <td>${ep.avgLatencyMs}</td>
+      <td>${ep.maxLatencyMs}</td>
+    </tr>`;
+  }
+  html += "</tbody></table>";
+
+  return html;
+}
+
+function renderApiKeyDetailTable(apiKeys) {
+  if (!apiKeys.length) {
+    return "";
+  }
+
+  let html = '<div class="detail-section-title">by API key</div>';
+  html +=
+    '<table class="detail-table"><thead><tr><th>api key</th><th>reqs</th><th>ok</th><th>4xx</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
+  for (const key of apiKeys) {
+    html += `<tr>
+      <td><code>${escapeHtml(key.apiKeyId)}</code></td>
+      <td>${key.requestCount}</td>
+      <td>${key.successCount}</td>
+      <td>${key.clientErrorCount || "-"}</td>
+      <td>${key.serverErrorCount || "-"}</td>
+      <td>${key.authErrorCount || "-"}</td>
+      <td>${key.rateLimitCount || "-"}</td>
+      <td>${key.avgLatencyMs}</td>
+      <td>${key.maxLatencyMs}</td>
+    </tr>`;
+  }
+  html += "</tbody></table>";
+
+  return html;
+}
+
+function renderBucketTimeline(buckets) {
+  if (buckets.length <= 1) {
+    return "";
+  }
+
+  const maxReqs = Math.max(...buckets.map((b) => b.requestCount));
+  let html =
+    '<div class="detail-section-title">request timeline (1m buckets)</div>';
+  for (const b of buckets) {
+    const errPct = b.requestCount
+      ? ((b.clientErrorCount + b.serverErrorCount) / b.requestCount) * 100
+      : 0;
+    const okPct = 100 - errPct;
+    const pct = maxReqs ? (b.requestCount / maxReqs) * 100 : 0;
+    const time = new Date(b.bucketStart).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    html += `<div class="detail-bar-row">
+      <span class="detail-bar-label">${time}</span>
+      <div class="detail-bar-track">
+        <div class="detail-bar-fill" style="width:${pct * (okPct / 100)}%;background:var(--green)"></div>
+        <div class="detail-bar-fill" style="width:${pct * (errPct / 100)}%;background:var(--red)"></div>
+      </div>
+      <span class="detail-bar-count">${b.requestCount}</span>
+    </div>`;
+  }
+
+  return html;
+}
+
+function renderKeyDetailBody(data) {
+  const { totals } = data;
+  if (!totals.requestCount) {
+    return DETAIL_EMPTY_STATE_HTML;
+  }
+
+  return [
+    renderDetailStats(totals),
+    renderEndpointDetailTable(data.endpoints),
+    renderBucketTimeline(data.buckets),
+  ].join("");
+}
+
+function renderAccountDetailBody(data) {
+  const { totals } = data;
+  if (!totals.requestCount) {
+    return DETAIL_EMPTY_STATE_HTML;
+  }
+
+  return [
+    renderDetailStats(totals),
+    renderApiKeyDetailTable(data.apiKeys),
+    renderEndpointDetailTable(data.endpoints),
+    renderBucketTimeline(data.buckets),
+  ].join("");
+}
+
+async function openUsageDetailModal({ title, path, renderBody }) {
+  $("#key-detail-title").textContent = title;
+  $("#key-detail-body").innerHTML = DETAIL_LOADING_HTML;
   $("#modal-key-detail").classList.add("open");
 
   try {
-    const data = await api(
-      `/admin/keys/${keyId}/usage?windowMs=${state.keyUsageWindowMs}`
-    );
-    $("#key-detail-body").innerHTML = renderKeyDetailBody(data);
+    const data = await api(path);
+    $("#key-detail-body").innerHTML = renderBody(data);
   } catch (e) {
     $("#key-detail-body").innerHTML =
       `<div class="empty-state"><div class="empty-state-text" style="color:var(--red)">${escapeHtml(e.message)}</div></div>`;
   }
+}
+
+async function openKeyDetail(keyId) {
+  const key = keyById(keyId);
+  const label = key?.label || maskKey(key?.key || keyId);
+  await openUsageDetailModal({
+    title: label,
+    path: `/admin/keys/${keyId}/usage?windowMs=${state.keyUsageWindowMs}`,
+    renderBody: renderKeyDetailBody,
+  });
+}
+
+async function openAccountDetail(accountId) {
+  const account = state.accounts.find((a) => a.id === accountId);
+  const label = account?.label || account?.accountId || accountId;
+  const title = account
+    ? `${account.provider} account: ${label}`
+    : `account: ${label}`;
+
+  await openUsageDetailModal({
+    title,
+    path: `/admin/accounts/${accountId}/usage?windowMs=${state.accountUsageWindowMs}`,
+    renderBody: renderAccountDetailBody,
+  });
 }
 
 function setupSnippetForKey(key) {
@@ -556,10 +680,32 @@ function renderOAuthFlow(data, provider) {
 async function loadAccounts() {
   showLoading("accounts-list");
   try {
-    state.accounts = (await api("/admin/accounts")).accounts || [];
+    const [accountsResult, usageResult] = await Promise.allSettled([
+      api("/admin/accounts"),
+      api(`/admin/accounts/usage?windowMs=${state.accountUsageWindowMs}`),
+    ]);
+
+    if (accountsResult.status !== "fulfilled") throw accountsResult.reason;
+
+    state.accounts = accountsResult.value.accounts || [];
+
+    if (usageResult.status === "fulfilled") {
+      if (typeof usageResult.value.windowMs === "number") {
+        state.accountUsageWindowMs = usageResult.value.windowMs;
+      }
+      state.accountUsageById = usageMapFromList(
+        usageResult.value.usage,
+        "providerAccountId"
+      );
+    } else {
+      state.accountUsageById = new Map();
+      toast("Failed to load account usage", "error");
+    }
+
     renderAccounts();
   } catch (e) {
     state.accounts = [];
+    state.accountUsageById = new Map();
     $("#accounts-list").innerHTML =
       `<div class="empty-state"><div class="empty-state-text" style="color:var(--red)">${escapeHtml(e.message)}</div></div>`;
     toast(e.message, "error");
@@ -582,7 +728,10 @@ async function loadKeys() {
       if (typeof usageResult.value.windowMs === "number") {
         state.keyUsageWindowMs = usageResult.value.windowMs;
       }
-      state.keyUsageById = usageMapFromList(usageResult.value.usage);
+      state.keyUsageById = usageMapFromList(
+        usageResult.value.usage,
+        "apiKeyId"
+      );
     } else {
       state.keyUsageById = new Map();
       toast("Failed to load API key usage", "error");
@@ -964,8 +1113,11 @@ function logout() {
   sessionStorage.removeItem("kleis_admin_token");
   state.token = "";
   state.accounts = [];
+  state.accountUsageById = new Map();
+  state.accountUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.keys = [];
   state.keyUsageById = new Map();
+  state.keyUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.activeOAuth = null;
   state.revealedKeyIds.clear();
   state.setupKeyId = null;
@@ -979,19 +1131,24 @@ function logout() {
 
 $("#accounts-list").addEventListener("click", (e) => {
   const button = e.target.closest("button[data-action]");
-  if (!button) return;
+  if (button) {
+    const action = button.dataset.action;
+    const accountId = button.dataset.accountId;
 
-  const action = button.dataset.action;
-  const accountId = button.dataset.accountId;
-
-  if (action === "go-connect") {
-    switchToTab("oauth");
+    if (action === "go-connect") {
+      switchToTab("oauth");
+      return;
+    }
+    if (!accountId) return;
+    if (action === "set-primary") setPrimary(accountId);
+    if (action === "refresh-account") refreshAccount(accountId);
+    if (action === "delete-account") deleteAccount(accountId);
     return;
   }
-  if (!accountId) return;
-  if (action === "set-primary") setPrimary(accountId);
-  if (action === "refresh-account") refreshAccount(accountId);
-  if (action === "delete-account") deleteAccount(accountId);
+
+  const card = e.target.closest(".card[data-account-id]");
+  const accountId = card?.dataset.accountId;
+  if (accountId) openAccountDetail(accountId);
 });
 
 $("#keys-list").addEventListener("click", (e) => {

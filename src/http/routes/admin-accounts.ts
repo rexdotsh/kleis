@@ -10,7 +10,12 @@ import {
   startProviderOAuth,
 } from "../../domain/providers/provider-service";
 import {
+  getProviderAccountUsageDetail,
+  listProviderAccountUsageSummaries,
+} from "../../db/repositories/account-usage";
+import {
   deleteProviderAccount,
+  findProviderAccountById,
   listProviderAccounts,
   setPrimaryProviderAccount,
 } from "../../db/repositories/provider-accounts";
@@ -47,6 +52,17 @@ const importAccountBodySchema = z.strictObject({
   metadata: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
+const listProviderAccountUsageQuerySchema = z.strictObject({
+  windowMs: z.coerce
+    .number()
+    .int()
+    .min(60_000)
+    .max(30 * 24 * 60 * 60 * 1000)
+    .optional(),
+});
+
+const DEFAULT_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 const toMillisecondsTimestamp = (value: number): number =>
   value < 10_000_000_000 ? value * 1000 : value;
 
@@ -71,6 +87,57 @@ export const adminAccountsRoutes = new Hono()
     const accounts = await listProviderAccounts(db);
     return context.json({ accounts: accounts.map(toAdminAccountView) });
   })
+  .get(
+    "/usage",
+    zValidator("query", listProviderAccountUsageQuerySchema),
+    async (context) => {
+      const query = context.req.valid("query");
+      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
+      const now = Date.now();
+      const since = now - windowMs;
+
+      const usage = await listProviderAccountUsageSummaries(db, since);
+
+      return context.json({
+        windowMs,
+        since,
+        now,
+        usage,
+      });
+    }
+  )
+  .get(
+    "/:id/usage",
+    zValidator("param", accountIdParamsSchema),
+    zValidator("query", listProviderAccountUsageQuerySchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const query = context.req.valid("query");
+      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
+      const now = Date.now();
+      const since = now - windowMs;
+
+      const account = await findProviderAccountById(db, id);
+      if (!account) {
+        return context.json(
+          {
+            error: "not_found",
+            message: "Account not found",
+          },
+          404
+        );
+      }
+
+      const detail = await getProviderAccountUsageDetail(db, id, since);
+
+      return context.json({
+        windowMs,
+        since,
+        now,
+        ...detail,
+      });
+    }
+  )
   .delete(
     "/:id",
     zValidator("param", accountIdParamsSchema),

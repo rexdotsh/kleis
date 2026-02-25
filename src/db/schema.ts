@@ -69,11 +69,12 @@ export const oauthStates = sqliteTable("oauth_states", {
   expiresAt: integer("expires_at", { mode: "number" }).notNull(),
 });
 
-export const apiKeyUsageBuckets = sqliteTable(
-  "api_key_usage_buckets",
+export const requestUsageBuckets = sqliteTable(
+  "request_usage_buckets",
   {
     bucketStart: integer("bucket_start", { mode: "number" }).notNull(),
     apiKeyId: text("api_key_id").notNull(),
+    providerAccountId: text("provider_account_id").notNull(),
     provider: text("provider", { enum: providers }).notNull(),
     endpoint: text("endpoint").notNull(),
     requestCount: integer("request_count", { mode: "number" })
@@ -86,6 +87,12 @@ export const apiKeyUsageBuckets = sqliteTable(
       .notNull()
       .default(0),
     serverErrorCount: integer("server_error_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    authErrorCount: integer("auth_error_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    rateLimitCount: integer("rate_limit_count", { mode: "number" })
       .notNull()
       .default(0),
     totalLatencyMs: integer("total_latency_ms", { mode: "number" })
@@ -101,14 +108,19 @@ export const apiKeyUsageBuckets = sqliteTable(
       columns: [
         table.bucketStart,
         table.apiKeyId,
+        table.providerAccountId,
         table.provider,
         table.endpoint,
       ],
     }),
-    index("api_key_usage_buckets_key_bucket_idx").on(
+    index("request_usage_buckets_key_bucket_idx").on(
       table.apiKeyId,
       table.bucketStart
     ),
-    index("api_key_usage_buckets_bucket_idx").on(table.bucketStart),
+    index("request_usage_buckets_account_bucket_idx").on(
+      table.providerAccountId,
+      table.bucketStart
+    ),
+    index("request_usage_buckets_bucket_idx").on(table.bucketStart),
   ]
 );
