@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   consumeOAuthState,
   createOAuthState,
+  findOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
 import { CODEX_ORIGINATOR } from "./constants";
@@ -28,11 +29,30 @@ const CODEX_ISSUER = "https://auth.openai.com";
 const CODEX_AUTHORIZE_URL = `${CODEX_ISSUER}/oauth/authorize`;
 const CODEX_TOKEN_URL = `${CODEX_ISSUER}/oauth/token`;
 const CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback";
+const CODEX_DEVICE_REDIRECT_URI = `${CODEX_ISSUER}/deviceauth/callback`;
+const CODEX_DEVICE_USER_CODE_URL = `${CODEX_ISSUER}/api/accounts/deviceauth/usercode`;
+const CODEX_DEVICE_TOKEN_URL = `${CODEX_ISSUER}/api/accounts/deviceauth/token`;
 const CODEX_OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
+const CODEX_POLLING_SAFETY_MARGIN_MS = 3000;
 
-const codexOAuthStateMetadataSchema = z.strictObject({
-  redirectUri: z.url(),
+const codexStartOptionsSchema = z.object({
+  mode: z.enum(["browser", "headless"]).optional(),
 });
+
+const codexOAuthStateMetadataSchema = z.discriminatedUnion("mode", [
+  z.strictObject({
+    mode: z.literal("browser"),
+    redirectUri: z.url(),
+  }),
+  z.strictObject({
+    mode: z.literal("headless"),
+    deviceAuthId: z.string().min(1),
+    userCode: z.string().min(1),
+    intervalMs: z.number().int().positive(),
+  }),
+]);
+
+type CodexOAuthStateMetadata = z.infer<typeof codexOAuthStateMetadataSchema>;
 
 type CodexTokenResponse = {
   access_token?: string;
@@ -50,6 +70,37 @@ type IdTokenClaims = {
   "https://api.openai.com/auth"?: {
     chatgpt_account_id?: string;
   };
+};
+
+type CodexDeviceAuthorizationResponse = {
+  device_auth_id?: string;
+  user_code?: string;
+  interval?: string | number;
+};
+
+type CodexDeviceTokenResponse = {
+  authorization_code?: string;
+  code_verifier?: string;
+};
+
+const sleep = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+
+const resolveCodexOAuthMode = (
+  options: Record<string, unknown> | undefined
+): "browser" | "headless" => {
+  if (!options) {
+    return "browser";
+  }
+
+  const parsed = codexStartOptionsSchema.safeParse(options);
+  if (!parsed.success) {
+    return "browser";
+  }
+
+  return parsed.data.mode ?? "browser";
 };
 
 const buildAuthorizeUrl = (input: {
@@ -125,10 +176,10 @@ const parseTokenResponse = async (
   return body;
 };
 
-const exchangeCodeForTokens = async (input: {
+const exchangeAuthorizationCodeForTokens = async (input: {
   code: string;
   redirectUri: string;
-  verifier: string;
+  codeVerifier: string;
 }): Promise<CodexTokenResponse> => {
   const response = await fetch(CODEX_TOKEN_URL, {
     method: "POST",
@@ -140,13 +191,90 @@ const exchangeCodeForTokens = async (input: {
       code: input.code,
       redirect_uri: input.redirectUri,
       client_id: CODEX_CLIENT_ID,
-      code_verifier: input.verifier,
+      code_verifier: input.codeVerifier,
     }).toString(),
   });
 
   await requireOkResponse(response, "Codex token exchange failed");
 
   return parseTokenResponse(response);
+};
+
+const requestDeviceAuthorization = async (): Promise<{
+  deviceAuthId: string;
+  userCode: string;
+  intervalMs: number;
+}> => {
+  const response = await fetch(CODEX_DEVICE_USER_CODE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      client_id: CODEX_CLIENT_ID,
+    }),
+  });
+
+  await requireOkResponse(response, "Codex device authorization start failed");
+
+  const body = (await response.json()) as CodexDeviceAuthorizationResponse;
+  if (!body.device_auth_id || !body.user_code) {
+    throw new Error("Codex device authorization response is malformed");
+  }
+
+  const rawInterval =
+    typeof body.interval === "number"
+      ? body.interval
+      : Number.parseInt(body.interval ?? "", 10);
+  const intervalSeconds =
+    Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 5;
+
+  return {
+    deviceAuthId: body.device_auth_id,
+    userCode: body.user_code,
+    intervalMs: intervalSeconds * 1000,
+  };
+};
+
+const pollDeviceAuthorizationCode = async (input: {
+  deviceAuthId: string;
+  userCode: string;
+  intervalMs: number;
+  expiresAt: number;
+}): Promise<{ authorizationCode: string; codeVerifier: string }> => {
+  while (Date.now() < input.expiresAt) {
+    const response = await fetch(CODEX_DEVICE_TOKEN_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        device_auth_id: input.deviceAuthId,
+        user_code: input.userCode,
+      }),
+    });
+
+    if (response.ok) {
+      const body = (await response.json()) as CodexDeviceTokenResponse;
+      if (!body.authorization_code || !body.code_verifier) {
+        throw new Error("Codex device authorization response is malformed");
+      }
+
+      return {
+        authorizationCode: body.authorization_code,
+        codeVerifier: body.code_verifier,
+      };
+    }
+
+    if (response.status === 403 || response.status === 404) {
+      await sleep(input.intervalMs + CODEX_POLLING_SAFETY_MARGIN_MS);
+      continue;
+    }
+
+    await requireOkResponse(response, "Codex device authorization poll failed");
+  }
+
+  throw new Error("Codex device authorization timed out");
 };
 
 const refreshCodexTokens = async (
@@ -201,6 +329,18 @@ const buildCodexMetadata = (input: {
   };
 };
 
+const buildFreshOAuthTokenResult = (
+  tokens: CodexTokenResponse,
+  now: number
+): ProviderTokenResult =>
+  buildTokenResult({
+    tokens,
+    now,
+    fallbackRefreshToken: null,
+    fallbackAccountId: null,
+    existingMetadata: null,
+  });
+
 const buildTokenResult = (input: {
   tokens: CodexTokenResponse;
   now: number;
@@ -241,15 +381,40 @@ export const codexAdapter: ProviderAdapter = {
   async startOAuth(
     input: ProviderOAuthStartInput
   ): Promise<ProviderOAuthStartResult> {
-    const redirectUri = CODEX_REDIRECT_URI;
-
-    const pkce = await generatePkce();
+    const mode = resolveCodexOAuthMode(input.options);
     const state = generateState();
+
+    if (mode === "headless") {
+      const deviceAuth = await requestDeviceAuthorization();
+      await createOAuthState(input.database, {
+        state,
+        provider: "codex",
+        pkceVerifier: null,
+        metadataJson: JSON.stringify({
+          mode,
+          deviceAuthId: deviceAuth.deviceAuthId,
+          userCode: deviceAuth.userCode,
+          intervalMs: deviceAuth.intervalMs,
+        }),
+        expiresAt: input.now + CODEX_OAUTH_STATE_TTL_MS,
+      });
+
+      return {
+        authorizationUrl: `${CODEX_ISSUER}/codex/device`,
+        state,
+        method: "auto",
+        instructions: `Enter code: ${deviceAuth.userCode}`,
+      };
+    }
+
+    const redirectUri = CODEX_REDIRECT_URI;
+    const pkce = await generatePkce();
     await createOAuthState(input.database, {
       state,
       provider: "codex",
       pkceVerifier: pkce.verifier,
       metadataJson: JSON.stringify({
+        mode,
         redirectUri,
       }),
       expiresAt: input.now + CODEX_OAUTH_STATE_TTL_MS,
@@ -270,51 +435,86 @@ export const codexAdapter: ProviderAdapter = {
   async completeOAuth(
     input: ProviderOAuthCompleteInput
   ): Promise<ProviderTokenResult> {
-    if (!input.code) {
-      throw new Error("Codex OAuth completion requires an authorization code");
-    }
-
-    const stateRecord = await consumeOAuthState(
+    const pendingState = await findOAuthState(
       input.database,
       input.state,
       "codex",
       input.now
     );
-    if (!stateRecord) {
+    if (!pendingState) {
       throw new Error("Codex OAuth state is missing or expired");
     }
 
-    const stateMetadata = parseOAuthStateMetadata(
+    const metadata: CodexOAuthStateMetadata = parseOAuthStateMetadata(
       "Codex",
-      stateRecord.metadataJson,
+      pendingState.metadataJson,
       codexOAuthStateMetadataSchema
     );
+    if (metadata.mode === "headless") {
+      const deviceAuthorization = await pollDeviceAuthorizationCode({
+        deviceAuthId: metadata.deviceAuthId,
+        userCode: metadata.userCode,
+        intervalMs: metadata.intervalMs,
+        expiresAt: pendingState.expiresAt,
+      });
 
-    if (!stateRecord.pkceVerifier) {
-      throw new Error("Codex OAuth state is missing PKCE verifier");
+      const completedAt = Date.now();
+
+      const consumedState = await consumeOAuthState(
+        input.database,
+        input.state,
+        "codex",
+        completedAt
+      );
+      if (!consumedState) {
+        throw new Error("Codex OAuth state is missing or expired");
+      }
+
+      const tokens = await exchangeAuthorizationCodeForTokens({
+        code: deviceAuthorization.authorizationCode,
+        redirectUri: CODEX_DEVICE_REDIRECT_URI,
+        codeVerifier: deviceAuthorization.codeVerifier,
+      });
+
+      return buildFreshOAuthTokenResult(tokens, completedAt);
+    }
+
+    const browserCode = input.code;
+    if (!browserCode) {
+      throw new Error("Codex OAuth completion requires an authorization code");
     }
 
     const codeInput = parseAuthorizationCodeInput(
-      input.code,
+      browserCode,
       "Codex OAuth completion requires an authorization code"
     );
     if (codeInput.state && codeInput.state !== input.state) {
       throw new Error("Codex OAuth callback state mismatch");
     }
 
-    const tokens = await exchangeCodeForTokens({
+    const completedAt = Date.now();
+
+    const stateRecord = await consumeOAuthState(
+      input.database,
+      input.state,
+      "codex",
+      completedAt
+    );
+    if (!stateRecord) {
+      throw new Error("Codex OAuth state is missing or expired");
+    }
+
+    if (!stateRecord.pkceVerifier) {
+      throw new Error("Codex OAuth state is missing PKCE verifier");
+    }
+
+    const tokens = await exchangeAuthorizationCodeForTokens({
       code: codeInput.code,
-      redirectUri: stateMetadata.redirectUri,
-      verifier: stateRecord.pkceVerifier,
+      redirectUri: metadata.redirectUri,
+      codeVerifier: stateRecord.pkceVerifier,
     });
 
-    return buildTokenResult({
-      tokens,
-      now: input.now,
-      fallbackRefreshToken: null,
-      fallbackAccountId: null,
-      existingMetadata: null,
-    });
+    return buildFreshOAuthTokenResult(tokens, completedAt);
   },
   async refreshAccount(
     account: ProviderAccountRecord,

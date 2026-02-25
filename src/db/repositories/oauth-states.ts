@@ -40,7 +40,7 @@ export const createOAuthState = async (
   });
 };
 
-export const consumeOAuthState = async (
+export const findOAuthState = async (
   database: Database,
   state: string,
   provider: Provider,
@@ -57,6 +57,20 @@ export const consumeOAuthState = async (
     return null;
   }
 
+  return toRecord(row);
+};
+
+export const consumeOAuthState = async (
+  database: Database,
+  state: string,
+  provider: Provider,
+  now: number
+): Promise<OAuthStateRecord | null> => {
+  const row = await findOAuthState(database, state, provider, now);
+  if (!row) {
+    return null;
+  }
+
   const deleteResult = await database
     .delete(oauthStates)
     .where(
@@ -67,5 +81,5 @@ export const consumeOAuthState = async (
     return null;
   }
 
-  return toRecord(row);
+  return row;
 };

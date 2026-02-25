@@ -232,7 +232,7 @@ export const adminAccountsRoutes = new Hono()
     async (context) => {
       const { provider } = context.req.valid("param");
       const body = context.req.valid("json");
-      if ((provider === "codex" || provider === "claude") && !body.code) {
+      if (provider === "claude" && !body.code) {
         return context.json(
           {
             error: "bad_request",

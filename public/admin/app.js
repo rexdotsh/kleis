@@ -969,6 +969,7 @@ async function copyToClipboard(text, btn) {
 function updateOAuthProviderUI() {
   const p = $("#oauth-provider").value;
   $("#oauth-copilot-opts").style.display = p === "copilot" ? "block" : "none";
+  $("#oauth-codex-opts").style.display = p === "codex" ? "block" : "none";
   $("#oauth-claude-opts").style.display = p === "claude" ? "block" : "none";
 }
 
@@ -983,6 +984,8 @@ async function startOAuth() {
     if (provider === "copilot") {
       const ed = $("#oauth-enterprise-domain").value.trim();
       if (ed) body.options = { enterpriseDomain: ed };
+    } else if (provider === "codex") {
+      body.options = { mode: $("#oauth-codex-mode").value };
     } else if (provider === "claude") {
       body.options = { mode: $("#oauth-claude-mode").value };
     }
