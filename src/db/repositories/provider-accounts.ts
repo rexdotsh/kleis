@@ -52,7 +52,10 @@ export const listProviderAccounts = async (
   const rows = await database
     .select()
     .from(providerAccounts)
-    .orderBy(desc(providerAccounts.createdAt));
+    .orderBy(
+      desc(providerAccounts.isPrimary),
+      desc(providerAccounts.createdAt)
+    );
   return rows.map(toRecord);
 };
 
