@@ -1,4 +1,3 @@
-<!-- thx claude :) -->
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -21,8 +20,6 @@
       --text-tertiary: #5c5853;
       --amber: #d4a24e;
       --amber-dim: #b8882e;
-      --amber-glow: rgba(212, 162, 78, 0.15);
-      --green: #4ade80;
       --copilot: #79c0ff;
       --codex: #a78bfa;
       --claude: #fb923c;
@@ -38,37 +35,21 @@
 
     body {
       width: 1200px;
-      height: 630px;
+      height: 400px;
       background: var(--bg-root);
       font-family: var(--font-mono);
       color: var(--text-primary);
-      display: grid;
-      grid-template-columns: 1fr 1fr;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
       position: relative;
       overflow: hidden;
     }
 
-    .left {
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      padding: 0 72px;
-      border-right: 1px solid var(--border-subtle);
-      z-index: 2;
-    }
-
-    .eyebrow {
-      font-size: 10px;
-      font-weight: 500;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--amber-dim);
-      margin-bottom: 20px;
-    }
-
     .name {
       font-family: var(--font-display);
-      font-size: 72px;
+      font-size: 108px;
       font-weight: 700;
       letter-spacing: -0.03em;
       color: var(--amber);
@@ -77,27 +58,25 @@
     }
 
     .tagline {
-      font-size: 13px;
+      font-size: 15px;
       color: var(--text-tertiary);
-      line-height: 1.6;
-      margin-bottom: 44px;
-      max-width: 340px;
+      margin-bottom: 48px;
+      letter-spacing: 0.02em;
     }
 
     .flow {
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 18px;
     }
 
     .node {
-      padding: 8px 16px;
+      padding: 10px 22px;
       border: 1px solid var(--border);
-      font-size: 13px;
+      font-size: 15px;
       font-weight: 500;
       color: var(--text-secondary);
       letter-spacing: 0.04em;
-      white-space: nowrap;
       background: var(--bg-surface);
     }
 
@@ -108,200 +87,42 @@
 
     .arrow {
       color: var(--border);
-      font-size: 16px;
+      font-size: 20px;
       user-select: none;
     }
 
-    .providers {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .providers .node {
-      font-size: 12px;
-      padding: 6px 14px;
-    }
-    .providers .node.codex {
+    .node.codex {
       color: var(--codex);
       border-color: rgba(167, 139, 250, 0.2);
     }
-    .providers .node.copilot {
+    .node.copilot {
       color: var(--copilot);
       border-color: rgba(121, 192, 255, 0.2);
     }
-    .providers .node.claude {
+    .node.claude {
       color: var(--claude);
       border-color: rgba(251, 146, 60, 0.2);
     }
-    .providers .node.more {
+    .node.more {
       color: var(--text-tertiary);
       border-color: var(--border-subtle);
       border-style: dashed;
     }
-
-    .right {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 2;
-      padding: 0 56px;
-    }
-
-    .terminal {
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      width: 100%;
-      font-size: 12px;
-      line-height: 1.8;
-      overflow: hidden;
-    }
-
-    .terminal-bar {
-      padding: 10px 16px;
-      border-bottom: 1px solid var(--border-subtle);
-      display: flex;
-      gap: 6px;
-      align-items: center;
-    }
-
-    .terminal-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--border);
-    }
-
-    .terminal-body {
-      padding: 20px 24px;
-      color: var(--text-tertiary);
-    }
-
-    .terminal-body .cmd {
-      color: var(--text-secondary);
-    }
-    .terminal-body .flag {
-      color: var(--amber);
-    }
-    .terminal-body .dim {
-      color: var(--text-tertiary);
-    }
-    .terminal-body .ok {
-      color: var(--green);
-    }
-    .terminal-body .url {
-      color: var(--copilot);
-    }
-    .terminal-body .comment {
-      color: var(--border);
-    }
-
-    .line {
-      display: block;
-    }
-    .line + .line-gap {
-      margin-top: 12px;
-    }
-
-    .bottom {
-      position: absolute;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      height: 44px;
-      border-top: 1px solid var(--border-subtle);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 72px;
-      z-index: 2;
-    }
-
-    .bottom-stack {
-      font-size: 10px;
-      color: var(--border);
-      letter-spacing: 0.08em;
-    }
-
-    .bottom-stack .sep {
-      margin: 0 6px;
-    }
-
-    .bottom-link {
-      font-size: 10px;
-      color: var(--text-tertiary);
-      letter-spacing: 0.04em;
-    }
     </style>
   </head>
   <body>
-    <div class="left">
-      <div class="eyebrow">oauth account proxy</div>
-      <div class="name">kleis</div>
-      <div class="tagline">
-        authenticate provider accounts once. route requests through one base url
-        with admin-managed keys.
-      </div>
+    <div class="name">kleis</div>
+    <div class="tagline">one oauth proxy for coding agents</div>
 
-      <div class="flow">
-        <div class="node highlight">API_KEY</div>
-        <span class="arrow">&rarr;</span>
-        <div class="node highlight">kleis</div>
-        <span class="arrow">&rarr;</span>
-        <div class="providers">
-          <div class="node copilot">copilot</div>
-          <div class="node claude">claude</div>
-          <div class="node codex">codex</div>
-          <div class="node more">...</div>
-        </div>
-      </div>
-    </div>
-
-    <div class="right">
-      <div class="terminal">
-        <div class="terminal-bar">
-          <div class="terminal-dot"></div>
-          <div class="terminal-dot"></div>
-          <div class="terminal-dot"></div>
-        </div>
-        <div class="terminal-body">
-          <span class="line comment"># connect accounts once</span>
-          <span class="line"
-            ><span class="cmd">open</span>
-            <span class="url">kleis.dev/admin</span></span
-          >
-
-          <span class="line line-gap comment"># point your agent</span>
-          <span class="line"
-            ><span class="cmd">export</span>
-            <span class="flag">KLEIS_API_KEY</span>=<span class="dim"
-              >sk-...</span
-            ></span
-          >
-          <span class="line"
-            ><span class="cmd">export</span>
-            <span class="flag">OPENCODE_MODELS_URL</span>=<span class="url"
-              >kleis.dev</span
-            ></span
-          >
-
-          <span class="line line-gap comment"># that's it</span>
-          <span class="line"><span class="cmd">opencode</span></span>
-          <span class="line"
-            ><span class="ok">&#10003;</span>
-            <span class="dim">routing to 3 providers</span></span
-          >
-        </div>
-      </div>
-    </div>
-
-    <div class="bottom">
-      <span class="bottom-stack"
-        >hono<span class="sep">&middot;</span>turso<span class="sep"
-          >&middot;</span
-        >drizzle<span class="sep">&middot;</span>bun</span
-      >
-      <span class="bottom-link">github.com/rexdotsh/kleis</span>
+    <div class="flow">
+      <div class="node highlight">API_KEY</div>
+      <span class="arrow">&rarr;</span>
+      <div class="node highlight">kleis</div>
+      <span class="arrow">&rarr;</span>
+      <div class="node copilot">copilot</div>
+      <div class="node claude">claude</div>
+      <div class="node codex">codex</div>
+      <div class="node more">...</div>
     </div>
   </body>
 </html>

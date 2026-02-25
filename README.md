@@ -1,5 +1,3 @@
-# Kleis
-
 <p align="center">
   <img src="./assets/hero.png" alt="Kleis" width="100%" />
 </p>
