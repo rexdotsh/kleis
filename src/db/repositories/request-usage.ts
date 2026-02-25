@@ -29,16 +29,21 @@ const statusCounters = (
   authErrorCount: number;
   rateLimitCount: number;
 } => {
+  const isAuthError = statusCode === 401 || statusCode === 403;
+  const isRateLimitError = statusCode === 429;
+  const isClientError = statusCode >= 400 && statusCode < 500;
+
   const successCount = statusCode >= 200 && statusCode < 400 ? 1 : 0;
-  const clientErrorCount = statusCode >= 400 && statusCode < 500 ? 1 : 0;
+  const clientErrorCount =
+    isClientError && !isAuthError && !isRateLimitError ? 1 : 0;
   const serverErrorCount = statusCode >= 500 ? 1 : 0;
 
   return {
     successCount,
     clientErrorCount,
     serverErrorCount,
-    authErrorCount: statusCode === 401 || statusCode === 403 ? 1 : 0,
-    rateLimitCount: statusCode === 429 ? 1 : 0,
+    authErrorCount: isAuthError ? 1 : 0,
+    rateLimitCount: isRateLimitError ? 1 : 0,
   };
 };
 

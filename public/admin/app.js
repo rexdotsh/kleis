@@ -172,7 +172,7 @@ function usageMetaParts(
   }
   if (usage?.clientErrorCount) {
     parts.push(
-      `<span class="card-meta-item" style="color:var(--amber)">${usage.clientErrorCount} 4xx</span>`
+      `<span class="card-meta-item" style="color:var(--amber)">${usage.clientErrorCount} 4xx other</span>`
     );
   }
   if (usage?.serverErrorCount) {
@@ -455,7 +455,7 @@ function renderDetailStats(totals) {
   let html = `<div class="detail-stats">
     <div class="detail-stat"><div class="detail-stat-value">${totals.requestCount}</div><div class="detail-stat-label">requests</div></div>
     <div class="detail-stat"><div class="detail-stat-value">${successRate}%</div><div class="detail-stat-label">success</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${totals.clientErrorCount}</div><div class="detail-stat-label">4xx</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${totals.clientErrorCount}</div><div class="detail-stat-label">4xx other</div></div>
     <div class="detail-stat"><div class="detail-stat-value">${totals.serverErrorCount}</div><div class="detail-stat-label">5xx</div></div>
     <div class="detail-stat"><div class="detail-stat-value">${totals.authErrorCount || 0}</div><div class="detail-stat-label">auth</div></div>
     <div class="detail-stat"><div class="detail-stat-value">${totals.rateLimitCount || 0}</div><div class="detail-stat-label">429</div></div>
@@ -477,7 +477,7 @@ function renderEndpointDetailTable(endpoints) {
 
   let html = '<div class="detail-section-title">by provider / endpoint</div>';
   html +=
-    '<table class="detail-table"><thead><tr><th>provider</th><th>endpoint</th><th>reqs</th><th>ok</th><th>4xx</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
+    '<table class="detail-table"><thead><tr><th>provider</th><th>endpoint</th><th>reqs</th><th>ok</th><th>4xx other</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
   for (const ep of endpoints) {
     html += `<tr>
       <td><span class="badge badge-${ep.provider}">${ep.provider}</span></td>
@@ -504,7 +504,7 @@ function renderApiKeyDetailTable(apiKeys) {
 
   let html = '<div class="detail-section-title">by API key</div>';
   html +=
-    '<table class="detail-table"><thead><tr><th>api key</th><th>reqs</th><th>ok</th><th>4xx</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
+    '<table class="detail-table"><thead><tr><th>api key</th><th>reqs</th><th>ok</th><th>4xx other</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
   for (const key of apiKeys) {
     html += `<tr>
       <td><code>${escapeHtml(key.apiKeyId)}</code></td>
@@ -533,7 +533,12 @@ function renderBucketTimeline(buckets) {
     '<div class="detail-section-title">request timeline (1m buckets)</div>';
   for (const b of buckets) {
     const errPct = b.requestCount
-      ? ((b.clientErrorCount + b.serverErrorCount) / b.requestCount) * 100
+      ? ((b.clientErrorCount +
+          b.authErrorCount +
+          b.rateLimitCount +
+          b.serverErrorCount) /
+          b.requestCount) *
+        100
       : 0;
     const okPct = 100 - errPct;
     const pct = maxReqs ? (b.requestCount / maxReqs) * 100 : 0;
