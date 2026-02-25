@@ -23,7 +23,6 @@ const state = {
   showRevokedKeys: false,
   activeOAuth: null,
   revealedKeyIds: new Set(),
-  setupKeyId: null,
 };
 
 const APP_ORIGIN = window.location.origin;
@@ -130,14 +129,6 @@ function tokenStatus(expiresAt) {
 
 function maskKey(k) {
   return k.length <= 12 ? k : `${k.slice(0, 8)}...${k.slice(-4)}`;
-}
-
-function isActiveKey(key, now = Date.now()) {
-  return !key.revokedAt && (!key.expiresAt || key.expiresAt > now);
-}
-
-function firstUsableKey() {
-  return state.keys.find((key) => isActiveKey(key)) || null;
 }
 
 function keyById(keyId) {
@@ -629,47 +620,29 @@ async function openAccountDetail(accountId) {
   });
 }
 
-function setupSnippetForKey(key) {
-  if (!key || !isActiveKey(key)) {
-    return "# create an active API key to generate setup snippet";
-  }
-
+function setupSnippet() {
   return [
-    "# kleis models live under kleis/* alongside built-in providers",
+    "# 1) Point OpenCode model discovery at kleis",
     `export OPENCODE_MODELS_URL=${APP_ORIGIN}`,
-    `export KLEIS_API_KEY=${key.key}`,
+    "",
+    "# 2) Refresh discovered models",
     "opencode models --refresh",
+    "",
+    "# 3) Open OpenCode and connect manually",
+    "opencode",
+    "# inside OpenCode, run:",
+    "/connect",
+    "# choose: kleis",
+    "# then paste an API key copied from a key card below",
   ].join("\n");
 }
 
 function renderSetupSnippet() {
-  const keySelect = $("#setup-key-select");
   const snippet = $("#setup-snippet");
   const copyBtn = $("#btn-copy-setup");
-  if (!keySelect || !snippet || !copyBtn) return;
-
-  const now = Date.now();
-  const fallback = firstUsableKey();
-  const selectedById = state.setupKeyId ? keyById(state.setupKeyId) : null;
-  const selected =
-    selectedById && isActiveKey(selectedById, now) ? selectedById : fallback;
-  state.setupKeyId = selected?.id || null;
-
-  keySelect.innerHTML = state.keys
-    .map((key) => {
-      const active = isActiveKey(key, now);
-      const status = active ? "active" : key.revokedAt ? "revoked" : "expired";
-      const disabled = active ? "" : " disabled";
-      const label = key.label || maskKey(key.key);
-      const sel = key.id === state.setupKeyId ? " selected" : "";
-      return `<option value="${key.id}"${sel}${disabled}>${escapeHtml(label)} (${status})</option>`;
-    })
-    .join("");
-
-  const hasKey = Boolean(selected);
-  keySelect.disabled = !hasKey;
-  copyBtn.disabled = !hasKey;
-  snippet.textContent = setupSnippetForKey(selected);
+  if (!snippet || !copyBtn) return;
+  copyBtn.disabled = false;
+  snippet.textContent = setupSnippet();
 }
 
 function showKeyReveal(fullKey) {
@@ -776,13 +749,11 @@ async function loadKeys() {
     }
 
     renderKeys();
-    renderSetupSnippet();
   } catch (e) {
     state.keys = [];
     state.keyUsageById = new Map();
     $("#keys-list").innerHTML =
       `<div class="empty-state"><div class="empty-state-text" style="color:var(--red)">${escapeHtml(e.message)}</div></div>`;
-    renderSetupSnippet();
     toast(e.message, "error");
   }
 }
@@ -1164,6 +1135,7 @@ async function handleLogin() {
 function enterApp() {
   $("#login-gate").classList.add("hidden");
   $("#app").classList.add("visible");
+  renderSetupSnippet();
   loadAccounts();
   loadKeys();
 }
@@ -1180,7 +1152,6 @@ function logout() {
   state.showRevokedKeys = false;
   state.activeOAuth = null;
   state.revealedKeyIds.clear();
-  state.setupKeyId = null;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
   $("#login-gate").classList.remove("hidden");
@@ -1270,20 +1241,8 @@ $("#toggle-show-revoked-keys").addEventListener("change", (e) => {
 $("#oauth-provider").addEventListener("change", updateOAuthProviderUI);
 updateOAuthProviderUI();
 
-$("#setup-key-select").addEventListener("change", (e) => {
-  state.setupKeyId = e.target.value || null;
-  renderSetupSnippet();
-});
-
 $("#btn-copy-setup").addEventListener("click", (e) => {
-  const selected = state.setupKeyId
-    ? keyById(state.setupKeyId)
-    : firstUsableKey();
-  if (!selected || !isActiveKey(selected)) {
-    toast("Create an active API key first", "error");
-    return;
-  }
-  copyToClipboard(setupSnippetForKey(selected), e.currentTarget);
+  copyToClipboard(setupSnippet(), e.currentTarget);
 });
 
 for (const tab of $$(".tab")) {
