@@ -16,6 +16,7 @@ import {
   type CreateApiKeyInput,
 } from "../../db/repositories/api-keys";
 import { providers } from "../../db/schema";
+import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 
 const createApiKeyBodySchema = z.strictObject({
   label: z.string().trim().min(1).max(120).optional(),
@@ -36,17 +37,6 @@ const keyIdParamsSchema = z.strictObject({
   id: z.uuid(),
 });
 
-const listApiKeyUsageQuerySchema = z.strictObject({
-  windowMs: z.coerce
-    .number()
-    .int()
-    .min(60_000)
-    .max(30 * 24 * 60 * 60 * 1000)
-    .optional(),
-});
-
-const DEFAULT_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
-
 export const adminKeysRoutes = new Hono()
   .get("/", async (context) => {
     const keys = await listApiKeys(db);
@@ -54,12 +44,10 @@ export const adminKeysRoutes = new Hono()
   })
   .get(
     "/usage",
-    zValidator("query", listApiKeyUsageQuerySchema),
+    zValidator("query", usageWindowQuerySchema),
     async (context) => {
       const query = context.req.valid("query");
-      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
-      const now = Date.now();
-      const since = now - windowMs;
+      const { windowMs, now, since } = resolveUsageWindow(query.windowMs);
 
       const usage = await listApiKeyUsageSummaries(db, since);
 
@@ -148,13 +136,11 @@ export const adminKeysRoutes = new Hono()
   .get(
     "/:id/usage",
     zValidator("param", keyIdParamsSchema),
-    zValidator("query", listApiKeyUsageQuerySchema),
+    zValidator("query", usageWindowQuerySchema),
     async (context) => {
       const { id } = context.req.valid("param");
       const query = context.req.valid("query");
-      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
-      const now = Date.now();
-      const since = now - windowMs;
+      const { windowMs, now, since } = resolveUsageWindow(query.windowMs);
 
       const key = await findApiKeyById(db, id);
       if (!key) {

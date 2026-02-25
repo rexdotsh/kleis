@@ -7,11 +7,15 @@ import {
   applyTotalsRow,
   DETAIL_BUCKET_LIMIT,
   emptyUsageTotals,
-  parseProvider,
+  mapEndpointUsageRows,
+  mapUsageBucketRows,
+  summarizeGroupedUsageRows,
   toAveragedTotals,
   toNonNegativeInteger,
   toUsageBucketStart,
-  type UsageTotals,
+  type UsageBucketRow,
+  type UsageEndpointBreakdown,
+  type UsageProviderSummary,
 } from "./usage-shared";
 
 export const MISSING_PROVIDER_ACCOUNT_ID = "__missing__";
@@ -98,16 +102,6 @@ export const recordRequestUsage = async (
     });
 };
 
-type ApiKeyUsageProviderSummary = {
-  provider: Provider;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-};
-
 type ApiKeyUsageSummary = {
   apiKeyId: string;
   requestCount: number;
@@ -119,61 +113,7 @@ type ApiKeyUsageSummary = {
   avgLatencyMs: number;
   maxLatencyMs: number;
   lastRequestAt: number | null;
-  providers: ApiKeyUsageProviderSummary[];
-};
-
-type MutableApiKeyUsageSummary = {
-  apiKeyId: string;
-  totals: UsageTotals;
-  providers: Map<Provider, ApiKeyUsageProviderSummary>;
-};
-
-const summarySort = (left: ApiKeyUsageSummary, right: ApiKeyUsageSummary) => {
-  if (right.requestCount !== left.requestCount) {
-    return right.requestCount - left.requestCount;
-  }
-
-  return (right.lastRequestAt ?? 0) - (left.lastRequestAt ?? 0);
-};
-
-const ensureSummary = (
-  summariesByKey: Map<string, MutableApiKeyUsageSummary>,
-  apiKeyId: string
-): MutableApiKeyUsageSummary => {
-  const existing = summariesByKey.get(apiKeyId);
-  if (existing) {
-    return existing;
-  }
-
-  const created: MutableApiKeyUsageSummary = {
-    apiKeyId,
-    totals: emptyUsageTotals(),
-    providers: new Map(),
-  };
-  summariesByKey.set(apiKeyId, created);
-  return created;
-};
-
-const ensureProviderSummary = (
-  providersByName: Map<Provider, ApiKeyUsageProviderSummary>,
-  provider: Provider
-): ApiKeyUsageProviderSummary => {
-  const existing = providersByName.get(provider);
-  if (existing) {
-    return existing;
-  }
-
-  const created: ApiKeyUsageProviderSummary = {
-    provider,
-    requestCount: 0,
-    successCount: 0,
-    clientErrorCount: 0,
-    serverErrorCount: 0,
-    authErrorCount: 0,
-    rateLimitCount: 0,
-  };
-  providersByName.set(provider, created);
-  return created;
+  providers: UsageProviderSummary[];
 };
 
 export const listApiKeyUsageSummaries = async (
@@ -185,7 +125,7 @@ export const listApiKeyUsageSummaries = async (
   const [totalsRows, providerRows] = await Promise.all([
     database
       .select({
-        apiKeyId: requestUsageBuckets.apiKeyId,
+        groupKey: requestUsageBuckets.apiKeyId,
         requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
         successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
         clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
@@ -201,7 +141,7 @@ export const listApiKeyUsageSummaries = async (
       .groupBy(requestUsageBuckets.apiKeyId),
     database
       .select({
-        apiKeyId: requestUsageBuckets.apiKeyId,
+        groupKey: requestUsageBuckets.apiKeyId,
         provider: requestUsageBuckets.provider,
         requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
         successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
@@ -215,80 +155,19 @@ export const listApiKeyUsageSummaries = async (
       .groupBy(requestUsageBuckets.apiKeyId, requestUsageBuckets.provider),
   ]);
 
-  const summariesByKey = new Map<string, MutableApiKeyUsageSummary>();
-  for (const row of totalsRows) {
-    const summary = ensureSummary(summariesByKey, row.apiKeyId);
-    applyTotalsRow(summary.totals, row);
-  }
-
-  for (const row of providerRows) {
-    const provider = parseProvider(row.provider);
-    if (!provider) {
-      continue;
-    }
-
-    const summary = ensureSummary(summariesByKey, row.apiKeyId);
-    const providerSummary = ensureProviderSummary(summary.providers, provider);
-    providerSummary.requestCount += toNonNegativeInteger(row.requestCount);
-    providerSummary.successCount += toNonNegativeInteger(row.successCount);
-    providerSummary.clientErrorCount += toNonNegativeInteger(
-      row.clientErrorCount
-    );
-    providerSummary.serverErrorCount += toNonNegativeInteger(
-      row.serverErrorCount
-    );
-    providerSummary.authErrorCount += toNonNegativeInteger(row.authErrorCount);
-    providerSummary.rateLimitCount += toNonNegativeInteger(row.rateLimitCount);
-  }
-
-  const summaries: ApiKeyUsageSummary[] = [];
-  for (const summary of summariesByKey.values()) {
-    const totals = toAveragedTotals(summary.totals);
-    const providers = Array.from(summary.providers.values()).sort(
-      (left, right) => right.requestCount - left.requestCount
-    );
-
-    summaries.push({
-      apiKeyId: summary.apiKeyId,
-      requestCount: totals.requestCount,
-      successCount: totals.successCount,
-      clientErrorCount: totals.clientErrorCount,
-      serverErrorCount: totals.serverErrorCount,
-      authErrorCount: totals.authErrorCount,
-      rateLimitCount: totals.rateLimitCount,
-      avgLatencyMs: totals.avgLatencyMs,
-      maxLatencyMs: totals.maxLatencyMs,
-      lastRequestAt: totals.lastRequestAt,
-      providers,
-    });
-  }
-
-  return summaries.sort(summarySort);
+  return summarizeGroupedUsageRows({
+    totalsRows,
+    providerRows,
+  }).map((summary) => ({
+    apiKeyId: summary.groupKey,
+    ...summary.totals,
+    providers: summary.providers,
+  }));
 };
 
-type ApiKeyUsageEndpointBreakdown = {
-  provider: Provider;
-  endpoint: string;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-  avgLatencyMs: number;
-  maxLatencyMs: number;
-  lastRequestAt: number | null;
-};
+type ApiKeyUsageEndpointBreakdown = UsageEndpointBreakdown;
 
-type ApiKeyUsageBucketRow = {
-  bucketStart: number;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-};
+type ApiKeyUsageBucketRow = UsageBucketRow;
 
 type ApiKeyUsageDetail = {
   apiKeyId: string;
@@ -363,49 +242,10 @@ export const getApiKeyUsageDetail = async (
     applyTotalsRow(totals, totalsRow);
   }
 
-  const endpoints: ApiKeyUsageEndpointBreakdown[] = [];
-  for (const row of endpointRows) {
-    const provider = parseProvider(row.provider);
-    if (!provider) {
-      continue;
-    }
+  const endpoints: ApiKeyUsageEndpointBreakdown[] =
+    mapEndpointUsageRows(endpointRows);
 
-    const requestCount = toNonNegativeInteger(row.requestCount);
-    const totalLatencyMs = toNonNegativeInteger(row.totalLatencyMs);
-    endpoints.push({
-      provider,
-      endpoint: row.endpoint,
-      requestCount,
-      successCount: toNonNegativeInteger(row.successCount),
-      clientErrorCount: toNonNegativeInteger(row.clientErrorCount),
-      serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
-      authErrorCount: toNonNegativeInteger(row.authErrorCount),
-      rateLimitCount: toNonNegativeInteger(row.rateLimitCount),
-      avgLatencyMs: requestCount
-        ? Math.round(totalLatencyMs / requestCount)
-        : 0,
-      maxLatencyMs: toNonNegativeInteger(row.maxLatencyMs),
-      lastRequestAt:
-        row.lastRequestAt === null
-          ? null
-          : toNonNegativeInteger(row.lastRequestAt),
-    });
-  }
-  endpoints.sort((left, right) => right.requestCount - left.requestCount);
-
-  const buckets = bucketRows
-    .map(
-      (row): ApiKeyUsageBucketRow => ({
-        bucketStart: toNonNegativeInteger(row.bucketStart),
-        requestCount: toNonNegativeInteger(row.requestCount),
-        successCount: toNonNegativeInteger(row.successCount),
-        clientErrorCount: toNonNegativeInteger(row.clientErrorCount),
-        serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
-        authErrorCount: toNonNegativeInteger(row.authErrorCount),
-        rateLimitCount: toNonNegativeInteger(row.rateLimitCount),
-      })
-    )
-    .reverse();
+  const buckets: ApiKeyUsageBucketRow[] = mapUsageBucketRows(bucketRows);
 
   return {
     apiKeyId,

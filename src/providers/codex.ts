@@ -8,7 +8,12 @@ import type { ProviderAccountRecord } from "../db/repositories/provider-accounts
 import { CODEX_ORIGINATOR } from "./constants";
 import { requireOkResponse } from "./http";
 import type { CodexAccountMetadata } from "./metadata";
-import { decodeBase64Url, generatePkce, generateState } from "./oauth-utils";
+import {
+  decodeBase64Url,
+  generatePkce,
+  generateState,
+  parseAuthorizationCodeInput,
+} from "./oauth-utils";
 import { parseOAuthStateMetadata } from "./oauth-state";
 import type {
   ProviderAdapter,
@@ -45,48 +50,6 @@ type IdTokenClaims = {
   "https://api.openai.com/auth"?: {
     chatgpt_account_id?: string;
   };
-};
-
-const parseAuthorizationCodeInput = (
-  input: string
-): { code: string; state?: string } => {
-  const value = input.trim();
-  if (!value) {
-    throw new Error("Codex OAuth completion requires an authorization code");
-  }
-
-  try {
-    const url = new URL(value);
-    const code = url.searchParams.get("code");
-    if (code) {
-      const state = url.searchParams.get("state");
-      if (state) {
-        return { code, state };
-      }
-
-      return { code };
-    }
-  } catch {
-    // ignore non-url values
-  }
-
-  if (value.includes("#")) {
-    const split = value.split("#", 2);
-    if (split[0]) {
-      if (split[1]) {
-        return {
-          code: split[0],
-          state: split[1],
-        };
-      }
-
-      return {
-        code: split[0],
-      };
-    }
-  }
-
-  return { code: value };
 };
 
 const buildAuthorizeUrl = (input: {
@@ -331,7 +294,10 @@ export const codexAdapter: ProviderAdapter = {
       throw new Error("Codex OAuth state is missing PKCE verifier");
     }
 
-    const codeInput = parseAuthorizationCodeInput(input.code);
+    const codeInput = parseAuthorizationCodeInput(
+      input.code,
+      "Codex OAuth completion requires an authorization code"
+    );
     if (codeInput.state && codeInput.state !== input.state) {
       throw new Error("Codex OAuth callback state mismatch");
     }

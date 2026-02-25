@@ -53,15 +53,6 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
   }
 
   const route = resolveProxyRoute(context.req.path);
-  const requestedModel = route
-    ? await readRequestedModel(context.req.raw)
-    : null;
-  const requestedModelRoute = route
-    ? parseModelForProxyRoute(requestedModel, route)
-    : {
-        rawModel: null,
-        upstreamModel: null,
-      };
 
   if (route && apiKey.providerScopes?.length) {
     if (!apiKey.providerScopes.includes(route.provider)) {
@@ -76,6 +67,8 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
   }
 
   if (route && apiKey.modelScopes?.length) {
+    const requestedModel = await readRequestedModel(context.req.raw);
+    const requestedModelRoute = parseModelForProxyRoute(requestedModel, route);
     const modelCandidates = modelScopeCandidates(requestedModelRoute, route);
     const allowed = modelCandidates.some((candidate) =>
       apiKey.modelScopes?.includes(candidate)

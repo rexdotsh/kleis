@@ -1,27 +1,22 @@
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 
 import type { Database } from "../index";
-import { requestUsageBuckets, type Provider } from "../schema";
+import { requestUsageBuckets } from "../schema";
 import {
   applyTotalsRow,
   DETAIL_BUCKET_LIMIT,
   emptyUsageTotals,
-  parseProvider,
+  mapEndpointUsageRows,
+  mapUsageBucketRows,
+  summarizeGroupedUsageRows,
   toAveragedTotals,
   toNonNegativeInteger,
   toUsageBucketStart,
+  type UsageBucketRow,
+  type UsageEndpointBreakdown,
+  type UsageProviderSummary,
   type UsageTotals,
 } from "./usage-shared";
-
-type ProviderAccountUsageProviderSummary = {
-  provider: Provider;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-};
 
 type ProviderAccountUsageSummary = {
   providerAccountId: string;
@@ -34,53 +29,7 @@ type ProviderAccountUsageSummary = {
   avgLatencyMs: number;
   maxLatencyMs: number;
   lastRequestAt: number | null;
-  providers: ProviderAccountUsageProviderSummary[];
-};
-
-type MutableProviderAccountUsageSummary = {
-  providerAccountId: string;
-  totals: UsageTotals;
-  providers: Map<Provider, ProviderAccountUsageProviderSummary>;
-};
-
-const ensureSummary = (
-  summariesByAccount: Map<string, MutableProviderAccountUsageSummary>,
-  providerAccountId: string
-): MutableProviderAccountUsageSummary => {
-  const existing = summariesByAccount.get(providerAccountId);
-  if (existing) {
-    return existing;
-  }
-
-  const created: MutableProviderAccountUsageSummary = {
-    providerAccountId,
-    totals: emptyUsageTotals(),
-    providers: new Map(),
-  };
-  summariesByAccount.set(providerAccountId, created);
-  return created;
-};
-
-const ensureProviderSummary = (
-  providersByName: Map<Provider, ProviderAccountUsageProviderSummary>,
-  provider: Provider
-): ProviderAccountUsageProviderSummary => {
-  const existing = providersByName.get(provider);
-  if (existing) {
-    return existing;
-  }
-
-  const created: ProviderAccountUsageProviderSummary = {
-    provider,
-    requestCount: 0,
-    successCount: 0,
-    clientErrorCount: 0,
-    serverErrorCount: 0,
-    authErrorCount: 0,
-    rateLimitCount: 0,
-  };
-  providersByName.set(provider, created);
-  return created;
+  providers: UsageProviderSummary[];
 };
 
 export const listProviderAccountUsageSummaries = async (
@@ -92,7 +41,7 @@ export const listProviderAccountUsageSummaries = async (
   const [totalsRows, providerRows] = await Promise.all([
     database
       .select({
-        providerAccountId: requestUsageBuckets.providerAccountId,
+        groupKey: requestUsageBuckets.providerAccountId,
         requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
         successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
         clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
@@ -108,7 +57,7 @@ export const listProviderAccountUsageSummaries = async (
       .groupBy(requestUsageBuckets.providerAccountId),
     database
       .select({
-        providerAccountId: requestUsageBuckets.providerAccountId,
+        groupKey: requestUsageBuckets.providerAccountId,
         provider: requestUsageBuckets.provider,
         requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
         successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
@@ -125,63 +74,14 @@ export const listProviderAccountUsageSummaries = async (
       ),
   ]);
 
-  const summariesByAccount = new Map<
-    string,
-    MutableProviderAccountUsageSummary
-  >();
-  for (const row of totalsRows) {
-    const summary = ensureSummary(summariesByAccount, row.providerAccountId);
-    applyTotalsRow(summary.totals, row);
-  }
-
-  for (const row of providerRows) {
-    const provider = parseProvider(row.provider);
-    if (!provider) {
-      continue;
-    }
-
-    const summary = ensureSummary(summariesByAccount, row.providerAccountId);
-    const providerSummary = ensureProviderSummary(summary.providers, provider);
-    providerSummary.requestCount += toNonNegativeInteger(row.requestCount);
-    providerSummary.successCount += toNonNegativeInteger(row.successCount);
-    providerSummary.clientErrorCount += toNonNegativeInteger(
-      row.clientErrorCount
-    );
-    providerSummary.serverErrorCount += toNonNegativeInteger(
-      row.serverErrorCount
-    );
-    providerSummary.authErrorCount += toNonNegativeInteger(row.authErrorCount);
-    providerSummary.rateLimitCount += toNonNegativeInteger(row.rateLimitCount);
-  }
-
-  const summaries: ProviderAccountUsageSummary[] = [];
-  for (const summary of summariesByAccount.values()) {
-    const totals = toAveragedTotals(summary.totals);
-    const providers = Array.from(summary.providers.values()).sort(
-      (left, right) => right.requestCount - left.requestCount
-    );
-
-    summaries.push({
-      providerAccountId: summary.providerAccountId,
-      requestCount: totals.requestCount,
-      successCount: totals.successCount,
-      clientErrorCount: totals.clientErrorCount,
-      serverErrorCount: totals.serverErrorCount,
-      authErrorCount: totals.authErrorCount,
-      rateLimitCount: totals.rateLimitCount,
-      avgLatencyMs: totals.avgLatencyMs,
-      maxLatencyMs: totals.maxLatencyMs,
-      lastRequestAt: totals.lastRequestAt,
-      providers,
-    });
-  }
-
-  summaries.sort(
-    (left, right) =>
-      right.requestCount - left.requestCount ||
-      (right.lastRequestAt ?? 0) - (left.lastRequestAt ?? 0)
-  );
-  return summaries;
+  return summarizeGroupedUsageRows({
+    totalsRows,
+    providerRows,
+  }).map((summary) => ({
+    providerAccountId: summary.groupKey,
+    ...summary.totals,
+    providers: summary.providers,
+  }));
 };
 
 type ProviderAccountUsageApiKeyBreakdown = {
@@ -197,29 +97,9 @@ type ProviderAccountUsageApiKeyBreakdown = {
   lastRequestAt: number | null;
 };
 
-type ProviderAccountUsageEndpointBreakdown = {
-  provider: Provider;
-  endpoint: string;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-  avgLatencyMs: number;
-  maxLatencyMs: number;
-  lastRequestAt: number | null;
-};
+type ProviderAccountUsageEndpointBreakdown = UsageEndpointBreakdown;
 
-type ProviderAccountUsageBucketRow = {
-  bucketStart: number;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-};
+type ProviderAccountUsageBucketRow = UsageBucketRow;
 
 type ProviderAccountUsageDetail = {
   providerAccountId: string;
@@ -348,49 +228,11 @@ export const getProviderAccountUsageDetail = async (
         (right.lastRequestAt ?? 0) - (left.lastRequestAt ?? 0)
     );
 
-  const endpoints: ProviderAccountUsageEndpointBreakdown[] = [];
-  for (const row of endpointRows) {
-    const provider = parseProvider(row.provider);
-    if (!provider) {
-      continue;
-    }
+  const endpoints: ProviderAccountUsageEndpointBreakdown[] =
+    mapEndpointUsageRows(endpointRows);
 
-    const requestCount = toNonNegativeInteger(row.requestCount);
-    const totalLatencyMs = toNonNegativeInteger(row.totalLatencyMs);
-    endpoints.push({
-      provider,
-      endpoint: row.endpoint,
-      requestCount,
-      successCount: toNonNegativeInteger(row.successCount),
-      clientErrorCount: toNonNegativeInteger(row.clientErrorCount),
-      serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
-      authErrorCount: toNonNegativeInteger(row.authErrorCount),
-      rateLimitCount: toNonNegativeInteger(row.rateLimitCount),
-      avgLatencyMs: requestCount
-        ? Math.round(totalLatencyMs / requestCount)
-        : 0,
-      maxLatencyMs: toNonNegativeInteger(row.maxLatencyMs),
-      lastRequestAt:
-        row.lastRequestAt === null
-          ? null
-          : toNonNegativeInteger(row.lastRequestAt),
-    });
-  }
-  endpoints.sort((left, right) => right.requestCount - left.requestCount);
-
-  const buckets = bucketRows
-    .map(
-      (bucket): ProviderAccountUsageBucketRow => ({
-        bucketStart: toNonNegativeInteger(bucket.bucketStart),
-        requestCount: toNonNegativeInteger(bucket.requestCount),
-        successCount: toNonNegativeInteger(bucket.successCount),
-        clientErrorCount: toNonNegativeInteger(bucket.clientErrorCount),
-        serverErrorCount: toNonNegativeInteger(bucket.serverErrorCount),
-        authErrorCount: toNonNegativeInteger(bucket.authErrorCount),
-        rateLimitCount: toNonNegativeInteger(bucket.rateLimitCount),
-      })
-    )
-    .reverse();
+  const buckets: ProviderAccountUsageBucketRow[] =
+    mapUsageBucketRows(bucketRows);
 
   return {
     providerAccountId,

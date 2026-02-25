@@ -25,6 +25,7 @@ import {
   resolveImportedProviderAccountId,
   type ProviderAccountMetadata,
 } from "../../providers/metadata";
+import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 
 const accountIdParamsSchema = z.strictObject({
   id: z.string().trim().min(1).max(120),
@@ -52,17 +53,6 @@ const importAccountBodySchema = z.strictObject({
   metadata: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
-const listProviderAccountUsageQuerySchema = z.strictObject({
-  windowMs: z.coerce
-    .number()
-    .int()
-    .min(60_000)
-    .max(30 * 24 * 60 * 60 * 1000)
-    .optional(),
-});
-
-const DEFAULT_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
-
 const toMillisecondsTimestamp = (value: number): number =>
   value < 10_000_000_000 ? value * 1000 : value;
 
@@ -89,12 +79,10 @@ export const adminAccountsRoutes = new Hono()
   })
   .get(
     "/usage",
-    zValidator("query", listProviderAccountUsageQuerySchema),
+    zValidator("query", usageWindowQuerySchema),
     async (context) => {
       const query = context.req.valid("query");
-      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
-      const now = Date.now();
-      const since = now - windowMs;
+      const { windowMs, now, since } = resolveUsageWindow(query.windowMs);
 
       const usage = await listProviderAccountUsageSummaries(db, since);
 
@@ -109,13 +97,11 @@ export const adminAccountsRoutes = new Hono()
   .get(
     "/:id/usage",
     zValidator("param", accountIdParamsSchema),
-    zValidator("query", listProviderAccountUsageQuerySchema),
+    zValidator("query", usageWindowQuerySchema),
     async (context) => {
       const { id } = context.req.valid("param");
       const query = context.req.valid("query");
-      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
-      const now = Date.now();
-      const since = now - windowMs;
+      const { windowMs, now, since } = resolveUsageWindow(query.windowMs);
 
       const account = await findProviderAccountById(db, id);
       if (!account) {
