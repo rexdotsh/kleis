@@ -622,18 +622,15 @@ async function openAccountDetail(accountId) {
 
 function setupSnippet() {
   return [
-    "# 1) Point OpenCode model discovery at kleis",
-    `export OPENCODE_MODELS_URL=${APP_ORIGIN}`,
-    "",
-    "# 2) Refresh discovered models",
+    "# Terminal",
+    `export OPENCODE_MODELS_URL="${APP_ORIGIN}"`,
     "opencode models --refresh",
-    "",
-    "# 3) Open OpenCode and connect manually",
     "opencode",
-    "# inside OpenCode, run:",
+    "",
+    "# Inside OpenCode",
     "/connect",
-    "# choose: kleis",
-    "# then paste an API key copied from a key card below",
+    "# provider: kleis",
+    "# token: copy an active API key from this page",
   ].join("\n");
 }
 
