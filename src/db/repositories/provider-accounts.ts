@@ -510,7 +510,7 @@ export const setPrimaryProviderAccount = async (
     .update(providerAccounts)
     .set({
       isPrimary: sql<boolean>`CASE WHEN ${providerAccounts.id} = ${id} THEN 1 ELSE 0 END`,
-      updatedAt: now,
+      updatedAt: sql<number>`CASE WHEN ${providerAccounts.id} = ${id} OR ${providerAccounts.isPrimary} = 1 THEN ${now} ELSE ${providerAccounts.updatedAt} END`,
     })
     .where(
       and(
