@@ -125,15 +125,30 @@ describe("models registry contract", () => {
     expect(kleis.models?.["openai/text-embedding-3-large"]).toBeUndefined();
   });
 
-  test("filters out providers without configured accounts", () => {
+  test("preserves unconfigured providers from upstream unchanged", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/",
       configuredProviders: ["codex"],
     });
 
-    expect(registry.anthropic).toBeUndefined();
-    expect(registry["github-copilot"]).toBeUndefined();
+    const anthropic = registry.anthropic as {
+      env?: string[];
+      models?: Record<string, { provider?: { api?: string } }>;
+    };
+    expect(anthropic.env).toEqual(["ANTHROPIC_API_KEY"]);
+    expect(anthropic.models?.["claude-sonnet-4"]?.provider?.api).toBe(
+      "https://api.anthropic.com/v1"
+    );
+
+    const copilot = registry["github-copilot"] as {
+      env?: string[];
+      models?: Record<string, { provider?: { api?: string } }>;
+    };
+    expect(copilot.env).toEqual(["GITHUB_TOKEN"]);
+    expect(copilot.models?.["gpt-5"]?.provider?.api).toBe(
+      "https://api.githubcopilot.com"
+    );
 
     const openai = registry.openai as {
       env?: string[];
@@ -152,16 +167,22 @@ describe("models registry contract", () => {
     expect(kleis.models?.["github-copilot/gpt-5"]).toBeUndefined();
   });
 
-  test("keeps registry valid when no providers are configured", () => {
+  test("preserves all upstream providers when none are configured", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/",
       configuredProviders: [],
     });
 
-    expect(registry.openai).toBeUndefined();
-    expect(registry.anthropic).toBeUndefined();
-    expect(registry["github-copilot"]).toBeUndefined();
+    const openai = registry.openai as {
+      env?: string[];
+      models?: Record<string, unknown>;
+    };
+    expect(openai.env).toEqual(["OPENAI_API_KEY"]);
+    expect(Object.keys(openai.models ?? {})).toHaveLength(3);
+
+    expect(registry.anthropic).toBeDefined();
+    expect(registry["github-copilot"]).toBeDefined();
 
     const kleis = registry.kleis as {
       env?: string[];

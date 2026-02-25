@@ -138,7 +138,6 @@ const patchCanonicalProviders = (input: {
 }): void => {
   for (const mapping of proxyProviderMappings) {
     if (!input.configuredProviders.has(mapping.internalProvider)) {
-      delete input.registry[mapping.canonicalProvider];
       continue;
     }
 
@@ -147,7 +146,6 @@ const patchCanonicalProviders = (input: {
       mapping.canonicalProvider
     );
     if (!sourceProvider) {
-      delete input.registry[mapping.canonicalProvider];
       continue;
     }
 
