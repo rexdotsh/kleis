@@ -18,17 +18,20 @@ const transformCodexBody = (bodyJson: unknown, bodyText: string): string => {
 
   // Codex's chatgpt.com backend endpoint behaves differently from generic OpenAI Responses:
   // - OpenCode only sets top-level `instructions` in native Codex/OAuth mode.
-  //   https://github.com/sst/opencode/blob/dev/packages/opencode/src/session/llm.ts#L65-L112
+  //   https://github.com/sst/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/llm.ts#L65-L112
   // - Codex-native clients include `instructions` explicitly in the request body.
-  //   https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/providers/openai-codex-responses.ts#L286-L291
+  //   https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/openai-codex-responses.ts#L286-L291
   // - Codex-native clients also omit `max_output_tokens` / `max_completion_tokens`.
-  //   https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/providers/openai-codex-responses.ts#L286-L315
+  //   https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/openai-codex-responses.ts#L286-L315
   const {
     max_output_tokens: _maxOutputTokens,
     max_completion_tokens: _maxCompletionTokens,
     ...nextBody
   } = bodyJson;
 
+  // OpenCode injects instructions internally in its Codex/OAuth path:
+  // https://github.com/sst/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/llm.ts#L110-L112
+  // Non-Codex clients won't — fall back to the default Codex system prompt.
   const instructions =
     trimString(nextBody.instructions) || CODEX_DEFAULT_INSTRUCTIONS;
 

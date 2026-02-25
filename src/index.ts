@@ -40,6 +40,8 @@ app.route("/", healthRoutes);
 app.route("/", modelsRoutes);
 
 if (!isVercel) {
+  // Vercel serves public/ automatically, manual setup needed for local dev.
+  // https://vercel.com/docs/frameworks/backend/hono#serving-static-assets
   const { serveStatic } = await import("hono/bun");
   app.get(
     "/admin",
