@@ -16,6 +16,7 @@ import {
   type CreateApiKeyInput,
 } from "../../db/repositories/api-keys";
 import { providers } from "../../db/schema";
+import { toMillisecondsTimestamp } from "../../utils/timestamp";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 
 const createApiKeyBodySchema = z.strictObject({
@@ -62,21 +63,22 @@ export const adminKeysRoutes = new Hono()
   .post("/", zValidator("json", createApiKeyBodySchema), async (context) => {
     const input = context.req.valid("json");
     const now = Date.now();
-    if (input.expiresAt !== null && input.expiresAt !== undefined) {
-      if (input.expiresAt <= now) {
-        return context.json(
-          {
-            error: "bad_request",
-            message: "expiresAt must be in the future",
-          },
-          400
-        );
-      }
+    const expiresAt =
+      input.expiresAt != null ? toMillisecondsTimestamp(input.expiresAt) : null;
+
+    if (expiresAt !== null && expiresAt <= now) {
+      return context.json(
+        {
+          error: "bad_request",
+          message: "expiresAt must be in the future",
+        },
+        400
+      );
     }
 
     const payload: CreateApiKeyInput = {
       label: input.label ?? null,
-      expiresAt: input.expiresAt ?? null,
+      expiresAt,
     };
     if (input.providerScopes) {
       payload.providerScopes = input.providerScopes;

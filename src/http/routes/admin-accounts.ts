@@ -26,6 +26,7 @@ import {
   type ProviderAccountMetadata,
 } from "../../providers/metadata";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
+import { toMillisecondsTimestamp } from "../../utils/timestamp";
 
 const accountIdParamsSchema = z.strictObject({
   id: z.string().trim().min(1).max(120),
@@ -52,9 +53,6 @@ const importAccountBodySchema = z.strictObject({
   label: z.string().trim().min(1).max(160).nullable().optional(),
   metadata: z.record(z.string(), z.unknown()).nullable().optional(),
 });
-
-const toMillisecondsTimestamp = (value: number): number =>
-  value < 10_000_000_000 ? value * 1000 : value;
 
 const toAdminAccountView = (
   account: Awaited<ReturnType<typeof listProviderAccounts>>[number]
