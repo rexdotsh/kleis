@@ -4,8 +4,9 @@ import { db } from "../../db";
 import { listConfiguredProviders } from "../../db/repositories/provider-accounts";
 import {
   buildProxyModelsRegistry,
-  getModelsDevRegistry,
+  fetchModelsDevRegistry,
 } from "../../domain/models/models-dev";
+import { modelsRegistryCacheHeaders } from "../utils/models-cache";
 
 const MODELS_ROUTE_PATH = "/api.json";
 
@@ -17,7 +18,7 @@ const resolveBaseOriginWithPath = (requestUrl: URL): string => {
 };
 
 const resolveProxyRegistry = async (context: Context) => {
-  const upstreamRegistry = await getModelsDevRegistry();
+  const upstreamRegistry = await fetchModelsDevRegistry();
   const configuredProviders = await listConfiguredProviders(db);
   const requestUrl = new URL(context.req.url);
   return buildProxyModelsRegistry({
@@ -31,6 +32,6 @@ export const modelsRoutes = new Hono().get(
   MODELS_ROUTE_PATH,
   async (context) => {
     const registry = await resolveProxyRegistry(context);
-    return context.json(registry);
+    return context.json(registry, { headers: modelsRegistryCacheHeaders });
   }
 );

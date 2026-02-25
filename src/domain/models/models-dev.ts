@@ -23,8 +23,6 @@ const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
   "gpt-5.1-codex",
 ]);
 
-let inFlightFetch: Promise<ModelsDevRegistry> | null = null;
-
 const parseRegistry = (value: unknown): ModelsDevRegistry => {
   if (!isObjectRecord(value)) {
     throw new Error("models.dev payload is not an object");
@@ -33,7 +31,8 @@ const parseRegistry = (value: unknown): ModelsDevRegistry => {
   return value;
 };
 
-const fetchRegistry = async (url: string): Promise<ModelsDevRegistry> => {
+export const fetchModelsDevRegistry = async (): Promise<ModelsDevRegistry> => {
+  const url = MODELS_DEV_URL;
   const response = await fetch(url, {
     method: "GET",
     headers: {
@@ -213,18 +212,6 @@ const toKleisProviderEntry = (input: {
       input.configuredProviders
     ),
   };
-};
-
-export const getModelsDevRegistry = (): Promise<ModelsDevRegistry> => {
-  if (inFlightFetch) {
-    return inFlightFetch;
-  }
-
-  inFlightFetch = fetchRegistry(MODELS_DEV_URL).finally(() => {
-    inFlightFetch = null;
-  });
-
-  return inFlightFetch;
 };
 
 export const buildProxyModelsRegistry = (
