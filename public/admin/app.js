@@ -8,6 +8,7 @@ const state = {
   keys: [],
   keyUsageById: new Map(),
   keyUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
+  showRevokedKeys: false,
   activeOAuth: null,
   revealedKeyIds: new Set(),
   setupKeyId: null,
@@ -375,6 +376,10 @@ function keyCardHtml(key) {
     }
   }
 
+  const actionButtons = revoked
+    ? `<button class="btn btn-danger btn-sm" data-action="delete-key" data-key-id="${key.id}" type="button">delete</button>`
+    : `<button class="btn btn-ghost btn-sm" data-action="rotate-key" data-key-id="${key.id}" type="button">rotate</button><button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${key.id}" type="button">revoke</button>`;
+
   return `<div class="card" data-key-id="${key.id}" style="cursor:pointer">
     <div class="card-top">
       <div class="card-identity">
@@ -384,8 +389,7 @@ function keyCardHtml(key) {
       <div class="card-actions">
         <button class="btn btn-ghost btn-sm" data-action="copy-key" data-key-id="${key.id}" type="button">copy</button>
         <button class="btn btn-ghost btn-sm" data-action="toggle-key" data-key-id="${key.id}" type="button">${isRevealed ? "hide" : "show"}</button>
-        ${revoked ? "" : `<button class="btn btn-ghost btn-sm" data-action="rotate-key" data-key-id="${key.id}" type="button">rotate</button>`}
-        ${revoked ? "" : `<button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${key.id}" type="button">revoke</button>`}
+        ${actionButtons}
       </div>
     </div>
     <div class="card-key"><code>${escapeHtml(keyDisplay)}</code></div>
@@ -395,21 +399,43 @@ function keyCardHtml(key) {
 }
 
 function renderKeys() {
-  const { keys } = state;
-  $("#keys-count").textContent = keys.length ? `(${keys.length})` : "";
+  const { keys, showRevokedKeys } = state;
+  const visibleKeys = showRevokedKeys
+    ? keys
+    : keys.filter((key) => !key.revokedAt);
+  const hiddenRevokedCount = keys.length - visibleKeys.length;
 
-  if (!keys.length) {
+  if (!showRevokedKeys && hiddenRevokedCount > 0) {
+    $("#keys-count").textContent = `(${visibleKeys.length}/${keys.length})`;
+  } else {
+    $("#keys-count").textContent = visibleKeys.length
+      ? `(${visibleKeys.length})`
+      : "";
+  }
+
+  const showRevokedToggle = $("#toggle-show-revoked-keys");
+  if (showRevokedToggle) {
+    showRevokedToggle.checked = showRevokedKeys;
+  }
+
+  if (!visibleKeys.length) {
+    if (keys.length && !showRevokedKeys) {
+      $("#keys-list").innerHTML =
+        '<div class="empty-state"><div class="empty-state-text">No active API keys. Revoked keys are hidden.</div><button class="btn btn-ghost btn-sm" type="button" data-action="show-revoked">show revoked</button></div>';
+      return;
+    }
+
     $("#keys-list").innerHTML =
       '<div class="empty-state"><div class="empty-state-text">No API keys created yet.</div><button class="btn btn-primary btn-sm" type="button" data-action="open-create-key">create one</button></div>';
     return;
   }
 
-  const activeIds = new Set(keys.map((k) => k.id));
+  const activeIds = new Set(visibleKeys.map((k) => k.id));
   for (const id of state.revealedKeyIds) {
     if (!activeIds.has(id)) state.revealedKeyIds.delete(id);
   }
 
-  $("#keys-list").innerHTML = keys.map(keyCardHtml).join("");
+  $("#keys-list").innerHTML = visibleKeys.map(keyCardHtml).join("");
 }
 
 const DETAIL_EMPTY_STATE_HTML =
@@ -929,6 +955,26 @@ async function revokeKey(id) {
   }
 }
 
+async function deleteKey(id) {
+  const key = keyById(id);
+  const label = key?.label || maskKey(key?.key || id);
+  const confirmed = await showConfirm(
+    "Delete Revoked API Key",
+    `Delete "${label}" permanently? This removes the key and its usage history. This cannot be undone.`,
+    "delete"
+  );
+  if (!confirmed) return;
+
+  try {
+    await api(`/admin/keys/${id}`, { method: "DELETE" });
+    state.revealedKeyIds.delete(id);
+    toast("Key deleted");
+    await loadKeys();
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
 async function copyToClipboard(text, btn) {
   try {
     await navigator.clipboard.writeText(text);
@@ -1118,6 +1164,7 @@ function logout() {
   state.keys = [];
   state.keyUsageById = new Map();
   state.keyUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
+  state.showRevokedKeys = false;
   state.activeOAuth = null;
   state.revealedKeyIds.clear();
   state.setupKeyId = null;
@@ -1125,6 +1172,7 @@ function logout() {
   $("#oauth-flow-active").innerHTML = "";
   $("#login-gate").classList.remove("hidden");
   $("#app").classList.remove("visible");
+  $("#toggle-show-revoked-keys").checked = false;
   $("#login-token").value = "";
   $("#login-error").textContent = "";
 }
@@ -1161,6 +1209,11 @@ $("#keys-list").addEventListener("click", (e) => {
       openCreateKeyModal();
       return;
     }
+    if (action === "show-revoked") {
+      state.showRevokedKeys = true;
+      renderKeys();
+      return;
+    }
     if (!keyId) return;
 
     if (action === "copy-key") {
@@ -1177,6 +1230,7 @@ $("#keys-list").addEventListener("click", (e) => {
     }
     if (action === "rotate-key") rotateKey(keyId, button);
     if (action === "revoke-key") revokeKey(keyId);
+    if (action === "delete-key") deleteKey(keyId);
     return;
   }
 
@@ -1195,6 +1249,10 @@ $("#btn-create-key").addEventListener("click", openCreateKeyModal);
 $("#btn-modal-create-key").addEventListener("click", createKey);
 $("#btn-oauth-start").addEventListener("click", startOAuth);
 $("#btn-import-account").addEventListener("click", importAccount);
+$("#toggle-show-revoked-keys").addEventListener("change", (e) => {
+  state.showRevokedKeys = e.target.checked;
+  renderKeys();
+});
 
 $("#oauth-provider").addEventListener("change", updateOAuthProviderUI);
 updateOAuthProviderUI();

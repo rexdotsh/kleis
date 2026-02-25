@@ -1,6 +1,6 @@
 import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
 
-import { apiKeys } from "../schema";
+import { apiKeys, requestUsageBuckets } from "../schema";
 import type { Database } from "../index";
 
 type ScopeList = string[] | null;
@@ -130,6 +130,38 @@ export const revokeApiKey = async (
     .where(and(eq(apiKeys.id, id), isNull(apiKeys.revokedAt)));
 
   return result.rowsAffected > 0;
+};
+
+type DeleteRevokedApiKeyResult = "deleted" | "not_found" | "not_revoked";
+
+export const deleteRevokedApiKey = (
+  database: Database,
+  id: string
+): Promise<DeleteRevokedApiKeyResult> => {
+  return database.transaction(async (tx) => {
+    const key = await tx.query.apiKeys.findFirst({
+      columns: {
+        id: true,
+        revokedAt: true,
+      },
+      where: eq(apiKeys.id, id),
+    });
+
+    if (!key) {
+      return "not_found";
+    }
+
+    if (key.revokedAt === null) {
+      return "not_revoked";
+    }
+
+    await tx
+      .delete(requestUsageBuckets)
+      .where(eq(requestUsageBuckets.apiKeyId, id));
+    await tx.delete(apiKeys).where(eq(apiKeys.id, id));
+
+    return "deleted";
+  });
 };
 
 export const findActiveApiKeyByValue = async (

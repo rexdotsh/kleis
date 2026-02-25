@@ -9,6 +9,7 @@ import {
 } from "../../db/repositories/request-usage";
 import {
   createApiKey,
+  deleteRevokedApiKey,
   findApiKeyById,
   listApiKeys,
   revokeApiKey,
@@ -118,6 +119,32 @@ export const adminKeysRoutes = new Hono()
       return context.json({ revoked: true });
     }
   )
+  .delete("/:id", zValidator("param", keyIdParamsSchema), async (context) => {
+    const { id } = context.req.valid("param");
+    const result = await deleteRevokedApiKey(db, id);
+
+    if (result === "not_found") {
+      return context.json(
+        {
+          error: "not_found",
+          message: "API key was not found",
+        },
+        404
+      );
+    }
+
+    if (result === "not_revoked") {
+      return context.json(
+        {
+          error: "bad_request",
+          message: "Only revoked API keys can be deleted",
+        },
+        400
+      );
+    }
+
+    return context.json({ deleted: true });
+  })
   .get(
     "/:id/usage",
     zValidator("param", keyIdParamsSchema),
