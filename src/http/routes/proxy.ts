@@ -91,7 +91,20 @@ const proxyRequest = async (
   }
 
   const now = Date.now();
-  const account = await getPrimaryProviderAccount(db, route.provider, now);
+  let account: Awaited<ReturnType<typeof getPrimaryProviderAccount>>;
+  try {
+    account = await getPrimaryProviderAccount(db, route.provider, now);
+  } catch {
+    recordUsage(502);
+    return context.json(
+      proxyErrorResponse(
+        `Failed to refresh ${route.provider} account token`,
+        "token_refresh_failed"
+      ),
+      502
+    );
+  }
+
   if (!account) {
     recordUsage(400);
     return context.json(
