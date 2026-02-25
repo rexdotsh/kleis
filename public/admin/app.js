@@ -637,12 +637,11 @@ function setupSnippet() {
   ].join("\n");
 }
 
-function renderSetupSnippet() {
+function openSetupModal() {
   const snippet = $("#setup-snippet");
-  const copyBtn = $("#btn-copy-setup");
-  if (!snippet || !copyBtn) return;
-  copyBtn.disabled = false;
+  if (!snippet) return;
   snippet.textContent = setupSnippet();
+  $("#modal-opencode-setup").classList.add("open");
 }
 
 function showKeyReveal(fullKey) {
@@ -1135,7 +1134,6 @@ async function handleLogin() {
 function enterApp() {
   $("#login-gate").classList.add("hidden");
   $("#app").classList.add("visible");
-  renderSetupSnippet();
   loadAccounts();
   loadKeys();
 }
@@ -1230,6 +1228,7 @@ $("#btn-logout").addEventListener("click", logout);
 $("#btn-refresh-accounts").addEventListener("click", loadAccounts);
 $("#btn-refresh-keys").addEventListener("click", loadKeys);
 $("#btn-create-key").addEventListener("click", openCreateKeyModal);
+$("#btn-open-setup").addEventListener("click", openSetupModal);
 $("#btn-modal-create-key").addEventListener("click", createKey);
 $("#btn-oauth-start").addEventListener("click", startOAuth);
 $("#btn-import-account").addEventListener("click", importAccount);

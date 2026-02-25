@@ -966,6 +966,13 @@
                 show revoked
               </label>
               <button
+                id="btn-open-setup"
+                class="btn btn-ghost btn-sm"
+                type="button"
+              >
+                opencode setup
+              </button>
+              <button
                 id="btn-refresh-keys"
                 class="btn btn-ghost btn-sm"
                 type="button"
@@ -980,27 +987,6 @@
                 + new key
               </button>
             </div>
-          </div>
-
-          <div class="card">
-            <div
-              style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px"
-            >
-              <span class="section-title" style="font-size:13px"
-                >Setup snippet</span
-              >
-              <button
-                id="btn-copy-setup"
-                class="btn btn-primary btn-sm"
-                type="button"
-              >
-                copy
-              </button>
-            </div>
-            <div class="field-hint" style="margin-bottom:8px">
-              Copy this setup snippet, then copy an API key from a key card.
-            </div>
-            <pre id="setup-snippet" class="snippet-block"></pre>
           </div>
 
           <div id="keys-list"></div>
@@ -1246,6 +1232,30 @@
           <div class="loading-indicator">
             <span class="spinner spinner-lg"></span>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-opencode-setup" class="modal-backdrop">
+      <div class="modal" style="width:560px">
+        <div
+          style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px"
+        >
+          <div class="modal-title" style="margin-bottom:0">OpenCode setup</div>
+          <button class="btn btn-ghost btn-sm modal-close" type="button">
+            close
+          </button>
+        </div>
+        <div class="field-hint" style="margin-bottom:10px">
+          Run this once, then copy an API key from a key card and connect in
+          OpenCode.
+        </div>
+        <pre id="setup-snippet" class="snippet-block"></pre>
+        <div class="modal-footer">
+          <button class="btn btn-ghost modal-close" type="button">close</button>
+          <button id="btn-copy-setup" class="btn btn-primary" type="button">
+            copy snippet
+          </button>
         </div>
       </div>
     </div>
