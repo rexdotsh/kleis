@@ -1,5 +1,9 @@
 # Kleis
 
+<p align="center">
+  <img src="./assets/hero.png" alt="Kleis" width="100%" />
+</p>
+
 OAuth account proxy for [OpenCode](https://github.com/sst/opencode). One base URL for Copilot, Codex, and Claude.
 
 > [!NOTE]
@@ -51,6 +55,16 @@ Admin panel lives at `http://localhost:3000/admin/`.
 
 ---
 
+## OAuth flows
+
+- Codex: browser callback code flow or headless device flow.
+- Copilot: device flow.
+- Claude: authorization code flow (`claude.ai` or `console.anthropic.com` mode).
+
+After connecting accounts, set one primary account per provider.
+
+---
+
 ## OpenCode configuration
 
 After creating an API key in the admin panel:
@@ -72,4 +86,4 @@ Build pre-bundles everything into `dist/index.js` because Vercel's `@vercel/node
 
 ## Stack
 
-Hono &middot; Turso (libSQL) &middot; Drizzle ORM &middot; Zod
+Hono &middot; Turso (libSQL) &middot; Drizzle ORM &middot; Zod &middot; Bun
