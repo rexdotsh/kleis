@@ -461,23 +461,16 @@ export const releaseProviderAccountRefreshLock = async (
     );
 };
 
-export type UpdateProviderAccountProfileInput = {
-  label: string | null;
-  accountId: string | null;
-  metadata: ProviderAccountMetadata | null;
-  now: number;
-};
-
-export type UpdateProviderAccountProfileResult =
-  | ProviderAccountRecord
-  | "account_id_conflict"
-  | null;
-
 export const updateProviderAccountProfile = async (
   database: Database,
   id: string,
-  input: UpdateProviderAccountProfileInput
-): Promise<UpdateProviderAccountProfileResult> => {
+  input: {
+    label: string | null;
+    accountId: string | null;
+    metadata: ProviderAccountMetadata | null;
+    now: number;
+  }
+): Promise<ProviderAccountRecord | "account_id_conflict" | null> => {
   try {
     const result = await database
       .update(providerAccounts)

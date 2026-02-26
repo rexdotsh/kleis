@@ -71,9 +71,7 @@ export const readAnthropicUsageFromResponse = (
   return readAnthropicUsageObject(responseBody.usage);
 };
 
-export const readOpenAiResponsesUsageObject = (
-  usage: unknown
-): TokenUsage | null => {
+const readOpenAiResponsesUsageObject = (usage: unknown): TokenUsage | null => {
   if (!isObjectRecord(usage)) {
     return null;
   }
@@ -126,9 +124,7 @@ export const readOpenAiResponsesUsageFromSseEvent = (
   return readOpenAiResponsesUsageObject(responseBody.usage);
 };
 
-export const readOpenAiChatUsageObject = (
-  usage: unknown
-): TokenUsage | null => {
+const readOpenAiChatUsageObject = (usage: unknown): TokenUsage | null => {
   if (!isObjectRecord(usage)) {
     return null;
   }
