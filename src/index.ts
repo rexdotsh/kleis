@@ -5,6 +5,7 @@ import { requireAdminAuth } from "./http/middleware/admin-auth";
 import { requireProxyApiKey } from "./http/middleware/api-key-auth";
 import { adminAccountsRoutes } from "./http/routes/admin-accounts";
 import { adminKeysRoutes } from "./http/routes/admin-keys";
+import { adminUsageRoutes } from "./http/routes/admin-usage";
 import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
 import { proxyRoutes } from "./http/routes/proxy";
@@ -69,6 +70,7 @@ const adminApi = new Hono();
 adminApi.use("/*", requireAdminAuth);
 adminApi.route("/accounts", adminAccountsRoutes);
 adminApi.route("/keys", adminKeysRoutes);
+adminApi.route("/usage", adminUsageRoutes);
 app.route("/admin", adminApi);
 
 app.use("/openai/v1/*", requireProxyApiKey);

@@ -893,6 +893,203 @@
       width: 36px;
       flex-shrink: 0;
     }
+    .dash-controls {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+      gap: 12px;
+    }
+    .dash-window-selector {
+      display: flex;
+      gap: 2px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-sm);
+      padding: 2px;
+      flex-shrink: 0;
+    }
+    .dash-window-btn {
+      padding: 6px 14px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      background: none;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: all 120ms ease;
+    }
+    .dash-window-btn:hover {
+      color: var(--text-secondary);
+    }
+    .dash-window-btn.active {
+      color: var(--text-inverse);
+      background: var(--amber);
+    }
+    .dash-kpi-row {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .dash-kpi {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 16px 18px;
+      border-top: 2px solid var(--border-subtle);
+      transition: border-color 200ms ease;
+    }
+    .dash-kpi:hover {
+      border-color: var(--border);
+    }
+    .dash-kpi-label {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+    }
+    .dash-kpi-value {
+      font-family: var(--font-display);
+      font-size: 1.4rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      line-height: 1.1;
+    }
+    .dash-kpi-delta {
+      font-size: 11px;
+      margin-top: 6px;
+    }
+    .dash-kpi-delta.positive {
+      color: var(--green);
+    }
+    .dash-kpi-delta.negative {
+      color: var(--red);
+    }
+    .dash-kpi-delta.neutral {
+      color: var(--text-tertiary);
+    }
+    .dash-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      padding: 18px;
+      margin-bottom: 16px;
+      transition: border-color 200ms ease;
+    }
+    .dash-card:hover {
+      border-color: var(--border);
+    }
+    .dash-chart-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 14px;
+    }
+    .dash-chart-svg {
+      width: 100%;
+      display: block;
+    }
+    .dash-legend {
+      display: flex;
+      gap: 16px;
+      font-size: 10px;
+      color: var(--text-tertiary);
+      margin-top: 10px;
+    }
+    .dash-legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .dash-legend-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+    .dash-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .dash-provider-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .dash-provider-row:last-child {
+      border-bottom: none;
+    }
+    .dash-provider-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 90px;
+      flex-shrink: 0;
+    }
+    .dash-provider-pct {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+    .dash-provider-track {
+      flex: 1;
+      height: 22px;
+      background: var(--bg-input);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .dash-provider-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 300ms ease;
+    }
+    .dash-provider-stats {
+      font-size: 11px;
+      color: var(--text-secondary);
+      display: flex;
+      gap: 6px;
+      flex-shrink: 0;
+      min-width: 200px;
+      justify-content: flex-end;
+    }
+    .dash-empty {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-tertiary);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .dash-kpi-row {
+        grid-template-columns: repeat(3, 1fr);
+      }
+      .dash-grid-2 {
+        grid-template-columns: 1fr;
+      }
+      .dash-provider-stats {
+        display: none;
+      }
+    }
+    @media (max-width: 640px) {
+      .dash-kpi-row {
+        grid-template-columns: repeat(2, 1fr);
+      }
+      .dash-controls {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
     </style>
   </head>
   <body>
@@ -933,14 +1130,70 @@
 
       <div class="shell">
         <nav class="tabs fade-in">
-          <button class="tab active" data-tab="accounts" type="button">
+          <button class="tab active" data-tab="usage" type="button">
+            usage
+          </button>
+          <button class="tab" data-tab="accounts" type="button">
             accounts
           </button>
           <button class="tab" data-tab="keys" type="button">api keys</button>
           <button class="tab" data-tab="oauth" type="button">connect</button>
         </nav>
 
-        <div id="panel-accounts" class="tab-panel active fade-in-delay">
+        <div id="panel-usage" class="tab-panel active fade-in-delay">
+          <div class="dash-controls">
+            <div><span class="section-title">Usage</span></div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <div class="dash-window-selector" id="dash-window-selector">
+                <button
+                  class="dash-window-btn"
+                  data-window="3600000"
+                  type="button"
+                >
+                  1h
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="21600000"
+                  type="button"
+                >
+                  6h
+                </button>
+                <button
+                  class="dash-window-btn active"
+                  data-window="86400000"
+                  type="button"
+                >
+                  24h
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="604800000"
+                  type="button"
+                >
+                  7d
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="2592000000"
+                  type="button"
+                >
+                  30d
+                </button>
+              </div>
+              <button
+                id="btn-refresh-dash"
+                class="btn btn-ghost btn-sm"
+                type="button"
+              >
+                refresh
+              </button>
+            </div>
+          </div>
+          <div id="dash-content"></div>
+        </div>
+
+        <div id="panel-accounts" class="tab-panel fade-in-delay">
           <div class="section-header">
             <div>
               <span class="section-title">Provider Accounts</span>

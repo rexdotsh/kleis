@@ -23,6 +23,7 @@ const state = {
   showRevokedKeys: false,
   activeOAuth: null,
   revealedKeyIds: new Set(),
+  dashboardWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
 };
 
 const APP_ORIGIN = window.location.origin;
@@ -182,6 +183,26 @@ function formatCount(value) {
   return usageNumber(value).toLocaleString("en-US");
 }
 
+function formatCompact(n) {
+  const v = usageNumber(n);
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1000) return `${(v / 1000).toFixed(1)}K`;
+  return String(v);
+}
+
+function cacheHitRate(inputTokens, cacheReadTokens) {
+  const total = inputTokens + cacheReadTokens;
+  return total > 0 ? Math.round((cacheReadTokens / total) * 100) : 0;
+}
+
+function formatBucketTime(ts, bucketSizeMs) {
+  const d = new Date(ts);
+  if (bucketSizeMs >= 86_400_000) {
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  }
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function normalizeUsage(rawUsage) {
   const usage = rawUsage || {};
   const requestCount = usageNumber(usage.requestCount);
@@ -251,16 +272,6 @@ function usageMetaParts(
     includeMaxLatency &&
       metrics.maxLatencyMs &&
       meta(`${formatCount(metrics.maxLatencyMs)}ms max`),
-    metrics.requestCount &&
-      meta(`${formatCount(metrics.totalTokens)} tok total`),
-    metrics.requestCount &&
-      meta(
-        `${formatCount(metrics.inputTokens)} in / ${formatCount(metrics.outputTokens)} out tok`
-      ),
-    metrics.requestCount &&
-      meta(
-        `${formatCount(metrics.cacheReadTokens)} cache read / ${formatCount(metrics.cacheWriteTokens)} cache write`
-      ),
     metrics.lastRequestAt &&
       meta(`last req ${escapeHtml(relativeTime(metrics.lastRequestAt))}`),
   ].filter(Boolean);
@@ -482,7 +493,7 @@ function keyCardHtml(key) {
       const puRate = metrics.successRate;
       const ratePart = puRate !== null ? ` (${puRate}% ok)` : "";
       providerUsageParts.push(
-        `<span class="card-meta-item"><span class="badge badge-${pu.provider}">${pu.provider}</span> ${formatCount(metrics.requestCount)} reqs${ratePart} - ${formatCount(metrics.inputTokens)} in / ${formatCount(metrics.outputTokens)} out tok - ${formatCount(metrics.cacheReadTokens)} read / ${formatCount(metrics.cacheWriteTokens)} write cache</span>`
+        `<span class="card-meta-item"><span class="badge badge-${pu.provider}">${pu.provider}</span> ${formatCount(metrics.requestCount)} reqs${ratePart}</span>`
       );
     }
   }
@@ -617,18 +628,21 @@ const MODEL_LEAD_COLS = [
   ],
 ];
 
-function renderUsageTable(title, rows, leadCols) {
-  if (!rows.length) return "";
+function usageTableHtml(rows, leadCols) {
   const headers = [...leadCols.map((c) => c[0]), ...USAGE_TABLE_HEADERS];
-  let html = `<div class="detail-section-title">${title}</div>`;
-  html += `<div style="overflow:auto"><table class="detail-table"><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>`;
+  let html = `<table class="detail-table"><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>`;
   for (const row of rows) {
     const metrics = normalizeUsage(row);
     const lead = leadCols.map((c) => `<td>${c[1](row)}</td>`).join("");
     html += `<tr>${lead}<td>${formatCount(metrics.requestCount)}</td><td>${formatCount(metrics.successCount)}</td><td>${metrics.clientErrorCount ? formatCount(metrics.clientErrorCount) : "-"}</td><td>${metrics.serverErrorCount ? formatCount(metrics.serverErrorCount) : "-"}</td><td>${metrics.authErrorCount ? formatCount(metrics.authErrorCount) : "-"}</td><td>${metrics.rateLimitCount ? formatCount(metrics.rateLimitCount) : "-"}</td><td>${formatCount(metrics.avgLatencyMs)}</td><td>${formatCount(metrics.maxLatencyMs)}</td><td>${formatCount(metrics.inputTokens)}</td><td>${formatCount(metrics.outputTokens)}</td><td>${formatCount(metrics.cacheReadTokens)}</td><td>${formatCount(metrics.cacheWriteTokens)}</td></tr>`;
   }
-  html += "</tbody></table></div>";
+  html += "</tbody></table>";
   return html;
+}
+
+function renderUsageTable(title, rows, leadCols) {
+  if (!rows.length) return "";
+  return `<div class="detail-section-title">${title}</div><div style="overflow:auto">${usageTableHtml(rows, leadCols)}</div>`;
 }
 
 function renderBucketTimeline(buckets) {
@@ -870,6 +884,279 @@ function renderOAuthFlow(data, provider) {
   </div>`;
 
   $("#btn-oauth-complete").addEventListener("click", completeOAuth);
+}
+
+function dashDelta(current, previous) {
+  if (!previous || previous === 0) return current > 0 ? null : 0;
+  return Math.round(((current - previous) / previous) * 100);
+}
+
+function dashDeltaHtml(value, inverted) {
+  if (value === null || value === undefined) return "";
+  const sign = value > 0 ? "+" : "";
+  const cls =
+    value === 0
+      ? "neutral"
+      : value > 0 !== (inverted || false)
+        ? "positive"
+        : "negative";
+  return `<div class="dash-kpi-delta ${cls}">${sign}${value}% vs prev</div>`;
+}
+
+function renderDashKpis(m, pm) {
+  const cr = cacheHitRate(m.inputTokens, m.cacheReadTokens);
+  const prevCr = cacheHitRate(pm.inputTokens, pm.cacheReadTokens);
+
+  const kpis = [
+    {
+      label: "requests",
+      value: formatCompact(m.requestCount),
+      delta: dashDelta(m.requestCount, pm.requestCount),
+      accent: "var(--amber)",
+    },
+    {
+      label: "success rate",
+      value: m.successRate !== null ? `${m.successRate}%` : "-",
+      delta: dashDelta(
+        m.successRate ?? 0,
+        pm.requestCount
+          ? Math.round((pm.successCount / pm.requestCount) * 100)
+          : 0
+      ),
+      accent: "var(--green)",
+    },
+    {
+      label: "tokens",
+      value: formatCompact(m.totalTokens),
+      delta: dashDelta(m.totalTokens, pm.inputTokens + pm.outputTokens),
+      accent: "var(--amber)",
+    },
+    {
+      label: "cache hit",
+      value: `${cr}%`,
+      delta: dashDelta(cr, prevCr),
+      accent: "var(--copilot)",
+    },
+    {
+      label: "avg latency",
+      value: `${formatCount(m.avgLatencyMs)}ms`,
+      delta: dashDelta(m.avgLatencyMs, pm.avgLatencyMs),
+      inverted: true,
+      accent: "var(--text-secondary)",
+    },
+  ];
+
+  return `<div class="dash-kpi-row">${kpis
+    .map(
+      (k) =>
+        `<div class="dash-kpi" style="border-top-color:${k.accent}"><div class="dash-kpi-label">${k.label}</div><div class="dash-kpi-value">${k.value}</div>${dashDeltaHtml(k.delta, k.inverted)}</div>`
+    )
+    .join("")}</div>`;
+}
+
+function renderSvgBarChart(buckets, seriesExtractor, bucketSizeMs) {
+  if (!buckets.length) return "";
+
+  const W = 700;
+  const H = 140;
+  const PL = 44;
+  const PR = 8;
+  const PT = 12;
+  const PB = 24;
+  const chartW = W - PL - PR;
+  const chartH = H - PT - PB;
+
+  let maxVal = 0;
+  for (const b of buckets) {
+    let total = 0;
+    for (const s of seriesExtractor(b)) total += s.value;
+    if (total > maxVal) maxVal = total;
+  }
+  if (maxVal === 0) return "";
+
+  const step = chartW / buckets.length;
+  const barW = Math.max(1.5, Math.min(12, step * 0.8));
+
+  let svg = `<svg class="dash-chart-svg" viewBox="0 0 ${W} ${H}">`;
+
+  const gridValues = [maxVal, Math.round(maxVal / 2), 0];
+  for (let i = 0; i < gridValues.length; i++) {
+    const y = PT + (chartH * i) / 2;
+    svg += `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="var(--border-subtle)" stroke-width="0.5"/>`;
+    svg += `<text x="${PL - 4}" y="${y + 3}" text-anchor="end" fill="var(--text-tertiary)" font-size="9" font-family="var(--font-mono)">${formatCompact(gridValues[i])}</text>`;
+  }
+
+  for (let i = 0; i < buckets.length; i++) {
+    const b = buckets[i];
+    const series = seriesExtractor(b);
+    let total = 0;
+    for (const s of series) total += s.value;
+    const x = PL + i * step + (step - barW) / 2;
+    let currentY = PT + chartH - (total / maxVal) * chartH;
+    for (const s of series) {
+      const h = (s.value / maxVal) * chartH;
+      if (h > 0.5) {
+        const tip = `${formatBucketTime(b.bucketStart, bucketSizeMs)}: ${formatCount(s.value)} ${s.label}`;
+        svg += `<rect x="${x}" y="${currentY}" width="${barW}" height="${h}" fill="${s.color}" rx="0.5"><title>${escapeHtml(tip)}</title></rect>`;
+        currentY += h;
+      }
+    }
+  }
+
+  const labelCount = Math.min(6, buckets.length);
+  if (labelCount > 1) {
+    const labelStep = Math.max(1, Math.floor(buckets.length / labelCount));
+    for (let i = 0; i < buckets.length; i += labelStep) {
+      const x = PL + i * step + step / 2;
+      svg += `<text x="${x}" y="${H - 4}" text-anchor="middle" fill="var(--text-tertiary)" font-size="8" font-family="var(--font-mono)">${escapeHtml(formatBucketTime(buckets[i].bucketStart, bucketSizeMs))}</text>`;
+    }
+  }
+
+  svg += "</svg>";
+  return svg;
+}
+
+function requestSeriesExtractor(bucket) {
+  const m = normalizeUsage(bucket);
+  const errCount =
+    m.clientErrorCount +
+    m.serverErrorCount +
+    m.authErrorCount +
+    m.rateLimitCount;
+  return [
+    { value: m.successCount, color: "var(--green)", label: "success" },
+    { value: errCount, color: "var(--red)", label: "errors" },
+  ];
+}
+
+function tokenSeriesExtractor(bucket) {
+  const m = normalizeUsage(bucket);
+  return [
+    { value: m.inputTokens, color: "var(--amber)", label: "input" },
+    { value: m.outputTokens, color: "var(--green)", label: "output" },
+  ];
+}
+
+function renderProviderBreakdown(providers, totalMetrics) {
+  if (!providers.length) return "";
+  const maxReqs = Math.max(...providers.map((p) => p.requestCount));
+  let html = "";
+  for (const p of providers) {
+    const pm = normalizeUsage(p);
+    const pct = totalMetrics.requestCount
+      ? Math.round((pm.requestCount / totalMetrics.requestCount) * 100)
+      : 0;
+    const barPct = maxReqs ? (pm.requestCount / maxReqs) * 100 : 0;
+    const tokTotal = pm.inputTokens + pm.outputTokens;
+    const cr = cacheHitRate(pm.inputTokens, pm.cacheReadTokens);
+    html += `<div class="dash-provider-row">
+      <div class="dash-provider-info">
+        <span class="badge badge-${p.provider}">${p.provider}</span>
+        <span class="dash-provider-pct">${pct}%</span>
+      </div>
+      <div class="dash-provider-track">
+        <div class="dash-provider-fill" style="width:${barPct}%;background:var(--${p.provider})"></div>
+      </div>
+      <div class="dash-provider-stats">
+        ${formatCount(pm.requestCount)} reqs
+        <span class="dot-sep"></span>
+        ${formatCompact(tokTotal)} tok
+        <span class="dot-sep"></span>
+        ${cr}% cache
+      </div>
+    </div>`;
+  }
+  return html;
+}
+
+function renderDashTable(title, rows, leadCols) {
+  if (!rows.length) return "";
+  return `<div class="dash-card" style="overflow:auto"><div class="dash-chart-title">${title}</div>${usageTableHtml(rows, leadCols)}</div>`;
+}
+
+const DASH_KEY_LEAD_COLS = [
+  [
+    "key",
+    (row) => {
+      const k = keyById(row.apiKeyId);
+      return k
+        ? escapeHtml(k.label || maskKey(k.key))
+        : `<code>${escapeHtml(row.apiKeyId.slice(0, 8))}...</code>`;
+    },
+  ],
+];
+
+function renderDashboard(data) {
+  const el = $("#dash-content");
+  if (!data || !data.totals || !data.totals.requestCount) {
+    el.innerHTML =
+      '<div class="dash-empty">No usage data in this window.</div>';
+    return;
+  }
+
+  const {
+    totals,
+    previousTotals,
+    byProvider,
+    byEndpoint,
+    byModel,
+    byKey,
+    buckets,
+    bucketSizeMs,
+  } = data;
+  const m = normalizeUsage(totals);
+  const pm = normalizeUsage(previousTotals);
+
+  let html = renderDashKpis(m, pm);
+
+  const reqChart = renderSvgBarChart(
+    buckets,
+    requestSeriesExtractor,
+    bucketSizeMs
+  );
+  const tokChart = renderSvgBarChart(
+    buckets,
+    tokenSeriesExtractor,
+    bucketSizeMs
+  );
+
+  if (reqChart || tokChart) {
+    html += '<div class="dash-grid-2">';
+    if (reqChart) {
+      html += `<div class="dash-card"><div class="dash-chart-title">request volume</div>${reqChart}<div class="dash-legend"><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--green)"></span>success</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--red)"></span>errors</span></div></div>`;
+    }
+    if (tokChart) {
+      html += `<div class="dash-card"><div class="dash-chart-title">token usage</div>${tokChart}<div class="dash-legend"><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--amber)"></span>input</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--green)"></span>output</span></div></div>`;
+    }
+    html += "</div>";
+  }
+
+  if (byProvider.length) {
+    html += `<div class="dash-card"><div class="dash-chart-title">by provider</div>${renderProviderBreakdown(byProvider, m)}</div>`;
+  }
+
+  html += renderDashTable("by model", byModel, MODEL_LEAD_COLS);
+  html += renderDashTable("by API key", byKey, DASH_KEY_LEAD_COLS);
+  html += renderDashTable("by endpoint", byEndpoint, ENDPOINT_LEAD_COLS);
+
+  if (m.lastRequestAt) {
+    html += `<div style="font-size:11px;color:var(--text-tertiary);text-align:right;margin-top:4px">last request: ${escapeHtml(new Date(m.lastRequestAt).toLocaleString())}</div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+async function loadDashboard() {
+  const el = $("#dash-content");
+  el.innerHTML = DETAIL_LOADING_HTML;
+  try {
+    const data = await api(
+      `/admin/usage/dashboard?windowMs=${state.dashboardWindowMs}`
+    );
+    renderDashboard(data);
+  } catch (e) {
+    el.innerHTML = `<div class="dash-empty" style="color:var(--red)">${escapeHtml(e.message)}</div>`;
+  }
 }
 
 async function loadAccounts() {
@@ -1450,6 +1737,7 @@ function enterApp() {
   $("#app").classList.add("visible");
   const hash = location.hash.slice(1);
   if (hash && $(`#panel-${hash}`)) switchToTab(hash);
+  loadDashboard();
   loadAccounts();
   loadKeys();
 }
@@ -1466,6 +1754,7 @@ function logout() {
   state.showRevokedKeys = false;
   state.activeOAuth = null;
   state.revealedKeyIds.clear();
+  state.dashboardWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
   $("#login-gate").classList.remove("hidden");
@@ -1552,6 +1841,17 @@ $("#login-token").addEventListener("keydown", (e) => {
 $("#btn-logout").addEventListener("click", logout);
 $("#btn-refresh-accounts").addEventListener("click", loadAccounts);
 $("#btn-refresh-keys").addEventListener("click", loadKeys);
+$("#btn-refresh-dash").addEventListener("click", loadDashboard);
+$("#dash-window-selector").addEventListener("click", (e) => {
+  const btn = e.target.closest(".dash-window-btn");
+  if (!btn) return;
+  const windowMs = Number(btn.dataset.window);
+  if (!windowMs || windowMs === state.dashboardWindowMs) return;
+  state.dashboardWindowMs = windowMs;
+  for (const b of $$("#dash-window-selector .dash-window-btn"))
+    b.classList.toggle("active", b === btn);
+  loadDashboard();
+});
 $("#btn-create-key").addEventListener("click", openCreateKeyModal);
 $("#btn-open-setup").addEventListener("click", openSetupModal);
 $("#btn-modal-create-key").addEventListener("click", createKey);
