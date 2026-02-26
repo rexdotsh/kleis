@@ -291,70 +291,6 @@ function renderUsageTable(title, rows, leadCols) {
   return `<div class="detail-section-title">${title}</div><div style="overflow:auto">${usageTableHtml(rows, leadCols)}</div>`;
 }
 
-function renderBucketTimeline(buckets) {
-  if (buckets.length <= 1) {
-    return "";
-  }
-
-  const maxReqs = Math.max(
-    ...buckets.map((bucket) => normalizeUsage(bucket).requestCount)
-  );
-  let html =
-    '<div class="detail-section-title">request timeline (1m buckets)</div>';
-  for (const b of buckets) {
-    const metrics = normalizeUsage(b);
-    const errPct = metrics.requestCount
-      ? ((metrics.clientErrorCount +
-          metrics.authErrorCount +
-          metrics.rateLimitCount +
-          metrics.serverErrorCount) /
-          metrics.requestCount) *
-        100
-      : 0;
-    const okPct = 100 - errPct;
-    const pct = maxReqs ? (metrics.requestCount / maxReqs) * 100 : 0;
-    const time = new Date(b.bucketStart).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-
-    html += `<div class="detail-bar-row">
-      <span class="detail-bar-label">${time}</span>
-      <div class="detail-bar-track">
-        <div class="detail-bar-fill" style="width:${pct * (okPct / 100)}%;background:var(--green)"></div>
-        <div class="detail-bar-fill" style="width:${pct * (errPct / 100)}%;background:var(--red)"></div>
-      </div>
-      <span class="detail-bar-count">${metrics.requestCount}</span>
-    </div>`;
-  }
-
-  return html;
-}
-
-function renderTokenBucketTable(buckets) {
-  if (!buckets.length) {
-    return "";
-  }
-
-  let html =
-    '<div class="detail-section-title">token timeline (1m buckets)</div>';
-  html +=
-    '<div style="overflow:auto"><table class="detail-table"><thead><tr><th>bucket</th><th>input tok</th><th>output tok</th><th>cache read</th><th>cache write</th><th>total tok</th></tr></thead><tbody>';
-
-  for (const bucket of buckets) {
-    const metrics = normalizeUsage(bucket);
-    const bucketLabel = new Date(bucket.bucketStart).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-
-    html += `<tr><td>${bucketLabel}</td><td>${formatCount(metrics.inputTokens)}</td><td>${formatCount(metrics.outputTokens)}</td><td>${formatCount(metrics.cacheReadTokens)}</td><td>${formatCount(metrics.cacheWriteTokens)}</td><td>${formatCount(metrics.totalTokens)}</td></tr>`;
-  }
-
-  html += "</tbody></table></div>";
-  return html;
-}
-
 function renderKeyDetailBody(data) {
   const { totals } = data;
   if (!totals.requestCount) {
@@ -373,8 +309,6 @@ function renderKeyDetailBody(data) {
       data.models || [],
       MODEL_LEAD_COLS
     ),
-    renderBucketTimeline(data.buckets),
-    renderTokenBucketTable(data.buckets),
   ].join("");
 }
 
@@ -407,8 +341,6 @@ function renderAccountDetailBody(data) {
       data.models || [],
       MODEL_LEAD_COLS
     ),
-    renderBucketTimeline(data.buckets),
-    renderTokenBucketTable(data.buckets),
   ].join("");
 }
 
