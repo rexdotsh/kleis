@@ -247,6 +247,7 @@ function switchToTab(name) {
     t.classList.toggle("active", t.dataset.tab === name);
   for (const p of $$(".tab-panel"))
     p.classList.toggle("active", p.id === `panel-${name}`);
+  history.replaceState(null, "", `#${name}`);
 }
 
 function showLoading(containerId) {
@@ -1191,6 +1192,8 @@ async function handleLogin() {
 function enterApp() {
   $("#login-gate").classList.add("hidden");
   $("#app").classList.add("visible");
+  const hash = location.hash.slice(1);
+  if (hash && $(`#panel-${hash}`)) switchToTab(hash);
   loadAccounts();
   loadKeys();
 }
