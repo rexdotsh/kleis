@@ -31,7 +31,10 @@ const createUsageCapture = () => {
   };
 };
 
-const createSseResponse = (events: readonly unknown[]): Response => {
+const createSseResponse = (
+  events: readonly unknown[],
+  contentType = "text/event-stream"
+): Response => {
   const payload = events
     .map((event) =>
       typeof event === "string"
@@ -40,6 +43,12 @@ const createSseResponse = (events: readonly unknown[]): Response => {
     )
     .join("");
   const encoder = new TextEncoder();
+  const responseInit: ResponseInit = {};
+  if (contentType) {
+    responseInit.headers = {
+      "content-type": contentType,
+    };
+  }
 
   return new Response(
     new ReadableStream<Uint8Array>({
@@ -48,18 +57,19 @@ const createSseResponse = (events: readonly unknown[]): Response => {
         controller.close();
       },
     }),
-    {
-      headers: {
-        "content-type": "text/event-stream",
-      },
-    }
+    responseInit
   );
 };
 
 describe("proxy contract: codex", () => {
   const codexUsageBody = { model: "gpt-5-codex", input: [] };
+  const codexStreamingUsageBody = {
+    ...codexUsageBody,
+    stream: true,
+  };
 
   const prepareCodexUsageRequest = (
+    bodyJson: unknown,
     onTokenUsage?: ((usage: TokenUsage) => void) | null
   ) =>
     prepareCodexProxyRequest({
@@ -67,8 +77,8 @@ describe("proxy contract: codex", () => {
       accessToken: "codex-access",
       accountId: null,
       metadata: null,
-      bodyText: JSON.stringify(codexUsageBody),
-      bodyJson: codexUsageBody,
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
       onTokenUsage,
     });
 
@@ -174,7 +184,10 @@ describe("proxy contract: codex", () => {
 
   test("extracts normalized usage from non-streaming responses", async () => {
     const capture = createUsageCapture();
-    const result = prepareCodexUsageRequest(capture.onTokenUsage);
+    const result = prepareCodexUsageRequest(
+      codexUsageBody,
+      capture.onTokenUsage
+    );
 
     const sourceResponse = Response.json({
       usage: {
@@ -192,6 +205,37 @@ describe("proxy contract: codex", () => {
       inputTokens: 100,
       outputTokens: 34,
       cacheReadTokens: 20,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  test("extracts non-streaming usage when content-type is missing", async () => {
+    const capture = createUsageCapture();
+    const result = prepareCodexUsageRequest(
+      codexUsageBody,
+      capture.onTokenUsage
+    );
+
+    const sourceResponse = new Response(
+      new TextEncoder().encode(
+        JSON.stringify({
+          usage: {
+            input_tokens: 60,
+            output_tokens: 10,
+            input_tokens_details: {
+              cached_tokens: 5,
+            },
+          },
+        })
+      )
+    );
+
+    await result.transformResponse(sourceResponse);
+
+    expect(capture.read()).toEqual({
+      inputTokens: 55,
+      outputTokens: 10,
+      cacheReadTokens: 5,
       cacheWriteTokens: 0,
     });
   });
@@ -234,7 +278,10 @@ describe("proxy contract: codex", () => {
   for (const testCase of codexStreamUsageCases) {
     test(`extracts usage from streaming ${testCase.eventType} events`, async () => {
       const capture = createUsageCapture();
-      const result = prepareCodexUsageRequest(capture.onTokenUsage);
+      const result = prepareCodexUsageRequest(
+        codexStreamingUsageBody,
+        capture.onTokenUsage
+      );
 
       const transformed = await result.transformResponse(
         createSseResponse([
@@ -251,6 +298,42 @@ describe("proxy contract: codex", () => {
       expect(capture.read()).toEqual(testCase.expected);
     });
   }
+
+  test("extracts usage from streaming responses without content-type", async () => {
+    const capture = createUsageCapture();
+    const result = prepareCodexUsageRequest(
+      codexStreamingUsageBody,
+      capture.onTokenUsage
+    );
+
+    const transformed = await result.transformResponse(
+      createSseResponse(
+        [
+          {
+            type: "response.done",
+            response: {
+              usage: {
+                input_tokens: 81,
+                output_tokens: 23,
+                input_tokens_details: {
+                  cached_tokens: 9,
+                },
+              },
+            },
+          },
+        ],
+        ""
+      )
+    );
+    await transformed.text();
+
+    expect(capture.read()).toEqual({
+      inputTokens: 72,
+      outputTokens: 23,
+      cacheReadTokens: 9,
+      cacheWriteTokens: 0,
+    });
+  });
 });
 
 describe("proxy contract: copilot", () => {
@@ -427,6 +510,105 @@ describe("proxy contract: copilot", () => {
       expect(capture.read()).toEqual(testCase.expected);
     });
   }
+
+  test("extracts usage from responses stream without content-type", async () => {
+    const capture = createUsageCapture();
+    const bodyJson = {
+      stream: true,
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      ],
+    };
+
+    const result = prepareCopilotProxyRequest({
+      endpoint: "responses",
+      requestUrl: new URL("https://kleis.local/responses?stream=true"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+      githubAccessToken: "gh-token",
+      metadata: null,
+      onTokenUsage: capture.onTokenUsage,
+    });
+
+    const transformed = await result.transformResponse(
+      createSseResponse(
+        [
+          {
+            type: "response.done",
+            response: {
+              usage: {
+                input_tokens: 88,
+                output_tokens: 21,
+                input_tokens_details: {
+                  cached_tokens: 8,
+                },
+              },
+            },
+          },
+        ],
+        ""
+      )
+    );
+    await transformed.text();
+
+    expect(capture.read()).toEqual({
+      inputTokens: 80,
+      outputTokens: 21,
+      cacheReadTokens: 8,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  test("extracts usage from non-streaming responses without content-type", async () => {
+    const capture = createUsageCapture();
+    const bodyJson = {
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      ],
+    };
+
+    const result = prepareCopilotProxyRequest({
+      endpoint: "responses",
+      requestUrl: new URL("https://kleis.local/responses"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+      githubAccessToken: "gh-token",
+      metadata: null,
+      onTokenUsage: capture.onTokenUsage,
+    });
+
+    const transformed = await result.transformResponse(
+      new Response(
+        new TextEncoder().encode(
+          JSON.stringify({
+            usage: {
+              input_tokens: 54,
+              output_tokens: 9,
+              input_tokens_details: {
+                cached_tokens: 4,
+              },
+            },
+          })
+        )
+      )
+    );
+    await transformed.text();
+
+    expect(capture.read()).toEqual({
+      inputTokens: 50,
+      outputTokens: 9,
+      cacheReadTokens: 4,
+      cacheWriteTokens: 0,
+    });
+  });
 });
 
 describe("proxy contract: claude", () => {

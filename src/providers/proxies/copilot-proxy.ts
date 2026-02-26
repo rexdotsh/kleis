@@ -17,7 +17,7 @@ import {
   readOpenAiResponsesUsageFromSseEvent,
   type TokenUsage,
 } from "../../usage/token-usage";
-import { isObjectRecord } from "../../utils/object";
+import { isObjectRecord, readBooleanField } from "../../utils/object";
 import { transformOpenAiUsageResponse } from "./openai-usage-response";
 
 type CopilotMessageProfile = {
@@ -221,7 +221,8 @@ const withChatCompletionsStreamUsage = (
 const transformCopilotResponse = (
   endpoint: ProxyEndpoint,
   response: Response,
-  onTokenUsage?: ((usage: TokenUsage) => void) | null
+  onTokenUsage: ((usage: TokenUsage) => void) | null | undefined,
+  isStreamingRequest: boolean
 ): Promise<Response> => {
   const extractors =
     endpoint === "responses"
@@ -239,6 +240,7 @@ const transformCopilotResponse = (
     extractSseUsage: extractors.extractSseUsage,
     extractJsonUsage: extractors.extractJsonUsage,
     onTokenUsage,
+    isStreamingRequest,
   });
 };
 
@@ -262,6 +264,9 @@ type CopilotProxyPreparationResult = {
 export const prepareCopilotProxyRequest = (
   input: CopilotProxyPreparationInput
 ): CopilotProxyPreparationResult => {
+  const isStreamingRequest =
+    readBooleanField(input.bodyJson, "stream") === true;
+
   const profile = deriveCopilotRequestProfile(input.endpoint, input.bodyJson);
   const baseUrl =
     input.metadata?.copilotApiBaseUrl ?? COPILOT_DEFAULT_API_BASE_URL;
@@ -292,6 +297,11 @@ export const prepareCopilotProxyRequest = (
     ),
     bodyText,
     transformResponse: (response: Response): Promise<Response> =>
-      transformCopilotResponse(input.endpoint, response, input.onTokenUsage),
+      transformCopilotResponse(
+        input.endpoint,
+        response,
+        input.onTokenUsage,
+        isStreamingRequest
+      ),
   };
 };

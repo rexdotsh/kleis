@@ -70,15 +70,10 @@ const readLatestUsageFromSse = (
   return text.slice(cursor);
 };
 
-export const maybeCreateOpenAiSseUsagePassthrough = (
+export const createOpenAiSseUsagePassthrough = (
   input: OpenAiSsePassthroughInput
 ): Response => {
   if (!input.response.body) {
-    return input.response;
-  }
-
-  const contentType = input.response.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("text/event-stream")) {
     return input.response;
   }
 

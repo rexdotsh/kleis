@@ -1,5 +1,5 @@
 import type { CodexAccountMetadata } from "../metadata";
-import { isObjectRecord } from "../../utils/object";
+import { isObjectRecord, readBooleanField } from "../../utils/object";
 import {
   readOpenAiResponsesUsageFromResponse,
   readOpenAiResponsesUsageFromSseEvent,
@@ -49,13 +49,15 @@ const transformCodexBody = (bodyJson: unknown, bodyText: string): string => {
 
 const transformCodexResponse = (
   response: Response,
-  onTokenUsage?: ((usage: TokenUsage) => void) | null
+  onTokenUsage: ((usage: TokenUsage) => void) | null | undefined,
+  isStreamingRequest: boolean
 ): Promise<Response> =>
   transformOpenAiUsageResponse({
     response,
     extractSseUsage: readOpenAiResponsesUsageFromSseEvent,
     extractJsonUsage: readOpenAiResponsesUsageFromResponse,
     onTokenUsage,
+    isStreamingRequest,
   });
 
 type CodexProxyPreparationInput = {
@@ -77,6 +79,9 @@ type CodexProxyPreparationResult = {
 export const prepareCodexProxyRequest = (
   input: CodexProxyPreparationInput
 ): CodexProxyPreparationResult => {
+  const isStreamingRequest =
+    readBooleanField(input.bodyJson, "stream") === true;
+
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   if (!input.headers.get("originator")) {
     input.headers.set("originator", CODEX_ORIGINATOR);
@@ -91,6 +96,6 @@ export const prepareCodexProxyRequest = (
     upstreamUrl: CODEX_RESPONSE_ENDPOINT,
     bodyText: transformCodexBody(input.bodyJson, input.bodyText),
     transformResponse: (response: Response): Promise<Response> =>
-      transformCodexResponse(response, input.onTokenUsage),
+      transformCodexResponse(response, input.onTokenUsage, isStreamingRequest),
   };
 };

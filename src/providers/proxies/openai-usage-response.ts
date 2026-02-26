@@ -1,5 +1,5 @@
 import type { TokenUsage } from "../../usage/token-usage";
-import { maybeCreateOpenAiSseUsagePassthrough } from "./openai-sse-passthrough";
+import { createOpenAiSseUsagePassthrough } from "./openai-sse-passthrough";
 
 type UsageExtractor = (payload: unknown) => TokenUsage | null;
 
@@ -8,18 +8,19 @@ type TransformOpenAiUsageResponseInput = {
   extractSseUsage: UsageExtractor;
   extractJsonUsage: UsageExtractor;
   onTokenUsage?: ((usage: TokenUsage) => void) | null | undefined;
+  isStreamingRequest: boolean;
 };
 
-const maybeTrackJsonUsage = async (
+const hasContentType = (response: Response, expected: string): boolean => {
+  const contentType = response.headers.get("content-type") ?? "";
+  return contentType.toLowerCase().includes(expected);
+};
+
+const trackJsonUsage = async (
   response: Response,
   extractUsage: UsageExtractor,
   onTokenUsage?: ((usage: TokenUsage) => void) | null
 ): Promise<Response> => {
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("application/json")) {
-    return response;
-  }
-
   const bodyText = await response.text();
   let bodyJson: unknown;
   try {
@@ -53,16 +54,23 @@ export const transformOpenAiUsageResponse = (
     return Promise.resolve(input.response);
   }
 
-  const maybeSseResponse = maybeCreateOpenAiSseUsagePassthrough({
-    response: input.response,
-    extractUsage: input.extractSseUsage,
-    onTokenUsage: input.onTokenUsage,
-  });
-  if (maybeSseResponse !== input.response) {
-    return Promise.resolve(maybeSseResponse);
+  // Route based on request intent, not just response content-type.
+  // Codex (chatgpt.com/backend-api) returns SSE streams with no Content-Type header,
+  // so content-type alone is insufficient for routing.
+  if (
+    input.isStreamingRequest ||
+    hasContentType(input.response, "text/event-stream")
+  ) {
+    return Promise.resolve(
+      createOpenAiSseUsagePassthrough({
+        response: input.response,
+        extractUsage: input.extractSseUsage,
+        onTokenUsage: input.onTokenUsage,
+      })
+    );
   }
 
-  return maybeTrackJsonUsage(
+  return trackJsonUsage(
     input.response,
     input.extractJsonUsage,
     input.onTokenUsage
