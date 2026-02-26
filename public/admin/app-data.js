@@ -1086,7 +1086,6 @@ function logout() {
 export {
   $,
   $$,
-  DEFAULT_KEY_USAGE_WINDOW_MS,
   accountById,
   accountUsageForId,
   activeKeysWithModelsUrl,
