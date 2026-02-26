@@ -24,6 +24,13 @@ export type CreateApiKeyInput = {
   expiresAt?: number | null;
 };
 
+export type UpdateApiKeyInput = {
+  label: string | null;
+  providerScopes: string[] | null;
+  modelScopes: string[] | null;
+  expiresAt: number | null;
+};
+
 const parseScopeList = (value: string | null): ScopeList => {
   if (!value) {
     return null;
@@ -137,6 +144,32 @@ export const revokeApiKey = async (
     .where(and(eq(apiKeys.id, id), isNull(apiKeys.revokedAt)));
 
   return result.rowsAffected > 0;
+};
+
+export const updateApiKey = async (
+  database: Database,
+  id: string,
+  input: UpdateApiKeyInput
+): Promise<ApiKeyRecord | null> => {
+  const result = await database
+    .update(apiKeys)
+    .set({
+      label: input.label,
+      providerScopeJson: input.providerScopes?.length
+        ? JSON.stringify(input.providerScopes)
+        : null,
+      modelScopeJson: input.modelScopes?.length
+        ? JSON.stringify(input.modelScopes)
+        : null,
+      expiresAt: input.expiresAt,
+    })
+    .where(eq(apiKeys.id, id));
+
+  if (result.rowsAffected === 0) {
+    return null;
+  }
+
+  return findApiKeyById(database, id);
 };
 
 type DeleteRevokedApiKeyResult = "deleted" | "not_found" | "not_revoked";

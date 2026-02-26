@@ -461,6 +461,51 @@ export const releaseProviderAccountRefreshLock = async (
     );
 };
 
+export type UpdateProviderAccountProfileInput = {
+  label: string | null;
+  accountId: string | null;
+  metadata: ProviderAccountMetadata | null;
+  now: number;
+};
+
+export type UpdateProviderAccountProfileResult =
+  | ProviderAccountRecord
+  | "account_id_conflict"
+  | null;
+
+export const updateProviderAccountProfile = async (
+  database: Database,
+  id: string,
+  input: UpdateProviderAccountProfileInput
+): Promise<UpdateProviderAccountProfileResult> => {
+  try {
+    const result = await database
+      .update(providerAccounts)
+      .set({
+        label: input.label,
+        accountId: input.accountId,
+        metadataJson: serializeProviderAccountMetadata(input.metadata),
+        updatedAt: input.now,
+      })
+      .where(eq(providerAccounts.id, id));
+    if (result.rowsAffected === 0) {
+      return null;
+    }
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      return "account_id_conflict";
+    }
+    throw error;
+  }
+
+  const updated = await findProviderAccountById(database, id);
+  if (!updated) {
+    throw new Error("Failed to load updated provider account");
+  }
+
+  return updated;
+};
+
 export const deleteProviderAccount = async (
   database: Database,
   id: string
