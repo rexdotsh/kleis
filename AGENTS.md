@@ -1,126 +1,61 @@
-# Ultracite Code Standards
+# Kleis
 
-This project uses **Ultracite**, a zero-config preset that enforces strict code quality standards through automated formatting and linting.
+Single OAuth account proxy for coding agents. One base URL that stores OAuth credentials centrally, refreshes tokens automatically, and routes requests to Copilot/Codex/Claude through provider-compatible proxy endpoints.
 
-## Quick Reference
+## Architecture
 
-- **Format code**: `bun x ultracite fix`
-- **Check for issues**: `bun x ultracite check`
-- **Diagnose setup**: `bun x ultracite doctor`
+- **Runtime**: Bun + Hono, deployed on Vercel Functions
+- **Database**: Turso (libSQL) via Drizzle ORM
+- **Admin UI**: Vanilla HTML/CSS/JS SPA in `public/admin/`
+- **Linting**: `bun fix` (Biome-based via Ultracite)
+- **Tests**: `bun test`
+- **Type check**: `bun typecheck`
 
-Biome (the underlying engine) provides robust linting and formatting. Most issues are automatically fixable.
+## Database Schema (4 tables)
 
----
+- **`provider_accounts`**: OAuth credentials per provider (copilot/codex/claude). Includes access/refresh tokens, expiry, primary flag, metadata JSON, distributed refresh lock fields.
+- **`api_keys`**: Proxy auth keys (`kleis_*` format). Provider and model scope arrays. Each key gets a `modelsDiscoveryToken` for scoped model URLs.
+- **`oauth_states`**: Ephemeral records for in-flight OAuth flows.
+- **`request_usage_buckets`**: Minute-bucketed analytics. Tracks request/success/error counts and latency per key+account+provider+endpoint.
 
-## Core Principles
+**Migrations**: Never write migration files by hand. Edit `src/db/schema.ts`, then run `bun db:generate` to create the migration. Only run `bun db:migrate` if explicitly asked.
 
-Write code that is **accessible, performant, type-safe, and maintainable**. Focus on clarity and explicit intent over brevity.
+## Proxy Routes
 
-### Type Safety & Explicitness
+All require `Authorization: Bearer <kleis_api_key>`:
 
-- Use explicit types for function parameters and return values when they enhance clarity
-- Prefer `unknown` over `any` when the type is genuinely unknown
-- Use const assertions (`as const`) for immutable values and literal types
-- Leverage TypeScript's type narrowing instead of type assertions
-- Use meaningful variable names instead of magic numbers - extract constants with descriptive names
+| Route | Provider | Upstream |
+|---|---|---|
+| `POST /copilot/v1/chat/completions` | Copilot | GitHub Copilot chat completions |
+| `POST /copilot/v1/responses` | Copilot | GitHub Copilot responses API |
+| `POST /openai/v1/responses` | Codex | ChatGPT Codex responses API |
+| `POST /anthropic/v1/messages` | Claude | Anthropic messages API |
 
-### Modern JavaScript/TypeScript
+## Provider Details
 
-- Use arrow functions for callbacks and short functions
-- Prefer `for...of` loops over `.forEach()` and indexed `for` loops
-- Use optional chaining (`?.`) and nullish coalescing (`??`) for safer property access
-- Prefer template literals over string concatenation
-- Use destructuring for object and array assignments
-- Use `const` by default, `let` only when reassignment is needed, never `var`
+**Copilot**: GitHub device flow OAuth. Derives vision/initiator headers from message content. Supports enterprise domain override.
 
-### Async & Promises
+**Codex**: OpenAI browser (PKCE) or headless (device) flow. Injects Codex-specific headers (`ChatGPT-Account-Id`, `originator`). Strips unsupported params.
 
-- Always `await` promises in async functions - don't forget to use the return value
-- Use `async/await` syntax instead of promise chains for better readability
-- Handle errors appropriately in async code with try-catch blocks
-- Don't use async functions as Promise executors
+**Claude**: Anthropic PKCE flow (max or console mode). Full Claude Code identity emulation: system prompt rewriting, tool name prefixing/stripping (`mcp_` prefix), beta header injection, user-agent spoofing. Handles both streaming SSE transformation and non-streaming JSON rewriting.
 
-### React & JSX
+## Model Registry
 
-- Use function components over class components
-- Call hooks at the top level only, never conditionally
-- Specify all dependencies in hook dependency arrays correctly
-- Use the `key` prop for elements in iterables (prefer unique IDs over array indices)
-- Nest children between opening and closing tags instead of passing as props
-- Don't define components inside other components
-- Use semantic HTML and ARIA attributes for accessibility:
-  - Provide meaningful alt text for images
-  - Use proper heading hierarchy
-  - Add labels for form inputs
-  - Include keyboard event handlers alongside mouse events
-  - Use semantic elements (`<button>`, `<nav>`, etc.) instead of divs with roles
-
-### Error Handling & Debugging
-
-- Remove `console.log`, `debugger`, and `alert` statements from production code
-- Throw `Error` objects with descriptive messages, not strings or other values
-- Use `try-catch` blocks meaningfully - don't catch errors just to rethrow them
-- Prefer early returns over nested conditionals for error cases
-
-### Code Organization
-
-- Keep functions focused and under reasonable cognitive complexity limits
-- Extract complex conditions into well-named boolean variables
-- Use early returns to reduce nesting
-- Prefer simple conditionals over nested ternary operators
-- Group related code together and separate concerns
-
-### Security
-
-- Add `rel="noopener"` when using `target="_blank"` on links
-- Avoid `dangerouslySetInnerHTML` unless absolutely necessary
-- Don't use `eval()` or assign directly to `document.cookie`
-- Validate and sanitize user input
-
-### Performance
-
-- Avoid spread syntax in accumulators within loops
-- Use top-level regex literals instead of creating them in loops
-- Prefer specific imports over namespace imports
-- Avoid barrel files (index files that re-export everything)
-- Use proper image components (e.g., Next.js `<Image>`) over `<img>` tags
-
-### Framework-Specific Guidance
-
-**Next.js:**
-- Use Next.js `<Image>` component for images
-- Use `next/head` or App Router metadata API for head elements
-- Use Server Components for async data fetching instead of async Client Components
-
-**React 19+:**
-- Use ref as a prop instead of `React.forwardRef`
-
-**Solid/Svelte/Vue/Qwik:**
-- Use `class` and `for` attributes (not `className` or `htmlFor`)
+- `GET /api.json` — Full models.dev upstream + `kleis` aggregate provider with all configured models
+- `GET /api/:modelsToken/api.json` — Scoped to API key's provider/model scopes, rewrites upstream provider URLs to Kleis proxy URLs
 
 ---
 
-## Testing
+## Code Standards (Ultracite)
 
-- Write assertions inside `it()` or `test()` blocks
-- Avoid done callbacks in async tests - use async/await instead
-- Don't use `.only` or `.skip` in committed code
-- Keep test suites reasonably flat - avoid excessive `describe` nesting
+This project uses Ultracite (Biome-based) for formatting and linting.
 
-## When Biome Can't Help
+- **Fix**: `bun fix` (run before committing, also runs via lefthook pre-commit)
+- **Check**: `bun lint`
 
-Biome's linter will catch most issues automatically. Focus your attention on:
+Write code that is type-safe and explicit. Use `unknown` over `any`, const assertions for immutable values, early returns over nested conditionals, `for...of` over `.forEach()`, `async/await` over promise chains, and template literals over concatenation. Remove `console.log`/`debugger` from production code. Throw `Error` objects, not strings.
 
-1. **Business logic correctness** - Biome can't validate your algorithms
-2. **Meaningful naming** - Use descriptive names for functions, variables, and types
-3. **Architecture decisions** - Component structure, data flow, and API design
-4. **Edge cases** - Handle boundary conditions and error states
-5. **User experience** - Accessibility, performance, and usability considerations
-6. **Documentation** - Add comments for complex logic, but prefer self-documenting code
-
----
-
-Most formatting and common issues are automatically fixed by Biome. Run `bun x ultracite fix` before committing to ensure compliance.
+The admin UI is vanilla JS in `public/admin/`.
 
 <!-- opensrc:start -->
 
@@ -144,93 +79,3 @@ npx opensrc <owner>/<repo>      # GitHub repo (e.g., npx opensrc vercel/ai)
 ```
 
 <!-- opensrc:end -->
-
----
-
-## Kleis Project Charter
-
-This repository is building a **single OAuth account proxy** for coding agents.
-
-### Problem Statement
-
-One user can have multiple OAuth-backed accounts across Copilot, Codex, and Claude.
-Re-authenticating these accounts in every client and every machine is painful.
-
-### Product Goal
-
-Provide one reusable base URL that:
-
-- accepts admin-managed API keys,
-- stores OAuth credentials centrally,
-- refreshes tokens automatically,
-- exposes model discovery endpoints,
-- routes requests to Copilot/Codex/Claude accounts,
-- includes a minimal admin UI for account operations.
-
-### Primary Use Case
-
-- OpenCode compatibility first.
-- Other coding agents should work via OpenAI-compatible and Anthropic-compatible endpoints.
-
-### Required Provider Behavior
-
-- **Copilot**: first-party OAuth flow should work without workaround hacks.
-- **Codex**: first-party OAuth flow should work without workaround hacks.
-- **Claude**: include workaround patterns used in:
-  - `opensrc/repos/github.com/anomalyco/opencode-anthropic-auth`
-  - `opensrc/repos/github.com/badlogic/pi-mono`
-
-For Claude OAuth behavior in this project:
-
-- include required beta headers,
-- include Claude Code user-agent/system identity behavior,
-- include request/stream tool-name normalization patterns,
-- do **not** hide this behind a feature flag.
-
-### Deployment and Runtime Decisions
-
-- Build **Vercel-first** architecture.
-- Keep route/service boundaries portable to other runtimes.
-- Use **Hono + Vercel Functions** for implementation.
-
-### Data and ORM Decisions
-
-- Use **Turso (libSQL)** as the relational database.
-- Use **Drizzle ORM** + Drizzle migrations for schema and queries.
-- Keep all request/response and env contracts fully typed.
-
-### Storage Decisions
-
-- Use a database for persistence (tokens, accounts, API keys, OAuth state).
-- Plaintext token storage is acceptable for this personal project.
-- No encryption/hashing required right now.
-
-### Simplicity and Maintainability Rules
-
-- Keep modules small and explicit.
-- Avoid duplicate provider logic by sharing small utilities.
-- Prefer straightforward control flow over clever abstractions.
-- Keep the admin UI minimal and functional.
-- Build only what is needed for v1.
-
-### Model Registry Requirements
-
-- Provide endpoint(s) compatible with OpenCode model discovery.
-- Merge custom proxy models with latest `models.dev` data.
-- Keep `models.dev` data fresh by fetching upstream.
-- Expose a models.dev-compatible JSON route that OpenCode can consume directly.
-
-### Admin UI Requirements (v1)
-
-- view all configured accounts,
-- set primary account per provider,
-- issue/revoke API keys,
-- trigger token refresh manually,
-- show last refresh state.
-
-### Immediate Non-Goals
-
-- advanced telemetry,
-- billing, quotas, monetization,
-- enterprise-grade multi-tenant security,
-- over-designed dashboards.
