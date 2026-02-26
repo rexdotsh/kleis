@@ -27,8 +27,6 @@ const computeBucketSizeMs = (windowMs: number): number => {
 
 const DASHBOARD_BUCKET_LIMIT = 200;
 const DASHBOARD_BREAKDOWN_LIMIT = 120;
-const REQUEST_COUNT_SUM = sql<number>`sum(${requestUsageBuckets.requestCount})`;
-const LAST_REQUEST_AT_MAX = sql<number>`max(${requestUsageBuckets.lastRequestAt})`;
 
 export const getDashboardUsage = async (
   database: Database,
@@ -83,7 +81,10 @@ export const getDashboardUsage = async (
       .from(requestUsageBuckets)
       .where(currentFilter)
       .groupBy(requestUsageBuckets.provider, requestUsageBuckets.endpoint)
-      .orderBy(desc(REQUEST_COUNT_SUM), desc(LAST_REQUEST_AT_MAX))
+      .orderBy(
+        desc(sql<number>`sum(${requestUsageBuckets.requestCount})`),
+        desc(sql<number>`max(${requestUsageBuckets.lastRequestAt})`)
+      )
       .limit(DASHBOARD_BREAKDOWN_LIMIT),
     database
       .select({
@@ -99,7 +100,10 @@ export const getDashboardUsage = async (
         requestUsageBuckets.endpoint,
         requestUsageBuckets.model
       )
-      .orderBy(desc(REQUEST_COUNT_SUM), desc(LAST_REQUEST_AT_MAX))
+      .orderBy(
+        desc(sql<number>`sum(${requestUsageBuckets.requestCount})`),
+        desc(sql<number>`max(${requestUsageBuckets.lastRequestAt})`)
+      )
       .limit(DASHBOARD_BREAKDOWN_LIMIT),
     database
       .select({
@@ -109,7 +113,10 @@ export const getDashboardUsage = async (
       .from(requestUsageBuckets)
       .where(currentFilter)
       .groupBy(requestUsageBuckets.apiKeyId)
-      .orderBy(desc(REQUEST_COUNT_SUM), desc(LAST_REQUEST_AT_MAX))
+      .orderBy(
+        desc(sql<number>`sum(${requestUsageBuckets.requestCount})`),
+        desc(sql<number>`max(${requestUsageBuckets.lastRequestAt})`)
+      )
       .limit(DASHBOARD_BREAKDOWN_LIMIT),
     database
       .select({
