@@ -8,6 +8,11 @@ import {
   CLAUDE_TOOL_PREFIX,
 } from "../constants";
 import { requireProxyEndpointRoute } from "../proxy-endpoints";
+import {
+  readAnthropicUsageFromResponse,
+  readAnthropicUsageObject,
+  type TokenUsage,
+} from "../../usage/token-usage";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 
 // Anthropic's server blocks "OpenCode" in system prompts for OAuth sessions.
@@ -176,7 +181,8 @@ const buildUpstreamUrl = (search: string): string => {
 
 const maybeTransformClaudeStreamResponse = (
   response: Response,
-  toolPrefix: string
+  toolPrefix: string,
+  onTokenUsage?: ((usage: TokenUsage) => void) | null
 ): Response => {
   if (!response.body) {
     return response;
@@ -192,6 +198,86 @@ const maybeTransformClaudeStreamResponse = (
   const decoder = new TextDecoder();
   let pendingText = "";
 
+  const streamUsage: TokenUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
+
+  const readOptionalUsageToken = (
+    usage: Record<string, unknown>,
+    key: string
+  ): number | null => {
+    if (!(key in usage)) {
+      return null;
+    }
+
+    const value = usage[key];
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return 0;
+    }
+
+    return Math.max(0, Math.trunc(parsed));
+  };
+
+  const readStreamUsage = (payload: unknown): void => {
+    if (!isObjectRecord(payload)) {
+      return;
+    }
+
+    if (payload.type === "message_start") {
+      const message = isObjectRecord(payload.message) ? payload.message : null;
+      const usage = readAnthropicUsageObject(message?.usage);
+      if (!usage) {
+        return;
+      }
+
+      streamUsage.inputTokens = usage.inputTokens;
+      streamUsage.cacheReadTokens = usage.cacheReadTokens;
+      streamUsage.cacheWriteTokens = usage.cacheWriteTokens;
+      return;
+    }
+
+    if (payload.type === "message_delta") {
+      const usage = isObjectRecord(payload.usage) ? payload.usage : null;
+      if (!usage) {
+        return;
+      }
+
+      const inputTokens = readOptionalUsageToken(usage, "input_tokens");
+      if (inputTokens !== null) {
+        streamUsage.inputTokens = inputTokens;
+      }
+
+      const outputTokens = readOptionalUsageToken(usage, "output_tokens");
+      if (outputTokens !== null) {
+        streamUsage.outputTokens = outputTokens;
+      }
+
+      const cacheReadTokens = readOptionalUsageToken(
+        usage,
+        "cache_read_input_tokens"
+      );
+      if (cacheReadTokens !== null) {
+        streamUsage.cacheReadTokens = cacheReadTokens;
+      }
+
+      const cacheWriteTokens = readOptionalUsageToken(
+        usage,
+        "cache_creation_input_tokens"
+      );
+      if (cacheWriteTokens !== null) {
+        streamUsage.cacheWriteTokens = cacheWriteTokens;
+      }
+    }
+  };
+
   const transformSseLine = (line: string): string => {
     if (!line.startsWith("data:")) {
       return line;
@@ -204,6 +290,7 @@ const maybeTransformClaudeStreamResponse = (
 
     try {
       const jsonBody = JSON.parse(payload) as unknown;
+      readStreamUsage(jsonBody);
       const transformed = transformClaudeResponsePayload(jsonBody, toolPrefix);
       return `data: ${JSON.stringify(transformed)}`;
     } catch {
@@ -233,6 +320,7 @@ const maybeTransformClaudeStreamResponse = (
         pendingText += decoder.decode();
         enqueueChunk(controller, pendingText);
         pendingText = "";
+        onTokenUsage?.(streamUsage);
         controller.close();
         return;
       }
@@ -265,7 +353,8 @@ const maybeTransformClaudeStreamResponse = (
 
 const maybeTransformClaudeJsonResponse = async (
   response: Response,
-  toolPrefix: string
+  toolPrefix: string,
+  onTokenUsage?: ((usage: TokenUsage) => void) | null
 ): Promise<Response> => {
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("application/json")) {
@@ -285,6 +374,10 @@ const maybeTransformClaudeJsonResponse = async (
   }
 
   const transformedBody = transformClaudeResponsePayload(jsonBody, toolPrefix);
+  const usage = readAnthropicUsageFromResponse(jsonBody);
+  if (usage) {
+    onTokenUsage?.(usage);
+  }
   const headers = new Headers(response.headers);
   headers.delete("content-length");
   return Response.json(transformedBody, {
@@ -296,7 +389,8 @@ const maybeTransformClaudeJsonResponse = async (
 
 const transformClaudeResponse = (
   response: Response,
-  toolPrefix: string
+  toolPrefix: string,
+  onTokenUsage?: ((usage: TokenUsage) => void) | null
 ): Promise<Response> => {
   if (!response.body) {
     return Promise.resolve(response);
@@ -305,11 +399,11 @@ const transformClaudeResponse = (
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.toLowerCase().includes("text/event-stream")) {
     return Promise.resolve(
-      maybeTransformClaudeStreamResponse(response, toolPrefix)
+      maybeTransformClaudeStreamResponse(response, toolPrefix, onTokenUsage)
     );
   }
 
-  return maybeTransformClaudeJsonResponse(response, toolPrefix);
+  return maybeTransformClaudeJsonResponse(response, toolPrefix, onTokenUsage);
 };
 
 const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {
@@ -327,6 +421,7 @@ type ClaudeProxyPreparationInput = {
   bodyJson: unknown;
   accessToken: string;
   metadata: ClaudeAccountMetadata | null;
+  onTokenUsage?: ((usage: TokenUsage) => void) | null;
 };
 
 type ClaudeProxyPreparationResult = {
@@ -370,6 +465,6 @@ export const prepareClaudeProxyRequest = (
     upstreamUrl: buildUpstreamUrl(input.requestUrl.search),
     bodyText,
     transformResponse: (response: Response): Promise<Response> =>
-      transformClaudeResponse(response, toolPrefix),
+      transformClaudeResponse(response, toolPrefix, input.onTokenUsage),
   };
 };

@@ -1,6 +1,7 @@
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 
 import type { ProxyEndpoint } from "../../providers/proxy-endpoints";
+import type { TokenUsage } from "../../usage/token-usage";
 import type { Database } from "../index";
 import { requestUsageBuckets, type Provider } from "../schema";
 import {
@@ -8,13 +9,19 @@ import {
   DETAIL_BUCKET_LIMIT,
   emptyUsageTotals,
   mapEndpointUsageRows,
+  mapModelUsageRows,
   mapUsageBucketRows,
+  selectUsageCounterSums,
+  selectUsageLastRequestAtMax,
+  selectUsageLatencySums,
+  selectUsageTokenSums,
   summarizeGroupedUsageRows,
   toAveragedTotals,
   toNonNegativeInteger,
   toUsageBucketStart,
   type UsageBucketRow,
   type UsageEndpointBreakdown,
+  type UsageModelBreakdown,
   type UsageProviderSummary,
 } from "./usage-shared";
 
@@ -52,10 +59,38 @@ type RecordRequestUsageInput = {
   providerAccountId: string;
   provider: Provider;
   endpoint: ProxyEndpoint;
+  model: string;
   statusCode: number;
   durationMs: number;
   occurredAt: number;
+  tokenUsage?: TokenUsage | null;
 };
+
+type RecordTokenUsageInput = {
+  apiKeyId: string;
+  providerAccountId: string;
+  provider: Provider;
+  endpoint: ProxyEndpoint;
+  model: string;
+  occurredAt: number;
+  tokenUsage: TokenUsage;
+};
+
+const tokenColumns = (tokenUsage: TokenUsage | null | undefined) => ({
+  inputTokens: toNonNegativeInteger(tokenUsage?.inputTokens),
+  outputTokens: toNonNegativeInteger(tokenUsage?.outputTokens),
+  cacheReadTokens: toNonNegativeInteger(tokenUsage?.cacheReadTokens),
+  cacheWriteTokens: toNonNegativeInteger(tokenUsage?.cacheWriteTokens),
+});
+
+const usageBucketConflictTarget = [
+  requestUsageBuckets.bucketStart,
+  requestUsageBuckets.apiKeyId,
+  requestUsageBuckets.providerAccountId,
+  requestUsageBuckets.provider,
+  requestUsageBuckets.endpoint,
+  requestUsageBuckets.model,
+];
 
 export const recordRequestUsage = async (
   database: Database,
@@ -64,6 +99,7 @@ export const recordRequestUsage = async (
   const occurredAt = toNonNegativeInteger(input.occurredAt);
   const durationMs = toNonNegativeInteger(input.durationMs);
   const counters = statusCounters(input.statusCode);
+  const tokens = tokenColumns(input.tokenUsage);
 
   const row: typeof requestUsageBuckets.$inferInsert = {
     bucketStart: toUsageBucketStart(occurredAt),
@@ -71,6 +107,7 @@ export const recordRequestUsage = async (
     providerAccountId: input.providerAccountId,
     provider: input.provider,
     endpoint: input.endpoint,
+    model: input.model,
     requestCount: 1,
     successCount: counters.successCount,
     clientErrorCount: counters.clientErrorCount,
@@ -79,6 +116,10 @@ export const recordRequestUsage = async (
     rateLimitCount: counters.rateLimitCount,
     totalLatencyMs: durationMs,
     maxLatencyMs: durationMs,
+    inputTokens: tokens.inputTokens,
+    outputTokens: tokens.outputTokens,
+    cacheReadTokens: tokens.cacheReadTokens,
+    cacheWriteTokens: tokens.cacheWriteTokens,
     lastRequestAt: occurredAt,
   };
 
@@ -86,13 +127,7 @@ export const recordRequestUsage = async (
     .insert(requestUsageBuckets)
     .values(row)
     .onConflictDoUpdate({
-      target: [
-        requestUsageBuckets.bucketStart,
-        requestUsageBuckets.apiKeyId,
-        requestUsageBuckets.providerAccountId,
-        requestUsageBuckets.provider,
-        requestUsageBuckets.endpoint,
-      ],
+      target: usageBucketConflictTarget,
       set: {
         requestCount: sql`${requestUsageBuckets.requestCount} + 1`,
         successCount: sql`${requestUsageBuckets.successCount} + ${row.successCount}`,
@@ -102,6 +137,54 @@ export const recordRequestUsage = async (
         rateLimitCount: sql`${requestUsageBuckets.rateLimitCount} + ${row.rateLimitCount}`,
         totalLatencyMs: sql`${requestUsageBuckets.totalLatencyMs} + ${row.totalLatencyMs}`,
         maxLatencyMs: sql`max(${requestUsageBuckets.maxLatencyMs}, ${row.maxLatencyMs})`,
+        inputTokens: sql`${requestUsageBuckets.inputTokens} + ${row.inputTokens}`,
+        outputTokens: sql`${requestUsageBuckets.outputTokens} + ${row.outputTokens}`,
+        cacheReadTokens: sql`${requestUsageBuckets.cacheReadTokens} + ${row.cacheReadTokens}`,
+        cacheWriteTokens: sql`${requestUsageBuckets.cacheWriteTokens} + ${row.cacheWriteTokens}`,
+        lastRequestAt: sql`max(${requestUsageBuckets.lastRequestAt}, ${row.lastRequestAt})`,
+      },
+    });
+};
+
+export const recordTokenUsage = async (
+  database: Database,
+  input: RecordTokenUsageInput
+): Promise<void> => {
+  const occurredAt = toNonNegativeInteger(input.occurredAt);
+  const tokens = tokenColumns(input.tokenUsage);
+
+  const row: typeof requestUsageBuckets.$inferInsert = {
+    bucketStart: toUsageBucketStart(occurredAt),
+    apiKeyId: input.apiKeyId,
+    providerAccountId: input.providerAccountId,
+    provider: input.provider,
+    endpoint: input.endpoint,
+    model: input.model,
+    requestCount: 0,
+    successCount: 0,
+    clientErrorCount: 0,
+    serverErrorCount: 0,
+    authErrorCount: 0,
+    rateLimitCount: 0,
+    totalLatencyMs: 0,
+    maxLatencyMs: 0,
+    inputTokens: tokens.inputTokens,
+    outputTokens: tokens.outputTokens,
+    cacheReadTokens: tokens.cacheReadTokens,
+    cacheWriteTokens: tokens.cacheWriteTokens,
+    lastRequestAt: occurredAt,
+  };
+
+  await database
+    .insert(requestUsageBuckets)
+    .values(row)
+    .onConflictDoUpdate({
+      target: usageBucketConflictTarget,
+      set: {
+        inputTokens: sql`${requestUsageBuckets.inputTokens} + ${row.inputTokens}`,
+        outputTokens: sql`${requestUsageBuckets.outputTokens} + ${row.outputTokens}`,
+        cacheReadTokens: sql`${requestUsageBuckets.cacheReadTokens} + ${row.cacheReadTokens}`,
+        cacheWriteTokens: sql`${requestUsageBuckets.cacheWriteTokens} + ${row.cacheWriteTokens}`,
         lastRequestAt: sql`max(${requestUsageBuckets.lastRequestAt}, ${row.lastRequestAt})`,
       },
     });
@@ -117,6 +200,10 @@ type ApiKeyUsageSummary = {
   rateLimitCount: number;
   avgLatencyMs: number;
   maxLatencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   lastRequestAt: number | null;
   providers: UsageProviderSummary[];
 };
@@ -131,15 +218,10 @@ export const listApiKeyUsageSummaries = async (
     database
       .select({
         groupKey: requestUsageBuckets.apiKeyId,
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-        totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-        maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-        lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(gte(requestUsageBuckets.bucketStart, sinceBucket))
@@ -148,12 +230,8 @@ export const listApiKeyUsageSummaries = async (
       .select({
         groupKey: requestUsageBuckets.apiKeyId,
         provider: requestUsageBuckets.provider,
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(gte(requestUsageBuckets.bucketStart, sinceBucket))
@@ -172,12 +250,15 @@ export const listApiKeyUsageSummaries = async (
 
 type ApiKeyUsageEndpointBreakdown = UsageEndpointBreakdown;
 
+type ApiKeyUsageModelBreakdown = UsageModelBreakdown;
+
 type ApiKeyUsageBucketRow = UsageBucketRow;
 
 type ApiKeyUsageDetail = {
   apiKeyId: string;
   totals: Omit<ApiKeyUsageSummary, "apiKeyId" | "providers">;
   endpoints: ApiKeyUsageEndpointBreakdown[];
+  models: ApiKeyUsageModelBreakdown[];
   buckets: ApiKeyUsageBucketRow[];
 };
 
@@ -192,18 +273,13 @@ export const getApiKeyUsageDetail = async (
     gte(requestUsageBuckets.bucketStart, sinceBucket)
   );
 
-  const [totalsRows, endpointRows, bucketRows] = await Promise.all([
+  const [totalsRows, endpointRows, modelRows, bucketRows] = await Promise.all([
     database
       .select({
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-        totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-        maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-        lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(windowFilter),
@@ -211,28 +287,36 @@ export const getApiKeyUsageDetail = async (
       .select({
         provider: requestUsageBuckets.provider,
         endpoint: requestUsageBuckets.endpoint,
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-        totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-        maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-        lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(windowFilter)
       .groupBy(requestUsageBuckets.provider, requestUsageBuckets.endpoint),
     database
       .select({
+        provider: requestUsageBuckets.provider,
+        endpoint: requestUsageBuckets.endpoint,
+        model: requestUsageBuckets.model,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
+      })
+      .from(requestUsageBuckets)
+      .where(windowFilter)
+      .groupBy(
+        requestUsageBuckets.provider,
+        requestUsageBuckets.endpoint,
+        requestUsageBuckets.model
+      ),
+    database
+      .select({
         bucketStart: requestUsageBuckets.bucketStart,
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(windowFilter)
@@ -250,12 +334,15 @@ export const getApiKeyUsageDetail = async (
   const endpoints: ApiKeyUsageEndpointBreakdown[] =
     mapEndpointUsageRows(endpointRows);
 
+  const models: ApiKeyUsageModelBreakdown[] = mapModelUsageRows(modelRows);
+
   const buckets: ApiKeyUsageBucketRow[] = mapUsageBucketRows(bucketRows);
 
   return {
     apiKeyId,
     totals: toAveragedTotals(totals),
     endpoints,
+    models,
     buckets,
   };
 };

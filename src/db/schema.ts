@@ -83,6 +83,7 @@ export const requestUsageBuckets = sqliteTable(
     providerAccountId: text("provider_account_id").notNull(),
     provider: text("provider", { enum: providers }).notNull(),
     endpoint: text("endpoint").notNull(),
+    model: text("model").notNull().default(""),
     requestCount: integer("request_count", { mode: "number" })
       .notNull()
       .default(0),
@@ -107,6 +108,18 @@ export const requestUsageBuckets = sqliteTable(
     maxLatencyMs: integer("max_latency_ms", { mode: "number" })
       .notNull()
       .default(0),
+    inputTokens: integer("input_tokens", { mode: "number" })
+      .notNull()
+      .default(0),
+    outputTokens: integer("output_tokens", { mode: "number" })
+      .notNull()
+      .default(0),
+    cacheReadTokens: integer("cache_read_tokens", { mode: "number" })
+      .notNull()
+      .default(0),
+    cacheWriteTokens: integer("cache_write_tokens", { mode: "number" })
+      .notNull()
+      .default(0),
     lastRequestAt: integer("last_request_at", { mode: "number" }).notNull(),
   },
   (table) => [
@@ -117,6 +130,7 @@ export const requestUsageBuckets = sqliteTable(
         table.providerAccountId,
         table.provider,
         table.endpoint,
+        table.model,
       ],
     }),
     index("request_usage_buckets_key_bucket_idx").on(
