@@ -281,6 +281,9 @@ const proxyRequest = async (
   let responseToClient = upstreamResponse;
   if (responseTransformer) {
     responseToClient = await responseTransformer(upstreamResponse);
+    // Bun auto-decompresses but keeps Content-Encoding; Anthropic is the main
+    // upstream that returns it, causing ZlibError on clients reading plaintext.
+    responseToClient.headers.delete("content-encoding");
   }
 
   usageRecorder.recordFinal(upstreamResponse.status);
