@@ -205,6 +205,27 @@ const maybeTransformClaudeStreamResponse = (
     cacheWriteTokens: 0,
   };
 
+  const readOptionalUsageToken = (
+    usage: Record<string, unknown>,
+    key: string
+  ): number | null => {
+    if (!(key in usage)) {
+      return null;
+    }
+
+    const value = usage[key];
+    if (value === null || value === undefined) {
+      return null;
+    }
+
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) {
+      return 0;
+    }
+
+    return Math.max(0, Math.trunc(parsed));
+  };
+
   const readStreamUsage = (payload: unknown): void => {
     if (!isObjectRecord(payload)) {
       return;
@@ -224,12 +245,36 @@ const maybeTransformClaudeStreamResponse = (
     }
 
     if (payload.type === "message_delta") {
-      const usage = readAnthropicUsageObject(payload.usage);
+      const usage = isObjectRecord(payload.usage) ? payload.usage : null;
       if (!usage) {
         return;
       }
 
-      streamUsage.outputTokens = usage.outputTokens;
+      const inputTokens = readOptionalUsageToken(usage, "input_tokens");
+      if (inputTokens !== null) {
+        streamUsage.inputTokens = inputTokens;
+      }
+
+      const outputTokens = readOptionalUsageToken(usage, "output_tokens");
+      if (outputTokens !== null) {
+        streamUsage.outputTokens = outputTokens;
+      }
+
+      const cacheReadTokens = readOptionalUsageToken(
+        usage,
+        "cache_read_input_tokens"
+      );
+      if (cacheReadTokens !== null) {
+        streamUsage.cacheReadTokens = cacheReadTokens;
+      }
+
+      const cacheWriteTokens = readOptionalUsageToken(
+        usage,
+        "cache_creation_input_tokens"
+      );
+      if (cacheWriteTokens !== null) {
+        streamUsage.cacheWriteTokens = cacheWriteTokens;
+      }
     }
   };
 

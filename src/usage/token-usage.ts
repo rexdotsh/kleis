@@ -105,7 +105,14 @@ export const readOpenAiResponsesUsageFromResponse = (
 export const readOpenAiResponsesUsageFromSseEvent = (
   payload: unknown
 ): TokenUsage | null => {
-  if (!isObjectRecord(payload) || payload.type !== "response.completed") {
+  if (!isObjectRecord(payload)) {
+    return null;
+  }
+
+  if (
+    payload.type !== "response.completed" &&
+    payload.type !== "response.done"
+  ) {
     return null;
   }
 

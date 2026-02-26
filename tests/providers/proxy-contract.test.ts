@@ -207,6 +207,56 @@ describe("proxy contract: codex", () => {
       cacheWriteTokens: 0,
     });
   });
+
+  test("extracts usage from streaming response.done events", async () => {
+    let capturedUsage: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheWriteTokens: number;
+    } | null = null;
+
+    const result = prepareCodexProxyRequest({
+      headers: new Headers(),
+      accessToken: "codex-access",
+      accountId: null,
+      metadata: null,
+      bodyText: JSON.stringify({ model: "gpt-5-codex", input: [] }),
+      bodyJson: { model: "gpt-5-codex", input: [] },
+      onTokenUsage: (usage) => {
+        capturedUsage = usage;
+      },
+    });
+
+    const encoder = new TextEncoder();
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"response.done","response":{"usage":{"input_tokens":72,"output_tokens":18,"input_tokens_details":{"cached_tokens":12}}}}\n\n'
+            )
+          );
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }
+    );
+
+    const transformed = await result.transformResponse(sourceResponse);
+    await transformed.text();
+
+    expect(capturedUsage).toEqual({
+      inputTokens: 60,
+      outputTokens: 18,
+      cacheReadTokens: 12,
+      cacheWriteTokens: 0,
+    });
+  });
 });
 
 describe("proxy contract: copilot", () => {
@@ -359,6 +409,67 @@ describe("proxy contract: copilot", () => {
       inputTokens: 42,
       outputTokens: 12,
       cacheReadTokens: 8,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  test("extracts usage from responses stream response.done events", async () => {
+    let capturedUsage: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheWriteTokens: number;
+    } | null = null;
+
+    const bodyJson = {
+      stream: true,
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      ],
+    };
+
+    const result = prepareCopilotProxyRequest({
+      endpoint: "responses",
+      requestUrl: new URL("https://kleis.local/responses?stream=true"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+      githubAccessToken: "gh-token",
+      metadata: null,
+      onTokenUsage: (usage) => {
+        capturedUsage = usage;
+      },
+    });
+
+    const encoder = new TextEncoder();
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"response.done","response":{"usage":{"input_tokens":140,"output_tokens":50,"input_tokens_details":{"cached_tokens":20}}}}\n\n'
+            )
+          );
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }
+    );
+
+    const transformed = await result.transformResponse(sourceResponse);
+    await transformed.text();
+
+    expect(capturedUsage).toEqual({
+      inputTokens: 120,
+      outputTokens: 50,
+      cacheReadTokens: 20,
       cacheWriteTokens: 0,
     });
   });
@@ -546,6 +657,61 @@ describe("proxy contract: claude", () => {
       outputTokens: 13,
       cacheReadTokens: 11,
       cacheWriteTokens: 5,
+    });
+  });
+
+  test("updates claude streaming usage when message_delta includes usage fields", async () => {
+    let capturedUsage: {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheWriteTokens: number;
+    } | null = null;
+
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: "{}",
+      bodyJson: {},
+      accessToken: "claude-token",
+      metadata: null,
+      onTokenUsage: (usage) => {
+        capturedUsage = usage;
+      },
+    });
+
+    const encoder = new TextEncoder();
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"message_start","message":{"usage":{"input_tokens":40,"cache_read_input_tokens":4,"cache_creation_input_tokens":2}}}\n\n'
+            )
+          );
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"message_delta","usage":{"input_tokens":41,"output_tokens":9,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}\n\n'
+            )
+          );
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }
+    );
+
+    const transformedResponse = await result.transformResponse(sourceResponse);
+    await transformedResponse.text();
+
+    expect(capturedUsage).toEqual({
+      inputTokens: 41,
+      outputTokens: 9,
+      cacheReadTokens: 5,
+      cacheWriteTokens: 3,
     });
   });
 
