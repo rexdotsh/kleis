@@ -15,14 +15,11 @@ const readRequestedModel = async (request: Request): Promise<string | null> => {
     return null;
   }
 
-  let bodyJson: unknown;
   try {
-    bodyJson = JSON.parse(bodyText) as unknown;
+    return readModelFromBody(JSON.parse(bodyText) as unknown);
   } catch {
     return null;
   }
-
-  return readModelFromBody(bodyJson);
 };
 
 export const requireProxyApiKey = createMiddleware(async (context, next) => {
@@ -53,6 +50,22 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
 
   const route = resolveProxyRoute(context.req.path);
 
+  const isProxyRequest = context.req.method === "POST" && route !== null;
+
+  let requestedModel: string | null = null;
+  if (isProxyRequest) {
+    requestedModel = await readRequestedModel(context.req.raw);
+    if (!requestedModel) {
+      return context.json(
+        {
+          error: "bad_request",
+          message: "Proxy requests must include a non-empty model field",
+        },
+        400
+      );
+    }
+  }
+
   if (route && apiKey.providerScopes?.length) {
     if (!apiKey.providerScopes.includes(route.provider)) {
       return context.json(
@@ -65,8 +78,7 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
     }
   }
 
-  if (route && apiKey.modelScopes?.length) {
-    const requestedModel = await readRequestedModel(context.req.raw);
+  if (isProxyRequest && apiKey.modelScopes?.length) {
     const allowed = isModelInScope({
       model: requestedModel,
       route,
@@ -76,9 +88,7 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
       return context.json(
         {
           error: "forbidden",
-          message: requestedModel
-            ? `API key is not allowed to access model: ${requestedModel}`
-            : "API key model scope requires an explicit model field",
+          message: `API key is not allowed to access model: ${requestedModel}`,
         },
         403
       );

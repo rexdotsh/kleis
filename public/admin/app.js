@@ -1079,6 +1079,7 @@ function renderProviderBreakdown(providers, totalMetrics) {
     const pct = totalMetrics.requestCount
       ? Math.round((pm.requestCount / totalMetrics.requestCount) * 100)
       : 0;
+    const barPct = pct > 0 ? Math.max(pct, 2) : 0;
     const tokTotal = pm.inputTokens + pm.outputTokens;
     const cr = cacheHitRate(pm.inputTokens, pm.cacheReadTokens);
     html += `<div class="dash-provider-row">
@@ -1087,7 +1088,7 @@ function renderProviderBreakdown(providers, totalMetrics) {
         <span class="dash-provider-pct">${pct}%</span>
       </div>
       <div class="dash-provider-track">
-        <div class="dash-provider-fill" style="width:${pct}%;background:var(--${p.provider})"></div>
+        <div class="dash-provider-fill" style="width:${barPct}%;background:var(--${p.provider})"></div>
       </div>
       <div class="dash-provider-stats">
         ${formatCount(pm.requestCount)} reqs
