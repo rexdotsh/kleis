@@ -4,8 +4,7 @@ import { db } from "../../db";
 import { findActiveApiKeyByValue } from "../../db/repositories/api-keys";
 import { parseBearerToken } from "../utils/bearer";
 import {
-  modelScopeCandidates,
-  parseModelForProxyRoute,
+  isModelInScope,
   readModelFromBody,
   resolveProxyRoute,
 } from "../proxy-routing";
@@ -68,18 +67,17 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
 
   if (route && apiKey.modelScopes?.length) {
     const requestedModel = await readRequestedModel(context.req.raw);
-    const requestedModelRoute = parseModelForProxyRoute(requestedModel, route);
-    const modelCandidates = modelScopeCandidates(requestedModelRoute, route);
-    const allowed = modelCandidates.some((candidate) =>
-      apiKey.modelScopes?.includes(candidate)
-    );
+    const allowed = isModelInScope({
+      model: requestedModel,
+      route,
+      modelScopes: apiKey.modelScopes,
+    });
     if (!allowed) {
-      const deniedModel = requestedModelRoute.rawModel ?? null;
       return context.json(
         {
           error: "forbidden",
-          message: deniedModel
-            ? `API key is not allowed to access model: ${deniedModel}`
+          message: requestedModel
+            ? `API key is not allowed to access model: ${requestedModel}`
             : "API key model scope requires an explicit model field",
         },
         403

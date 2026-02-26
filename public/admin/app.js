@@ -135,6 +135,20 @@ function keyById(keyId) {
   return state.keys.find((key) => key.id === keyId) || null;
 }
 
+function modelsUrlForKey(key) {
+  if (!key) return null;
+  if (typeof key.scopedModelsUrl === "string" && key.scopedModelsUrl.trim()) {
+    return key.scopedModelsUrl;
+  }
+  if (
+    typeof key.modelsDiscoveryToken === "string" &&
+    key.modelsDiscoveryToken.trim()
+  ) {
+    return `${APP_ORIGIN}/api/${key.modelsDiscoveryToken}`;
+  }
+  return null;
+}
+
 function accountUsageForId(accountId) {
   return state.accountUsageById.get(accountId) || null;
 }
@@ -345,6 +359,7 @@ function keyCardHtml(key) {
   const keyDisplay = isRevealed ? key.key : maskKey(key.key);
   const usage = usageForKey(key.id);
   const windowLabel = usageWindowLabel(state.keyUsageWindowMs);
+  const modelsUrl = modelsUrlForKey(key);
 
   const scopeBadges = key.providerScopes
     ? key.providerScopes
@@ -353,6 +368,12 @@ function keyCardHtml(key) {
     : '<span style="color:var(--text-tertiary)">all providers</span>';
 
   const metaParts = [`<span class="card-meta-item">${scopeBadges}</span>`];
+
+  if (modelsUrl) {
+    metaParts.push(
+      `<span class="card-meta-item"><span style="color:var(--text-tertiary)">models:</span> <code>${escapeHtml(modelsUrl)}</code></span>`
+    );
+  }
 
   metaParts.push(
     ...usageMetaParts(usage, {
@@ -391,6 +412,7 @@ function keyCardHtml(key) {
       </div>
       <div class="card-actions">
         <button class="btn btn-ghost btn-sm" data-action="copy-key" data-key-id="${key.id}" type="button">copy</button>
+        ${modelsUrl ? `<button class="btn btn-ghost btn-sm" data-action="copy-models-url" data-key-id="${key.id}" type="button">copy models url</button>` : ""}
         <button class="btn btn-ghost btn-sm" data-action="toggle-key" data-key-id="${key.id}" type="button">${isRevealed ? "hide" : "show"}</button>
         ${actionButtons}
       </div>
@@ -628,14 +650,15 @@ async function openAccountDetail(accountId) {
 function setupSnippet() {
   return [
     "# Terminal",
-    `export OPENCODE_MODELS_URL="${APP_ORIGIN}"`,
+    `export OPENCODE_MODELS_URL="${APP_ORIGIN}/api/<models-discovery-token>"`,
+    "# use the 'copy models url' button on your API key card",
     "opencode models --refresh",
     "opencode",
     "",
     "# Inside OpenCode",
     "/connect",
     "# provider: kleis",
-    "# token: copy an active API key from this page",
+    "# token: copy the same API key from this page",
   ].join("\n");
 }
 
@@ -1207,6 +1230,13 @@ $("#keys-list").addEventListener("click", (e) => {
       const key = keyById(keyId);
       if (key) copyToClipboard(key.key, button);
       else toast("Key unavailable", "error");
+      return;
+    }
+    if (action === "copy-models-url") {
+      const key = keyById(keyId);
+      const modelsUrl = modelsUrlForKey(key);
+      if (modelsUrl) copyToClipboard(modelsUrl, button);
+      else toast("Scoped models URL unavailable", "error");
       return;
     }
     if (action === "toggle-key") {

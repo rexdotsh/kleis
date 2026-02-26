@@ -191,4 +191,60 @@ describe("models registry contract", () => {
     expect(kleis.env).toEqual(["KLEIS_API_KEY"]);
     expect(Object.keys(kleis.models ?? {})).toHaveLength(0);
   });
+
+  test("applies api key provider and model scopes", () => {
+    const registry = buildProxyModelsRegistry({
+      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
+      baseOrigin: "https://kleis.example/api/kmd_abc123",
+      configuredProviders: ["codex", "claude", "copilot"],
+      apiKeyScopes: {
+        providerScopes: ["codex", "copilot"],
+        modelScopes: ["openai/gpt-5.3-codex", "gpt-5-mini"],
+      },
+    });
+
+    expect(Object.keys(registry).sort()).toEqual([
+      "github-copilot",
+      "kleis",
+      "openai",
+    ]);
+
+    const openai = registry.openai as {
+      models?: Record<string, { id?: string }>;
+    };
+    expect(Object.keys(openai.models ?? {})).toEqual(["gpt-5.3-codex"]);
+
+    const copilot = registry["github-copilot"] as {
+      models?: Record<string, { id?: string }>;
+    };
+    expect(Object.keys(copilot.models ?? {})).toEqual(["gpt-5-mini"]);
+
+    const kleis = registry.kleis as {
+      models?: Record<string, { id?: string }>;
+    };
+    expect(Object.keys(kleis.models ?? {}).sort()).toEqual([
+      "github-copilot/gpt-5-mini",
+      "openai/gpt-5.3-codex",
+    ]);
+  });
+
+  test("scoped mode omits non-proxy upstream providers", () => {
+    const registry = buildProxyModelsRegistry({
+      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
+      baseOrigin: "https://kleis.example/api/kmd_xyz789",
+      configuredProviders: ["codex"],
+      apiKeyScopes: {
+        providerScopes: ["codex"],
+        modelScopes: null,
+      },
+    });
+
+    expect(registry.anthropic).toBeUndefined();
+    expect(registry["github-copilot"]).toBeUndefined();
+
+    const kleis = registry.kleis as {
+      models?: Record<string, unknown>;
+    };
+    expect(Object.keys(kleis.models ?? {})).toEqual(["openai/gpt-5.3-codex"]);
+  });
 });

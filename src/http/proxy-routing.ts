@@ -17,6 +17,8 @@ export type ProxyRoute = {
   endpoint: ProxyEndpoint;
 };
 
+export type ModelScopeRoute = Pick<ProxyRoute, "publicProvider" | "provider">;
+
 type ParsedModelRoute = {
   rawModel: string | null;
   upstreamModel: string | null;
@@ -50,7 +52,7 @@ export const readModelFromBody = (body: unknown): string | null => {
 
 export const parseModelForProxyRoute = (
   model: string | null | undefined,
-  route: ProxyRoute
+  route: ModelScopeRoute
 ): ParsedModelRoute => {
   const rawModel = model?.trim() ?? "";
   if (!rawModel) {
@@ -87,7 +89,7 @@ export const parseModelForProxyRoute = (
 
 export const modelScopeCandidates = (
   parsedModel: ParsedModelRoute,
-  route: ProxyRoute
+  route: ModelScopeRoute
 ): string[] => {
   const candidates = new Set<string>();
   const rawModel = parsedModel.rawModel;
@@ -109,4 +111,19 @@ export const modelScopeCandidates = (
   }
 
   return Array.from(candidates);
+};
+
+export const isModelInScope = (input: {
+  model: string | null | undefined;
+  route: ModelScopeRoute;
+  modelScopes: readonly string[] | null | undefined;
+}): boolean => {
+  const modelScopes = input.modelScopes;
+  if (!modelScopes?.length) {
+    return true;
+  }
+
+  const parsedModel = parseModelForProxyRoute(input.model, input.route);
+  const candidates = modelScopeCandidates(parsedModel, input.route);
+  return candidates.some((candidate) => modelScopes.includes(candidate));
 };

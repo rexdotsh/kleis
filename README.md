@@ -17,6 +17,8 @@ Each provider has its own proxy adapter because none of them behave the same way
 
 `GET /api.json` serves a models.dev-compatible registry that merges upstream model data with Kleis routing info, so OpenCode auto-discovers everything without manual model config.
 
+Each API key also gets a scoped discovery URL at `GET /api/<models-discovery-token>/api.json`, so model discovery can match that key's provider/model scopes.
+
 There's also minute-bucketed request analytics across both API keys and provider accounts (non-blocking on the proxy path), and a small admin panel for managing accounts, keys, and token refreshes.
 
 ### Proxy routes
@@ -68,7 +70,7 @@ After connecting accounts, set one primary account per provider.
 After creating an API key in the admin panel:
 
 ```env
-OPENCODE_MODELS_URL=https://your-kleis-domain
+OPENCODE_MODELS_URL=https://your-kleis-domain/api/<models-discovery-token>
 KLEIS_API_KEY=your-issued-key
 ```
 

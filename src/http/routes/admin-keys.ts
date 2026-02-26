@@ -17,6 +17,7 @@ import {
 } from "../../db/repositories/api-keys";
 import { providers } from "../../db/schema";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
+import { invalidateModelsRegistryCache } from "../utils/models-cache";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 
 const createApiKeyBodySchema = z.strictObject({
@@ -38,10 +39,35 @@ const keyIdParamsSchema = z.strictObject({
   id: z.uuid(),
 });
 
+type ApiKeyRecord = Awaited<ReturnType<typeof listApiKeys>>[number];
+
+type ApiKeyView = ApiKeyRecord & {
+  scopedModelsUrl: string | null;
+};
+
+const scopedModelsUrl = (
+  requestUrl: URL,
+  modelsDiscoveryToken: string | null
+): string | null => {
+  if (!modelsDiscoveryToken) {
+    return null;
+  }
+
+  return `${requestUrl.origin}/api/${modelsDiscoveryToken}`;
+};
+
+const toApiKeyView = (requestUrl: URL, key: ApiKeyRecord): ApiKeyView => ({
+  ...key,
+  scopedModelsUrl: scopedModelsUrl(requestUrl, key.modelsDiscoveryToken),
+});
+
 export const adminKeysRoutes = new Hono()
   .get("/", async (context) => {
+    const requestUrl = new URL(context.req.url);
     const keys = await listApiKeys(db);
-    return context.json({ keys });
+    return context.json({
+      keys: keys.map((key) => toApiKeyView(requestUrl, key)),
+    });
   })
   .get(
     "/usage",
@@ -88,7 +114,13 @@ export const adminKeysRoutes = new Hono()
     }
 
     const key = await createApiKey(db, payload, now);
-    return context.json({ key }, 201);
+    invalidateModelsRegistryCache();
+    return context.json(
+      {
+        key: toApiKeyView(new URL(context.req.url), key),
+      },
+      201
+    );
   })
   .post(
     "/:id/revoke",
@@ -106,6 +138,7 @@ export const adminKeysRoutes = new Hono()
         );
       }
 
+      invalidateModelsRegistryCache();
       return context.json({ revoked: true });
     }
   )
@@ -133,6 +166,7 @@ export const adminKeysRoutes = new Hono()
       );
     }
 
+    invalidateModelsRegistryCache();
     return context.json({ deleted: true });
   })
   .get(
