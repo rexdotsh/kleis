@@ -845,11 +845,13 @@
       letter-spacing: 0.05em;
       padding: 6px 8px;
       border-bottom: 1px solid var(--border);
+      white-space: nowrap;
     }
     .detail-table td {
       padding: 7px 8px;
       color: var(--text-secondary);
       border-bottom: 1px solid var(--border-subtle);
+      white-space: nowrap;
     }
     .detail-table tr:last-child td {
       border-bottom: none;
@@ -1637,7 +1639,7 @@
     </div>
 
     <div id="modal-key-detail" class="modal-backdrop">
-      <div class="modal" style="width:560px">
+      <div class="modal" style="width:min(90vw, 900px)">
         <div
           style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px"
         >
