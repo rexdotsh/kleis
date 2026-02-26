@@ -1073,7 +1073,7 @@ function tokenSeriesExtractor(bucket) {
 
 function renderProviderBreakdown(providers, totalMetrics) {
   if (!providers.length) return "";
-  let html = "";
+  let html = '<div class="dash-provider-grid">';
   for (const p of providers) {
     const pm = normalizeUsage(p);
     const pct = totalMetrics.requestCount
@@ -1090,15 +1090,12 @@ function renderProviderBreakdown(providers, totalMetrics) {
       <div class="dash-provider-track">
         <div class="dash-provider-fill" style="width:${barPct}%;background:var(--${p.provider})"></div>
       </div>
-      <div class="dash-provider-stats">
-        ${formatCount(pm.requestCount)} reqs
-        <span class="dot-sep"></span>
-        ${formatCompact(tokTotal)} tok
-        <span class="dot-sep"></span>
-        ${cr}% cache
-      </div>
+      <span class="dash-provider-stat">${formatCount(pm.requestCount)} reqs</span>
+      <span class="dash-provider-stat">${formatCompact(tokTotal)} tok</span>
+      <span class="dash-provider-stat">${cr}% cache</span>
     </div>`;
   }
+  html += "</div>";
   return html;
 }
 
