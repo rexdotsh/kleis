@@ -1,4 +1,5 @@
 {
   "outputDirectory": "dist",
-  "bunVersion": "1.x"
+  "bunVersion": "1.x",
+  "buildCommand": "sh vercel.sh"
 }
