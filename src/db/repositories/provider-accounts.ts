@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, lte, or } from "drizzle-orm";
 
 import type { Database } from "../index";
 import { providerAccounts, type Provider } from "../schema";
@@ -506,27 +506,29 @@ export const setPrimaryProviderAccount = async (
     return null;
   }
 
-  const result = await database
-    .update(providerAccounts)
-    .set({
-      isPrimary: sql<boolean>`CASE WHEN ${providerAccounts.id} = ${id} THEN 1 ELSE 0 END`,
-      updatedAt: sql<number>`CASE WHEN ${providerAccounts.id} = ${id} OR ${providerAccounts.isPrimary} = 1 THEN ${now} ELSE ${providerAccounts.updatedAt} END`,
-    })
-    .where(
-      and(
-        eq(providerAccounts.provider, account.provider),
-        sql`exists (
-          select 1
-          from ${providerAccounts}
-          where ${providerAccounts.id} = ${id}
-            and ${providerAccounts.provider} = ${account.provider}
-        )`
-      )
-    );
+  return database.transaction(async (tx) => {
+    await tx
+      .update(providerAccounts)
+      .set({ isPrimary: false, updatedAt: now })
+      .where(
+        and(
+          eq(providerAccounts.provider, account.provider),
+          eq(providerAccounts.isPrimary, true)
+        )
+      );
 
-  if (result.rowsAffected === 0) {
-    return null;
-  }
+    const result = await tx
+      .update(providerAccounts)
+      .set({ isPrimary: true, updatedAt: now })
+      .where(eq(providerAccounts.id, id));
 
-  return findProviderAccountById(database, id);
+    if (result.rowsAffected === 0) {
+      return null;
+    }
+
+    const row = await tx.query.providerAccounts.findFirst({
+      where: eq(providerAccounts.id, id),
+    });
+    return row ? toRecord(row) : null;
+  });
 };
