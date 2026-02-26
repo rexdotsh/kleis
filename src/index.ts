@@ -33,9 +33,7 @@ app.onError((error, context) => {
   );
 });
 
-app.get("/", (context) =>
-  context.redirect("https://github.com/rexdotsh/kleis")
-);
+app.get("/", (context) => context.redirect("/admin"));
 
 app.route("/", healthRoutes);
 app.route("/", modelsRoutes);
