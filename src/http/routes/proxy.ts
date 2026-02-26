@@ -1,3 +1,4 @@
+import { waitUntil } from "@vercel/functions";
 import { Hono, type Context } from "hono";
 
 import { db } from "../../db";
@@ -49,7 +50,7 @@ const tryParseJsonBody = (bodyText: string | null): unknown | null => {
 };
 
 const runInBackground = (promise: Promise<unknown>): void => {
-  promise.catch(() => undefined);
+  waitUntil(promise.catch(() => undefined));
 };
 
 const proxyRequest = async (
