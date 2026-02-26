@@ -1,3 +1,4 @@
+import { feature } from "bun:bundle";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 
@@ -11,8 +12,6 @@ import { modelsRoutes } from "./http/routes/models";
 import { proxyRoutes } from "./http/routes/proxy";
 
 const app = new Hono();
-const isVercel = process.env.VERCEL === "1";
-const isDev = process.env.NODE_ENV !== "production" && !isVercel;
 
 app.onError((error, context) => {
   if (error instanceof HTTPException) {
@@ -51,15 +50,17 @@ app.use("/anthropic/v1/*", requireProxyApiKey);
 app.use("/copilot/v1/*", requireProxyApiKey);
 app.route("/", proxyRoutes);
 
-// Vercel serves public/ via CDN. Locally, Bun's routes serve admin HTML with HMR.
-const adminPage = isDev
-  ? (await import("../public/admin/index.html")).default
-  : undefined;
+// feature("DEV") is resolved at compile time — dead-code eliminated in production builds.
+// Locally, Bun's routes serve admin HTML with HMR. Vercel serves public/ via CDN.
+// https://bun.sh/docs/bundler#features
+const dev = feature("DEV")
+  ? { page: (await import("../public/admin/index.html")).default }
+  : null;
 
 export default {
   port: Number(process.env.PORT ?? 3000),
   // Bun's router treats "/admin" and "/admin/" as distinct URLs
-  routes: adminPage && { "/admin": adminPage, "/admin/": adminPage },
-  development: isDev,
+  routes: dev && { "/admin": dev.page, "/admin/": dev.page },
+  development: !!dev,
   fetch: app.fetch,
 };
