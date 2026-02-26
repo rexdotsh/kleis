@@ -295,6 +295,47 @@ function formatMetadataForInput(metadata) {
   return JSON.stringify(metadata, null, 2);
 }
 
+const trimmedOrNull = (value) => value.trim() || null;
+
+const parseCommaSeparatedList = (value) =>
+  value
+    ? value
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    : [];
+
+const checkedValues = (selector) =>
+  Array.from($$(selector))
+    .filter((input) => input.checked)
+    .map((input) => input.value);
+
+function setCheckedValues(selector, values) {
+  const allowed = new Set(values || []);
+  for (const input of $$(selector)) {
+    input.checked = allowed.has(input.value);
+  }
+}
+
+function parseOptionalJsonObject(raw, fieldLabel) {
+  if (!raw) {
+    return null;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${fieldLabel} must be valid JSON`);
+  }
+
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${fieldLabel} must be a JSON object`);
+  }
+
+  return parsed;
+}
+
 function accountCardHtml(account) {
   const s = tokenStatus(account.expiresAt);
   const name = account.label || account.accountId || account.id;
@@ -903,27 +944,16 @@ async function saveAccountEdits() {
     return;
   }
 
-  const label = $("#edit-account-label").value.trim();
-  const editableAccountId = $("#edit-account-account-id").value.trim();
+  const label = trimmedOrNull($("#edit-account-label").value);
+  const editableAccountId = trimmedOrNull($("#edit-account-account-id").value);
   const metadataRaw = $("#edit-account-metadata").value.trim();
 
-  let metadata = null;
-  if (metadataRaw) {
-    try {
-      metadata = JSON.parse(metadataRaw);
-    } catch {
-      toast("Metadata must be valid JSON", "error");
-      return;
-    }
-
-    if (
-      typeof metadata !== "object" ||
-      metadata === null ||
-      Array.isArray(metadata)
-    ) {
-      toast("Metadata must be a JSON object", "error");
-      return;
-    }
+  let metadata;
+  try {
+    metadata = parseOptionalJsonObject(metadataRaw, "Metadata");
+  } catch (error) {
+    toast(error.message, "error");
+    return;
   }
 
   const previousLabel = saveButton.textContent;
@@ -933,8 +963,8 @@ async function saveAccountEdits() {
     await api(`/admin/accounts/${accountId}`, {
       method: "PATCH",
       body: JSON.stringify({
-        label: label || null,
-        accountId: editableAccountId || null,
+        label,
+        accountId: editableAccountId,
         metadata,
       }),
     });
@@ -958,20 +988,14 @@ function openCreateKeyModal() {
 }
 
 async function createKey() {
-  const label = $("#key-label").value.trim() || undefined;
-  const providerScopes = Array.from($$(".key-scope-provider:checked")).map(
-    (cb) => cb.value
-  );
-  const raw = $("#key-model-scopes").value.trim();
-  const modelScopes = raw
-    ? raw
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean)
-    : undefined;
-  const body = { label };
-  if (providerScopes.length) body.providerScopes = providerScopes;
-  if (modelScopes) body.modelScopes = modelScopes;
+  const label = trimmedOrNull($("#key-label").value);
+  const providerScopes = checkedValues(".key-scope-provider");
+  const modelScopes = parseCommaSeparatedList($("#key-model-scopes").value);
+  const body = {
+    ...(label ? { label } : {}),
+    ...(providerScopes.length ? { providerScopes } : {}),
+    ...(modelScopes.length ? { modelScopes } : {}),
+  };
 
   try {
     const data = await api("/admin/keys", {
@@ -998,12 +1022,7 @@ function openEditKeyModal(id) {
   $("#edit-key-model-scopes").value = key.modelScopes?.join(", ") || "";
   $("#edit-key-expires-at").value =
     key.expiresAt === null ? "" : String(key.expiresAt);
-
-  for (const cb of $$(".edit-key-scope-provider")) {
-    cb.checked =
-      Array.isArray(key.providerScopes) &&
-      key.providerScopes.includes(cb.value);
-  }
+  setCheckedValues(".edit-key-scope-provider", key.providerScopes);
 
   const saveButton = $("#btn-modal-save-key");
   saveButton.dataset.keyId = key.id;
@@ -1020,20 +1039,14 @@ async function saveKeyEdits() {
     return;
   }
 
-  const label = $("#edit-key-label").value.trim();
-  const providerScopes = Array.from($$(".edit-key-scope-provider:checked")).map(
-    (cb) => cb.value
+  const label = trimmedOrNull($("#edit-key-label").value);
+  const providerScopes = checkedValues(".edit-key-scope-provider");
+  const modelScopes = parseCommaSeparatedList(
+    $("#edit-key-model-scopes").value
   );
-  const rawModelScopes = $("#edit-key-model-scopes").value.trim();
-  const modelScopes = rawModelScopes
-    ? rawModelScopes
-        .split(",")
-        .map((scope) => scope.trim())
-        .filter(Boolean)
-    : [];
 
   const body = {
-    label: label || null,
+    label,
     providerScopes: providerScopes.length ? providerScopes : null,
     modelScopes: modelScopes.length ? modelScopes : null,
   };
@@ -1266,8 +1279,8 @@ async function importAccount() {
   const accessToken = $("#import-access-token").value.trim();
   const refreshToken = $("#import-refresh-token").value.trim();
   const expiresAtRaw = $("#import-expires-at").value.trim();
-  const accountId = $("#import-account-id").value.trim();
-  const label = $("#import-label").value.trim();
+  const accountId = trimmedOrNull($("#import-account-id").value);
+  const label = trimmedOrNull($("#import-label").value);
   const metadataRaw = $("#import-metadata").value.trim();
 
   if (!accessToken || !refreshToken) {
@@ -1284,13 +1297,11 @@ async function importAccount() {
   }
 
   let metadata;
-  if (metadataRaw) {
-    try {
-      metadata = JSON.parse(metadataRaw);
-    } catch {
-      toast("Metadata must be valid JSON", "error");
-      return;
-    }
+  try {
+    metadata = parseOptionalJsonObject(metadataRaw, "Metadata");
+  } catch (error) {
+    toast(error.message, "error");
+    return;
   }
 
   const body = { accessToken, refreshToken, expiresAt };

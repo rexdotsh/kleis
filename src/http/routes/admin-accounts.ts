@@ -18,6 +18,7 @@ import {
   findProviderAccountById,
   listProviderAccounts,
   setPrimaryProviderAccount,
+  type ProviderAccountRecord,
   updateProviderAccountProfile,
 } from "../../db/repositories/provider-accounts";
 import { providers } from "../../db/schema";
@@ -63,6 +64,16 @@ const updateAccountBodySchema = z.strictObject({
   metadata: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
+const accountNotFoundBody = {
+  error: "not_found",
+  message: "Account not found",
+} as const;
+
+const invalidMetadataBody = {
+  error: "bad_request",
+  message: "Invalid provider metadata payload",
+} as const;
+
 const normalizeEditableText = (
   value: string | null | undefined
 ): string | null | undefined => {
@@ -75,6 +86,43 @@ const normalizeEditableText = (
   }
 
   return value.length > 0 ? value : null;
+};
+
+const resolvePatchedValue = <T>(current: T, patched: T | undefined): T =>
+  patched === undefined ? current : patched;
+
+const resolveUpdatedAccountMetadata = (input: {
+  account: ProviderAccountRecord;
+  accountId: string | null;
+  patch: Record<string, unknown> | null | undefined;
+}): ProviderAccountMetadata | null | "invalid" => {
+  if (input.patch === undefined) {
+    return input.account.metadata;
+  }
+
+  if (input.patch === null) {
+    return null;
+  }
+
+  const baseMetadata =
+    input.account.metadata ??
+    parseImportedProviderAccountMetadata({
+      provider: input.account.provider,
+      accountId: input.accountId,
+      metadata: null,
+    });
+
+  const parsedMetadata = providerAccountMetadataSchema.safeParse({
+    ...baseMetadata,
+    ...input.patch,
+    provider: input.account.provider,
+  });
+
+  if (!parsedMetadata.success) {
+    return "invalid";
+  }
+
+  return parsedMetadata.data;
 };
 
 const toAdminAccountView = (
@@ -126,13 +174,7 @@ export const adminAccountsRoutes = new Hono()
 
       const account = await findProviderAccountById(db, id);
       if (!account) {
-        return context.json(
-          {
-            error: "not_found",
-            message: "Account not found",
-          },
-          404
-        );
+        return context.json(accountNotFoundBody, 404);
       }
 
       const detail = await getProviderAccountUsageDetail(db, id, since);
@@ -155,50 +197,26 @@ export const adminAccountsRoutes = new Hono()
 
       const existing = await findProviderAccountById(db, id);
       if (!existing) {
-        return context.json(
-          {
-            error: "not_found",
-            message: "Account not found",
-          },
-          404
-        );
+        return context.json(accountNotFoundBody, 404);
       }
 
-      const nextLabel = normalizeEditableText(body.label);
-      const nextAccountId = normalizeEditableText(body.accountId);
+      const label = resolvePatchedValue(
+        existing.label,
+        normalizeEditableText(body.label)
+      );
+      const accountId = resolvePatchedValue(
+        existing.accountId,
+        normalizeEditableText(body.accountId)
+      );
 
-      const label = nextLabel === undefined ? existing.label : nextLabel;
-      const accountId =
-        nextAccountId === undefined ? existing.accountId : nextAccountId;
+      const metadata = resolveUpdatedAccountMetadata({
+        account: existing,
+        accountId,
+        patch: body.metadata,
+      });
 
-      let metadata = existing.metadata;
-      if (body.metadata !== undefined) {
-        if (body.metadata === null) {
-          metadata = null;
-        } else {
-          const parsedMetadata = providerAccountMetadataSchema.safeParse({
-            ...(existing.metadata ??
-              parseImportedProviderAccountMetadata({
-                provider: existing.provider,
-                accountId,
-                metadata: null,
-              })),
-            ...body.metadata,
-            provider: existing.provider,
-          });
-
-          if (!parsedMetadata.success) {
-            return context.json(
-              {
-                error: "bad_request",
-                message: "Invalid provider metadata payload",
-              },
-              400
-            );
-          }
-
-          metadata = parsedMetadata.data;
-        }
+      if (metadata === "invalid") {
+        return context.json(invalidMetadataBody, 400);
       }
 
       const updated = await updateProviderAccountProfile(db, id, {
@@ -220,13 +238,7 @@ export const adminAccountsRoutes = new Hono()
       }
 
       if (!updated) {
-        return context.json(
-          {
-            error: "not_found",
-            message: "Account not found",
-          },
-          404
-        );
+        return context.json(accountNotFoundBody, 404);
       }
 
       return context.json({
@@ -243,13 +255,7 @@ export const adminAccountsRoutes = new Hono()
       const deleted = await deleteProviderAccount(db, id);
 
       if (!deleted) {
-        return context.json(
-          {
-            error: "not_found",
-            message: "Account not found",
-          },
-          404
-        );
+        return context.json(accountNotFoundBody, 404);
       }
 
       invalidateModelsRegistryCache();
@@ -264,13 +270,7 @@ export const adminAccountsRoutes = new Hono()
       const updated = await setPrimaryProviderAccount(db, id, Date.now());
 
       if (!updated) {
-        return context.json(
-          {
-            error: "not_found",
-            message: "Account not found",
-          },
-          404
-        );
+        return context.json(accountNotFoundBody, 404);
       }
 
       invalidateModelsRegistryCache();
@@ -305,13 +305,7 @@ export const adminAccountsRoutes = new Hono()
       }
 
       if (!account) {
-        return context.json(
-          {
-            error: "not_found",
-            message: "Account not found",
-          },
-          404
-        );
+        return context.json(accountNotFoundBody, 404);
       }
 
       return context.json({
