@@ -157,22 +157,6 @@ const cloneProviderModels = (input: {
   return models;
 };
 
-const filterProviderModels = (input: {
-  sourceModels: Record<string, unknown>;
-  shouldIncludeModel: (modelId: string) => boolean;
-}): JsonObject => {
-  const models: JsonObject = {};
-  for (const [modelId, modelValue] of Object.entries(input.sourceModels)) {
-    if (!input.shouldIncludeModel(modelId)) {
-      continue;
-    }
-
-    models[modelId] = cloneJsonValue(modelValue);
-  }
-
-  return models;
-};
-
 const resolveAllowedMappings = (input: {
   configuredProviders: ReadonlySet<Provider>;
   providerScopes: readonly string[] | null;
@@ -193,13 +177,13 @@ const resolveAllowedMappings = (input: {
   });
 };
 
-const buildScopedUpstreamRegistry = (input: {
+const patchCanonicalProviders = (input: {
+  registry: ModelsDevRegistry;
   upstreamRegistry: ModelsDevRegistry;
+  baseOrigin: string;
   mappings: readonly ProxyMapping[];
   modelScopes: readonly string[] | null;
-}): ModelsDevRegistry => {
-  const registry: ModelsDevRegistry = {};
-
+}): void => {
   for (const mapping of input.mappings) {
     const sourceProvider = getObjectProperty(
       input.upstreamRegistry,
@@ -216,8 +200,11 @@ const buildScopedUpstreamRegistry = (input: {
       continue;
     }
 
-    const providerModels = filterProviderModels({
+    const apiUrl = `${input.baseOrigin}${mapping.routeBasePath}`;
+    const providerModels = cloneProviderModels({
       sourceModels: getObjectProperty(sourceProvider, "models") ?? {},
+      apiUrl,
+      npm: mapping.npm,
       shouldIncludeModel: (modelId) =>
         isModelSupportedByProxyProvider(mapping.internalProvider, modelId) &&
         isModelInScope({
@@ -231,11 +218,13 @@ const buildScopedUpstreamRegistry = (input: {
     }
 
     const provider = cloneJsonValue(sourceProvider);
+    provider.id = mapping.canonicalProvider;
+    provider.env = [PROXY_API_KEY_ENV];
+    provider.api = apiUrl;
+    provider.npm = mapping.npm;
     provider.models = providerModels;
-    registry[mapping.canonicalProvider] = provider;
+    input.registry[mapping.canonicalProvider] = provider;
   }
-
-  return registry;
 };
 
 const mergeKleisProviderModels = (input: {
@@ -284,56 +273,6 @@ const toKleisProviderEntry = (input: {
   };
 };
 
-const toStringArray = (value: unknown): string[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const result: string[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "string") {
-      continue;
-    }
-
-    const normalized = entry.trim();
-    if (!normalized) {
-      continue;
-    }
-
-    result.push(normalized);
-  }
-
-  return result;
-};
-
-const mergeKleisProviderEntries = (
-  existingProvider: JsonObject,
-  generatedProvider: JsonObject
-): JsonObject => {
-  const provider = cloneJsonValue(existingProvider);
-  const existingModels = getObjectProperty(provider, "models") ?? {};
-  const generatedModels = getObjectProperty(generatedProvider, "models") ?? {};
-
-  provider.models = {
-    ...cloneJsonValue(generatedModels),
-    ...cloneJsonValue(existingModels),
-  };
-
-  const env = new Set(toStringArray(provider.env));
-  env.add(PROXY_API_KEY_ENV);
-  provider.env = Array.from(env);
-
-  if (typeof provider.id !== "string" || !provider.id.trim()) {
-    provider.id = KLEIS_PROVIDER_ID;
-  }
-
-  if (typeof provider.name !== "string" || !provider.name.trim()) {
-    provider.name = KLEIS_PROVIDER_NAME;
-  }
-
-  return provider;
-};
-
 const appendKleisProviderEntry = (input: {
   registry: ModelsDevRegistry;
   baseOrigin: string;
@@ -351,10 +290,28 @@ const appendKleisProviderEntry = (input: {
     return;
   }
 
-  input.registry[KLEIS_PROVIDER_ID] = mergeKleisProviderEntries(
-    existingProvider,
-    generatedProvider
-  );
+  const existingModels = getObjectProperty(existingProvider, "models") ?? {};
+  const generatedModels = getObjectProperty(generatedProvider, "models") ?? {};
+  const existingEnv = Array.isArray(existingProvider.env)
+    ? existingProvider.env.filter(
+        (entry): entry is string =>
+          typeof entry === "string" && entry.trim().length > 0
+      )
+    : [];
+
+  if (!existingEnv.includes(PROXY_API_KEY_ENV)) {
+    existingEnv.push(PROXY_API_KEY_ENV);
+  }
+
+  input.registry[KLEIS_PROVIDER_ID] = {
+    ...generatedProvider,
+    ...cloneJsonValue(existingProvider),
+    env: existingEnv,
+    models: {
+      ...cloneJsonValue(generatedModels),
+      ...cloneJsonValue(existingModels),
+    },
+  };
 };
 
 export const buildProxyModelsRegistry = (
@@ -366,15 +323,20 @@ export const buildProxyModelsRegistry = (
     configuredProviders: new Set(input.configuredProviders),
     providerScopes,
   });
+  const registry: ModelsDevRegistry = input.apiKeyScopes
+    ? {}
+    : cloneJsonValue(input.upstreamRegistry);
   const baseOrigin = normalizeOrigin(input.baseOrigin);
 
-  const registry: ModelsDevRegistry = input.apiKeyScopes
-    ? buildScopedUpstreamRegistry({
-        upstreamRegistry: input.upstreamRegistry,
-        mappings,
-        modelScopes,
-      })
-    : cloneJsonValue(input.upstreamRegistry);
+  if (input.apiKeyScopes) {
+    patchCanonicalProviders({
+      registry,
+      upstreamRegistry: input.upstreamRegistry,
+      baseOrigin,
+      mappings,
+      modelScopes,
+    });
+  }
 
   appendKleisProviderEntry({
     registry,

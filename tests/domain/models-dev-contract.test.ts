@@ -268,10 +268,10 @@ describe("models registry contract", () => {
       env?: string[];
       models?: Record<string, { id?: string; provider?: { api?: string } }>;
     };
-    expect(openai.env).toEqual(["OPENAI_API_KEY"]);
+    expect(openai.env).toEqual(["KLEIS_API_KEY"]);
     expect(Object.keys(openai.models ?? {})).toEqual(["gpt-5.3-codex"]);
     expect(openai.models?.["gpt-5.3-codex"]?.provider?.api).toBe(
-      "https://api.openai.com/v1"
+      "https://kleis.example/api/kmd_abc123/openai/v1"
     );
 
     const copilot = registry["github-copilot"] as {
