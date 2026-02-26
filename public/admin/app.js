@@ -612,7 +612,6 @@ function renderDetailStats(totals) {
     [formatCount(metrics.rateLimitCount), "429"],
     [`${formatCount(metrics.avgLatencyMs)}ms`, "avg latency"],
     [`${formatCount(metrics.maxLatencyMs)}ms`, "max latency"],
-    [formatCount(metrics.totalTokens), "total tokens"],
     [formatCount(metrics.inputTokens), "input tokens"],
     [formatCount(metrics.outputTokens), "output tokens"],
     [formatCount(metrics.cacheReadTokens), "cache read"],
@@ -774,7 +773,7 @@ function renderAccountDetailBody(data) {
   return [
     renderDetailStats(totals),
     renderUsageTable("by API key", data.apiKeys, [
-      ["api key", (k) => `<code>${escapeHtml(k.apiKeyId)}</code>`],
+      ["api key", (k) => apiKeyDisplayHtml(k.apiKeyId)],
     ]),
     renderUsageTable(
       "by provider / endpoint",
@@ -1109,17 +1108,15 @@ function renderDashTable(title, rows, leadCols) {
   return `<div class="dash-card" style="overflow:auto"><div class="dash-chart-title">${title}</div>${usageTableHtml(rows, leadCols)}</div>`;
 }
 
-const DASH_KEY_LEAD_COLS = [
-  [
-    "key",
-    (row) => {
-      const k = keyById(row.apiKeyId);
-      return k
-        ? escapeHtml(k.label || maskKey(k.key))
-        : `<code>${escapeHtml(row.apiKeyId.slice(0, 8))}...</code>`;
-    },
-  ],
-];
+function apiKeyDisplayHtml(apiKeyId) {
+  const key = keyById(apiKeyId);
+  if (key) {
+    return escapeHtml(key.label || maskKey(key.key));
+  }
+  return `<code>${escapeHtml(apiKeyId.slice(0, 8))}...</code>`;
+}
+
+const DASH_KEY_LEAD_COLS = [["key", (row) => apiKeyDisplayHtml(row.apiKeyId)]];
 
 function renderDashboard(data) {
   const el = $("#dash-content");
@@ -1180,7 +1177,7 @@ function renderDashboard(data) {
   html += renderDashTable("by endpoint", byEndpoint, ENDPOINT_LEAD_COLS);
 
   if (m.lastRequestAt) {
-    html += `<div style="font-size:11px;color:var(--text-tertiary);text-align:right;margin-top:4px">last request: ${escapeHtml(new Date(m.lastRequestAt).toLocaleString())}</div>`;
+    html += `<div class="dash-last-request">last request: ${escapeHtml(new Date(m.lastRequestAt).toLocaleString())}</div>`;
   }
 
   el.innerHTML = html;

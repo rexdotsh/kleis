@@ -100,6 +100,9 @@ export const getDashboardUsage = async (
         requestUsageBuckets.endpoint,
         requestUsageBuckets.model
       )
+      .having(
+        sql`sum(${requestUsageBuckets.successCount}) > 0 and trim(${requestUsageBuckets.model}) <> ''`
+      )
       .orderBy(
         desc(sql<number>`sum(${requestUsageBuckets.requestCount})`),
         desc(sql<number>`max(${requestUsageBuckets.lastRequestAt})`)

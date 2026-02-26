@@ -807,7 +807,7 @@
 
     .detail-stats {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 10px;
       margin-bottom: 20px;
     }
@@ -1069,8 +1069,17 @@
       color: var(--text-tertiary);
       font-size: 13px;
     }
+    .dash-last-request {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      text-align: right;
+      margin: 8px 2px 14px;
+    }
 
     @media (max-width: 900px) {
+      .detail-stats {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
       .dash-kpi-row {
         grid-template-columns: repeat(3, 1fr);
       }
@@ -1082,6 +1091,9 @@
       }
     }
     @media (max-width: 640px) {
+      .detail-stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
       .dash-kpi-row {
         grid-template-columns: repeat(2, 1fr);
       }
