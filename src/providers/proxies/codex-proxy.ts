@@ -1,6 +1,12 @@
 import type { CodexAccountMetadata } from "../metadata";
 import { isObjectRecord } from "../../utils/object";
+import {
+  readOpenAiResponsesUsageFromResponse,
+  readOpenAiResponsesUsageFromSseEvent,
+  type TokenUsage,
+} from "../../usage/token-usage";
 import CODEX_DEFAULT_INSTRUCTIONS from "../codex-default-instructions.txt";
+import { maybeCreateOpenAiSseUsagePassthrough } from "./openai-sse-passthrough";
 
 import {
   CODEX_ACCOUNT_ID_HEADER,
@@ -41,6 +47,61 @@ const transformCodexBody = (bodyJson: unknown, bodyText: string): string => {
   });
 };
 
+const maybeTrackCodexJsonUsage = async (
+  response: Response,
+  onTokenUsage?: ((usage: TokenUsage) => void) | null
+): Promise<Response> => {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    return response;
+  }
+
+  const bodyText = await response.text();
+  let bodyJson: unknown;
+  try {
+    bodyJson = JSON.parse(bodyText) as unknown;
+  } catch {
+    return new Response(bodyText, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+
+  const usage = readOpenAiResponsesUsageFromResponse(bodyJson);
+  if (usage) {
+    onTokenUsage?.(usage);
+  }
+
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return Response.json(bodyJson, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
+
+const transformCodexResponse = (
+  response: Response,
+  onTokenUsage?: ((usage: TokenUsage) => void) | null
+): Promise<Response> => {
+  if (!response.body) {
+    return Promise.resolve(response);
+  }
+
+  const maybeSseResponse = maybeCreateOpenAiSseUsagePassthrough({
+    response,
+    extractUsage: readOpenAiResponsesUsageFromSseEvent,
+    onTokenUsage,
+  });
+  if (maybeSseResponse !== response) {
+    return Promise.resolve(maybeSseResponse);
+  }
+
+  return maybeTrackCodexJsonUsage(response, onTokenUsage);
+};
+
 type CodexProxyPreparationInput = {
   headers: Headers;
   accessToken: string;
@@ -48,11 +109,13 @@ type CodexProxyPreparationInput = {
   metadata: CodexAccountMetadata | null;
   bodyText: string;
   bodyJson: unknown;
+  onTokenUsage?: ((usage: TokenUsage) => void) | null;
 };
 
 type CodexProxyPreparationResult = {
   upstreamUrl: string;
   bodyText: string;
+  transformResponse(response: Response): Promise<Response>;
 };
 
 export const prepareCodexProxyRequest = (
@@ -71,5 +134,7 @@ export const prepareCodexProxyRequest = (
   return {
     upstreamUrl: CODEX_RESPONSE_ENDPOINT,
     bodyText: transformCodexBody(input.bodyJson, input.bodyText),
+    transformResponse: (response: Response): Promise<Response> =>
+      transformCodexResponse(response, input.onTokenUsage),
   };
 };

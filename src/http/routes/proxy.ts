@@ -4,11 +4,16 @@ import { db } from "../../db";
 import {
   MISSING_PROVIDER_ACCOUNT_ID,
   recordRequestUsage,
+  recordTokenUsage,
 } from "../../db/repositories/request-usage";
 import { getPrimaryProviderAccount } from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../providers/proxies/codex-proxy";
 import { prepareCopilotProxyRequest } from "../../providers/proxies/copilot-proxy";
+import {
+  isTokenUsagePopulated,
+  type TokenUsage,
+} from "../../usage/token-usage";
 import { isObjectRecord } from "../../utils/object";
 import {
   parseModelForProxyRoute,
@@ -55,25 +60,71 @@ const proxyRequest = async (
   const apiKeyId = context.get("proxyApiKeyId");
   let providerAccountId = MISSING_PROVIDER_ACCOUNT_ID;
 
-  const recordUsage = (statusCode: number): void => {
-    runInBackground(
-      recordRequestUsage(db, {
-        apiKeyId,
-        providerAccountId,
-        provider: route.provider,
-        endpoint: route.endpoint,
-        statusCode,
-        durationMs: Date.now() - startedAt,
-        occurredAt: Date.now(),
-      })
-    );
-  };
-
   const requestUrl = new URL(context.req.url);
   const requestBodyText = await context.req.text();
   const parsedRequestBody = tryParseJsonBody(requestBodyText);
   const requestedModel = readModelFromBody(parsedRequestBody);
   const parsedModel = parseModelForProxyRoute(requestedModel, route);
+  const usageModel = parsedModel.upstreamModel ?? "";
+
+  let usageOccurredAt = 0;
+  let requestUsagePersisted = false;
+  let extractedTokenUsage: TokenUsage | null = null;
+
+  const recordRequestCounters = (
+    statusCode: number,
+    occurredAt: number,
+    tokenUsage?: TokenUsage | null
+  ): void => {
+    const usageInput = {
+      apiKeyId,
+      providerAccountId,
+      provider: route.provider,
+      endpoint: route.endpoint,
+      model: usageModel,
+      statusCode,
+      durationMs: occurredAt - startedAt,
+      occurredAt,
+      ...(tokenUsage !== undefined ? { tokenUsage } : {}),
+    };
+    runInBackground(recordRequestUsage(db, usageInput));
+  };
+
+  const recordTokenCounters = (
+    tokenUsage: TokenUsage,
+    occurredAt: number
+  ): void => {
+    runInBackground(
+      recordTokenUsage(db, {
+        apiKeyId,
+        providerAccountId,
+        provider: route.provider,
+        endpoint: route.endpoint,
+        model: usageModel,
+        occurredAt,
+        tokenUsage,
+      })
+    );
+  };
+
+  const recordImmediateUsage = (statusCode: number): void => {
+    usageOccurredAt = Date.now();
+    requestUsagePersisted = true;
+    recordRequestCounters(statusCode, usageOccurredAt);
+  };
+
+  const handleTokenUsage = (tokenUsage: TokenUsage): void => {
+    if (!isTokenUsagePopulated(tokenUsage)) {
+      return;
+    }
+
+    extractedTokenUsage = tokenUsage;
+    if (!requestUsagePersisted) {
+      return;
+    }
+
+    recordTokenCounters(tokenUsage, usageOccurredAt || Date.now());
+  };
 
   let requestBodyJson = parsedRequestBody;
   let requestBody = requestBodyText;
@@ -95,7 +146,7 @@ const proxyRequest = async (
   try {
     account = await getPrimaryProviderAccount(db, route.provider, now);
   } catch {
-    recordUsage(502);
+    recordImmediateUsage(502);
     return context.json(
       proxyErrorResponse(
         `Failed to refresh ${route.provider} account token`,
@@ -106,7 +157,7 @@ const proxyRequest = async (
   }
 
   if (!account) {
-    recordUsage(400);
+    recordImmediateUsage(400);
     return context.json(
       proxyErrorResponse(
         `No primary ${route.provider} account is configured`,
@@ -135,9 +186,11 @@ const proxyRequest = async (
           account.metadata?.provider === "codex" ? account.metadata : null,
         bodyText: requestBody,
         bodyJson: requestBodyJson,
+        onTokenUsage: handleTokenUsage,
       });
       upstreamUrl = codexProxy.upstreamUrl;
       requestBody = codexProxy.bodyText;
+      responseTransformer = codexProxy.transformResponse;
       break;
     }
 
@@ -146,12 +199,16 @@ const proxyRequest = async (
         endpoint: route.endpoint,
         requestUrl,
         headers,
+        bodyText: requestBody,
         bodyJson: requestBodyJson,
         githubAccessToken: account.refreshToken,
         metadata:
           account.metadata?.provider === "copilot" ? account.metadata : null,
+        onTokenUsage: handleTokenUsage,
       });
       upstreamUrl = copilotProxy.upstreamUrl;
+      requestBody = copilotProxy.bodyText;
+      responseTransformer = copilotProxy.transformResponse;
       break;
     }
 
@@ -164,6 +221,7 @@ const proxyRequest = async (
         accessToken: account.accessToken,
         metadata:
           account.metadata?.provider === "claude" ? account.metadata : null,
+        onTokenUsage: handleTokenUsage,
       });
       upstreamUrl = claudeProxy.upstreamUrl;
       requestBody = claudeProxy.bodyText;
@@ -172,7 +230,7 @@ const proxyRequest = async (
     }
 
     default: {
-      recordUsage(500);
+      recordImmediateUsage(500);
       return context.json(
         proxyErrorResponse(
           `Proxy route provider is not supported: ${route.provider}`,
@@ -191,17 +249,24 @@ const proxyRequest = async (
       body: requestBody,
     });
   } catch (error) {
-    recordUsage(500);
+    recordImmediateUsage(500);
     throw error;
   }
 
-  recordUsage(upstreamResponse.status);
-
+  let responseToClient = upstreamResponse;
   if (responseTransformer) {
-    return await responseTransformer(upstreamResponse);
+    responseToClient = await responseTransformer(upstreamResponse);
   }
 
-  return upstreamResponse;
+  usageOccurredAt = Date.now();
+  recordRequestCounters(
+    upstreamResponse.status,
+    usageOccurredAt,
+    extractedTokenUsage
+  );
+  requestUsagePersisted = true;
+
+  return responseToClient;
 };
 
 const routes = new Hono();

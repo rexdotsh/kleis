@@ -174,33 +174,65 @@ function usageWindowLabel(windowMs) {
   return `${Math.floor(windowMs / 1000)}s`;
 }
 
+function usageNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function formatCount(value) {
+  return usageNumber(value).toLocaleString("en-US");
+}
+
 function usageMetaParts(
   usage,
   { windowLabel = null, includeMaxLatency = false } = {}
 ) {
   if (!usage) return [];
-  const rate = usage.requestCount
-    ? Math.round((usage.successCount / usage.requestCount) * 100)
+  const requestCount = usageNumber(usage.requestCount);
+  const successCount = usageNumber(usage.successCount);
+  const clientErrorCount = usageNumber(usage.clientErrorCount);
+  const serverErrorCount = usageNumber(usage.serverErrorCount);
+  const authErrorCount = usageNumber(usage.authErrorCount);
+  const rateLimitCount = usageNumber(usage.rateLimitCount);
+  const avgLatencyMs = usageNumber(usage.avgLatencyMs);
+  const maxLatencyMs = usageNumber(usage.maxLatencyMs);
+  const inputTokens = usageNumber(usage.inputTokens);
+  const outputTokens = usageNumber(usage.outputTokens);
+  const cacheReadTokens = usageNumber(usage.cacheReadTokens);
+  const cacheWriteTokens = usageNumber(usage.cacheWriteTokens);
+  const totalTokens = inputTokens + outputTokens;
+
+  const rate = requestCount
+    ? Math.round((successCount / requestCount) * 100)
     : null;
   const meta = (text, color) =>
     `<span class="card-meta-item"${color ? ` style="color:${color}"` : ""}>${text}</span>`;
   return [
-    usage.requestCount &&
+    requestCount &&
       meta(
-        `${usage.requestCount} reqs${windowLabel ? ` (${windowLabel})` : ""}`
+        `${formatCount(requestCount)} reqs${windowLabel ? ` (${windowLabel})` : ""}`
       ),
     rate !== null && meta(`${rate}% success`),
-    usage.clientErrorCount &&
-      meta(`${usage.clientErrorCount} 4xx other`, "var(--amber)"),
-    usage.serverErrorCount &&
-      meta(`${usage.serverErrorCount} 5xx`, "var(--red)"),
-    usage.authErrorCount &&
-      meta(`${usage.authErrorCount} auth`, "var(--amber)"),
-    usage.rateLimitCount && meta(`${usage.rateLimitCount} 429`, "var(--amber)"),
-    usage.avgLatencyMs && meta(`${usage.avgLatencyMs}ms avg`),
+    clientErrorCount &&
+      meta(`${formatCount(clientErrorCount)} 4xx other`, "var(--amber)"),
+    serverErrorCount &&
+      meta(`${formatCount(serverErrorCount)} 5xx`, "var(--red)"),
+    authErrorCount &&
+      meta(`${formatCount(authErrorCount)} auth`, "var(--amber)"),
+    rateLimitCount &&
+      meta(`${formatCount(rateLimitCount)} 429`, "var(--amber)"),
+    avgLatencyMs && meta(`${formatCount(avgLatencyMs)}ms avg`),
     includeMaxLatency &&
-      usage.maxLatencyMs &&
-      meta(`${usage.maxLatencyMs}ms max`),
+      maxLatencyMs &&
+      meta(`${formatCount(maxLatencyMs)}ms max`),
+    requestCount && meta(`${formatCount(totalTokens)} tok total`),
+    requestCount &&
+      meta(
+        `${formatCount(inputTokens)} in / ${formatCount(outputTokens)} out tok`
+      ),
+    requestCount &&
+      meta(
+        `${formatCount(cacheReadTokens)} cache read / ${formatCount(cacheWriteTokens)} cache write`
+      ),
     usage.lastRequestAt &&
       meta(`last req ${escapeHtml(relativeTime(usage.lastRequestAt))}`),
   ].filter(Boolean);
@@ -418,12 +450,18 @@ function keyCardHtml(key) {
   const providerUsageParts = [];
   if (usage?.providers?.length) {
     for (const pu of usage.providers) {
-      const puRate = pu.requestCount
-        ? Math.round((pu.successCount / pu.requestCount) * 100)
+      const providerRequests = usageNumber(pu.requestCount);
+      const providerSuccess = usageNumber(pu.successCount);
+      const providerInputTokens = usageNumber(pu.inputTokens);
+      const providerOutputTokens = usageNumber(pu.outputTokens);
+      const providerCacheReadTokens = usageNumber(pu.cacheReadTokens);
+      const providerCacheWriteTokens = usageNumber(pu.cacheWriteTokens);
+      const puRate = providerRequests
+        ? Math.round((providerSuccess / providerRequests) * 100)
         : null;
       const ratePart = puRate !== null ? ` (${puRate}% ok)` : "";
       providerUsageParts.push(
-        `<span class="card-meta-item"><span class="badge badge-${pu.provider}">${pu.provider}</span> ${pu.requestCount} reqs${ratePart}</span>`
+        `<span class="card-meta-item"><span class="badge badge-${pu.provider}">${pu.provider}</span> ${formatCount(providerRequests)} reqs${ratePart} - ${formatCount(providerInputTokens)} in / ${formatCount(providerOutputTokens)} out tok - ${formatCount(providerCacheReadTokens)} read / ${formatCount(providerCacheWriteTokens)} write cache</span>`
       );
     }
   }
@@ -498,18 +536,37 @@ const DETAIL_LOADING_HTML =
   '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
 
 function renderDetailStats(totals) {
-  const rate = totals.requestCount
-    ? Math.round((totals.successCount / totals.requestCount) * 100)
+  const requestCount = usageNumber(totals.requestCount);
+  const successCount = usageNumber(totals.successCount);
+  const clientErrorCount = usageNumber(totals.clientErrorCount);
+  const serverErrorCount = usageNumber(totals.serverErrorCount);
+  const authErrorCount = usageNumber(totals.authErrorCount);
+  const rateLimitCount = usageNumber(totals.rateLimitCount);
+  const avgLatencyMs = usageNumber(totals.avgLatencyMs);
+  const maxLatencyMs = usageNumber(totals.maxLatencyMs);
+  const inputTokens = usageNumber(totals.inputTokens);
+  const outputTokens = usageNumber(totals.outputTokens);
+  const cacheReadTokens = usageNumber(totals.cacheReadTokens);
+  const cacheWriteTokens = usageNumber(totals.cacheWriteTokens);
+  const totalTokens = inputTokens + outputTokens;
+
+  const rate = requestCount
+    ? Math.round((successCount / requestCount) * 100)
     : 0;
   const stats = [
-    [totals.requestCount, "requests"],
+    [formatCount(requestCount), "requests"],
     [`${rate}%`, "success"],
-    [totals.clientErrorCount, "4xx other"],
-    [totals.serverErrorCount, "5xx"],
-    [totals.authErrorCount || 0, "auth"],
-    [totals.rateLimitCount || 0, "429"],
-    [`${totals.avgLatencyMs}ms`, "avg latency"],
-    [`${totals.maxLatencyMs}ms`, "max latency"],
+    [formatCount(clientErrorCount), "4xx other"],
+    [formatCount(serverErrorCount), "5xx"],
+    [formatCount(authErrorCount), "auth"],
+    [formatCount(rateLimitCount), "429"],
+    [`${formatCount(avgLatencyMs)}ms`, "avg latency"],
+    [`${formatCount(maxLatencyMs)}ms`, "max latency"],
+    [formatCount(totalTokens), "total tokens"],
+    [formatCount(inputTokens), "input tokens"],
+    [formatCount(outputTokens), "output tokens"],
+    [formatCount(cacheReadTokens), "cache read"],
+    [formatCount(cacheWriteTokens), "cache write"],
   ];
   let html = `<div class="detail-stats">${stats.map(([v, l]) => `<div class="detail-stat"><div class="detail-stat-value">${v}</div><div class="detail-stat-label">${l}</div></div>`).join("")}</div>`;
   if (totals.lastRequestAt) {
@@ -527,6 +584,10 @@ const USAGE_TABLE_HEADERS = [
   "429",
   "avg ms",
   "max ms",
+  "input tok",
+  "output tok",
+  "cache read",
+  "cache write",
 ];
 
 const ENDPOINT_LEAD_COLS = [
@@ -537,16 +598,41 @@ const ENDPOINT_LEAD_COLS = [
   ["endpoint", (ep) => escapeHtml(ep.endpoint)],
 ];
 
+const MODEL_LEAD_COLS = [
+  [
+    "provider",
+    (modelRow) =>
+      `<span class="badge badge-${modelRow.provider}">${modelRow.provider}</span>`,
+  ],
+  ["endpoint", (modelRow) => escapeHtml(modelRow.endpoint)],
+  [
+    "model",
+    (modelRow) => `<code>${escapeHtml(modelRow.model || "(none)")}</code>`,
+  ],
+];
+
 function renderUsageTable(title, rows, leadCols) {
   if (!rows.length) return "";
   const headers = [...leadCols.map((c) => c[0]), ...USAGE_TABLE_HEADERS];
   let html = `<div class="detail-section-title">${title}</div>`;
-  html += `<table class="detail-table"><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>`;
+  html += `<div style="overflow:auto"><table class="detail-table"><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>`;
   for (const row of rows) {
+    const requestCount = usageNumber(row.requestCount);
+    const successCount = usageNumber(row.successCount);
+    const clientErrorCount = usageNumber(row.clientErrorCount);
+    const serverErrorCount = usageNumber(row.serverErrorCount);
+    const authErrorCount = usageNumber(row.authErrorCount);
+    const rateLimitCount = usageNumber(row.rateLimitCount);
+    const avgLatencyMs = usageNumber(row.avgLatencyMs);
+    const maxLatencyMs = usageNumber(row.maxLatencyMs);
+    const inputTokens = usageNumber(row.inputTokens);
+    const outputTokens = usageNumber(row.outputTokens);
+    const cacheReadTokens = usageNumber(row.cacheReadTokens);
+    const cacheWriteTokens = usageNumber(row.cacheWriteTokens);
     const lead = leadCols.map((c) => `<td>${c[1](row)}</td>`).join("");
-    html += `<tr>${lead}<td>${row.requestCount}</td><td>${row.successCount}</td><td>${row.clientErrorCount || "-"}</td><td>${row.serverErrorCount || "-"}</td><td>${row.authErrorCount || "-"}</td><td>${row.rateLimitCount || "-"}</td><td>${row.avgLatencyMs}</td><td>${row.maxLatencyMs}</td></tr>`;
+    html += `<tr>${lead}<td>${formatCount(requestCount)}</td><td>${formatCount(successCount)}</td><td>${clientErrorCount ? formatCount(clientErrorCount) : "-"}</td><td>${serverErrorCount ? formatCount(serverErrorCount) : "-"}</td><td>${authErrorCount ? formatCount(authErrorCount) : "-"}</td><td>${rateLimitCount ? formatCount(rateLimitCount) : "-"}</td><td>${formatCount(avgLatencyMs)}</td><td>${formatCount(maxLatencyMs)}</td><td>${formatCount(inputTokens)}</td><td>${formatCount(outputTokens)}</td><td>${formatCount(cacheReadTokens)}</td><td>${formatCount(cacheWriteTokens)}</td></tr>`;
   }
-  html += "</tbody></table>";
+  html += "</tbody></table></div>";
   return html;
 }
 
@@ -587,6 +673,34 @@ function renderBucketTimeline(buckets) {
   return html;
 }
 
+function renderTokenBucketTable(buckets) {
+  if (!buckets.length) {
+    return "";
+  }
+
+  let html =
+    '<div class="detail-section-title">token timeline (1m buckets)</div>';
+  html +=
+    '<div style="overflow:auto"><table class="detail-table"><thead><tr><th>bucket</th><th>input tok</th><th>output tok</th><th>cache read</th><th>cache write</th><th>total tok</th></tr></thead><tbody>';
+
+  for (const bucket of buckets) {
+    const inputTokens = usageNumber(bucket.inputTokens);
+    const outputTokens = usageNumber(bucket.outputTokens);
+    const cacheReadTokens = usageNumber(bucket.cacheReadTokens);
+    const cacheWriteTokens = usageNumber(bucket.cacheWriteTokens);
+    const totalTokens = inputTokens + outputTokens;
+    const bucketLabel = new Date(bucket.bucketStart).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    html += `<tr><td>${bucketLabel}</td><td>${formatCount(inputTokens)}</td><td>${formatCount(outputTokens)}</td><td>${formatCount(cacheReadTokens)}</td><td>${formatCount(cacheWriteTokens)}</td><td>${formatCount(totalTokens)}</td></tr>`;
+  }
+
+  html += "</tbody></table></div>";
+  return html;
+}
+
 function renderKeyDetailBody(data) {
   const { totals } = data;
   if (!totals.requestCount) {
@@ -600,7 +714,13 @@ function renderKeyDetailBody(data) {
       data.endpoints,
       ENDPOINT_LEAD_COLS
     ),
+    renderUsageTable(
+      "by provider / endpoint / model",
+      data.models || [],
+      MODEL_LEAD_COLS
+    ),
     renderBucketTimeline(data.buckets),
+    renderTokenBucketTable(data.buckets),
   ].join("");
 }
 
@@ -620,7 +740,13 @@ function renderAccountDetailBody(data) {
       data.endpoints,
       ENDPOINT_LEAD_COLS
     ),
+    renderUsageTable(
+      "by provider / endpoint / model",
+      data.models || [],
+      MODEL_LEAD_COLS
+    ),
     renderBucketTimeline(data.buckets),
+    renderTokenBucketTable(data.buckets),
   ].join("");
 }
 

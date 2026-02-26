@@ -10,7 +10,15 @@ import {
   requireProxyEndpointRoute,
   type ProxyEndpoint,
 } from "../proxy-endpoints";
+import {
+  readOpenAiChatUsageFromResponse,
+  readOpenAiChatUsageFromSseEvent,
+  readOpenAiResponsesUsageFromResponse,
+  readOpenAiResponsesUsageFromSseEvent,
+  type TokenUsage,
+} from "../../usage/token-usage";
 import { isObjectRecord } from "../../utils/object";
+import { maybeCreateOpenAiSseUsagePassthrough } from "./openai-sse-passthrough";
 
 type CopilotMessageProfile = {
   isVision: boolean;
@@ -181,17 +189,113 @@ const buildUpstreamUrl = (
   return upstream.toString();
 };
 
+const withChatCompletionsStreamUsage = (
+  endpoint: ProxyEndpoint,
+  bodyJson: unknown,
+  bodyText: string
+): string => {
+  if (endpoint !== "chat_completions") {
+    return bodyText;
+  }
+
+  if (!isObjectRecord(bodyJson) || bodyJson.stream !== true) {
+    return bodyText;
+  }
+
+  const streamOptions = isObjectRecord(bodyJson.stream_options)
+    ? bodyJson.stream_options
+    : null;
+  if (streamOptions?.include_usage === true) {
+    return bodyText;
+  }
+
+  return JSON.stringify({
+    ...bodyJson,
+    stream_options: {
+      ...(streamOptions ?? {}),
+      include_usage: true,
+    },
+  });
+};
+
+const maybeTrackCopilotJsonUsage = async (
+  endpoint: ProxyEndpoint,
+  response: Response,
+  onTokenUsage?: ((usage: TokenUsage) => void) | null
+): Promise<Response> => {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    return response;
+  }
+
+  const bodyText = await response.text();
+  let bodyJson: unknown;
+  try {
+    bodyJson = JSON.parse(bodyText) as unknown;
+  } catch {
+    return new Response(bodyText, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+
+  const usage =
+    endpoint === "responses"
+      ? readOpenAiResponsesUsageFromResponse(bodyJson)
+      : readOpenAiChatUsageFromResponse(bodyJson);
+  if (usage) {
+    onTokenUsage?.(usage);
+  }
+
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return Response.json(bodyJson, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+};
+
+const transformCopilotResponse = (
+  endpoint: ProxyEndpoint,
+  response: Response,
+  onTokenUsage?: ((usage: TokenUsage) => void) | null
+): Promise<Response> => {
+  if (!response.body) {
+    return Promise.resolve(response);
+  }
+
+  const maybeSseResponse = maybeCreateOpenAiSseUsagePassthrough({
+    response,
+    extractUsage:
+      endpoint === "responses"
+        ? readOpenAiResponsesUsageFromSseEvent
+        : readOpenAiChatUsageFromSseEvent,
+    onTokenUsage,
+  });
+  if (maybeSseResponse !== response) {
+    return Promise.resolve(maybeSseResponse);
+  }
+
+  return maybeTrackCopilotJsonUsage(endpoint, response, onTokenUsage);
+};
+
 type CopilotProxyPreparationInput = {
   endpoint: ProxyEndpoint;
   requestUrl: URL;
   headers: Headers;
+  bodyText: string;
   bodyJson: unknown;
   githubAccessToken: string;
   metadata: CopilotAccountMetadata | null;
+  onTokenUsage?: ((usage: TokenUsage) => void) | null;
 };
 
 type CopilotProxyPreparationResult = {
   upstreamUrl: string;
+  bodyText: string;
+  transformResponse(response: Response): Promise<Response>;
 };
 
 export const prepareCopilotProxyRequest = (
@@ -213,11 +317,20 @@ export const prepareCopilotProxyRequest = (
     input.headers.delete(COPILOT_VISION_HEADER);
   }
 
+  const bodyText = withChatCompletionsStreamUsage(
+    input.endpoint,
+    input.bodyJson,
+    input.bodyText
+  );
+
   return {
     upstreamUrl: buildUpstreamUrl(
       baseUrl,
       input.endpoint,
       input.requestUrl.search
     ),
+    bodyText,
+    transformResponse: (response: Response): Promise<Response> =>
+      transformCopilotResponse(input.endpoint, response, input.onTokenUsage),
   };
 };
