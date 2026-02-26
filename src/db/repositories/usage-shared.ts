@@ -502,6 +502,16 @@ export const mapModelUsageRows = (
   }
 
   models.sort((left, right) => {
+    const leftQuality =
+      (left.model.trim().length > 0 ? 2 : 0) + (left.successCount > 0 ? 1 : 0);
+    const rightQuality =
+      (right.model.trim().length > 0 ? 2 : 0) +
+      (right.successCount > 0 ? 1 : 0);
+    const qualityDifference = rightQuality - leftQuality;
+    if (qualityDifference !== 0) {
+      return qualityDifference;
+    }
+
     const requestDifference = right.requestCount - left.requestCount;
     if (requestDifference !== 0) {
       return requestDifference;
