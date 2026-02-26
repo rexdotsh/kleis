@@ -135,6 +135,16 @@ function keyById(keyId) {
   return state.keys.find((key) => key.id === keyId) || null;
 }
 
+function accountById(accountId) {
+  return state.accounts.find((a) => a.id === accountId) || null;
+}
+
+function isKeyActive(key) {
+  if (key.revokedAt) return false;
+  if (key.expiresAt && key.expiresAt < Date.now()) return false;
+  return true;
+}
+
 function modelsUrlForKey(key) {
   if (!key) return null;
   if (typeof key.scopedModelsUrl === "string" && key.scopedModelsUrl.trim()) {
@@ -353,8 +363,7 @@ function renderAccounts() {
 
 function keyCardHtml(key) {
   const revoked = !!key.revokedAt;
-  const expired = !revoked && key.expiresAt && key.expiresAt < Date.now();
-  const status = revoked ? "revoked" : expired ? "expired" : "active";
+  const status = revoked ? "revoked" : isKeyActive(key) ? "active" : "expired";
   const isRevealed = state.revealedKeyIds.has(key.id);
   const keyDisplay = isRevealed ? key.key : maskKey(key.key);
   const usage = usageForKey(key.id);
@@ -628,7 +637,7 @@ async function openKeyDetail(keyId) {
 }
 
 async function openAccountDetail(accountId) {
-  const account = state.accounts.find((a) => a.id === accountId);
+  const account = accountById(accountId);
   const label = account?.label || account?.accountId || accountId;
   const title = account
     ? `${account.provider} account: ${label}`
@@ -642,10 +651,7 @@ async function openAccountDetail(accountId) {
 }
 
 function activeKeysWithModelsUrl() {
-  return state.keys
-    .filter((k) => !k.revokedAt && !(k.expiresAt && k.expiresAt < Date.now()))
-    .map((k) => ({ ...k, modelsUrl: modelsUrlForKey(k) }))
-    .filter((k) => k.modelsUrl);
+  return state.keys.filter((k) => isKeyActive(k) && modelsUrlForKey(k));
 }
 
 function setupSnippet(key) {
@@ -805,7 +811,7 @@ async function loadKeys() {
 }
 
 async function setPrimary(id) {
-  const account = state.accounts.find((a) => a.id === id);
+  const account = accountById(id);
   const name = account?.label || account?.accountId || id;
   const confirmed = await showConfirm(
     "Set Primary Account",
@@ -824,7 +830,7 @@ async function setPrimary(id) {
 }
 
 async function deleteAccount(id) {
-  const account = state.accounts.find((a) => a.id === id);
+  const account = accountById(id);
   const name = account?.label || account?.accountId || id;
   const confirmed = await showConfirm(
     "Delete Account",
@@ -927,7 +933,7 @@ async function rotateKey(id, button) {
         ? existing.modelScopes
         : undefined,
   };
-  if (existing.expiresAt !== null && existing.expiresAt !== undefined) {
+  if (existing.expiresAt != null && existing.expiresAt > Date.now()) {
     payload.expiresAt = existing.expiresAt;
   }
 
