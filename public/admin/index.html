@@ -1021,6 +1021,18 @@
               >
               <div class="field-hint">Leave blank for github.com</div>
             </div>
+            <div id="oauth-codex-opts" class="field" style="display:none">
+              <label class="field-label" for="oauth-codex-mode">
+                OAuth Mode
+              </label>
+              <select id="oauth-codex-mode" class="field-input">
+                <option value="browser">Browser callback code</option>
+                <option value="headless">Headless device flow</option>
+              </select>
+              <div class="field-hint">
+                Use headless for SSH and remote terminals
+              </div>
+            </div>
             <div id="oauth-claude-opts" class="field" style="display:none">
               <label class="field-label" for="oauth-claude-mode">
                 OAuth Mode
@@ -1247,8 +1259,8 @@
           </button>
         </div>
         <div class="field-hint" style="margin-bottom:10px">
-          Run the terminal lines first, then use <code>/connect</code> inside
-          OpenCode and paste an active API key from this page.
+          Use the scoped models URL and matching API key from the same key card,
+          then run <code>/connect</code> inside OpenCode.
         </div>
         <pre id="setup-snippet" class="snippet-block"></pre>
         <div class="modal-footer">

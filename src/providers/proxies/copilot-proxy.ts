@@ -150,6 +150,9 @@ const deriveMessagesProfile = (jsonBody: unknown): CopilotMessageProfile => {
   };
 };
 
+// Copilot requires vision/initiator headers derived from message content.
+// https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/plugin/copilot.ts#L121-L131
+// https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/github-copilot-headers.ts#L5-L34
 const deriveCopilotRequestProfile = (
   endpoint: ProxyEndpoint,
   jsonBody: unknown

@@ -59,6 +59,19 @@ export const listProviderAccounts = async (
   return rows.map(toRecord);
 };
 
+export const listConfiguredProviders = async (
+  database: Database
+): Promise<Provider[]> => {
+  const rows = await database
+    .select({
+      provider: providerAccounts.provider,
+    })
+    .from(providerAccounts)
+    .where(eq(providerAccounts.isPrimary, true));
+
+  return rows.map((row) => row.provider);
+};
+
 export const findProviderAccountById = async (
   database: Database,
   id: string
@@ -140,6 +153,25 @@ type UpsertProviderAccountInput = {
   now: number;
 };
 
+const buildProviderAccountUpsertUpdate = (input: {
+  existingLabel: string | null;
+  nextLabel: string | null | undefined;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+  metadata: ProviderAccountMetadata | null;
+  now: number;
+}): Partial<typeof providerAccounts.$inferInsert> => ({
+  label: input.nextLabel === undefined ? input.existingLabel : input.nextLabel,
+  accessToken: input.accessToken,
+  refreshToken: input.refreshToken,
+  refreshLockToken: null,
+  refreshLockExpiresAt: null,
+  expiresAt: input.expiresAt,
+  metadataJson: serializeProviderAccountMetadata(input.metadata),
+  updatedAt: input.now,
+});
+
 export const upsertProviderAccount = async (
   database: Database,
   input: UpsertProviderAccountInput
@@ -155,16 +187,17 @@ export const upsertProviderAccount = async (
   if (existing) {
     await database
       .update(providerAccounts)
-      .set({
-        label: input.label === undefined ? existing.label : input.label,
-        accessToken: input.accessToken,
-        refreshToken: input.refreshToken,
-        refreshLockToken: null,
-        refreshLockExpiresAt: null,
-        expiresAt: input.expiresAt,
-        metadataJson: serializeProviderAccountMetadata(input.metadata),
-        updatedAt: input.now,
-      })
+      .set(
+        buildProviderAccountUpsertUpdate({
+          existingLabel: existing.label,
+          nextLabel: input.label,
+          accessToken: input.accessToken,
+          refreshToken: input.refreshToken,
+          expiresAt: input.expiresAt,
+          metadata: input.metadata,
+          now: input.now,
+        })
+      )
       .where(eq(providerAccounts.id, existing.id));
 
     const updated = await findProviderAccountById(database, existing.id);
@@ -225,16 +258,17 @@ export const upsertProviderAccount = async (
     if (concurrent) {
       await database
         .update(providerAccounts)
-        .set({
-          label: input.label === undefined ? concurrent.label : input.label,
-          accessToken: input.accessToken,
-          refreshToken: input.refreshToken,
-          refreshLockToken: null,
-          refreshLockExpiresAt: null,
-          expiresAt: input.expiresAt,
-          metadataJson: serializeProviderAccountMetadata(input.metadata),
-          updatedAt: input.now,
-        })
+        .set(
+          buildProviderAccountUpsertUpdate({
+            existingLabel: concurrent.label,
+            nextLabel: input.label,
+            accessToken: input.accessToken,
+            refreshToken: input.refreshToken,
+            expiresAt: input.expiresAt,
+            metadata: input.metadata,
+            now: input.now,
+          })
+        )
         .where(eq(providerAccounts.id, concurrent.id));
 
       const updated = await findProviderAccountById(database, concurrent.id);
@@ -476,7 +510,7 @@ export const setPrimaryProviderAccount = async (
     .update(providerAccounts)
     .set({
       isPrimary: sql<boolean>`CASE WHEN ${providerAccounts.id} = ${id} THEN 1 ELSE 0 END`,
-      updatedAt: now,
+      updatedAt: sql<number>`CASE WHEN ${providerAccounts.id} = ${id} OR ${providerAccounts.isPrimary} = 1 THEN ${now} ELSE ${providerAccounts.updatedAt} END`,
     })
     .where(
       and(

@@ -10,11 +10,19 @@ import {
 import { requireProxyEndpointRoute } from "../proxy-endpoints";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 
+// Anthropic's server blocks "OpenCode" in system prompts for OAuth sessions.
+// https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L198-L211
 const sanitizeClaudeSystemText = (text: string): string =>
   text
     .replace(/OpenCode/g, "Claude Code")
     .replace(/(?<!\/)opencode/gi, "Claude");
 
+// Request: prefix tool names so they match Claude Code's expected format.
+// Response: strip prefixes back so the client sees its original names.
+// https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L214-L239
+// https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L276-L294
+// pi-mono uses case-normalized Claude Code tool names instead of a prefix:
+// https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L64-L93
 const prefixToolName = (name: string, prefix: string): string =>
   name.startsWith(prefix) ? name : `${prefix}${name}`;
 
@@ -152,6 +160,8 @@ const claudeMessagesUpstreamSuffix = requireProxyEndpointRoute({
   endpoint: "messages",
 }).upstreamSuffix;
 
+// OAuth requests need ?beta=true on the messages endpoint.
+// https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L258-L263
 const buildUpstreamUrl = (search: string): string => {
   const upstream = new URL(
     `${claudeMessagesUpstreamSuffix}${search}`,
@@ -336,6 +346,8 @@ export const prepareClaudeProxyRequest = (
     CLAUDE_REQUIRED_BETA_HEADERS
   );
 
+  // OAuth sessions require Claude Code identity headers.
+  // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L525-L538
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("anthropic-beta", mergedBetas);
   input.headers.set(

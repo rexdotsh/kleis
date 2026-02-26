@@ -135,6 +135,20 @@ function keyById(keyId) {
   return state.keys.find((key) => key.id === keyId) || null;
 }
 
+function modelsUrlForKey(key) {
+  if (!key) return null;
+  if (typeof key.scopedModelsUrl === "string" && key.scopedModelsUrl.trim()) {
+    return key.scopedModelsUrl;
+  }
+  if (
+    typeof key.modelsDiscoveryToken === "string" &&
+    key.modelsDiscoveryToken.trim()
+  ) {
+    return `${APP_ORIGIN}/api/${key.modelsDiscoveryToken}`;
+  }
+  return null;
+}
+
 function accountUsageForId(accountId) {
   return state.accountUsageById.get(accountId) || null;
 }
@@ -172,7 +186,7 @@ function usageMetaParts(
   }
   if (usage?.clientErrorCount) {
     parts.push(
-      `<span class="card-meta-item" style="color:var(--amber)">${usage.clientErrorCount} 4xx</span>`
+      `<span class="card-meta-item" style="color:var(--amber)">${usage.clientErrorCount} 4xx other</span>`
     );
   }
   if (usage?.serverErrorCount) {
@@ -345,6 +359,7 @@ function keyCardHtml(key) {
   const keyDisplay = isRevealed ? key.key : maskKey(key.key);
   const usage = usageForKey(key.id);
   const windowLabel = usageWindowLabel(state.keyUsageWindowMs);
+  const modelsUrl = modelsUrlForKey(key);
 
   const scopeBadges = key.providerScopes
     ? key.providerScopes
@@ -353,6 +368,12 @@ function keyCardHtml(key) {
     : '<span style="color:var(--text-tertiary)">all providers</span>';
 
   const metaParts = [`<span class="card-meta-item">${scopeBadges}</span>`];
+
+  if (modelsUrl) {
+    metaParts.push(
+      `<span class="card-meta-item"><span style="color:var(--text-tertiary)">models:</span> <code>${escapeHtml(modelsUrl)}</code></span>`
+    );
+  }
 
   metaParts.push(
     ...usageMetaParts(usage, {
@@ -391,6 +412,7 @@ function keyCardHtml(key) {
       </div>
       <div class="card-actions">
         <button class="btn btn-ghost btn-sm" data-action="copy-key" data-key-id="${key.id}" type="button">copy</button>
+        ${modelsUrl ? `<button class="btn btn-ghost btn-sm" data-action="copy-models-url" data-key-id="${key.id}" type="button">copy models url</button>` : ""}
         <button class="btn btn-ghost btn-sm" data-action="toggle-key" data-key-id="${key.id}" type="button">${isRevealed ? "hide" : "show"}</button>
         ${actionButtons}
       </div>
@@ -455,7 +477,7 @@ function renderDetailStats(totals) {
   let html = `<div class="detail-stats">
     <div class="detail-stat"><div class="detail-stat-value">${totals.requestCount}</div><div class="detail-stat-label">requests</div></div>
     <div class="detail-stat"><div class="detail-stat-value">${successRate}%</div><div class="detail-stat-label">success</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${totals.clientErrorCount}</div><div class="detail-stat-label">4xx</div></div>
+    <div class="detail-stat"><div class="detail-stat-value">${totals.clientErrorCount}</div><div class="detail-stat-label">4xx other</div></div>
     <div class="detail-stat"><div class="detail-stat-value">${totals.serverErrorCount}</div><div class="detail-stat-label">5xx</div></div>
     <div class="detail-stat"><div class="detail-stat-value">${totals.authErrorCount || 0}</div><div class="detail-stat-label">auth</div></div>
     <div class="detail-stat"><div class="detail-stat-value">${totals.rateLimitCount || 0}</div><div class="detail-stat-label">429</div></div>
@@ -477,7 +499,7 @@ function renderEndpointDetailTable(endpoints) {
 
   let html = '<div class="detail-section-title">by provider / endpoint</div>';
   html +=
-    '<table class="detail-table"><thead><tr><th>provider</th><th>endpoint</th><th>reqs</th><th>ok</th><th>4xx</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
+    '<table class="detail-table"><thead><tr><th>provider</th><th>endpoint</th><th>reqs</th><th>ok</th><th>4xx other</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
   for (const ep of endpoints) {
     html += `<tr>
       <td><span class="badge badge-${ep.provider}">${ep.provider}</span></td>
@@ -504,7 +526,7 @@ function renderApiKeyDetailTable(apiKeys) {
 
   let html = '<div class="detail-section-title">by API key</div>';
   html +=
-    '<table class="detail-table"><thead><tr><th>api key</th><th>reqs</th><th>ok</th><th>4xx</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
+    '<table class="detail-table"><thead><tr><th>api key</th><th>reqs</th><th>ok</th><th>4xx other</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
   for (const key of apiKeys) {
     html += `<tr>
       <td><code>${escapeHtml(key.apiKeyId)}</code></td>
@@ -533,7 +555,12 @@ function renderBucketTimeline(buckets) {
     '<div class="detail-section-title">request timeline (1m buckets)</div>';
   for (const b of buckets) {
     const errPct = b.requestCount
-      ? ((b.clientErrorCount + b.serverErrorCount) / b.requestCount) * 100
+      ? ((b.clientErrorCount +
+          b.authErrorCount +
+          b.rateLimitCount +
+          b.serverErrorCount) /
+          b.requestCount) *
+        100
       : 0;
     const okPct = 100 - errPct;
     const pct = maxReqs ? (b.requestCount / maxReqs) * 100 : 0;
@@ -623,14 +650,15 @@ async function openAccountDetail(accountId) {
 function setupSnippet() {
   return [
     "# Terminal",
-    `export OPENCODE_MODELS_URL="${APP_ORIGIN}"`,
+    `export OPENCODE_MODELS_URL="${APP_ORIGIN}/api/<models-discovery-token>"`,
+    "# use the 'copy models url' button on your API key card",
     "opencode models --refresh",
     "opencode",
     "",
     "# Inside OpenCode",
     "/connect",
     "# provider: kleis",
-    "# token: copy an active API key from this page",
+    "# token: copy the same API key from this page",
   ].join("\n");
 }
 
@@ -969,6 +997,7 @@ async function copyToClipboard(text, btn) {
 function updateOAuthProviderUI() {
   const p = $("#oauth-provider").value;
   $("#oauth-copilot-opts").style.display = p === "copilot" ? "block" : "none";
+  $("#oauth-codex-opts").style.display = p === "codex" ? "block" : "none";
   $("#oauth-claude-opts").style.display = p === "claude" ? "block" : "none";
 }
 
@@ -983,6 +1012,8 @@ async function startOAuth() {
     if (provider === "copilot") {
       const ed = $("#oauth-enterprise-domain").value.trim();
       if (ed) body.options = { enterpriseDomain: ed };
+    } else if (provider === "codex") {
+      body.options = { mode: $("#oauth-codex-mode").value };
     } else if (provider === "claude") {
       body.options = { mode: $("#oauth-claude-mode").value };
     }
@@ -1199,6 +1230,13 @@ $("#keys-list").addEventListener("click", (e) => {
       const key = keyById(keyId);
       if (key) copyToClipboard(key.key, button);
       else toast("Key unavailable", "error");
+      return;
+    }
+    if (action === "copy-models-url") {
+      const key = keyById(keyId);
+      const modelsUrl = modelsUrlForKey(key);
+      if (modelsUrl) copyToClipboard(modelsUrl, button);
+      else toast("Scoped models URL unavailable", "error");
       return;
     }
     if (action === "toggle-key") {

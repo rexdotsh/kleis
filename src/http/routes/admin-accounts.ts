@@ -25,6 +25,9 @@ import {
   resolveImportedProviderAccountId,
   type ProviderAccountMetadata,
 } from "../../providers/metadata";
+import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
+import { toMillisecondsTimestamp } from "../../utils/timestamp";
+import { invalidateModelsRegistryCache } from "../utils/models-cache";
 
 const accountIdParamsSchema = z.strictObject({
   id: z.string().trim().min(1).max(120),
@@ -52,20 +55,6 @@ const importAccountBodySchema = z.strictObject({
   metadata: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
-const listProviderAccountUsageQuerySchema = z.strictObject({
-  windowMs: z.coerce
-    .number()
-    .int()
-    .min(60_000)
-    .max(30 * 24 * 60 * 60 * 1000)
-    .optional(),
-});
-
-const DEFAULT_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
-
-const toMillisecondsTimestamp = (value: number): number =>
-  value < 10_000_000_000 ? value * 1000 : value;
-
 const toAdminAccountView = (
   account: Awaited<ReturnType<typeof listProviderAccounts>>[number]
 ) => ({
@@ -89,12 +78,10 @@ export const adminAccountsRoutes = new Hono()
   })
   .get(
     "/usage",
-    zValidator("query", listProviderAccountUsageQuerySchema),
+    zValidator("query", usageWindowQuerySchema),
     async (context) => {
       const query = context.req.valid("query");
-      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
-      const now = Date.now();
-      const since = now - windowMs;
+      const { windowMs, now, since } = resolveUsageWindow(query.windowMs);
 
       const usage = await listProviderAccountUsageSummaries(db, since);
 
@@ -109,13 +96,11 @@ export const adminAccountsRoutes = new Hono()
   .get(
     "/:id/usage",
     zValidator("param", accountIdParamsSchema),
-    zValidator("query", listProviderAccountUsageQuerySchema),
+    zValidator("query", usageWindowQuerySchema),
     async (context) => {
       const { id } = context.req.valid("param");
       const query = context.req.valid("query");
-      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
-      const now = Date.now();
-      const since = now - windowMs;
+      const { windowMs, now, since } = resolveUsageWindow(query.windowMs);
 
       const account = await findProviderAccountById(db, id);
       if (!account) {
@@ -155,6 +140,7 @@ export const adminAccountsRoutes = new Hono()
         );
       }
 
+      invalidateModelsRegistryCache();
       return context.json({ deleted: true });
     }
   )
@@ -175,6 +161,7 @@ export const adminAccountsRoutes = new Hono()
         );
       }
 
+      invalidateModelsRegistryCache();
       return context.json({ account: toAdminAccountView(updated) });
     }
   )
@@ -246,7 +233,7 @@ export const adminAccountsRoutes = new Hono()
     async (context) => {
       const { provider } = context.req.valid("param");
       const body = context.req.valid("json");
-      if ((provider === "codex" || provider === "claude") && !body.code) {
+      if (provider === "claude" && !body.code) {
         return context.json(
           {
             error: "bad_request",
@@ -265,6 +252,8 @@ export const adminAccountsRoutes = new Hono()
         },
         Date.now()
       );
+
+      invalidateModelsRegistryCache();
       return context.json({ account: toAdminAccountView(account) });
     }
   )
@@ -327,6 +316,7 @@ export const adminAccountsRoutes = new Hono()
         now
       );
 
+      invalidateModelsRegistryCache();
       return context.json({
         account: toAdminAccountView(account),
         imported: true,

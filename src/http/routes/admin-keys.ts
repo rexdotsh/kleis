@@ -16,6 +16,9 @@ import {
   type CreateApiKeyInput,
 } from "../../db/repositories/api-keys";
 import { providers } from "../../db/schema";
+import { toMillisecondsTimestamp } from "../../utils/timestamp";
+import { invalidateModelsRegistryCache } from "../utils/models-cache";
+import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 
 const createApiKeyBodySchema = z.strictObject({
   label: z.string().trim().min(1).max(120).optional(),
@@ -36,30 +39,42 @@ const keyIdParamsSchema = z.strictObject({
   id: z.uuid(),
 });
 
-const listApiKeyUsageQuerySchema = z.strictObject({
-  windowMs: z.coerce
-    .number()
-    .int()
-    .min(60_000)
-    .max(30 * 24 * 60 * 60 * 1000)
-    .optional(),
-});
+type ApiKeyRecord = Awaited<ReturnType<typeof listApiKeys>>[number];
 
-const DEFAULT_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+type ApiKeyView = ApiKeyRecord & {
+  scopedModelsUrl: string | null;
+};
+
+const scopedModelsUrl = (
+  requestUrl: URL,
+  modelsDiscoveryToken: string | null
+): string | null => {
+  if (!modelsDiscoveryToken) {
+    return null;
+  }
+
+  return `${requestUrl.origin}/api/${modelsDiscoveryToken}`;
+};
+
+const toApiKeyView = (requestUrl: URL, key: ApiKeyRecord): ApiKeyView => ({
+  ...key,
+  scopedModelsUrl: scopedModelsUrl(requestUrl, key.modelsDiscoveryToken),
+});
 
 export const adminKeysRoutes = new Hono()
   .get("/", async (context) => {
+    const requestUrl = new URL(context.req.url);
     const keys = await listApiKeys(db);
-    return context.json({ keys });
+    return context.json({
+      keys: keys.map((key) => toApiKeyView(requestUrl, key)),
+    });
   })
   .get(
     "/usage",
-    zValidator("query", listApiKeyUsageQuerySchema),
+    zValidator("query", usageWindowQuerySchema),
     async (context) => {
       const query = context.req.valid("query");
-      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
-      const now = Date.now();
-      const since = now - windowMs;
+      const { windowMs, now, since } = resolveUsageWindow(query.windowMs);
 
       const usage = await listApiKeyUsageSummaries(db, since);
 
@@ -74,21 +89,22 @@ export const adminKeysRoutes = new Hono()
   .post("/", zValidator("json", createApiKeyBodySchema), async (context) => {
     const input = context.req.valid("json");
     const now = Date.now();
-    if (input.expiresAt !== null && input.expiresAt !== undefined) {
-      if (input.expiresAt <= now) {
-        return context.json(
-          {
-            error: "bad_request",
-            message: "expiresAt must be in the future",
-          },
-          400
-        );
-      }
+    const expiresAt =
+      input.expiresAt != null ? toMillisecondsTimestamp(input.expiresAt) : null;
+
+    if (expiresAt !== null && expiresAt <= now) {
+      return context.json(
+        {
+          error: "bad_request",
+          message: "expiresAt must be in the future",
+        },
+        400
+      );
     }
 
     const payload: CreateApiKeyInput = {
       label: input.label ?? null,
-      expiresAt: input.expiresAt ?? null,
+      expiresAt,
     };
     if (input.providerScopes) {
       payload.providerScopes = input.providerScopes;
@@ -98,7 +114,13 @@ export const adminKeysRoutes = new Hono()
     }
 
     const key = await createApiKey(db, payload, now);
-    return context.json({ key }, 201);
+    invalidateModelsRegistryCache();
+    return context.json(
+      {
+        key: toApiKeyView(new URL(context.req.url), key),
+      },
+      201
+    );
   })
   .post(
     "/:id/revoke",
@@ -116,6 +138,7 @@ export const adminKeysRoutes = new Hono()
         );
       }
 
+      invalidateModelsRegistryCache();
       return context.json({ revoked: true });
     }
   )
@@ -143,18 +166,17 @@ export const adminKeysRoutes = new Hono()
       );
     }
 
+    invalidateModelsRegistryCache();
     return context.json({ deleted: true });
   })
   .get(
     "/:id/usage",
     zValidator("param", keyIdParamsSchema),
-    zValidator("query", listApiKeyUsageQuerySchema),
+    zValidator("query", usageWindowQuerySchema),
     async (context) => {
       const { id } = context.req.valid("param");
       const query = context.req.valid("query");
-      const windowMs = query.windowMs ?? DEFAULT_USAGE_WINDOW_MS;
-      const now = Date.now();
-      const since = now - windowMs;
+      const { windowMs, now, since } = resolveUsageWindow(query.windowMs);
 
       const key = await findApiKeyById(db, id);
       if (!key) {

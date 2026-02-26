@@ -51,6 +51,7 @@ export const apiKeys = sqliteTable(
   {
     id: text("id").primaryKey(),
     key: text("key").notNull(),
+    modelsDiscoveryToken: text("models_discovery_token"),
     label: text("label"),
     providerScopeJson: text("provider_scope_json"),
     modelScopeJson: text("model_scope_json"),
@@ -58,7 +59,12 @@ export const apiKeys = sqliteTable(
     revokedAt: integer("revoked_at", { mode: "number" }),
     createdAt: integer("created_at", { mode: "number" }).notNull(),
   },
-  (table) => [uniqueIndex("api_keys_key_unique").on(table.key)]
+  (table) => [
+    uniqueIndex("api_keys_key_unique").on(table.key),
+    uniqueIndex("api_keys_models_discovery_token_unique").on(
+      table.modelsDiscoveryToken
+    ),
+  ]
 );
 
 export const oauthStates = sqliteTable("oauth_states", {

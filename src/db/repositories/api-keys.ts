@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, or, type SQL } from "drizzle-orm";
 
 import { apiKeys, requestUsageBuckets } from "../schema";
 import type { Database } from "../index";
@@ -8,6 +8,7 @@ type ScopeList = string[] | null;
 type ApiKeyRecord = {
   id: string;
   key: string;
+  modelsDiscoveryToken: string | null;
   label: string | null;
   providerScopes: ScopeList;
   modelScopes: ScopeList;
@@ -52,6 +53,7 @@ const parseScopeList = (value: string | null): ScopeList => {
 const toRecord = (row: typeof apiKeys.$inferSelect): ApiKeyRecord => ({
   id: row.id,
   key: row.key,
+  modelsDiscoveryToken: row.modelsDiscoveryToken,
   label: row.label,
   providerScopes: parseScopeList(row.providerScopeJson),
   modelScopes: parseScopeList(row.modelScopeJson),
@@ -88,6 +90,9 @@ export const findApiKeyById = async (
 const generateApiKeyValue = (): string =>
   `kleis_${crypto.randomUUID().replaceAll("-", "")}`;
 
+const generateModelsDiscoveryToken = (): string =>
+  `kmd_${crypto.randomUUID().replaceAll("-", "")}`;
+
 export const createApiKey = async (
   database: Database,
   input: CreateApiKeyInput,
@@ -96,6 +101,7 @@ export const createApiKey = async (
   const row: typeof apiKeys.$inferInsert = {
     id: crypto.randomUUID(),
     key: generateApiKeyValue(),
+    modelsDiscoveryToken: generateModelsDiscoveryToken(),
     label: input.label?.trim() || null,
     providerScopeJson: input.providerScopes?.length
       ? JSON.stringify(input.providerScopes)
@@ -111,6 +117,7 @@ export const createApiKey = async (
   await database.insert(apiKeys).values(row);
   return toRecord({
     ...row,
+    modelsDiscoveryToken: row.modelsDiscoveryToken ?? null,
     label: row.label ?? null,
     providerScopeJson: row.providerScopeJson ?? null,
     modelScopeJson: row.modelScopeJson ?? null,
@@ -164,14 +171,22 @@ export const deleteRevokedApiKey = (
   });
 };
 
-export const findActiveApiKeyByValue = async (
+export const findActiveApiKeyByValue = (
   database: Database,
   keyValue: string,
   now: number
 ): Promise<ApiKeyRecord | null> => {
+  return findActiveApiKey(database, eq(apiKeys.key, keyValue), now);
+};
+
+const findActiveApiKey = async (
+  database: Database,
+  predicate: SQL,
+  now: number
+): Promise<ApiKeyRecord | null> => {
   const row = await database.query.apiKeys.findFirst({
     where: and(
-      eq(apiKeys.key, keyValue),
+      predicate,
       isNull(apiKeys.revokedAt),
       or(isNull(apiKeys.expiresAt), gt(apiKeys.expiresAt, now))
     ),
@@ -182,4 +197,16 @@ export const findActiveApiKeyByValue = async (
   }
 
   return toRecord(row);
+};
+
+export const findActiveApiKeyByModelsDiscoveryToken = (
+  database: Database,
+  modelsDiscoveryToken: string,
+  now: number
+): Promise<ApiKeyRecord | null> => {
+  return findActiveApiKey(
+    database,
+    eq(apiKeys.modelsDiscoveryToken, modelsDiscoveryToken),
+    now
+  );
 };

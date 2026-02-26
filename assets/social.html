@@ -1,0 +1,129 @@
+<!-- for the social preview on github, again thx claude :) -->
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=1280">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Lexend:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    >
+    <style>
+    :root {
+      --bg-root: #0a0a0c;
+      --bg-surface: #111114;
+      --border: #27272d;
+      --border-subtle: #1e1e23;
+      --text-primary: #e8e4dd;
+      --text-secondary: #8a8580;
+      --text-tertiary: #5c5853;
+      --amber: #d4a24e;
+      --amber-dim: #b8882e;
+      --copilot: #79c0ff;
+      --codex: #a78bfa;
+      --claude: #fb923c;
+      --font-display: "Lexend", sans-serif;
+      --font-mono: "Geist Mono", monospace;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 1280px;
+      height: 640px;
+      background: var(--bg-root);
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .name {
+      font-family: var(--font-display);
+      font-size: 120px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--amber);
+      line-height: 1;
+    }
+
+    .tagline {
+      font-size: 18px;
+      color: var(--text-tertiary);
+      letter-spacing: 0.02em;
+    }
+
+    .flow {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin-top: 36px;
+    }
+
+    .node {
+      padding: 12px 24px;
+      border: 1px solid var(--border);
+      font-size: 17px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      letter-spacing: 0.04em;
+      background: var(--bg-surface);
+    }
+
+    .node.highlight {
+      color: var(--text-primary);
+      border-color: rgba(212, 162, 78, 0.2);
+    }
+
+    .arrow {
+      color: var(--border);
+      font-size: 22px;
+      user-select: none;
+    }
+
+    .node.codex {
+      color: var(--codex);
+      border-color: rgba(167, 139, 250, 0.2);
+    }
+    .node.copilot {
+      color: var(--copilot);
+      border-color: rgba(121, 192, 255, 0.2);
+    }
+    .node.claude {
+      color: var(--claude);
+      border-color: rgba(251, 146, 60, 0.2);
+    }
+    .node.more {
+      color: var(--text-tertiary);
+      border-color: var(--border-subtle);
+      border-style: dashed;
+    }
+    </style>
+  </head>
+  <body>
+    <div class="name">kleis</div>
+    <div class="tagline">one oauth proxy for coding agents</div>
+
+    <div class="flow">
+      <div class="node highlight">API_KEY</div>
+      <span class="arrow">&rarr;</span>
+      <div class="node highlight">kleis</div>
+      <span class="arrow">&rarr;</span>
+      <div class="node copilot">copilot</div>
+      <div class="node claude">claude</div>
+      <div class="node codex">codex</div>
+      <div class="node more">...</div>
+    </div>
+  </body>
+</html>

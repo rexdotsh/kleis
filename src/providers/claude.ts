@@ -13,7 +13,11 @@ import {
 } from "./constants";
 import { requireOkResponse } from "./http";
 import type { ClaudeAccountMetadata } from "./metadata";
-import { generatePkce, generateState } from "./oauth-utils";
+import {
+  generatePkce,
+  generateState,
+  parseAuthorizationCodeInput,
+} from "./oauth-utils";
 import { parseOAuthStateMetadata } from "./oauth-state";
 import type {
   ProviderAdapter,
@@ -40,48 +44,6 @@ type ClaudeTokenResponse = {
   expires_in?: number;
   token_type?: string;
   scope?: string;
-};
-
-const parseAuthorizationCodeInput = (
-  input: string
-): { code: string; state?: string } => {
-  const value = input.trim();
-  if (!value) {
-    throw new Error("Claude OAuth completion requires a code");
-  }
-
-  try {
-    const url = new URL(value);
-    const code = url.searchParams.get("code");
-    if (code) {
-      const state = url.searchParams.get("state");
-      if (state) {
-        return { code, state };
-      }
-
-      return { code };
-    }
-  } catch {
-    // ignore non-url values
-  }
-
-  if (value.includes("#")) {
-    const split = value.split("#", 2);
-    if (split[0]) {
-      if (split[1]) {
-        return {
-          code: split[0],
-          state: split[1],
-        };
-      }
-
-      return {
-        code: split[0],
-      };
-    }
-  }
-
-  return { code: value };
 };
 
 const exchangeCodeForTokens = async (input: {
@@ -257,7 +219,10 @@ export const claudeAdapter: ProviderAdapter = {
       throw new Error("Claude OAuth state is missing PKCE verifier");
     }
 
-    const codeInput = parseAuthorizationCodeInput(input.code);
+    const codeInput = parseAuthorizationCodeInput(
+      input.code,
+      "Claude OAuth completion requires a code"
+    );
     if (codeInput.state && codeInput.state !== input.state) {
       throw new Error("Claude OAuth callback state mismatch");
     }
