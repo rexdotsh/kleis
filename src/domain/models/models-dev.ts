@@ -128,37 +128,6 @@ const isModelSupportedByProxyProvider = (
   );
 };
 
-const patchCanonicalProviders = (input: {
-  registry: ModelsDevRegistry;
-  upstreamRegistry: ModelsDevRegistry;
-  baseOrigin: string;
-}): void => {
-  for (const mapping of proxyProviderMappings) {
-    const sourceProvider = getNestedObject(
-      input.upstreamRegistry,
-      mapping.canonicalProvider
-    );
-    if (!sourceProvider) {
-      continue;
-    }
-
-    const apiUrl = `${input.baseOrigin}${mapping.routeBasePath}`;
-    const provider = cloneJsonValue(sourceProvider);
-    provider.id = mapping.canonicalProvider;
-    provider.env = [PROXY_API_KEY_ENV];
-    provider.api = apiUrl;
-    provider.npm = mapping.npm;
-    provider.models = cloneProviderModels({
-      sourceModels: getNestedObject(sourceProvider, "models") ?? {},
-      apiUrl,
-      npm: mapping.npm,
-      shouldIncludeModel: (modelId) =>
-        isModelSupportedByProxyProvider(mapping.internalProvider, modelId),
-    });
-    input.registry[mapping.canonicalProvider] = provider;
-  }
-};
-
 const mergeKleisProviderModels = (
   registry: ModelsDevRegistry,
   baseOrigin: string
@@ -198,6 +167,77 @@ const toKleisProviderEntry = (input: {
   };
 };
 
+const toStringArray = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const result: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+
+    const normalized = entry.trim();
+    if (!normalized) {
+      continue;
+    }
+
+    result.push(normalized);
+  }
+
+  return result;
+};
+
+const mergeKleisProviderEntries = (
+  existingProvider: Record<string, unknown>,
+  generatedProvider: JsonObject
+): JsonObject => {
+  const provider = cloneJsonValue(existingProvider);
+  const existingModels = getNestedObject(provider, "models") ?? {};
+  const generatedModels = getNestedObject(generatedProvider, "models") ?? {};
+
+  provider.models = {
+    ...cloneJsonValue(generatedModels),
+    ...cloneJsonValue(existingModels),
+  };
+
+  const env = new Set(toStringArray(provider.env));
+  env.add(PROXY_API_KEY_ENV);
+  provider.env = Array.from(env);
+
+  if (typeof provider.id !== "string" || !provider.id.trim()) {
+    provider.id = KLEIS_PROVIDER_ID;
+  }
+
+  if (typeof provider.name !== "string" || !provider.name.trim()) {
+    provider.name = KLEIS_PROVIDER_NAME;
+  }
+
+  return provider;
+};
+
+const appendKleisProviderEntry = (input: {
+  registry: ModelsDevRegistry;
+  baseOrigin: string;
+}): void => {
+  const generatedProvider = toKleisProviderEntry({
+    registry: input.registry,
+    baseOrigin: input.baseOrigin,
+  });
+  const existingProvider = getNestedObject(input.registry, KLEIS_PROVIDER_ID);
+
+  if (!existingProvider) {
+    input.registry[KLEIS_PROVIDER_ID] = generatedProvider;
+    return;
+  }
+
+  input.registry[KLEIS_PROVIDER_ID] = mergeKleisProviderEntries(
+    existingProvider,
+    generatedProvider
+  );
+};
+
 export const getModelsDevRegistry = (): Promise<ModelsDevRegistry> => {
   if (inFlightFetch) {
     return inFlightFetch;
@@ -216,13 +256,7 @@ export const buildProxyModelsRegistry = (
   const registry: ModelsDevRegistry = cloneJsonValue(input.upstreamRegistry);
   const baseOrigin = normalizeOrigin(input.baseOrigin);
 
-  patchCanonicalProviders({
-    registry,
-    upstreamRegistry: input.upstreamRegistry,
-    baseOrigin,
-  });
-
-  registry[KLEIS_PROVIDER_ID] = toKleisProviderEntry({
+  appendKleisProviderEntry({
     registry,
     baseOrigin,
   });
