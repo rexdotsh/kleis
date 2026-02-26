@@ -359,7 +359,7 @@ function keyCardHtml(key) {
   const keyDisplay = isRevealed ? key.key : maskKey(key.key);
   const usage = usageForKey(key.id);
   const windowLabel = usageWindowLabel(state.keyUsageWindowMs);
-  const modelsUrl = modelsUrlForKey(key);
+  const modelsUrl = status === "active" ? modelsUrlForKey(key) : null;
 
   const scopeBadges = key.providerScopes
     ? key.providerScopes
@@ -368,12 +368,6 @@ function keyCardHtml(key) {
     : '<span style="color:var(--text-tertiary)">all providers</span>';
 
   const metaParts = [`<span class="card-meta-item">${scopeBadges}</span>`];
-
-  if (modelsUrl) {
-    metaParts.push(
-      `<span class="card-meta-item"><span style="color:var(--text-tertiary)">models:</span> <code>${escapeHtml(modelsUrl)}</code></span>`
-    );
-  }
 
   metaParts.push(
     ...usageMetaParts(usage, {
@@ -647,25 +641,53 @@ async function openAccountDetail(accountId) {
   });
 }
 
-function setupSnippet() {
+function activeKeysWithModelsUrl() {
+  return state.keys
+    .filter((k) => !k.revokedAt && !(k.expiresAt && k.expiresAt < Date.now()))
+    .map((k) => ({ ...k, modelsUrl: modelsUrlForKey(k) }))
+    .filter((k) => k.modelsUrl);
+}
+
+function setupSnippet(key) {
+  if (!key) {
+    return [
+      "# No active API keys with a models URL.",
+      "# Create an API key first, then reopen this dialog.",
+    ].join("\n");
+  }
+
+  const modelsUrl = modelsUrlForKey(key);
   return [
     "# Terminal",
-    `export OPENCODE_MODELS_URL="${APP_ORIGIN}/api/<models-discovery-token>"`,
-    "# use the 'copy models url' button on your API key card",
+    `export OPENCODE_MODELS_URL="${modelsUrl}"`,
     "opencode models --refresh",
     "opencode",
     "",
     "# Inside OpenCode",
     "/connect",
     "# provider: kleis",
-    "# token: copy the same API key from this page",
+    `# token: ${key.key}`,
   ].join("\n");
 }
 
 function openSetupModal() {
+  const select = $("#setup-key-select");
   const snippet = $("#setup-snippet");
-  if (!snippet) return;
-  snippet.textContent = setupSnippet();
+  if (!select || !snippet) return;
+
+  const keys = activeKeysWithModelsUrl();
+
+  select.innerHTML = keys.length
+    ? keys
+        .map(
+          (k) =>
+            `<option value="${k.id}">${escapeHtml(k.label || maskKey(k.key))}</option>`
+        )
+        .join("")
+    : '<option value="">no active keys</option>';
+
+  const selected = keys.length ? keys[0] : null;
+  snippet.textContent = setupSnippet(selected);
   $("#modal-opencode-setup").classList.add("open");
 }
 
@@ -985,9 +1007,10 @@ async function deleteKey(id) {
 async function copyToClipboard(text, btn) {
   try {
     await navigator.clipboard.writeText(text);
+    const original = btn.textContent;
     btn.textContent = "copied";
     setTimeout(() => {
-      btn.textContent = "copy";
+      btn.textContent = original;
     }, 2000);
   } catch {
     toast("Failed to copy", "error");
@@ -1275,8 +1298,14 @@ $("#toggle-show-revoked-keys").addEventListener("change", (e) => {
 $("#oauth-provider").addEventListener("change", updateOAuthProviderUI);
 updateOAuthProviderUI();
 
+$("#setup-key-select").addEventListener("change", (e) => {
+  const key = keyById(e.target.value);
+  $("#setup-snippet").textContent = setupSnippet(key);
+});
+
 $("#btn-copy-setup").addEventListener("click", (e) => {
-  copyToClipboard(setupSnippet(), e.currentTarget);
+  const key = keyById($("#setup-key-select").value);
+  copyToClipboard(setupSnippet(key), e.currentTarget);
 });
 
 for (const tab of $$(".tab")) {
