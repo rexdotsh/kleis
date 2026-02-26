@@ -501,34 +501,59 @@ export const setPrimaryProviderAccount = async (
   id: string,
   now: number
 ): Promise<ProviderAccountRecord | null> => {
-  const account = await findProviderAccountById(database, id);
-  if (!account) {
-    return null;
-  }
+  const accountChangedMessage =
+    "Provider account changed while setting primary";
 
-  return database.transaction(async (tx) => {
-    await tx
-      .update(providerAccounts)
-      .set({ isPrimary: false, updatedAt: now })
-      .where(
-        and(
-          eq(providerAccounts.provider, account.provider),
-          eq(providerAccounts.isPrimary, true)
-        )
-      );
+  try {
+    return await database.transaction(async (tx) => {
+      const account = await tx.query.providerAccounts.findFirst({
+        where: eq(providerAccounts.id, id),
+      });
+      if (!account) {
+        return null;
+      }
 
-    const result = await tx
-      .update(providerAccounts)
-      .set({ isPrimary: true, updatedAt: now })
-      .where(eq(providerAccounts.id, id));
+      await tx
+        .update(providerAccounts)
+        .set({ isPrimary: false, updatedAt: now })
+        .where(
+          and(
+            eq(providerAccounts.provider, account.provider),
+            eq(providerAccounts.isPrimary, true)
+          )
+        );
 
-    if (result.rowsAffected === 0) {
+      const result = await tx
+        .update(providerAccounts)
+        .set({ isPrimary: true, updatedAt: now })
+        .where(
+          and(
+            eq(providerAccounts.id, id),
+            eq(providerAccounts.provider, account.provider)
+          )
+        );
+
+      if (result.rowsAffected === 0) {
+        throw new Error(accountChangedMessage);
+      }
+
+      const row = await tx.query.providerAccounts.findFirst({
+        where: and(
+          eq(providerAccounts.id, id),
+          eq(providerAccounts.provider, account.provider)
+        ),
+      });
+      if (!row) {
+        throw new Error(accountChangedMessage);
+      }
+
+      return toRecord(row);
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === accountChangedMessage) {
       return null;
     }
 
-    const row = await tx.query.providerAccounts.findFirst({
-      where: eq(providerAccounts.id, id),
-    });
-    return row ? toRecord(row) : null;
-  });
+    throw error;
+  }
 };
