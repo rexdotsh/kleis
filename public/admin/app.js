@@ -1073,14 +1073,12 @@ function tokenSeriesExtractor(bucket) {
 
 function renderProviderBreakdown(providers, totalMetrics) {
   if (!providers.length) return "";
-  const maxReqs = Math.max(...providers.map((p) => p.requestCount));
   let html = "";
   for (const p of providers) {
     const pm = normalizeUsage(p);
     const pct = totalMetrics.requestCount
       ? Math.round((pm.requestCount / totalMetrics.requestCount) * 100)
       : 0;
-    const barPct = maxReqs ? (pm.requestCount / maxReqs) * 100 : 0;
     const tokTotal = pm.inputTokens + pm.outputTokens;
     const cr = cacheHitRate(pm.inputTokens, pm.cacheReadTokens);
     html += `<div class="dash-provider-row">
@@ -1089,7 +1087,7 @@ function renderProviderBreakdown(providers, totalMetrics) {
         <span class="dash-provider-pct">${pct}%</span>
       </div>
       <div class="dash-provider-track">
-        <div class="dash-provider-fill" style="width:${barPct}%;background:var(--${p.provider})"></div>
+        <div class="dash-provider-fill" style="width:${pct}%;background:var(--${p.provider})"></div>
       </div>
       <div class="dash-provider-stats">
         ${formatCount(pm.requestCount)} reqs
@@ -1889,7 +1887,7 @@ $("#keys-list").addEventListener("click", (e) => {
     if (action === "copy-models-url") {
       const key = keyById(keyId);
       const modelsUrl = modelsUrlForKey(key);
-      if (modelsUrl) copyToClipboard(modelsUrl, button);
+      if (modelsUrl) copyToClipboard(`${modelsUrl}/api.json`, button);
       else toast("Scoped models URL unavailable", "error");
       return;
     }
