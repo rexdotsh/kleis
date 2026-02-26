@@ -174,63 +174,36 @@ function usageWindowLabel(windowMs) {
   return `${Math.floor(windowMs / 1000)}s`;
 }
 
-function usageSuccessRate(usage) {
-  if (!usage?.requestCount) return null;
-  return Math.round((usage.successCount / usage.requestCount) * 100);
-}
-
 function usageMetaParts(
   usage,
   { windowLabel = null, includeMaxLatency = false } = {}
 ) {
-  const parts = [];
-  const successRate = usageSuccessRate(usage);
-
-  if (usage?.requestCount) {
-    parts.push(
-      `<span class="card-meta-item">${usage.requestCount} reqs${windowLabel ? ` (${windowLabel})` : ""}</span>`
-    );
-  }
-  if (successRate !== null) {
-    parts.push(`<span class="card-meta-item">${successRate}% success</span>`);
-  }
-  if (usage?.clientErrorCount) {
-    parts.push(
-      `<span class="card-meta-item" style="color:var(--amber)">${usage.clientErrorCount} 4xx other</span>`
-    );
-  }
-  if (usage?.serverErrorCount) {
-    parts.push(
-      `<span class="card-meta-item" style="color:var(--red)">${usage.serverErrorCount} 5xx</span>`
-    );
-  }
-  if (usage?.authErrorCount) {
-    parts.push(
-      `<span class="card-meta-item" style="color:var(--amber)">${usage.authErrorCount} auth</span>`
-    );
-  }
-  if (usage?.rateLimitCount) {
-    parts.push(
-      `<span class="card-meta-item" style="color:var(--amber)">${usage.rateLimitCount} 429</span>`
-    );
-  }
-  if (usage?.avgLatencyMs) {
-    parts.push(
-      `<span class="card-meta-item">${usage.avgLatencyMs}ms avg</span>`
-    );
-  }
-  if (includeMaxLatency && usage?.maxLatencyMs) {
-    parts.push(
-      `<span class="card-meta-item">${usage.maxLatencyMs}ms max</span>`
-    );
-  }
-  if (usage?.lastRequestAt) {
-    parts.push(
-      `<span class="card-meta-item">last req ${escapeHtml(relativeTime(usage.lastRequestAt))}</span>`
-    );
-  }
-
-  return parts;
+  if (!usage) return [];
+  const rate = usage.requestCount
+    ? Math.round((usage.successCount / usage.requestCount) * 100)
+    : null;
+  const meta = (text, color) =>
+    `<span class="card-meta-item"${color ? ` style="color:${color}"` : ""}>${text}</span>`;
+  return [
+    usage.requestCount &&
+      meta(
+        `${usage.requestCount} reqs${windowLabel ? ` (${windowLabel})` : ""}`
+      ),
+    rate !== null && meta(`${rate}% success`),
+    usage.clientErrorCount &&
+      meta(`${usage.clientErrorCount} 4xx other`, "var(--amber)"),
+    usage.serverErrorCount &&
+      meta(`${usage.serverErrorCount} 5xx`, "var(--red)"),
+    usage.authErrorCount &&
+      meta(`${usage.authErrorCount} auth`, "var(--amber)"),
+    usage.rateLimitCount && meta(`${usage.rateLimitCount} 429`, "var(--amber)"),
+    usage.avgLatencyMs && meta(`${usage.avgLatencyMs}ms avg`),
+    includeMaxLatency &&
+      usage.maxLatencyMs &&
+      meta(`${usage.maxLatencyMs}ms max`),
+    usage.lastRequestAt &&
+      meta(`last req ${escapeHtml(relativeTime(usage.lastRequestAt))}`),
+  ].filter(Boolean);
 }
 
 function usageMapFromList(items, idField) {
@@ -474,78 +447,55 @@ const DETAIL_LOADING_HTML =
   '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
 
 function renderDetailStats(totals) {
-  const successRate = totals.requestCount
+  const rate = totals.requestCount
     ? Math.round((totals.successCount / totals.requestCount) * 100)
     : 0;
-
-  let html = `<div class="detail-stats">
-    <div class="detail-stat"><div class="detail-stat-value">${totals.requestCount}</div><div class="detail-stat-label">requests</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${successRate}%</div><div class="detail-stat-label">success</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${totals.clientErrorCount}</div><div class="detail-stat-label">4xx other</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${totals.serverErrorCount}</div><div class="detail-stat-label">5xx</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${totals.authErrorCount || 0}</div><div class="detail-stat-label">auth</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${totals.rateLimitCount || 0}</div><div class="detail-stat-label">429</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${totals.avgLatencyMs}ms</div><div class="detail-stat-label">avg latency</div></div>
-    <div class="detail-stat"><div class="detail-stat-value">${totals.maxLatencyMs}ms</div><div class="detail-stat-label">max latency</div></div>
-  </div>`;
-
+  const stats = [
+    [totals.requestCount, "requests"],
+    [`${rate}%`, "success"],
+    [totals.clientErrorCount, "4xx other"],
+    [totals.serverErrorCount, "5xx"],
+    [totals.authErrorCount || 0, "auth"],
+    [totals.rateLimitCount || 0, "429"],
+    [`${totals.avgLatencyMs}ms`, "avg latency"],
+    [`${totals.maxLatencyMs}ms`, "max latency"],
+  ];
+  let html = `<div class="detail-stats">${stats.map(([v, l]) => `<div class="detail-stat"><div class="detail-stat-value">${v}</div><div class="detail-stat-label">${l}</div></div>`).join("")}</div>`;
   if (totals.lastRequestAt) {
     html += `<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:16px">last request: ${escapeHtml(new Date(totals.lastRequestAt).toLocaleString())}</div>`;
   }
-
   return html;
 }
 
-function renderEndpointDetailTable(endpoints) {
-  if (!endpoints.length) {
-    return "";
-  }
+const USAGE_TABLE_HEADERS = [
+  "reqs",
+  "ok",
+  "4xx other",
+  "5xx",
+  "auth",
+  "429",
+  "avg ms",
+  "max ms",
+];
 
-  let html = '<div class="detail-section-title">by provider / endpoint</div>';
-  html +=
-    '<table class="detail-table"><thead><tr><th>provider</th><th>endpoint</th><th>reqs</th><th>ok</th><th>4xx other</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
-  for (const ep of endpoints) {
-    html += `<tr>
-      <td><span class="badge badge-${ep.provider}">${ep.provider}</span></td>
-      <td>${escapeHtml(ep.endpoint)}</td>
-      <td>${ep.requestCount}</td>
-      <td>${ep.successCount}</td>
-      <td>${ep.clientErrorCount || "-"}</td>
-      <td>${ep.serverErrorCount || "-"}</td>
-      <td>${ep.authErrorCount || "-"}</td>
-      <td>${ep.rateLimitCount || "-"}</td>
-      <td>${ep.avgLatencyMs}</td>
-      <td>${ep.maxLatencyMs}</td>
-    </tr>`;
-  }
-  html += "</tbody></table>";
+const ENDPOINT_LEAD_COLS = [
+  [
+    "provider",
+    (ep) => `<span class="badge badge-${ep.provider}">${ep.provider}</span>`,
+  ],
+  ["endpoint", (ep) => escapeHtml(ep.endpoint)],
+];
 
-  return html;
-}
-
-function renderApiKeyDetailTable(apiKeys) {
-  if (!apiKeys.length) {
-    return "";
-  }
-
-  let html = '<div class="detail-section-title">by API key</div>';
-  html +=
-    '<table class="detail-table"><thead><tr><th>api key</th><th>reqs</th><th>ok</th><th>4xx other</th><th>5xx</th><th>auth</th><th>429</th><th>avg ms</th><th>max ms</th></tr></thead><tbody>';
-  for (const key of apiKeys) {
-    html += `<tr>
-      <td><code>${escapeHtml(key.apiKeyId)}</code></td>
-      <td>${key.requestCount}</td>
-      <td>${key.successCount}</td>
-      <td>${key.clientErrorCount || "-"}</td>
-      <td>${key.serverErrorCount || "-"}</td>
-      <td>${key.authErrorCount || "-"}</td>
-      <td>${key.rateLimitCount || "-"}</td>
-      <td>${key.avgLatencyMs}</td>
-      <td>${key.maxLatencyMs}</td>
-    </tr>`;
+function renderUsageTable(title, rows, leadCols) {
+  if (!rows.length) return "";
+  const headers = [...leadCols.map((c) => c[0]), ...USAGE_TABLE_HEADERS];
+  let html = `<div class="detail-section-title">${title}</div>`;
+  html += `<table class="detail-table"><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>`;
+  for (const row of rows) {
+    const lead = leadCols.map((c) => `<td>${c[1](row)}</td>`).join("");
+    html += `<tr>${lead}<td>${row.requestCount}</td><td>${row.successCount}</td><td>${row.clientErrorCount || "-"}</td><td>${row.serverErrorCount || "-"}</td><td>${row.authErrorCount || "-"}</td><td>${row.rateLimitCount || "-"}</td><td>${row.avgLatencyMs}</td><td>${row.maxLatencyMs}</td></tr>`;
   }
   html += "</tbody></table>";
-
   return html;
 }
 
@@ -594,7 +544,11 @@ function renderKeyDetailBody(data) {
 
   return [
     renderDetailStats(totals),
-    renderEndpointDetailTable(data.endpoints),
+    renderUsageTable(
+      "by provider / endpoint",
+      data.endpoints,
+      ENDPOINT_LEAD_COLS
+    ),
     renderBucketTimeline(data.buckets),
   ].join("");
 }
@@ -607,8 +561,14 @@ function renderAccountDetailBody(data) {
 
   return [
     renderDetailStats(totals),
-    renderApiKeyDetailTable(data.apiKeys),
-    renderEndpointDetailTable(data.endpoints),
+    renderUsageTable("by API key", data.apiKeys, [
+      ["api key", (k) => `<code>${escapeHtml(k.apiKeyId)}</code>`],
+    ]),
+    renderUsageTable(
+      "by provider / endpoint",
+      data.endpoints,
+      ENDPOINT_LEAD_COLS
+    ),
     renderBucketTimeline(data.buckets),
   ].join("");
 }
@@ -925,14 +885,12 @@ async function rotateKey(id, button) {
 
   const payload = {
     label: existing.label || undefined,
-    providerScopes:
-      existing.providerScopes && existing.providerScopes.length > 0
-        ? existing.providerScopes
-        : undefined,
-    modelScopes:
-      existing.modelScopes && existing.modelScopes.length > 0
-        ? existing.modelScopes
-        : undefined,
+    providerScopes: existing.providerScopes?.length
+      ? existing.providerScopes
+      : undefined,
+    modelScopes: existing.modelScopes?.length
+      ? existing.modelScopes
+      : undefined,
   };
   if (existing.expiresAt != null && existing.expiresAt > Date.now()) {
     payload.expiresAt = existing.expiresAt;
