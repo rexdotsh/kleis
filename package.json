@@ -4,7 +4,7 @@
   "scripts": {
     "dev": "bun --hot --no-clear-screen run src/index.ts",
     "build": "bun run bundle",
-    "bundle": "bun build src/index.ts --target=node --format=esm --outdir=dist --packages=external",
+    "bundle": "bun build src/index.ts --target=bun --outdir=dist --packages=external",
     "typecheck": "tsgo --noEmit -p tsconfig.json",
     "lint": "bun x ultracite check",
     "fix": "bun x ultracite fix",
