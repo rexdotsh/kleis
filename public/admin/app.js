@@ -182,11 +182,8 @@ function formatCount(value) {
   return usageNumber(value).toLocaleString("en-US");
 }
 
-function usageMetaParts(
-  usage,
-  { windowLabel = null, includeMaxLatency = false } = {}
-) {
-  if (!usage) return [];
+function normalizeUsage(rawUsage) {
+  const usage = rawUsage || {};
   const requestCount = usageNumber(usage.requestCount);
   const successCount = usageNumber(usage.successCount);
   const clientErrorCount = usageNumber(usage.clientErrorCount);
@@ -199,42 +196,73 @@ function usageMetaParts(
   const outputTokens = usageNumber(usage.outputTokens);
   const cacheReadTokens = usageNumber(usage.cacheReadTokens);
   const cacheWriteTokens = usageNumber(usage.cacheWriteTokens);
-  const totalTokens = inputTokens + outputTokens;
 
-  const rate = requestCount
-    ? Math.round((successCount / requestCount) * 100)
-    : null;
+  return {
+    requestCount,
+    successCount,
+    clientErrorCount,
+    serverErrorCount,
+    authErrorCount,
+    rateLimitCount,
+    avgLatencyMs,
+    maxLatencyMs,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    totalTokens: inputTokens + outputTokens,
+    successRate: requestCount
+      ? Math.round((successCount / requestCount) * 100)
+      : null,
+    lastRequestAt:
+      typeof usage.lastRequestAt === "number" &&
+      Number.isFinite(usage.lastRequestAt)
+        ? usage.lastRequestAt
+        : null,
+  };
+}
+
+function usageMetaParts(
+  usage,
+  { windowLabel = null, includeMaxLatency = false } = {}
+) {
+  if (!usage) return [];
+  const metrics = normalizeUsage(usage);
   const meta = (text, color) =>
     `<span class="card-meta-item"${color ? ` style="color:${color}"` : ""}>${text}</span>`;
   return [
-    requestCount &&
+    metrics.requestCount &&
       meta(
-        `${formatCount(requestCount)} reqs${windowLabel ? ` (${windowLabel})` : ""}`
+        `${formatCount(metrics.requestCount)} reqs${windowLabel ? ` (${windowLabel})` : ""}`
       ),
-    rate !== null && meta(`${rate}% success`),
-    clientErrorCount &&
-      meta(`${formatCount(clientErrorCount)} 4xx other`, "var(--amber)"),
-    serverErrorCount &&
-      meta(`${formatCount(serverErrorCount)} 5xx`, "var(--red)"),
-    authErrorCount &&
-      meta(`${formatCount(authErrorCount)} auth`, "var(--amber)"),
-    rateLimitCount &&
-      meta(`${formatCount(rateLimitCount)} 429`, "var(--amber)"),
-    avgLatencyMs && meta(`${formatCount(avgLatencyMs)}ms avg`),
+    metrics.successRate !== null && meta(`${metrics.successRate}% success`),
+    metrics.clientErrorCount &&
+      meta(
+        `${formatCount(metrics.clientErrorCount)} 4xx other`,
+        "var(--amber)"
+      ),
+    metrics.serverErrorCount &&
+      meta(`${formatCount(metrics.serverErrorCount)} 5xx`, "var(--red)"),
+    metrics.authErrorCount &&
+      meta(`${formatCount(metrics.authErrorCount)} auth`, "var(--amber)"),
+    metrics.rateLimitCount &&
+      meta(`${formatCount(metrics.rateLimitCount)} 429`, "var(--amber)"),
+    metrics.avgLatencyMs && meta(`${formatCount(metrics.avgLatencyMs)}ms avg`),
     includeMaxLatency &&
-      maxLatencyMs &&
-      meta(`${formatCount(maxLatencyMs)}ms max`),
-    requestCount && meta(`${formatCount(totalTokens)} tok total`),
-    requestCount &&
+      metrics.maxLatencyMs &&
+      meta(`${formatCount(metrics.maxLatencyMs)}ms max`),
+    metrics.requestCount &&
+      meta(`${formatCount(metrics.totalTokens)} tok total`),
+    metrics.requestCount &&
       meta(
-        `${formatCount(inputTokens)} in / ${formatCount(outputTokens)} out tok`
+        `${formatCount(metrics.inputTokens)} in / ${formatCount(metrics.outputTokens)} out tok`
       ),
-    requestCount &&
+    metrics.requestCount &&
       meta(
-        `${formatCount(cacheReadTokens)} cache read / ${formatCount(cacheWriteTokens)} cache write`
+        `${formatCount(metrics.cacheReadTokens)} cache read / ${formatCount(metrics.cacheWriteTokens)} cache write`
       ),
-    usage.lastRequestAt &&
-      meta(`last req ${escapeHtml(relativeTime(usage.lastRequestAt))}`),
+    metrics.lastRequestAt &&
+      meta(`last req ${escapeHtml(relativeTime(metrics.lastRequestAt))}`),
   ].filter(Boolean);
 }
 
@@ -450,18 +478,11 @@ function keyCardHtml(key) {
   const providerUsageParts = [];
   if (usage?.providers?.length) {
     for (const pu of usage.providers) {
-      const providerRequests = usageNumber(pu.requestCount);
-      const providerSuccess = usageNumber(pu.successCount);
-      const providerInputTokens = usageNumber(pu.inputTokens);
-      const providerOutputTokens = usageNumber(pu.outputTokens);
-      const providerCacheReadTokens = usageNumber(pu.cacheReadTokens);
-      const providerCacheWriteTokens = usageNumber(pu.cacheWriteTokens);
-      const puRate = providerRequests
-        ? Math.round((providerSuccess / providerRequests) * 100)
-        : null;
+      const metrics = normalizeUsage(pu);
+      const puRate = metrics.successRate;
       const ratePart = puRate !== null ? ` (${puRate}% ok)` : "";
       providerUsageParts.push(
-        `<span class="card-meta-item"><span class="badge badge-${pu.provider}">${pu.provider}</span> ${formatCount(providerRequests)} reqs${ratePart} - ${formatCount(providerInputTokens)} in / ${formatCount(providerOutputTokens)} out tok - ${formatCount(providerCacheReadTokens)} read / ${formatCount(providerCacheWriteTokens)} write cache</span>`
+        `<span class="card-meta-item"><span class="badge badge-${pu.provider}">${pu.provider}</span> ${formatCount(metrics.requestCount)} reqs${ratePart} - ${formatCount(metrics.inputTokens)} in / ${formatCount(metrics.outputTokens)} out tok - ${formatCount(metrics.cacheReadTokens)} read / ${formatCount(metrics.cacheWriteTokens)} write cache</span>`
       );
     }
   }
@@ -536,41 +557,26 @@ const DETAIL_LOADING_HTML =
   '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
 
 function renderDetailStats(totals) {
-  const requestCount = usageNumber(totals.requestCount);
-  const successCount = usageNumber(totals.successCount);
-  const clientErrorCount = usageNumber(totals.clientErrorCount);
-  const serverErrorCount = usageNumber(totals.serverErrorCount);
-  const authErrorCount = usageNumber(totals.authErrorCount);
-  const rateLimitCount = usageNumber(totals.rateLimitCount);
-  const avgLatencyMs = usageNumber(totals.avgLatencyMs);
-  const maxLatencyMs = usageNumber(totals.maxLatencyMs);
-  const inputTokens = usageNumber(totals.inputTokens);
-  const outputTokens = usageNumber(totals.outputTokens);
-  const cacheReadTokens = usageNumber(totals.cacheReadTokens);
-  const cacheWriteTokens = usageNumber(totals.cacheWriteTokens);
-  const totalTokens = inputTokens + outputTokens;
-
-  const rate = requestCount
-    ? Math.round((successCount / requestCount) * 100)
-    : 0;
+  const metrics = normalizeUsage(totals);
+  const rate = metrics.successRate ?? 0;
   const stats = [
-    [formatCount(requestCount), "requests"],
+    [formatCount(metrics.requestCount), "requests"],
     [`${rate}%`, "success"],
-    [formatCount(clientErrorCount), "4xx other"],
-    [formatCount(serverErrorCount), "5xx"],
-    [formatCount(authErrorCount), "auth"],
-    [formatCount(rateLimitCount), "429"],
-    [`${formatCount(avgLatencyMs)}ms`, "avg latency"],
-    [`${formatCount(maxLatencyMs)}ms`, "max latency"],
-    [formatCount(totalTokens), "total tokens"],
-    [formatCount(inputTokens), "input tokens"],
-    [formatCount(outputTokens), "output tokens"],
-    [formatCount(cacheReadTokens), "cache read"],
-    [formatCount(cacheWriteTokens), "cache write"],
+    [formatCount(metrics.clientErrorCount), "4xx other"],
+    [formatCount(metrics.serverErrorCount), "5xx"],
+    [formatCount(metrics.authErrorCount), "auth"],
+    [formatCount(metrics.rateLimitCount), "429"],
+    [`${formatCount(metrics.avgLatencyMs)}ms`, "avg latency"],
+    [`${formatCount(metrics.maxLatencyMs)}ms`, "max latency"],
+    [formatCount(metrics.totalTokens), "total tokens"],
+    [formatCount(metrics.inputTokens), "input tokens"],
+    [formatCount(metrics.outputTokens), "output tokens"],
+    [formatCount(metrics.cacheReadTokens), "cache read"],
+    [formatCount(metrics.cacheWriteTokens), "cache write"],
   ];
   let html = `<div class="detail-stats">${stats.map(([v, l]) => `<div class="detail-stat"><div class="detail-stat-value">${v}</div><div class="detail-stat-label">${l}</div></div>`).join("")}</div>`;
-  if (totals.lastRequestAt) {
-    html += `<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:16px">last request: ${escapeHtml(new Date(totals.lastRequestAt).toLocaleString())}</div>`;
+  if (metrics.lastRequestAt) {
+    html += `<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:16px">last request: ${escapeHtml(new Date(metrics.lastRequestAt).toLocaleString())}</div>`;
   }
   return html;
 }
@@ -617,20 +623,9 @@ function renderUsageTable(title, rows, leadCols) {
   let html = `<div class="detail-section-title">${title}</div>`;
   html += `<div style="overflow:auto"><table class="detail-table"><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>`;
   for (const row of rows) {
-    const requestCount = usageNumber(row.requestCount);
-    const successCount = usageNumber(row.successCount);
-    const clientErrorCount = usageNumber(row.clientErrorCount);
-    const serverErrorCount = usageNumber(row.serverErrorCount);
-    const authErrorCount = usageNumber(row.authErrorCount);
-    const rateLimitCount = usageNumber(row.rateLimitCount);
-    const avgLatencyMs = usageNumber(row.avgLatencyMs);
-    const maxLatencyMs = usageNumber(row.maxLatencyMs);
-    const inputTokens = usageNumber(row.inputTokens);
-    const outputTokens = usageNumber(row.outputTokens);
-    const cacheReadTokens = usageNumber(row.cacheReadTokens);
-    const cacheWriteTokens = usageNumber(row.cacheWriteTokens);
+    const metrics = normalizeUsage(row);
     const lead = leadCols.map((c) => `<td>${c[1](row)}</td>`).join("");
-    html += `<tr>${lead}<td>${formatCount(requestCount)}</td><td>${formatCount(successCount)}</td><td>${clientErrorCount ? formatCount(clientErrorCount) : "-"}</td><td>${serverErrorCount ? formatCount(serverErrorCount) : "-"}</td><td>${authErrorCount ? formatCount(authErrorCount) : "-"}</td><td>${rateLimitCount ? formatCount(rateLimitCount) : "-"}</td><td>${formatCount(avgLatencyMs)}</td><td>${formatCount(maxLatencyMs)}</td><td>${formatCount(inputTokens)}</td><td>${formatCount(outputTokens)}</td><td>${formatCount(cacheReadTokens)}</td><td>${formatCount(cacheWriteTokens)}</td></tr>`;
+    html += `<tr>${lead}<td>${formatCount(metrics.requestCount)}</td><td>${formatCount(metrics.successCount)}</td><td>${metrics.clientErrorCount ? formatCount(metrics.clientErrorCount) : "-"}</td><td>${metrics.serverErrorCount ? formatCount(metrics.serverErrorCount) : "-"}</td><td>${metrics.authErrorCount ? formatCount(metrics.authErrorCount) : "-"}</td><td>${metrics.rateLimitCount ? formatCount(metrics.rateLimitCount) : "-"}</td><td>${formatCount(metrics.avgLatencyMs)}</td><td>${formatCount(metrics.maxLatencyMs)}</td><td>${formatCount(metrics.inputTokens)}</td><td>${formatCount(metrics.outputTokens)}</td><td>${formatCount(metrics.cacheReadTokens)}</td><td>${formatCount(metrics.cacheWriteTokens)}</td></tr>`;
   }
   html += "</tbody></table></div>";
   return html;
@@ -641,20 +636,23 @@ function renderBucketTimeline(buckets) {
     return "";
   }
 
-  const maxReqs = Math.max(...buckets.map((b) => b.requestCount));
+  const maxReqs = Math.max(
+    ...buckets.map((bucket) => normalizeUsage(bucket).requestCount)
+  );
   let html =
     '<div class="detail-section-title">request timeline (1m buckets)</div>';
   for (const b of buckets) {
-    const errPct = b.requestCount
-      ? ((b.clientErrorCount +
-          b.authErrorCount +
-          b.rateLimitCount +
-          b.serverErrorCount) /
-          b.requestCount) *
+    const metrics = normalizeUsage(b);
+    const errPct = metrics.requestCount
+      ? ((metrics.clientErrorCount +
+          metrics.authErrorCount +
+          metrics.rateLimitCount +
+          metrics.serverErrorCount) /
+          metrics.requestCount) *
         100
       : 0;
     const okPct = 100 - errPct;
-    const pct = maxReqs ? (b.requestCount / maxReqs) * 100 : 0;
+    const pct = maxReqs ? (metrics.requestCount / maxReqs) * 100 : 0;
     const time = new Date(b.bucketStart).toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
@@ -666,7 +664,7 @@ function renderBucketTimeline(buckets) {
         <div class="detail-bar-fill" style="width:${pct * (okPct / 100)}%;background:var(--green)"></div>
         <div class="detail-bar-fill" style="width:${pct * (errPct / 100)}%;background:var(--red)"></div>
       </div>
-      <span class="detail-bar-count">${b.requestCount}</span>
+      <span class="detail-bar-count">${metrics.requestCount}</span>
     </div>`;
   }
 
@@ -684,17 +682,13 @@ function renderTokenBucketTable(buckets) {
     '<div style="overflow:auto"><table class="detail-table"><thead><tr><th>bucket</th><th>input tok</th><th>output tok</th><th>cache read</th><th>cache write</th><th>total tok</th></tr></thead><tbody>';
 
   for (const bucket of buckets) {
-    const inputTokens = usageNumber(bucket.inputTokens);
-    const outputTokens = usageNumber(bucket.outputTokens);
-    const cacheReadTokens = usageNumber(bucket.cacheReadTokens);
-    const cacheWriteTokens = usageNumber(bucket.cacheWriteTokens);
-    const totalTokens = inputTokens + outputTokens;
+    const metrics = normalizeUsage(bucket);
     const bucketLabel = new Date(bucket.bucketStart).toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
     });
 
-    html += `<tr><td>${bucketLabel}</td><td>${formatCount(inputTokens)}</td><td>${formatCount(outputTokens)}</td><td>${formatCount(cacheReadTokens)}</td><td>${formatCount(cacheWriteTokens)}</td><td>${formatCount(totalTokens)}</td></tr>`;
+    html += `<tr><td>${bucketLabel}</td><td>${formatCount(metrics.inputTokens)}</td><td>${formatCount(metrics.outputTokens)}</td><td>${formatCount(metrics.cacheReadTokens)}</td><td>${formatCount(metrics.cacheWriteTokens)}</td><td>${formatCount(metrics.totalTokens)}</td></tr>`;
   }
 
   html += "</tbody></table></div>";

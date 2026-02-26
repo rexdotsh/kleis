@@ -11,6 +11,10 @@ import {
   mapEndpointUsageRows,
   mapModelUsageRows,
   mapUsageBucketRows,
+  selectUsageCounterSums,
+  selectUsageLastRequestAtMax,
+  selectUsageLatencySums,
+  selectUsageTokenSums,
   summarizeGroupedUsageRows,
   toAveragedTotals,
   toNonNegativeInteger,
@@ -79,6 +83,15 @@ const tokenColumns = (tokenUsage: TokenUsage | null | undefined) => ({
   cacheWriteTokens: toNonNegativeInteger(tokenUsage?.cacheWriteTokens),
 });
 
+const usageBucketConflictTarget = [
+  requestUsageBuckets.bucketStart,
+  requestUsageBuckets.apiKeyId,
+  requestUsageBuckets.providerAccountId,
+  requestUsageBuckets.provider,
+  requestUsageBuckets.endpoint,
+  requestUsageBuckets.model,
+];
+
 export const recordRequestUsage = async (
   database: Database,
   input: RecordRequestUsageInput
@@ -114,14 +127,7 @@ export const recordRequestUsage = async (
     .insert(requestUsageBuckets)
     .values(row)
     .onConflictDoUpdate({
-      target: [
-        requestUsageBuckets.bucketStart,
-        requestUsageBuckets.apiKeyId,
-        requestUsageBuckets.providerAccountId,
-        requestUsageBuckets.provider,
-        requestUsageBuckets.endpoint,
-        requestUsageBuckets.model,
-      ],
+      target: usageBucketConflictTarget,
       set: {
         requestCount: sql`${requestUsageBuckets.requestCount} + 1`,
         successCount: sql`${requestUsageBuckets.successCount} + ${row.successCount}`,
@@ -173,14 +179,7 @@ export const recordTokenUsage = async (
     .insert(requestUsageBuckets)
     .values(row)
     .onConflictDoUpdate({
-      target: [
-        requestUsageBuckets.bucketStart,
-        requestUsageBuckets.apiKeyId,
-        requestUsageBuckets.providerAccountId,
-        requestUsageBuckets.provider,
-        requestUsageBuckets.endpoint,
-        requestUsageBuckets.model,
-      ],
+      target: usageBucketConflictTarget,
       set: {
         inputTokens: sql`${requestUsageBuckets.inputTokens} + ${row.inputTokens}`,
         outputTokens: sql`${requestUsageBuckets.outputTokens} + ${row.outputTokens}`,
@@ -219,19 +218,10 @@ export const listApiKeyUsageSummaries = async (
     database
       .select({
         groupKey: requestUsageBuckets.apiKeyId,
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-        totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-        maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-        inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-        outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-        cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-        cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
-        lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(gte(requestUsageBuckets.bucketStart, sinceBucket))
@@ -240,16 +230,8 @@ export const listApiKeyUsageSummaries = async (
       .select({
         groupKey: requestUsageBuckets.apiKeyId,
         provider: requestUsageBuckets.provider,
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-        inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-        outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-        cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-        cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(gte(requestUsageBuckets.bucketStart, sinceBucket))
@@ -294,19 +276,10 @@ export const getApiKeyUsageDetail = async (
   const [totalsRows, endpointRows, modelRows, bucketRows] = await Promise.all([
     database
       .select({
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-        totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-        maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-        inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-        outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-        cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-        cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
-        lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(windowFilter),
@@ -314,19 +287,10 @@ export const getApiKeyUsageDetail = async (
       .select({
         provider: requestUsageBuckets.provider,
         endpoint: requestUsageBuckets.endpoint,
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-        totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-        maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-        inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-        outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-        cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-        cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
-        lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(windowFilter)
@@ -336,19 +300,10 @@ export const getApiKeyUsageDetail = async (
         provider: requestUsageBuckets.provider,
         endpoint: requestUsageBuckets.endpoint,
         model: requestUsageBuckets.model,
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-        totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-        maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-        inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-        outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-        cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-        cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
-        lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(windowFilter)
@@ -360,16 +315,8 @@ export const getApiKeyUsageDetail = async (
     database
       .select({
         bucketStart: requestUsageBuckets.bucketStart,
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-        inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-        outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-        cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-        cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(windowFilter)

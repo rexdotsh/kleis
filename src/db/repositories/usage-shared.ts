@@ -1,4 +1,6 @@
-import { providers, type Provider } from "../schema";
+import { sql } from "drizzle-orm";
+
+import { providers, type requestUsageBuckets, type Provider } from "../schema";
 
 const USAGE_BUCKET_MS = 60_000;
 export const DETAIL_BUCKET_LIMIT = 60;
@@ -44,6 +46,33 @@ const parseProvider = (value: string): Provider | null => {
 
   return null;
 };
+
+type UsageBucketsTable = typeof requestUsageBuckets;
+
+export const selectUsageCounterSums = (table: UsageBucketsTable) => ({
+  requestCount: sql<number>`sum(${table.requestCount})`,
+  successCount: sql<number>`sum(${table.successCount})`,
+  clientErrorCount: sql<number>`sum(${table.clientErrorCount})`,
+  serverErrorCount: sql<number>`sum(${table.serverErrorCount})`,
+  authErrorCount: sql<number>`sum(${table.authErrorCount})`,
+  rateLimitCount: sql<number>`sum(${table.rateLimitCount})`,
+});
+
+export const selectUsageLatencySums = (table: UsageBucketsTable) => ({
+  totalLatencyMs: sql<number>`sum(${table.totalLatencyMs})`,
+  maxLatencyMs: sql<number>`max(${table.maxLatencyMs})`,
+});
+
+export const selectUsageTokenSums = (table: UsageBucketsTable) => ({
+  inputTokens: sql<number>`sum(${table.inputTokens})`,
+  outputTokens: sql<number>`sum(${table.outputTokens})`,
+  cacheReadTokens: sql<number>`sum(${table.cacheReadTokens})`,
+  cacheWriteTokens: sql<number>`sum(${table.cacheWriteTokens})`,
+});
+
+export const selectUsageLastRequestAtMax = (table: UsageBucketsTable) => ({
+  lastRequestAt: sql<number>`max(${table.lastRequestAt})`,
+});
 
 export type UsageTotals = {
   requestCount: number;

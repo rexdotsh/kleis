@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gte } from "drizzle-orm";
 
 import type { Database } from "../index";
 import { requestUsageBuckets } from "../schema";
@@ -9,6 +9,10 @@ import {
   mapEndpointUsageRows,
   mapModelUsageRows,
   mapUsageBucketRows,
+  selectUsageCounterSums,
+  selectUsageLastRequestAtMax,
+  selectUsageLatencySums,
+  selectUsageTokenSums,
   summarizeGroupedUsageRows,
   toAveragedTotals,
   toNonNegativeInteger,
@@ -48,19 +52,10 @@ export const listProviderAccountUsageSummaries = async (
     database
       .select({
         groupKey: requestUsageBuckets.providerAccountId,
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-        totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-        maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-        inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-        outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-        cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-        cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
-        lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(gte(requestUsageBuckets.bucketStart, sinceBucket))
@@ -69,16 +64,8 @@ export const listProviderAccountUsageSummaries = async (
       .select({
         groupKey: requestUsageBuckets.providerAccountId,
         provider: requestUsageBuckets.provider,
-        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-        successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-        clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-        serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-        authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-        rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-        inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-        outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-        cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-        cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(gte(requestUsageBuckets.bucketStart, sinceBucket))
@@ -150,38 +137,20 @@ export const getProviderAccountUsageDetail = async (
     await Promise.all([
       database
         .select({
-          requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-          successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-          clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-          serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-          authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-          rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-          totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-          maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-          inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-          outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-          cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-          cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
-          lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+          ...selectUsageCounterSums(requestUsageBuckets),
+          ...selectUsageLatencySums(requestUsageBuckets),
+          ...selectUsageTokenSums(requestUsageBuckets),
+          ...selectUsageLastRequestAtMax(requestUsageBuckets),
         })
         .from(requestUsageBuckets)
         .where(windowFilter),
       database
         .select({
           apiKeyId: requestUsageBuckets.apiKeyId,
-          requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-          successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-          clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-          serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-          authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-          rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-          totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-          maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-          inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-          outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-          cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-          cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
-          lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+          ...selectUsageCounterSums(requestUsageBuckets),
+          ...selectUsageLatencySums(requestUsageBuckets),
+          ...selectUsageTokenSums(requestUsageBuckets),
+          ...selectUsageLastRequestAtMax(requestUsageBuckets),
         })
         .from(requestUsageBuckets)
         .where(windowFilter)
@@ -190,19 +159,10 @@ export const getProviderAccountUsageDetail = async (
         .select({
           provider: requestUsageBuckets.provider,
           endpoint: requestUsageBuckets.endpoint,
-          requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-          successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-          clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-          serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-          authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-          rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-          totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-          maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-          inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-          outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-          cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-          cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
-          lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+          ...selectUsageCounterSums(requestUsageBuckets),
+          ...selectUsageLatencySums(requestUsageBuckets),
+          ...selectUsageTokenSums(requestUsageBuckets),
+          ...selectUsageLastRequestAtMax(requestUsageBuckets),
         })
         .from(requestUsageBuckets)
         .where(windowFilter)
@@ -212,19 +172,10 @@ export const getProviderAccountUsageDetail = async (
           provider: requestUsageBuckets.provider,
           endpoint: requestUsageBuckets.endpoint,
           model: requestUsageBuckets.model,
-          requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-          successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-          clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-          serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-          authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-          rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-          totalLatencyMs: sql<number>`sum(${requestUsageBuckets.totalLatencyMs})`,
-          maxLatencyMs: sql<number>`max(${requestUsageBuckets.maxLatencyMs})`,
-          inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-          outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-          cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-          cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
-          lastRequestAt: sql<number>`max(${requestUsageBuckets.lastRequestAt})`,
+          ...selectUsageCounterSums(requestUsageBuckets),
+          ...selectUsageLatencySums(requestUsageBuckets),
+          ...selectUsageTokenSums(requestUsageBuckets),
+          ...selectUsageLastRequestAtMax(requestUsageBuckets),
         })
         .from(requestUsageBuckets)
         .where(windowFilter)
@@ -236,16 +187,8 @@ export const getProviderAccountUsageDetail = async (
       database
         .select({
           bucketStart: requestUsageBuckets.bucketStart,
-          requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
-          successCount: sql<number>`sum(${requestUsageBuckets.successCount})`,
-          clientErrorCount: sql<number>`sum(${requestUsageBuckets.clientErrorCount})`,
-          serverErrorCount: sql<number>`sum(${requestUsageBuckets.serverErrorCount})`,
-          authErrorCount: sql<number>`sum(${requestUsageBuckets.authErrorCount})`,
-          rateLimitCount: sql<number>`sum(${requestUsageBuckets.rateLimitCount})`,
-          inputTokens: sql<number>`sum(${requestUsageBuckets.inputTokens})`,
-          outputTokens: sql<number>`sum(${requestUsageBuckets.outputTokens})`,
-          cacheReadTokens: sql<number>`sum(${requestUsageBuckets.cacheReadTokens})`,
-          cacheWriteTokens: sql<number>`sum(${requestUsageBuckets.cacheWriteTokens})`,
+          ...selectUsageCounterSums(requestUsageBuckets),
+          ...selectUsageTokenSums(requestUsageBuckets),
         })
         .from(requestUsageBuckets)
         .where(windowFilter)

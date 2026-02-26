@@ -18,7 +18,7 @@ import {
   type TokenUsage,
 } from "../../usage/token-usage";
 import { isObjectRecord } from "../../utils/object";
-import { maybeCreateOpenAiSseUsagePassthrough } from "./openai-sse-passthrough";
+import { transformOpenAiUsageResponse } from "./openai-usage-response";
 
 type CopilotMessageProfile = {
   isVision: boolean;
@@ -218,67 +218,28 @@ const withChatCompletionsStreamUsage = (
   });
 };
 
-const maybeTrackCopilotJsonUsage = async (
-  endpoint: ProxyEndpoint,
-  response: Response,
-  onTokenUsage?: ((usage: TokenUsage) => void) | null
-): Promise<Response> => {
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("application/json")) {
-    return response;
-  }
-
-  const bodyText = await response.text();
-  let bodyJson: unknown;
-  try {
-    bodyJson = JSON.parse(bodyText) as unknown;
-  } catch {
-    return new Response(bodyText, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
-  }
-
-  const usage =
-    endpoint === "responses"
-      ? readOpenAiResponsesUsageFromResponse(bodyJson)
-      : readOpenAiChatUsageFromResponse(bodyJson);
-  if (usage) {
-    onTokenUsage?.(usage);
-  }
-
-  const headers = new Headers(response.headers);
-  headers.delete("content-length");
-  return Response.json(bodyJson, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-};
-
 const transformCopilotResponse = (
   endpoint: ProxyEndpoint,
   response: Response,
   onTokenUsage?: ((usage: TokenUsage) => void) | null
 ): Promise<Response> => {
-  if (!response.body) {
-    return Promise.resolve(response);
-  }
+  const extractors =
+    endpoint === "responses"
+      ? {
+          extractSseUsage: readOpenAiResponsesUsageFromSseEvent,
+          extractJsonUsage: readOpenAiResponsesUsageFromResponse,
+        }
+      : {
+          extractSseUsage: readOpenAiChatUsageFromSseEvent,
+          extractJsonUsage: readOpenAiChatUsageFromResponse,
+        };
 
-  const maybeSseResponse = maybeCreateOpenAiSseUsagePassthrough({
+  return transformOpenAiUsageResponse({
     response,
-    extractUsage:
-      endpoint === "responses"
-        ? readOpenAiResponsesUsageFromSseEvent
-        : readOpenAiChatUsageFromSseEvent,
+    extractSseUsage: extractors.extractSseUsage,
+    extractJsonUsage: extractors.extractJsonUsage,
     onTokenUsage,
   });
-  if (maybeSseResponse !== response) {
-    return Promise.resolve(maybeSseResponse);
-  }
-
-  return maybeTrackCopilotJsonUsage(endpoint, response, onTokenUsage);
 };
 
 type CopilotProxyPreparationInput = {

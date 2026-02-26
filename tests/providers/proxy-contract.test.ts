@@ -16,8 +16,62 @@ import type {
 import { prepareClaudeProxyRequest } from "../../src/providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../src/providers/proxies/codex-proxy";
 import { prepareCopilotProxyRequest } from "../../src/providers/proxies/copilot-proxy";
+import type { TokenUsage } from "../../src/usage/token-usage";
+
+const createUsageCapture = () => {
+  let capturedUsage: TokenUsage | null = null;
+
+  return {
+    onTokenUsage(usage: TokenUsage): void {
+      capturedUsage = usage;
+    },
+    read(): TokenUsage | null {
+      return capturedUsage;
+    },
+  };
+};
+
+const createSseResponse = (events: readonly unknown[]): Response => {
+  const payload = events
+    .map((event) =>
+      typeof event === "string"
+        ? `data: ${event}\n\n`
+        : `data: ${JSON.stringify(event)}\n\n`
+    )
+    .join("");
+  const encoder = new TextEncoder();
+
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.enqueue(encoder.encode(payload));
+        controller.close();
+      },
+    }),
+    {
+      headers: {
+        "content-type": "text/event-stream",
+      },
+    }
+  );
+};
 
 describe("proxy contract: codex", () => {
+  const codexUsageBody = { model: "gpt-5-codex", input: [] };
+
+  const prepareCodexUsageRequest = (
+    onTokenUsage?: ((usage: TokenUsage) => void) | null
+  ) =>
+    prepareCodexProxyRequest({
+      headers: new Headers(),
+      accessToken: "codex-access",
+      accountId: null,
+      metadata: null,
+      bodyText: JSON.stringify(codexUsageBody),
+      bodyJson: codexUsageBody,
+      onTokenUsage,
+    });
+
   test("applies auth, account-id, and endpoint from metadata", () => {
     const headers = new Headers();
     const bodyJson = {
@@ -119,24 +173,8 @@ describe("proxy contract: codex", () => {
   });
 
   test("extracts normalized usage from non-streaming responses", async () => {
-    let capturedUsage: {
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens: number;
-      cacheWriteTokens: number;
-    } | null = null;
-
-    const result = prepareCodexProxyRequest({
-      headers: new Headers(),
-      accessToken: "codex-access",
-      accountId: null,
-      metadata: null,
-      bodyText: JSON.stringify({ model: "gpt-5-codex", input: [] }),
-      bodyJson: { model: "gpt-5-codex", input: [] },
-      onTokenUsage: (usage) => {
-        capturedUsage = usage;
-      },
-    });
+    const capture = createUsageCapture();
+    const result = prepareCodexUsageRequest(capture.onTokenUsage);
 
     const sourceResponse = Response.json({
       usage: {
@@ -150,7 +188,7 @@ describe("proxy contract: codex", () => {
 
     await result.transformResponse(sourceResponse);
 
-    expect(capturedUsage).toEqual({
+    expect(capture.read()).toEqual({
       inputTokens: 100,
       outputTokens: 34,
       cacheReadTokens: 20,
@@ -158,105 +196,61 @@ describe("proxy contract: codex", () => {
     });
   });
 
-  test("extracts usage from streaming response.completed events", async () => {
-    let capturedUsage: {
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens: number;
-      cacheWriteTokens: number;
-    } | null = null;
-
-    const result = prepareCodexProxyRequest({
-      headers: new Headers(),
-      accessToken: "codex-access",
-      accountId: null,
-      metadata: null,
-      bodyText: JSON.stringify({ model: "gpt-5-codex", input: [] }),
-      bodyJson: { model: "gpt-5-codex", input: [] },
-      onTokenUsage: (usage) => {
-        capturedUsage = usage;
+  const codexStreamUsageCases = [
+    {
+      eventType: "response.completed",
+      usage: {
+        input_tokens: 90,
+        output_tokens: 45,
+        input_tokens_details: {
+          cached_tokens: 30,
+        },
       },
-    });
-
-    const encoder = new TextEncoder();
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(
-            encoder.encode(
-              'data: {"type":"response.completed","response":{"usage":{"input_tokens":90,"output_tokens":45,"input_tokens_details":{"cached_tokens":30}}}}\n\n'
-            )
-          );
-          controller.close();
-        },
-      }),
-      {
-        headers: {
-          "content-type": "text/event-stream",
-        },
-      }
-    );
-
-    const transformed = await result.transformResponse(sourceResponse);
-    await transformed.text();
-
-    expect(capturedUsage).toEqual({
-      inputTokens: 60,
-      outputTokens: 45,
-      cacheReadTokens: 30,
-      cacheWriteTokens: 0,
-    });
-  });
-
-  test("extracts usage from streaming response.done events", async () => {
-    let capturedUsage: {
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens: number;
-      cacheWriteTokens: number;
-    } | null = null;
-
-    const result = prepareCodexProxyRequest({
-      headers: new Headers(),
-      accessToken: "codex-access",
-      accountId: null,
-      metadata: null,
-      bodyText: JSON.stringify({ model: "gpt-5-codex", input: [] }),
-      bodyJson: { model: "gpt-5-codex", input: [] },
-      onTokenUsage: (usage) => {
-        capturedUsage = usage;
+      expected: {
+        inputTokens: 60,
+        outputTokens: 45,
+        cacheReadTokens: 30,
+        cacheWriteTokens: 0,
       },
-    });
-
-    const encoder = new TextEncoder();
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(
-            encoder.encode(
-              'data: {"type":"response.done","response":{"usage":{"input_tokens":72,"output_tokens":18,"input_tokens_details":{"cached_tokens":12}}}}\n\n'
-            )
-          );
-          controller.close();
+    },
+    {
+      eventType: "response.done",
+      usage: {
+        input_tokens: 72,
+        output_tokens: 18,
+        input_tokens_details: {
+          cached_tokens: 12,
         },
-      }),
-      {
-        headers: {
-          "content-type": "text/event-stream",
-        },
-      }
-    );
+      },
+      expected: {
+        inputTokens: 60,
+        outputTokens: 18,
+        cacheReadTokens: 12,
+        cacheWriteTokens: 0,
+      },
+    },
+  ] as const;
 
-    const transformed = await result.transformResponse(sourceResponse);
-    await transformed.text();
+  for (const testCase of codexStreamUsageCases) {
+    test(`extracts usage from streaming ${testCase.eventType} events`, async () => {
+      const capture = createUsageCapture();
+      const result = prepareCodexUsageRequest(capture.onTokenUsage);
 
-    expect(capturedUsage).toEqual({
-      inputTokens: 60,
-      outputTokens: 18,
-      cacheReadTokens: 12,
-      cacheWriteTokens: 0,
+      const transformed = await result.transformResponse(
+        createSseResponse([
+          {
+            type: testCase.eventType,
+            response: {
+              usage: testCase.usage,
+            },
+          },
+        ])
+      );
+      await transformed.text();
+
+      expect(capture.read()).toEqual(testCase.expected);
     });
-  });
+  }
 });
 
 describe("proxy contract: copilot", () => {
@@ -294,6 +288,7 @@ describe("proxy contract: copilot", () => {
     expect(result.upstreamUrl).toBe(
       "https://api.githubcopilot.com/chat/completions?stream=true"
     );
+
     const transformed = JSON.parse(result.bodyText) as {
       stream_options?: { include_usage?: boolean };
     };
@@ -315,34 +310,25 @@ describe("proxy contract: copilot", () => {
       githubEmail: null,
     };
 
+    const bodyJson = {
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "question" }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "output_text", text: "answer" }],
+        },
+      ],
+    };
+
     const result = prepareCopilotProxyRequest({
       endpoint: "responses",
       requestUrl: new URL("https://kleis.local/responses"),
       headers,
-      bodyText: JSON.stringify({
-        input: [
-          {
-            role: "user",
-            content: [{ type: "input_text", text: "question" }],
-          },
-          {
-            role: "assistant",
-            content: [{ type: "output_text", text: "answer" }],
-          },
-        ],
-      }),
-      bodyJson: {
-        input: [
-          {
-            role: "user",
-            content: [{ type: "input_text", text: "question" }],
-          },
-          {
-            role: "assistant",
-            content: [{ type: "output_text", text: "answer" }],
-          },
-        ],
-      },
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
       githubAccessToken: "gh-token",
       metadata,
     });
@@ -352,130 +338,111 @@ describe("proxy contract: copilot", () => {
     expect(result.upstreamUrl).toBe("https://copilot.internal/responses");
   });
 
-  test("extracts usage from chat-completions stream chunks", async () => {
-    let capturedUsage: {
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens: number;
-      cacheWriteTokens: number;
-    } | null = null;
-
-    const bodyJson = {
-      stream: true,
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: "hello" }],
-        },
-      ],
-    };
-
-    const result = prepareCopilotProxyRequest({
+  const copilotStreamUsageCases = [
+    {
+      name: "chat-completions stream chunks",
       endpoint: "chat_completions",
-      requestUrl: new URL("https://kleis.local/chat/completions?stream=true"),
-      headers: new Headers(),
-      bodyText: JSON.stringify(bodyJson),
-      bodyJson,
-      githubAccessToken: "gh-token",
-      metadata: null,
-      onTokenUsage: (usage) => {
-        capturedUsage = usage;
+      requestUrl: "https://kleis.local/chat/completions?stream=true",
+      bodyJson: {
+        stream: true,
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "hello" }],
+          },
+        ],
       },
-    });
-
-    const encoder = new TextEncoder();
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(
-            encoder.encode(
-              'data: {"id":"cmpl_1","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":50,"completion_tokens":12,"prompt_tokens_details":{"cached_tokens":8}}}\n\n'
-            )
-          );
-          controller.close();
+      event: {
+        id: "cmpl_1",
+        object: "chat.completion.chunk",
+        choices: [],
+        usage: {
+          prompt_tokens: 50,
+          completion_tokens: 12,
+          prompt_tokens_details: {
+            cached_tokens: 8,
+          },
         },
-      }),
-      {
-        headers: {
-          "content-type": "text/event-stream",
-        },
-      }
-    );
-
-    const transformed = await result.transformResponse(sourceResponse);
-    await transformed.text();
-
-    expect(capturedUsage).toEqual({
-      inputTokens: 42,
-      outputTokens: 12,
-      cacheReadTokens: 8,
-      cacheWriteTokens: 0,
-    });
-  });
-
-  test("extracts usage from responses stream response.done events", async () => {
-    let capturedUsage: {
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens: number;
-      cacheWriteTokens: number;
-    } | null = null;
-
-    const bodyJson = {
-      stream: true,
-      input: [
-        {
-          role: "user",
-          content: [{ type: "input_text", text: "hello" }],
-        },
-      ],
-    };
-
-    const result = prepareCopilotProxyRequest({
+      },
+      expected: {
+        inputTokens: 42,
+        outputTokens: 12,
+        cacheReadTokens: 8,
+        cacheWriteTokens: 0,
+      },
+    },
+    {
+      name: "responses stream response.done events",
       endpoint: "responses",
-      requestUrl: new URL("https://kleis.local/responses?stream=true"),
-      headers: new Headers(),
-      bodyText: JSON.stringify(bodyJson),
-      bodyJson,
-      githubAccessToken: "gh-token",
-      metadata: null,
-      onTokenUsage: (usage) => {
-        capturedUsage = usage;
+      requestUrl: "https://kleis.local/responses?stream=true",
+      bodyJson: {
+        stream: true,
+        input: [
+          {
+            role: "user",
+            content: [{ type: "input_text", text: "hello" }],
+          },
+        ],
       },
-    });
-
-    const encoder = new TextEncoder();
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(
-            encoder.encode(
-              'data: {"type":"response.done","response":{"usage":{"input_tokens":140,"output_tokens":50,"input_tokens_details":{"cached_tokens":20}}}}\n\n'
-            )
-          );
-          controller.close();
+      event: {
+        type: "response.done",
+        response: {
+          usage: {
+            input_tokens: 140,
+            output_tokens: 50,
+            input_tokens_details: {
+              cached_tokens: 20,
+            },
+          },
         },
-      }),
-      {
-        headers: {
-          "content-type": "text/event-stream",
-        },
-      }
-    );
+      },
+      expected: {
+        inputTokens: 120,
+        outputTokens: 50,
+        cacheReadTokens: 20,
+        cacheWriteTokens: 0,
+      },
+    },
+  ] as const;
 
-    const transformed = await result.transformResponse(sourceResponse);
-    await transformed.text();
+  for (const testCase of copilotStreamUsageCases) {
+    test(`extracts usage from ${testCase.name}`, async () => {
+      const capture = createUsageCapture();
+      const result = prepareCopilotProxyRequest({
+        endpoint: testCase.endpoint,
+        requestUrl: new URL(testCase.requestUrl),
+        headers: new Headers(),
+        bodyText: JSON.stringify(testCase.bodyJson),
+        bodyJson: testCase.bodyJson,
+        githubAccessToken: "gh-token",
+        metadata: null,
+        onTokenUsage: capture.onTokenUsage,
+      });
 
-    expect(capturedUsage).toEqual({
-      inputTokens: 120,
-      outputTokens: 50,
-      cacheReadTokens: 20,
-      cacheWriteTokens: 0,
+      const transformed = await result.transformResponse(
+        createSseResponse([testCase.event])
+      );
+      await transformed.text();
+
+      expect(capture.read()).toEqual(testCase.expected);
     });
-  });
+  }
 });
 
 describe("proxy contract: claude", () => {
+  const prepareClaudeUsageRequest = (
+    onTokenUsage?: ((usage: TokenUsage) => void) | null
+  ) =>
+    prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: "{}",
+      bodyJson: {},
+      accessToken: "claude-token",
+      metadata: null,
+      onTokenUsage,
+    });
+
   test("merges beta headers and rewrites payload tool names", () => {
     const headers = new Headers({
       "anthropic-beta": `custom-beta,${CLAUDE_REQUIRED_BETA_HEADERS[0]}`,
@@ -528,24 +495,8 @@ describe("proxy contract: claude", () => {
   });
 
   test("strips tool prefix in non-streaming JSON response payload", async () => {
-    let capturedUsage: {
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens: number;
-      cacheWriteTokens: number;
-    } | null = null;
-
-    const result = prepareClaudeProxyRequest({
-      requestUrl: new URL("https://kleis.local/v1/messages"),
-      headers: new Headers(),
-      bodyText: "{}",
-      bodyJson: {},
-      accessToken: "claude-token",
-      metadata: null,
-      onTokenUsage: (usage) => {
-        capturedUsage = usage;
-      },
-    });
+    const capture = createUsageCapture();
+    const result = prepareClaudeUsageRequest(capture.onTokenUsage);
 
     const sourceResponse = Response.json({
       usage: {
@@ -563,7 +514,7 @@ describe("proxy contract: claude", () => {
     };
 
     expect(transformed.content[0]?.name).toBe("shell");
-    expect(capturedUsage).toEqual({
+    expect(capture.read()).toEqual({
       inputTokens: 33,
       outputTokens: 8,
       cacheReadTokens: 4,
@@ -572,14 +523,7 @@ describe("proxy contract: claude", () => {
   });
 
   test("strips tool prefix in streaming response payload", async () => {
-    const result = prepareClaudeProxyRequest({
-      requestUrl: new URL("https://kleis.local/v1/messages"),
-      headers: new Headers(),
-      bodyText: "{}",
-      bodyJson: {},
-      accessToken: "claude-token",
-      metadata: null,
-    });
+    const result = prepareClaudeUsageRequest();
 
     const encoder = new TextEncoder();
     const sourceResponse = new Response(
@@ -605,145 +549,87 @@ describe("proxy contract: claude", () => {
     expect(transformedText).toContain('"name":"shell"');
   });
 
-  test("extracts usage from claude streaming message events", async () => {
-    let capturedUsage: {
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens: number;
-      cacheWriteTokens: number;
-    } | null = null;
-
-    const result = prepareClaudeProxyRequest({
-      requestUrl: new URL("https://kleis.local/v1/messages"),
-      headers: new Headers(),
-      bodyText: "{}",
-      bodyJson: {},
-      accessToken: "claude-token",
-      metadata: null,
-      onTokenUsage: (usage) => {
-        capturedUsage = usage;
+  const claudeStreamUsageCases = [
+    {
+      name: "extracts usage from claude streaming message events",
+      events: [
+        {
+          type: "message_start",
+          message: {
+            usage: {
+              input_tokens: 55,
+              cache_read_input_tokens: 11,
+              cache_creation_input_tokens: 5,
+            },
+          },
+        },
+        {
+          type: "message_delta",
+          usage: {
+            output_tokens: 13,
+          },
+        },
+      ],
+      expected: {
+        inputTokens: 55,
+        outputTokens: 13,
+        cacheReadTokens: 11,
+        cacheWriteTokens: 5,
       },
-    });
-
-    const encoder = new TextEncoder();
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(
-            encoder.encode(
-              'data: {"type":"message_start","message":{"usage":{"input_tokens":55,"cache_read_input_tokens":11,"cache_creation_input_tokens":5}}}\n\n'
-            )
-          );
-          controller.enqueue(
-            encoder.encode(
-              'data: {"type":"message_delta","usage":{"output_tokens":13}}\n\n'
-            )
-          );
-          controller.close();
+    },
+    {
+      name: "updates claude streaming usage when message_delta includes usage fields",
+      events: [
+        {
+          type: "message_start",
+          message: {
+            usage: {
+              input_tokens: 40,
+              cache_read_input_tokens: 4,
+              cache_creation_input_tokens: 2,
+            },
+          },
         },
-      }),
-      {
-        headers: {
-          "content-type": "text/event-stream",
+        {
+          type: "message_delta",
+          usage: {
+            input_tokens: 41,
+            output_tokens: 9,
+            cache_read_input_tokens: 5,
+            cache_creation_input_tokens: 3,
+          },
         },
-      }
-    );
-
-    const transformedResponse = await result.transformResponse(sourceResponse);
-    await transformedResponse.text();
-
-    expect(capturedUsage).toEqual({
-      inputTokens: 55,
-      outputTokens: 13,
-      cacheReadTokens: 11,
-      cacheWriteTokens: 5,
-    });
-  });
-
-  test("updates claude streaming usage when message_delta includes usage fields", async () => {
-    let capturedUsage: {
-      inputTokens: number;
-      outputTokens: number;
-      cacheReadTokens: number;
-      cacheWriteTokens: number;
-    } | null = null;
-
-    const result = prepareClaudeProxyRequest({
-      requestUrl: new URL("https://kleis.local/v1/messages"),
-      headers: new Headers(),
-      bodyText: "{}",
-      bodyJson: {},
-      accessToken: "claude-token",
-      metadata: null,
-      onTokenUsage: (usage) => {
-        capturedUsage = usage;
+      ],
+      expected: {
+        inputTokens: 41,
+        outputTokens: 9,
+        cacheReadTokens: 5,
+        cacheWriteTokens: 3,
       },
+    },
+  ] as const;
+
+  for (const testCase of claudeStreamUsageCases) {
+    test(testCase.name, async () => {
+      const capture = createUsageCapture();
+      const result = prepareClaudeUsageRequest(capture.onTokenUsage);
+
+      const transformedResponse = await result.transformResponse(
+        createSseResponse(testCase.events)
+      );
+      await transformedResponse.text();
+
+      expect(capture.read()).toEqual(testCase.expected);
     });
-
-    const encoder = new TextEncoder();
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(
-            encoder.encode(
-              'data: {"type":"message_start","message":{"usage":{"input_tokens":40,"cache_read_input_tokens":4,"cache_creation_input_tokens":2}}}\n\n'
-            )
-          );
-          controller.enqueue(
-            encoder.encode(
-              'data: {"type":"message_delta","usage":{"input_tokens":41,"output_tokens":9,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}\n\n'
-            )
-          );
-          controller.close();
-        },
-      }),
-      {
-        headers: {
-          "content-type": "text/event-stream",
-        },
-      }
-    );
-
-    const transformedResponse = await result.transformResponse(sourceResponse);
-    await transformedResponse.text();
-
-    expect(capturedUsage).toEqual({
-      inputTokens: 41,
-      outputTokens: 9,
-      cacheReadTokens: 5,
-      cacheWriteTokens: 3,
-    });
-  });
+  }
 
   test("does not rewrite non-tool SSE name fields", async () => {
-    const result = prepareClaudeProxyRequest({
-      requestUrl: new URL("https://kleis.local/v1/messages"),
-      headers: new Headers(),
-      bodyText: "{}",
-      bodyJson: {},
-      accessToken: "claude-token",
-      metadata: null,
-    });
+    const result = prepareClaudeUsageRequest();
 
-    const encoder = new TextEncoder();
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(
-            encoder.encode('data: {"type":"status","name":"mcp_shell"}\n')
-          );
-          controller.enqueue(encoder.encode("\n"));
-          controller.close();
-        },
-      }),
-      {
-        headers: {
-          "content-type": "text/event-stream",
-        },
-      }
+    const transformedResponse = await result.transformResponse(
+      createSseResponse([{ type: "status", name: "mcp_shell" }])
     );
 
-    const transformedResponse = await result.transformResponse(sourceResponse);
     const transformedText = await transformedResponse.text();
     expect(transformedText).toContain('"name":"mcp_shell"');
   });
