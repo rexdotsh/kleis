@@ -319,15 +319,6 @@ function usageMapFromList(items, idField) {
   return map;
 }
 
-function mapById(items) {
-  const map = new Map();
-  if (!Array.isArray(items)) return map;
-  for (const item of items) {
-    if (item?.id) map.set(item.id, item);
-  }
-  return map;
-}
-
 function switchToTab(name) {
   for (const t of $$(".tab"))
     t.classList.toggle("active", t.dataset.tab === name);
@@ -669,8 +660,6 @@ const MODEL_LEAD_COLS = [
     (modelRow) => `<code>${escapeHtml(modelRow.model || "(none)")}</code>`,
   ],
 ];
-
-const DASH_TABLE_ROW_LIMIT = 100;
 
 function usageTableHtml(rows, leadCols) {
   const headers = [...leadCols.map((c) => c[0]), ...USAGE_TABLE_HEADERS];
@@ -1115,15 +1104,9 @@ function renderProviderBreakdown(providers, totalMetrics) {
   return html;
 }
 
-function renderDashTable(title, rows, leadCols, totalCount = rows.length) {
+function renderDashTable(title, rows, leadCols) {
   if (!rows.length) return "";
-  const rowCount = rows.length;
-  const overflow = totalCount - rowCount;
-  const note =
-    overflow > 0
-      ? `<div class="dash-table-note">showing top ${formatCount(rowCount)} of ${formatCount(totalCount)}</div>`
-      : "";
-  return `<div class="dash-card" style="overflow:auto"><div class="dash-chart-title">${title}</div>${usageTableHtml(rows, leadCols)}${note}</div>`;
+  return `<div class="dash-card" style="overflow:auto"><div class="dash-chart-title">${title}</div>${usageTableHtml(rows, leadCols)}</div>`;
 }
 
 const DASH_KEY_LEAD_COLS = [
@@ -1161,21 +1144,8 @@ function renderDashboard(data) {
     byKey = [],
     buckets = [],
     bucketSizeMs,
-    breakdownLimit,
-    byEndpointTotalCount = byEndpoint.length,
-    byModelTotalCount = byModel.length,
-    byKeyTotalCount = byKey.length,
   } = data;
   const pm = normalizeUsage(previousTotals);
-
-  const rowLimit =
-    typeof breakdownLimit === "number" && breakdownLimit > 0
-      ? breakdownLimit
-      : DASH_TABLE_ROW_LIMIT;
-
-  const visibleByEndpoint = byEndpoint.slice(0, rowLimit);
-  const visibleByModel = byModel.slice(0, rowLimit);
-  const visibleByKey = byKey.slice(0, rowLimit);
 
   let html = renderDashKpis(m, pm);
 
@@ -1205,24 +1175,9 @@ function renderDashboard(data) {
     html += `<div class="dash-card"><div class="dash-chart-title">by provider</div>${renderProviderBreakdown(byProvider, m)}</div>`;
   }
 
-  html += renderDashTable(
-    "by model",
-    visibleByModel,
-    MODEL_LEAD_COLS,
-    byModelTotalCount
-  );
-  html += renderDashTable(
-    "by API key",
-    visibleByKey,
-    DASH_KEY_LEAD_COLS,
-    byKeyTotalCount
-  );
-  html += renderDashTable(
-    "by endpoint",
-    visibleByEndpoint,
-    ENDPOINT_LEAD_COLS,
-    byEndpointTotalCount
-  );
+  html += renderDashTable("by model", byModel, MODEL_LEAD_COLS);
+  html += renderDashTable("by API key", byKey, DASH_KEY_LEAD_COLS);
+  html += renderDashTable("by endpoint", byEndpoint, ENDPOINT_LEAD_COLS);
 
   if (m.lastRequestAt) {
     html += `<div style="font-size:11px;color:var(--text-tertiary);text-align:right;margin-top:4px">last request: ${escapeHtml(new Date(m.lastRequestAt).toLocaleString())}</div>`;
@@ -1279,7 +1234,7 @@ async function loadAccounts() {
     if (accountsResult.status !== "fulfilled") throw accountsResult.reason;
 
     state.accounts = accountsResult.value.accounts || [];
-    state.accountsById = mapById(state.accounts);
+    state.accountsById = usageMapFromList(state.accounts, "id");
 
     if (usageResult.status === "fulfilled") {
       if (typeof usageResult.value.windowMs === "number") {
@@ -1316,7 +1271,7 @@ async function loadKeys() {
     if (keysResult.status !== "fulfilled") throw keysResult.reason;
 
     state.keys = keysResult.value.keys || [];
-    state.keysById = mapById(state.keys);
+    state.keysById = usageMapFromList(state.keys, "id");
 
     if (usageResult.status === "fulfilled") {
       if (typeof usageResult.value.windowMs === "number") {

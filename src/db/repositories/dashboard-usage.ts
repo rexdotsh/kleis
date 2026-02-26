@@ -27,6 +27,8 @@ const computeBucketSizeMs = (windowMs: number): number => {
 
 const DASHBOARD_BUCKET_LIMIT = 200;
 const DASHBOARD_BREAKDOWN_LIMIT = 120;
+const REQUEST_COUNT_SUM = sql<number>`sum(${requestUsageBuckets.requestCount})`;
+const LAST_REQUEST_AT_MAX = sql<number>`max(${requestUsageBuckets.lastRequestAt})`;
 
 export const getDashboardUsage = async (
   database: Database,
@@ -80,7 +82,9 @@ export const getDashboardUsage = async (
       })
       .from(requestUsageBuckets)
       .where(currentFilter)
-      .groupBy(requestUsageBuckets.provider, requestUsageBuckets.endpoint),
+      .groupBy(requestUsageBuckets.provider, requestUsageBuckets.endpoint)
+      .orderBy(desc(REQUEST_COUNT_SUM), desc(LAST_REQUEST_AT_MAX))
+      .limit(DASHBOARD_BREAKDOWN_LIMIT),
     database
       .select({
         provider: requestUsageBuckets.provider,
@@ -94,7 +98,9 @@ export const getDashboardUsage = async (
         requestUsageBuckets.provider,
         requestUsageBuckets.endpoint,
         requestUsageBuckets.model
-      ),
+      )
+      .orderBy(desc(REQUEST_COUNT_SUM), desc(LAST_REQUEST_AT_MAX))
+      .limit(DASHBOARD_BREAKDOWN_LIMIT),
     database
       .select({
         apiKeyId: requestUsageBuckets.apiKeyId,
@@ -102,7 +108,9 @@ export const getDashboardUsage = async (
       })
       .from(requestUsageBuckets)
       .where(currentFilter)
-      .groupBy(requestUsageBuckets.apiKeyId),
+      .groupBy(requestUsageBuckets.apiKeyId)
+      .orderBy(desc(REQUEST_COUNT_SUM), desc(LAST_REQUEST_AT_MAX))
+      .limit(DASHBOARD_BREAKDOWN_LIMIT),
     database
       .select({
         bucketStart: aggregatedBucket,
@@ -133,11 +141,7 @@ export const getDashboardUsage = async (
     .map((row) => ({ provider: row.provider, ...rowToAveraged(row) }))
     .sort((a, b) => b.requestCount - a.requestCount);
 
-  const byEndpointAll = mapEndpointUsageRows(endpointRows);
-
-  const byModelAll = mapModelUsageRows(modelRows);
-
-  const byKeyAll = keyRows
+  const byKey = keyRows
     .map((row) => ({ apiKeyId: row.apiKeyId, ...rowToAveraged(row) }))
     .sort(
       (a, b) =>
@@ -145,21 +149,13 @@ export const getDashboardUsage = async (
         (b.lastRequestAt ?? 0) - (a.lastRequestAt ?? 0)
     );
 
-  const byEndpoint = byEndpointAll.slice(0, DASHBOARD_BREAKDOWN_LIMIT);
-  const byModel = byModelAll.slice(0, DASHBOARD_BREAKDOWN_LIMIT);
-  const byKey = byKeyAll.slice(0, DASHBOARD_BREAKDOWN_LIMIT);
-
   return {
     totals: toAveragedTotals(totals),
     previousTotals: toAveragedTotals(previousTotals),
     byProvider,
-    byEndpoint,
-    byEndpointTotalCount: byEndpointAll.length,
-    byModel,
-    byModelTotalCount: byModelAll.length,
+    byEndpoint: mapEndpointUsageRows(endpointRows),
+    byModel: mapModelUsageRows(modelRows),
     byKey,
-    byKeyTotalCount: byKeyAll.length,
-    breakdownLimit: DASHBOARD_BREAKDOWN_LIMIT,
     buckets: mapUsageBucketRows(bucketRows),
     bucketSizeMs,
   };
