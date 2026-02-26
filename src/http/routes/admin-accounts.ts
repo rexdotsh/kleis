@@ -18,10 +18,12 @@ import {
   findProviderAccountById,
   listProviderAccounts,
   setPrimaryProviderAccount,
+  updateProviderAccountProfile,
 } from "../../db/repositories/provider-accounts";
 import { providers } from "../../db/schema";
 import {
   parseImportedProviderAccountMetadata,
+  providerAccountMetadataSchema,
   resolveImportedProviderAccountId,
   type ProviderAccountMetadata,
 } from "../../providers/metadata";
@@ -54,6 +56,26 @@ const importAccountBodySchema = z.strictObject({
   label: z.string().trim().min(1).max(160).nullable().optional(),
   metadata: z.record(z.string(), z.unknown()).nullable().optional(),
 });
+
+const updateAccountBodySchema = z.strictObject({
+  accountId: z.string().trim().max(200).nullable().optional(),
+  label: z.string().trim().max(160).nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+
+const normalizeEditableText = (
+  value: string | null | undefined
+): string | null | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  return value.length > 0 ? value : null;
+};
 
 const toAdminAccountView = (
   account: Awaited<ReturnType<typeof listProviderAccounts>>[number]
@@ -120,6 +142,96 @@ export const adminAccountsRoutes = new Hono()
         since,
         now,
         ...detail,
+      });
+    }
+  )
+  .patch(
+    "/:id",
+    zValidator("param", accountIdParamsSchema),
+    zValidator("json", updateAccountBodySchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const body = context.req.valid("json");
+
+      const existing = await findProviderAccountById(db, id);
+      if (!existing) {
+        return context.json(
+          {
+            error: "not_found",
+            message: "Account not found",
+          },
+          404
+        );
+      }
+
+      const nextLabel = normalizeEditableText(body.label);
+      const nextAccountId = normalizeEditableText(body.accountId);
+
+      const label = nextLabel === undefined ? existing.label : nextLabel;
+      const accountId =
+        nextAccountId === undefined ? existing.accountId : nextAccountId;
+
+      let metadata = existing.metadata;
+      if (body.metadata !== undefined) {
+        if (body.metadata === null) {
+          metadata = null;
+        } else {
+          const parsedMetadata = providerAccountMetadataSchema.safeParse({
+            ...(existing.metadata ??
+              parseImportedProviderAccountMetadata({
+                provider: existing.provider,
+                accountId,
+                metadata: null,
+              })),
+            ...body.metadata,
+            provider: existing.provider,
+          });
+
+          if (!parsedMetadata.success) {
+            return context.json(
+              {
+                error: "bad_request",
+                message: "Invalid provider metadata payload",
+              },
+              400
+            );
+          }
+
+          metadata = parsedMetadata.data;
+        }
+      }
+
+      const updated = await updateProviderAccountProfile(db, id, {
+        label,
+        accountId,
+        metadata,
+        now: Date.now(),
+      });
+
+      if (updated === "account_id_conflict") {
+        return context.json(
+          {
+            error: "conflict",
+            message:
+              "Another account for this provider already uses that account ID",
+          },
+          409
+        );
+      }
+
+      if (!updated) {
+        return context.json(
+          {
+            error: "not_found",
+            message: "Account not found",
+          },
+          404
+        );
+      }
+
+      return context.json({
+        account: toAdminAccountView(updated),
+        updated: true,
       });
     }
   )

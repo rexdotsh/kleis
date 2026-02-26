@@ -14,6 +14,8 @@ import {
   listApiKeys,
   revokeApiKey,
   type CreateApiKeyInput,
+  type UpdateApiKeyInput,
+  updateApiKey,
 } from "../../db/repositories/api-keys";
 import { providers } from "../../db/schema";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
@@ -35,9 +37,38 @@ const createApiKeyBodySchema = z.strictObject({
   expiresAt: z.int().positive().nullable().optional(),
 });
 
+const updateApiKeyBodySchema = z.strictObject({
+  label: z.string().trim().max(120).nullable().optional(),
+  providerScopes: z
+    .array(z.enum(providers))
+    .max(providers.length)
+    .nullable()
+    .optional(),
+  modelScopes: z
+    .array(z.string().trim().min(1).max(200))
+    .max(200)
+    .nullable()
+    .optional(),
+  expiresAt: z.int().positive().nullable().optional(),
+});
+
 const keyIdParamsSchema = z.strictObject({
   id: z.uuid(),
 });
+
+const normalizeEditableText = (
+  value: string | null | undefined
+): string | null | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (value === null) {
+    return null;
+  }
+
+  return value.length > 0 ? value : null;
+};
 
 type ApiKeyRecord = Awaited<ReturnType<typeof listApiKeys>>[number];
 
@@ -122,6 +153,82 @@ export const adminKeysRoutes = new Hono()
       201
     );
   })
+  .patch(
+    "/:id",
+    zValidator("param", keyIdParamsSchema),
+    zValidator("json", updateApiKeyBodySchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const body = context.req.valid("json");
+
+      const existing = await findApiKeyById(db, id);
+      if (!existing) {
+        return context.json(
+          {
+            error: "not_found",
+            message: "API key was not found",
+          },
+          404
+        );
+      }
+
+      const now = Date.now();
+      const nextLabel = normalizeEditableText(body.label);
+      const label = nextLabel === undefined ? existing.label : nextLabel;
+      const providerScopes =
+        body.providerScopes === undefined
+          ? existing.providerScopes
+          : body.providerScopes;
+      const modelScopes =
+        body.modelScopes === undefined
+          ? existing.modelScopes
+          : body.modelScopes;
+      const expiresAt =
+        body.expiresAt === undefined
+          ? existing.expiresAt
+          : body.expiresAt === null
+            ? null
+            : toMillisecondsTimestamp(body.expiresAt);
+
+      if (
+        body.expiresAt !== undefined &&
+        expiresAt !== null &&
+        expiresAt <= now
+      ) {
+        return context.json(
+          {
+            error: "bad_request",
+            message: "expiresAt must be in the future",
+          },
+          400
+        );
+      }
+
+      const payload: UpdateApiKeyInput = {
+        label,
+        providerScopes: providerScopes?.length ? providerScopes : null,
+        modelScopes: modelScopes?.length ? modelScopes : null,
+        expiresAt,
+      };
+
+      const updated = await updateApiKey(db, id, payload);
+      if (!updated) {
+        return context.json(
+          {
+            error: "not_found",
+            message: "API key was not found",
+          },
+          404
+        );
+      }
+
+      invalidateModelsRegistryCache();
+      return context.json({
+        key: toApiKeyView(new URL(context.req.url), updated),
+        updated: true,
+      });
+    }
+  )
   .post(
     "/:id/revoke",
     zValidator("param", keyIdParamsSchema),

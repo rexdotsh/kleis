@@ -1210,6 +1210,142 @@
       </div>
     </div>
 
+    <div id="modal-edit-account" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-title" id="edit-account-title">Edit Account</div>
+        <div class="field">
+          <label class="field-label" for="edit-account-label">Label</label>
+          <input
+            id="edit-account-label"
+            class="field-input"
+            type="text"
+            maxlength="160"
+            placeholder="my-main-account"
+          >
+        </div>
+        <div class="field">
+          <label class="field-label" for="edit-account-account-id">
+            Account ID
+          </label>
+          <input
+            id="edit-account-account-id"
+            class="field-input"
+            type="text"
+            maxlength="200"
+            placeholder="provider-specific account id"
+          >
+          <div class="field-hint">Leave empty to clear.</div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="edit-account-metadata">
+            Profile Metadata JSON
+          </label>
+          <textarea
+            id="edit-account-metadata"
+            class="field-input"
+            placeholder='{"githubLogin":"octocat"}'
+          ></textarea>
+          <div class="field-hint">
+            Must be a JSON object. Leave empty to clear metadata.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost modal-close" type="button">
+            cancel
+          </button>
+          <button
+            id="btn-modal-save-account"
+            class="btn btn-primary"
+            type="button"
+          >
+            save
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="modal-edit-key" class="modal-backdrop">
+      <div class="modal">
+        <div class="modal-title">Edit API Key</div>
+        <div class="field">
+          <label class="field-label" for="edit-key-label">Label</label>
+          <input
+            id="edit-key-label"
+            class="field-input"
+            type="text"
+            maxlength="120"
+            placeholder="my-laptop"
+          >
+        </div>
+        <div class="field">
+          <label class="field-label">Provider Scopes</label>
+          <div class="field-hint" style="margin-bottom:8px">
+            Leave empty for all providers.
+          </div>
+          <label class="scope-check">
+            <input
+              type="checkbox"
+              value="copilot"
+              class="edit-key-scope-provider"
+            >
+            copilot
+          </label>
+          <label class="scope-check">
+            <input
+              type="checkbox"
+              value="codex"
+              class="edit-key-scope-provider"
+            >
+            codex
+          </label>
+          <label class="scope-check">
+            <input
+              type="checkbox"
+              value="claude"
+              class="edit-key-scope-provider"
+            >
+            claude
+          </label>
+        </div>
+        <div class="field">
+          <label class="field-label" for="edit-key-model-scopes">
+            Model Scopes
+          </label>
+          <input
+            id="edit-key-model-scopes"
+            class="field-input"
+            type="text"
+            placeholder="github-copilot/gpt-5-mini, anthropic/claude-sonnet-4-5"
+          >
+          <div class="field-hint">
+            Comma-separated model patterns. Leave empty for all.
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="edit-key-expires-at">
+            Expires At (unix seconds or ms)
+          </label>
+          <input
+            id="edit-key-expires-at"
+            class="field-input"
+            type="number"
+            placeholder="1767225600000"
+          >
+          <div class="field-hint">
+            Leave unchanged to keep existing value. Clear to remove expiration.
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost modal-close" type="button">
+            cancel
+          </button>
+          <button id="btn-modal-save-key" class="btn btn-primary" type="button">
+            save
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div id="modal-confirm" class="modal-backdrop">
       <div class="modal modal-sm">
         <div class="modal-title" id="confirm-title"></div>

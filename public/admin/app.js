@@ -287,6 +287,14 @@ function metadataHtml(metadata) {
     .join("");
 }
 
+function formatMetadataForInput(metadata) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return "";
+  }
+
+  return JSON.stringify(metadata, null, 2);
+}
+
 function accountCardHtml(account) {
   const s = tokenStatus(account.expiresAt);
   const name = account.label || account.accountId || account.id;
@@ -300,6 +308,7 @@ function accountCardHtml(account) {
   const setPrimaryBtn = account.isPrimary
     ? ""
     : `<button class="btn btn-ghost btn-sm" data-action="set-primary" data-account-id="${account.id}" type="button">set primary</button>`;
+  const editBtn = `<button class="btn btn-ghost btn-sm" data-action="edit-account" data-account-id="${account.id}" type="button">edit</button>`;
 
   const identityParts = [];
   if (account.accountId && account.accountId !== name) {
@@ -328,6 +337,7 @@ function accountCardHtml(account) {
         ${account.isPrimary ? '<span class="badge badge-primary">primary</span>' : ""}
       </div>
       <div class="card-actions">
+        ${editBtn}
         ${setPrimaryBtn}
         <button class="btn btn-ghost btn-sm" data-action="refresh-account" data-account-id="${account.id}" type="button">refresh</button>
         <button class="btn btn-danger btn-sm" data-action="delete-account" data-account-id="${account.id}" type="button">delete</button>
@@ -405,8 +415,8 @@ function keyCardHtml(key) {
   }
 
   const actionButtons = revoked
-    ? `<button class="btn btn-danger btn-sm" data-action="delete-key" data-key-id="${key.id}" type="button">delete</button>`
-    : `<button class="btn btn-ghost btn-sm" data-action="rotate-key" data-key-id="${key.id}" type="button">rotate</button><button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${key.id}" type="button">revoke</button>`;
+    ? `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">edit</button><button class="btn btn-danger btn-sm" data-action="delete-key" data-key-id="${key.id}" type="button">delete</button>`
+    : `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">edit</button><button class="btn btn-ghost btn-sm" data-action="rotate-key" data-key-id="${key.id}" type="button">rotate</button><button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${key.id}" type="button">revoke</button>`;
 
   return `<div class="card" data-key-id="${key.id}" style="cursor:pointer">
     <div class="card-top">
@@ -870,6 +880,76 @@ async function refreshAccount(id) {
   }
 }
 
+function openEditAccountModal(id) {
+  const account = accountById(id);
+  if (!account) {
+    toast("Account was not found", "error");
+    return;
+  }
+
+  $("#edit-account-title").textContent = `Edit ${account.provider} Account`;
+  $("#edit-account-label").value = account.label || "";
+  $("#edit-account-account-id").value = account.accountId || "";
+  $("#edit-account-metadata").value = formatMetadataForInput(account.metadata);
+  $("#btn-modal-save-account").dataset.accountId = account.id;
+  $("#modal-edit-account").classList.add("open");
+}
+
+async function saveAccountEdits() {
+  const saveButton = $("#btn-modal-save-account");
+  const accountId = saveButton?.dataset.accountId;
+  if (!accountId) {
+    toast("Account was not found", "error");
+    return;
+  }
+
+  const label = $("#edit-account-label").value.trim();
+  const editableAccountId = $("#edit-account-account-id").value.trim();
+  const metadataRaw = $("#edit-account-metadata").value.trim();
+
+  let metadata = null;
+  if (metadataRaw) {
+    try {
+      metadata = JSON.parse(metadataRaw);
+    } catch {
+      toast("Metadata must be valid JSON", "error");
+      return;
+    }
+
+    if (
+      typeof metadata !== "object" ||
+      metadata === null ||
+      Array.isArray(metadata)
+    ) {
+      toast("Metadata must be a JSON object", "error");
+      return;
+    }
+  }
+
+  const previousLabel = saveButton.textContent;
+  saveButton.disabled = true;
+  saveButton.innerHTML = '<span class="spinner"></span> saving...';
+  try {
+    await api(`/admin/accounts/${accountId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        label: label || null,
+        accountId: editableAccountId || null,
+        metadata,
+      }),
+    });
+    $("#modal-edit-account").classList.remove("open");
+    saveButton.dataset.accountId = "";
+    toast("Account profile updated");
+    await loadAccounts();
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    saveButton.disabled = false;
+    saveButton.textContent = previousLabel || "save";
+  }
+}
+
 function openCreateKeyModal() {
   $("#key-label").value = "";
   $("#key-model-scopes").value = "";
@@ -904,6 +984,93 @@ async function createKey() {
     await loadKeys();
   } catch (e) {
     toast(e.message, "error");
+  }
+}
+
+function openEditKeyModal(id) {
+  const key = keyById(id);
+  if (!key) {
+    toast("API key was not found", "error");
+    return;
+  }
+
+  $("#edit-key-label").value = key.label || "";
+  $("#edit-key-model-scopes").value = key.modelScopes?.join(", ") || "";
+  $("#edit-key-expires-at").value =
+    key.expiresAt === null ? "" : String(key.expiresAt);
+
+  for (const cb of $$(".edit-key-scope-provider")) {
+    cb.checked =
+      Array.isArray(key.providerScopes) &&
+      key.providerScopes.includes(cb.value);
+  }
+
+  const saveButton = $("#btn-modal-save-key");
+  saveButton.dataset.keyId = key.id;
+  saveButton.dataset.originalExpiresAt =
+    key.expiresAt === null ? "" : String(key.expiresAt);
+  $("#modal-edit-key").classList.add("open");
+}
+
+async function saveKeyEdits() {
+  const saveButton = $("#btn-modal-save-key");
+  const keyId = saveButton?.dataset.keyId;
+  if (!keyId) {
+    toast("API key was not found", "error");
+    return;
+  }
+
+  const label = $("#edit-key-label").value.trim();
+  const providerScopes = Array.from($$(".edit-key-scope-provider:checked")).map(
+    (cb) => cb.value
+  );
+  const rawModelScopes = $("#edit-key-model-scopes").value.trim();
+  const modelScopes = rawModelScopes
+    ? rawModelScopes
+        .split(",")
+        .map((scope) => scope.trim())
+        .filter(Boolean)
+    : [];
+
+  const body = {
+    label: label || null,
+    providerScopes: providerScopes.length ? providerScopes : null,
+    modelScopes: modelScopes.length ? modelScopes : null,
+  };
+
+  const expiresAtRaw = $("#edit-key-expires-at").value.trim();
+  const originalExpiresAt = saveButton.dataset.originalExpiresAt || "";
+  if (expiresAtRaw !== originalExpiresAt) {
+    if (expiresAtRaw) {
+      const parsedExpiresAt = Number(expiresAtRaw);
+      if (!Number.isFinite(parsedExpiresAt) || parsedExpiresAt <= 0) {
+        toast("Expires At must be a valid unix timestamp", "error");
+        return;
+      }
+      body.expiresAt = parsedExpiresAt;
+    } else {
+      body.expiresAt = null;
+    }
+  }
+
+  const previousLabel = saveButton.textContent;
+  saveButton.disabled = true;
+  saveButton.innerHTML = '<span class="spinner"></span> saving...';
+  try {
+    await api(`/admin/keys/${keyId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    });
+    $("#modal-edit-key").classList.remove("open");
+    saveButton.dataset.keyId = "";
+    saveButton.dataset.originalExpiresAt = "";
+    toast("API key updated");
+    await loadKeys();
+  } catch (e) {
+    toast(e.message, "error");
+  } finally {
+    saveButton.disabled = false;
+    saveButton.textContent = previousLabel || "save";
   }
 }
 
@@ -1230,6 +1397,7 @@ $("#accounts-list").addEventListener("click", (e) => {
       return;
     }
     if (!accountId) return;
+    if (action === "edit-account") openEditAccountModal(accountId);
     if (action === "set-primary") setPrimary(accountId);
     if (action === "refresh-account") refreshAccount(accountId);
     if (action === "delete-account") deleteAccount(accountId);
@@ -1277,6 +1445,7 @@ $("#keys-list").addEventListener("click", (e) => {
       renderKeys();
       return;
     }
+    if (action === "edit-key") openEditKeyModal(keyId);
     if (action === "rotate-key") rotateKey(keyId, button);
     if (action === "revoke-key") revokeKey(keyId);
     if (action === "delete-key") deleteKey(keyId);
@@ -1297,6 +1466,8 @@ $("#btn-refresh-keys").addEventListener("click", loadKeys);
 $("#btn-create-key").addEventListener("click", openCreateKeyModal);
 $("#btn-open-setup").addEventListener("click", openSetupModal);
 $("#btn-modal-create-key").addEventListener("click", createKey);
+$("#btn-modal-save-account").addEventListener("click", saveAccountEdits);
+$("#btn-modal-save-key").addEventListener("click", saveKeyEdits);
 $("#btn-oauth-start").addEventListener("click", startOAuth);
 $("#btn-import-account").addEventListener("click", importAccount);
 $("#toggle-show-revoked-keys").addEventListener("change", (e) => {
