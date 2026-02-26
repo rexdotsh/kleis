@@ -15,15 +15,20 @@ function clearPersistedToken() {
 const state = {
   token: readPersistedToken(),
   accounts: [],
+  accountsById: new Map(),
   accountUsageById: new Map(),
   accountUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   keys: [],
+  keysById: new Map(),
   keyUsageById: new Map(),
   keyUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   showRevokedKeys: false,
   activeOAuth: null,
   revealedKeyIds: new Set(),
   dashboardWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
+  dashboardData: null,
+  dashboardLoading: false,
+  dashboardRequestSeq: 0,
 };
 
 const APP_ORIGIN = window.location.origin;
@@ -133,11 +138,11 @@ function maskKey(k) {
 }
 
 function keyById(keyId) {
-  return state.keys.find((key) => key.id === keyId) || null;
+  return state.keysById.get(keyId) || null;
 }
 
 function accountById(accountId) {
-  return state.accounts.find((a) => a.id === accountId) || null;
+  return state.accountsById.get(accountId) || null;
 }
 
 function isKeyActive(key) {
@@ -200,7 +205,24 @@ function formatBucketTime(ts, bucketSizeMs) {
   if (bucketSizeMs >= 86_400_000) {
     return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   }
+  if (bucketSizeMs >= 3_600_000) {
+    return d.toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function syncDashboardWindowButtons() {
+  for (const btn of $$("#dash-window-selector .dash-window-btn")) {
+    btn.classList.toggle(
+      "active",
+      Number(btn.dataset.window) === state.dashboardWindowMs
+    );
+  }
 }
 
 function normalizeUsage(rawUsage) {
@@ -243,6 +265,17 @@ function normalizeUsage(rawUsage) {
   };
 }
 
+function hasUsageMetrics(metrics) {
+  if (!metrics) return false;
+  return (
+    metrics.requestCount > 0 ||
+    metrics.totalTokens > 0 ||
+    metrics.cacheReadTokens > 0 ||
+    metrics.cacheWriteTokens > 0 ||
+    metrics.lastRequestAt !== null
+  );
+}
+
 function usageMetaParts(
   usage,
   { windowLabel = null, includeMaxLatency = false } = {}
@@ -282,6 +315,15 @@ function usageMapFromList(items, idField) {
   if (!Array.isArray(items)) return map;
   for (const u of items) {
     if (u?.[idField]) map.set(u[idField], u);
+  }
+  return map;
+}
+
+function mapById(items) {
+  const map = new Map();
+  if (!Array.isArray(items)) return map;
+  for (const item of items) {
+    if (item?.id) map.set(item.id, item);
   }
   return map;
 }
@@ -628,6 +670,8 @@ const MODEL_LEAD_COLS = [
   ],
 ];
 
+const DASH_TABLE_ROW_LIMIT = 100;
+
 function usageTableHtml(rows, leadCols) {
   const headers = [...leadCols.map((c) => c[0]), ...USAGE_TABLE_HEADERS];
   let html = `<table class="detail-table"><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>`;
@@ -957,6 +1001,13 @@ function renderDashKpis(m, pm) {
 function renderSvgBarChart(buckets, seriesExtractor, bucketSizeMs) {
   if (!buckets.length) return "";
 
+  const bucketSeries = buckets.map((bucket) => {
+    const series = seriesExtractor(bucket);
+    let total = 0;
+    for (const item of series) total += item.value;
+    return { bucket, series, total };
+  });
+
   const W = 700;
   const H = 140;
   const PL = 44;
@@ -967,14 +1018,12 @@ function renderSvgBarChart(buckets, seriesExtractor, bucketSizeMs) {
   const chartH = H - PT - PB;
 
   let maxVal = 0;
-  for (const b of buckets) {
-    let total = 0;
-    for (const s of seriesExtractor(b)) total += s.value;
-    if (total > maxVal) maxVal = total;
+  for (const item of bucketSeries) {
+    if (item.total > maxVal) maxVal = item.total;
   }
   if (maxVal === 0) return "";
 
-  const step = chartW / buckets.length;
+  const step = chartW / bucketSeries.length;
   const barW = Math.max(1.5, Math.min(12, step * 0.8));
 
   let svg = `<svg class="dash-chart-svg" viewBox="0 0 ${W} ${H}">`;
@@ -986,29 +1035,26 @@ function renderSvgBarChart(buckets, seriesExtractor, bucketSizeMs) {
     svg += `<text x="${PL - 4}" y="${y + 3}" text-anchor="end" fill="var(--text-tertiary)" font-size="9" font-family="var(--font-mono)">${formatCompact(gridValues[i])}</text>`;
   }
 
-  for (let i = 0; i < buckets.length; i++) {
-    const b = buckets[i];
-    const series = seriesExtractor(b);
-    let total = 0;
-    for (const s of series) total += s.value;
+  for (let i = 0; i < bucketSeries.length; i++) {
+    const item = bucketSeries[i];
     const x = PL + i * step + (step - barW) / 2;
-    let currentY = PT + chartH - (total / maxVal) * chartH;
-    for (const s of series) {
+    let currentY = PT + chartH - (item.total / maxVal) * chartH;
+    for (const s of item.series) {
       const h = (s.value / maxVal) * chartH;
       if (h > 0.5) {
-        const tip = `${formatBucketTime(b.bucketStart, bucketSizeMs)}: ${formatCount(s.value)} ${s.label}`;
+        const tip = `${formatBucketTime(item.bucket.bucketStart, bucketSizeMs)}: ${formatCount(s.value)} ${s.label}`;
         svg += `<rect x="${x}" y="${currentY}" width="${barW}" height="${h}" fill="${s.color}" rx="0.5"><title>${escapeHtml(tip)}</title></rect>`;
         currentY += h;
       }
     }
   }
 
-  const labelCount = Math.min(6, buckets.length);
+  const labelCount = Math.min(6, bucketSeries.length);
   if (labelCount > 1) {
-    const labelStep = Math.max(1, Math.floor(buckets.length / labelCount));
-    for (let i = 0; i < buckets.length; i += labelStep) {
+    const labelStep = Math.max(1, Math.floor(bucketSeries.length / labelCount));
+    for (let i = 0; i < bucketSeries.length; i += labelStep) {
       const x = PL + i * step + step / 2;
-      svg += `<text x="${x}" y="${H - 4}" text-anchor="middle" fill="var(--text-tertiary)" font-size="8" font-family="var(--font-mono)">${escapeHtml(formatBucketTime(buckets[i].bucketStart, bucketSizeMs))}</text>`;
+      svg += `<text x="${x}" y="${H - 4}" text-anchor="middle" fill="var(--text-tertiary)" font-size="8" font-family="var(--font-mono)">${escapeHtml(formatBucketTime(bucketSeries[i].bucket.bucketStart, bucketSizeMs))}</text>`;
     }
   }
 
@@ -1069,9 +1115,15 @@ function renderProviderBreakdown(providers, totalMetrics) {
   return html;
 }
 
-function renderDashTable(title, rows, leadCols) {
+function renderDashTable(title, rows, leadCols, totalCount = rows.length) {
   if (!rows.length) return "";
-  return `<div class="dash-card" style="overflow:auto"><div class="dash-chart-title">${title}</div>${usageTableHtml(rows, leadCols)}</div>`;
+  const rowCount = rows.length;
+  const overflow = totalCount - rowCount;
+  const note =
+    overflow > 0
+      ? `<div class="dash-table-note">showing top ${formatCount(rowCount)} of ${formatCount(totalCount)}</div>`
+      : "";
+  return `<div class="dash-card" style="overflow:auto"><div class="dash-chart-title">${title}</div>${usageTableHtml(rows, leadCols)}${note}</div>`;
 }
 
 const DASH_KEY_LEAD_COLS = [
@@ -1088,24 +1140,42 @@ const DASH_KEY_LEAD_COLS = [
 
 function renderDashboard(data) {
   const el = $("#dash-content");
-  if (!data || !data.totals || !data.totals.requestCount) {
+  if (!data || !data.totals) {
+    el.innerHTML =
+      '<div class="dash-empty">No usage data in this window.</div>';
+    return;
+  }
+
+  const m = normalizeUsage(data.totals);
+  if (!hasUsageMetrics(m)) {
     el.innerHTML =
       '<div class="dash-empty">No usage data in this window.</div>';
     return;
   }
 
   const {
-    totals,
     previousTotals,
-    byProvider,
-    byEndpoint,
-    byModel,
-    byKey,
-    buckets,
+    byProvider = [],
+    byEndpoint = [],
+    byModel = [],
+    byKey = [],
+    buckets = [],
     bucketSizeMs,
+    breakdownLimit,
+    byEndpointTotalCount = byEndpoint.length,
+    byModelTotalCount = byModel.length,
+    byKeyTotalCount = byKey.length,
   } = data;
-  const m = normalizeUsage(totals);
   const pm = normalizeUsage(previousTotals);
+
+  const rowLimit =
+    typeof breakdownLimit === "number" && breakdownLimit > 0
+      ? breakdownLimit
+      : DASH_TABLE_ROW_LIMIT;
+
+  const visibleByEndpoint = byEndpoint.slice(0, rowLimit);
+  const visibleByModel = byModel.slice(0, rowLimit);
+  const visibleByKey = byKey.slice(0, rowLimit);
 
   let html = renderDashKpis(m, pm);
 
@@ -1135,9 +1205,24 @@ function renderDashboard(data) {
     html += `<div class="dash-card"><div class="dash-chart-title">by provider</div>${renderProviderBreakdown(byProvider, m)}</div>`;
   }
 
-  html += renderDashTable("by model", byModel, MODEL_LEAD_COLS);
-  html += renderDashTable("by API key", byKey, DASH_KEY_LEAD_COLS);
-  html += renderDashTable("by endpoint", byEndpoint, ENDPOINT_LEAD_COLS);
+  html += renderDashTable(
+    "by model",
+    visibleByModel,
+    MODEL_LEAD_COLS,
+    byModelTotalCount
+  );
+  html += renderDashTable(
+    "by API key",
+    visibleByKey,
+    DASH_KEY_LEAD_COLS,
+    byKeyTotalCount
+  );
+  html += renderDashTable(
+    "by endpoint",
+    visibleByEndpoint,
+    ENDPOINT_LEAD_COLS,
+    byEndpointTotalCount
+  );
 
   if (m.lastRequestAt) {
     html += `<div style="font-size:11px;color:var(--text-tertiary);text-align:right;margin-top:4px">last request: ${escapeHtml(new Date(m.lastRequestAt).toLocaleString())}</div>`;
@@ -1148,14 +1233,38 @@ function renderDashboard(data) {
 
 async function loadDashboard() {
   const el = $("#dash-content");
+  const refreshButton = $("#btn-refresh-dash");
+  const requestSeq = state.dashboardRequestSeq + 1;
+
+  state.dashboardRequestSeq = requestSeq;
+  state.dashboardLoading = true;
+  if (refreshButton) refreshButton.disabled = true;
   el.innerHTML = DETAIL_LOADING_HTML;
+
   try {
     const data = await api(
       `/admin/usage/dashboard?windowMs=${state.dashboardWindowMs}`
     );
+
+    if (requestSeq !== state.dashboardRequestSeq) return;
+
+    if (typeof data.windowMs === "number") {
+      state.dashboardWindowMs = data.windowMs;
+      syncDashboardWindowButtons();
+    }
+
+    state.dashboardData = data;
     renderDashboard(data);
   } catch (e) {
-    el.innerHTML = `<div class="dash-empty" style="color:var(--red)">${escapeHtml(e.message)}</div>`;
+    if (requestSeq !== state.dashboardRequestSeq) return;
+    state.dashboardData = null;
+    const message = e instanceof Error ? e.message : "Failed to load usage";
+    el.innerHTML = `<div class="dash-empty" style="color:var(--red)">${escapeHtml(message)}</div>`;
+  } finally {
+    if (requestSeq === state.dashboardRequestSeq) {
+      state.dashboardLoading = false;
+      if (refreshButton) refreshButton.disabled = false;
+    }
   }
 }
 
@@ -1170,6 +1279,7 @@ async function loadAccounts() {
     if (accountsResult.status !== "fulfilled") throw accountsResult.reason;
 
     state.accounts = accountsResult.value.accounts || [];
+    state.accountsById = mapById(state.accounts);
 
     if (usageResult.status === "fulfilled") {
       if (typeof usageResult.value.windowMs === "number") {
@@ -1187,6 +1297,7 @@ async function loadAccounts() {
     renderAccounts();
   } catch (e) {
     state.accounts = [];
+    state.accountsById = new Map();
     state.accountUsageById = new Map();
     $("#accounts-list").innerHTML =
       `<div class="empty-state"><div class="empty-state-text" style="color:var(--red)">${escapeHtml(e.message)}</div></div>`;
@@ -1205,6 +1316,7 @@ async function loadKeys() {
     if (keysResult.status !== "fulfilled") throw keysResult.reason;
 
     state.keys = keysResult.value.keys || [];
+    state.keysById = mapById(state.keys);
 
     if (usageResult.status === "fulfilled") {
       if (typeof usageResult.value.windowMs === "number") {
@@ -1220,8 +1332,12 @@ async function loadKeys() {
     }
 
     renderKeys();
+    if (state.dashboardData && !state.dashboardLoading) {
+      renderDashboard(state.dashboardData);
+    }
   } catch (e) {
     state.keys = [];
+    state.keysById = new Map();
     state.keyUsageById = new Map();
     $("#keys-list").innerHTML =
       `<div class="empty-state"><div class="empty-state-text" style="color:var(--red)">${escapeHtml(e.message)}</div></div>`;
@@ -1737,6 +1853,7 @@ function enterApp() {
   $("#app").classList.add("visible");
   const hash = location.hash.slice(1);
   if (hash && $(`#panel-${hash}`)) switchToTab(hash);
+  syncDashboardWindowButtons();
   loadDashboard();
   loadAccounts();
   loadKeys();
@@ -1746,17 +1863,24 @@ function logout() {
   clearPersistedToken();
   state.token = "";
   state.accounts = [];
+  state.accountsById = new Map();
   state.accountUsageById = new Map();
   state.accountUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.keys = [];
+  state.keysById = new Map();
   state.keyUsageById = new Map();
   state.keyUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.showRevokedKeys = false;
   state.activeOAuth = null;
   state.revealedKeyIds.clear();
   state.dashboardWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
+  state.dashboardData = null;
+  state.dashboardLoading = false;
+  state.dashboardRequestSeq = 0;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
+  $("#dash-content").innerHTML = "";
+  syncDashboardWindowButtons();
   $("#login-gate").classList.remove("hidden");
   $("#app").classList.remove("visible");
   $("#toggle-show-revoked-keys").checked = false;
@@ -1848,8 +1972,7 @@ $("#dash-window-selector").addEventListener("click", (e) => {
   const windowMs = Number(btn.dataset.window);
   if (!windowMs || windowMs === state.dashboardWindowMs) return;
   state.dashboardWindowMs = windowMs;
-  for (const b of $$("#dash-window-selector .dash-window-btn"))
-    b.classList.toggle("active", b === btn);
+  syncDashboardWindowButtons();
   loadDashboard();
 });
 $("#btn-create-key").addEventListener("click", openCreateKeyModal);
