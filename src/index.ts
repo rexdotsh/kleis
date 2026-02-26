@@ -12,6 +12,7 @@ import { proxyRoutes } from "./http/routes/proxy";
 
 const app = new Hono();
 const isVercel = process.env.VERCEL === "1";
+const isDev = process.env.NODE_ENV !== "production" && !isVercel;
 
 app.onError((error, context) => {
   if (error instanceof HTTPException) {
@@ -38,32 +39,6 @@ app.get("/", (context) => context.redirect("/admin"));
 app.route("/", healthRoutes);
 app.route("/", modelsRoutes);
 
-if (!isVercel) {
-  // Vercel serves public/ automatically, manual setup needed for local dev.
-  // https://vercel.com/docs/frameworks/backend/hono#serving-static-assets
-  const { serveStatic } = await import("hono/bun");
-  app.get(
-    "/admin",
-    serveStatic({
-      root: "./public",
-      path: "admin/index.html",
-    })
-  );
-  app.get(
-    "/admin/",
-    serveStatic({
-      root: "./public",
-      path: "admin/index.html",
-    })
-  );
-  app.use(
-    "/admin/*",
-    serveStatic({
-      root: "./public",
-    })
-  );
-}
-
 const adminApi = new Hono();
 adminApi.use("/*", requireAdminAuth);
 adminApi.route("/accounts", adminAccountsRoutes);
@@ -76,7 +51,15 @@ app.use("/anthropic/v1/*", requireProxyApiKey);
 app.use("/copilot/v1/*", requireProxyApiKey);
 app.route("/", proxyRoutes);
 
+// Vercel serves public/ via CDN. Locally, Bun's routes serve admin HTML with HMR.
+const adminPage = isDev
+  ? (await import("../public/admin/index.html")).default
+  : undefined;
+
 export default {
   port: Number(process.env.PORT ?? 3000),
+  // Bun's router treats "/admin" and "/admin/" as distinct URLs
+  routes: adminPage && { "/admin": adminPage, "/admin/": adminPage },
+  development: isDev,
   fetch: app.fetch,
 };
