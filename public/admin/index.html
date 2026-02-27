@@ -995,8 +995,8 @@
     }
     .dash-provider-grid {
       display: grid;
-      grid-template-columns: 90px 1fr auto auto auto;
-      column-gap: 12px;
+      grid-template-columns: 100px 1fr auto auto auto;
+      column-gap: 10px;
     }
     .dash-provider-row {
       display: grid;
@@ -1013,11 +1013,20 @@
       display: flex;
       align-items: center;
       gap: 8px;
+      width: 100%;
+      min-width: 0;
+    }
+    .dash-provider-info .badge {
+      flex-shrink: 0;
     }
     .dash-provider-pct {
       font-size: 12px;
       font-weight: 600;
       color: var(--text-primary);
+      margin-left: auto;
+      width: 34px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
     }
     .dash-provider-track {
       height: 22px;
@@ -1061,7 +1070,7 @@
         grid-template-columns: 1fr;
       }
       .dash-provider-grid {
-        grid-template-columns: 90px 1fr;
+        grid-template-columns: 100px 1fr;
       }
       .dash-provider-stat {
         display: none;

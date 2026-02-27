@@ -1,4 +1,8 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "ignoreFiles": ["public/admin/app.js", "public/admin/app-render.js", "public/admin/app-data.js"]
+  "ignoreFiles": [
+    "public/admin/app.js",
+    "public/admin/app-render.js",
+    "public/admin/app-data.js"
+  ]
 }
