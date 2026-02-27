@@ -50,7 +50,7 @@ app.use("/anthropic/v1/*", requireProxyApiKey);
 app.use("/copilot/v1/*", requireProxyApiKey);
 app.route("/", proxyRoutes);
 
-// feature("DEV") is resolved at compile time — dead-code eliminated in production builds.
+// feature("DEV") is resolved at compile time; dead-code eliminated in production builds.
 // Locally, Bun's routes serve admin HTML with HMR. Vercel serves public/ via CDN.
 // https://bun.sh/docs/bundler#features
 const dev = feature("DEV")

@@ -41,8 +41,8 @@ All require `Authorization: Bearer <kleis_api_key>`:
 
 ## Model Registry
 
-- `GET /api.json` — Full models.dev upstream + `kleis` aggregate provider with all configured models
-- `GET /api/:modelsToken/api.json` — Scoped to API key's provider/model scopes, rewrites upstream provider URLs to Kleis proxy URLs
+- `GET /api.json` - Full models.dev upstream + `kleis` aggregate provider with all configured models
+- `GET /api/:modelsToken/api.json` - Scoped to API key's provider/model scopes, rewrites upstream provider URLs to Kleis proxy URLs
 
 ---
 
