@@ -125,13 +125,52 @@
               <span class="section-title">Provider Accounts</span>
               <span id="accounts-count" class="section-count"></span>
             </div>
-            <button
-              id="btn-refresh-accounts"
-              class="btn btn-ghost btn-sm"
-              type="button"
-            >
-              refresh
-            </button>
+            <div style="display:flex;gap:8px;align-items:center">
+              <div class="dash-window-selector" id="accounts-window-selector">
+                <button
+                  class="dash-window-btn"
+                  data-window="3600000"
+                  type="button"
+                >
+                  1h
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="21600000"
+                  type="button"
+                >
+                  6h
+                </button>
+                <button
+                  class="dash-window-btn active"
+                  data-window="86400000"
+                  type="button"
+                >
+                  24h
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="604800000"
+                  type="button"
+                >
+                  7d
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="2592000000"
+                  type="button"
+                >
+                  30d
+                </button>
+              </div>
+              <button
+                id="btn-refresh-accounts"
+                class="btn btn-ghost btn-sm"
+                type="button"
+              >
+                refresh
+              </button>
+            </div>
           </div>
           <div id="accounts-list"></div>
         </div>

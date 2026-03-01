@@ -234,6 +234,15 @@ function syncDashboardWindowButtons() {
   }
 }
 
+function syncAccountWindowButtons() {
+  for (const btn of $$("#accounts-window-selector .dash-window-btn")) {
+    btn.classList.toggle(
+      "active",
+      Number(btn.dataset.window) === state.accountUsageWindowMs
+    );
+  }
+}
+
 function normalizeUsage(rawUsage) {
   const usage = rawUsage || {};
   const requestCount = usageNumber(usage.requestCount);
@@ -488,6 +497,8 @@ async function loadAccounts() {
       state.accountUsageById = new Map();
       toast("Failed to load account usage", "error");
     }
+
+    syncAccountWindowButtons();
 
     renderAccounts();
   } catch (e) {
@@ -1049,6 +1060,7 @@ function enterApp() {
   const hash = location.hash.slice(1);
   if (hash && $(`#panel-${hash}`)) switchToTab(hash);
   syncDashboardWindowButtons();
+  syncAccountWindowButtons();
   loadDashboard();
   loadAccounts();
   loadKeys();
@@ -1076,6 +1088,7 @@ function logout() {
   $("#oauth-flow-active").innerHTML = "";
   $("#dash-content").innerHTML = "";
   syncDashboardWindowButtons();
+  syncAccountWindowButtons();
   $("#login-gate").classList.remove("hidden");
   $("#app").classList.remove("visible");
   $("#toggle-show-revoked-keys").checked = false;
@@ -1131,6 +1144,7 @@ export {
   startOAuth,
   state,
   switchToTab,
+  syncAccountWindowButtons,
   syncDashboardWindowButtons,
   toast,
   tokenStatus,

@@ -28,6 +28,7 @@ import {
   setPrimary,
   startOAuth,
   state,
+  syncAccountWindowButtons,
   switchToTab,
   syncDashboardWindowButtons,
   toast,
@@ -128,6 +129,15 @@ $("#dash-window-selector").addEventListener("click", (e) => {
   state.dashboardWindowMs = windowMs;
   syncDashboardWindowButtons();
   loadDashboard();
+});
+$("#accounts-window-selector").addEventListener("click", (e) => {
+  const btn = e.target.closest(".dash-window-btn");
+  if (!btn) return;
+  const windowMs = Number(btn.dataset.window);
+  if (!windowMs || windowMs === state.accountUsageWindowMs) return;
+  state.accountUsageWindowMs = windowMs;
+  syncAccountWindowButtons();
+  loadAccounts();
 });
 $("#btn-create-key").addEventListener("click", openCreateKeyModal);
 $("#btn-open-setup").addEventListener("click", openSetupModal);
