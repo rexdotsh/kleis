@@ -1,5 +1,11 @@
 {
   "outputDirectory": "dist",
   "bunVersion": "1.x",
-  "buildCommand": "sh vercel.sh"
+  "buildCommand": "sh vercel.sh",
+  "crons": [
+    {
+      "path": "/cron/refresh-provider-accounts",
+      "schedule": "0 8 * * *"
+    }
+  ]
 }

@@ -2,11 +2,12 @@ import { feature } from "bun:bundle";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 
-import { requireAdminAuth } from "./http/middleware/admin-auth";
+import { requireAdminAuth } from "./http/middleware/bearer-env-auth";
 import { requireProxyApiKey } from "./http/middleware/api-key-auth";
 import { adminAccountsRoutes } from "./http/routes/admin-accounts";
 import { adminKeysRoutes } from "./http/routes/admin-keys";
 import { adminUsageRoutes } from "./http/routes/admin-usage";
+import { cronRoutes } from "./http/routes/cron";
 import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
 import { proxyRoutes } from "./http/routes/proxy";
@@ -37,6 +38,7 @@ app.get("/", (context) => context.redirect("/admin"));
 
 app.route("/", healthRoutes);
 app.route("/", modelsRoutes);
+app.route("/", cronRoutes);
 
 const adminApi = new Hono();
 adminApi.use("/*", requireAdminAuth);

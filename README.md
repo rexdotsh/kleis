@@ -42,6 +42,7 @@ Create `.env`:
 
 ```env
 ADMIN_TOKEN=replace-with-a-long-random-token
+CRON_SECRET=replace-with-a-long-random-token
 TURSO_CONNECTION_URL=libsql://<your-db>.<region>.turso.io
 TURSO_AUTH_TOKEN=<your-turso-token>
 ```
@@ -78,7 +79,9 @@ KLEIS_API_KEY=your-issued-key
 
 ## Deploying to Vercel
 
-Set `ADMIN_TOKEN`, `TURSO_CONNECTION_URL`, and `TURSO_AUTH_TOKEN` in your Vercel project, then deploy. Migrations run on build. Bun runtime.
+Set `ADMIN_TOKEN`, `CRON_SECRET`, `TURSO_CONNECTION_URL`, and `TURSO_AUTH_TOKEN` in your Vercel project, then deploy. Migrations run on build. Bun runtime.
+
+`vercel.json` includes a daily cron that calls `GET /cron/refresh-provider-accounts` to force-refresh all saved provider accounts.
 
 Build pre-bundles everything into `dist/index.js` because Vercel's `@vercel/node` esbuild pass can't resolve extensionless TypeScript imports ([vercel/vercel#14910](https://github.com/vercel/vercel/issues/14910)) unless you use an experimental flag, which... breaks serving files from the `public` directory. Filed [vercel/vercel#15216](https://github.com/vercel/vercel/pull/15216) to fix this.
 
