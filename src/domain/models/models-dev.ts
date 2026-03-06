@@ -27,10 +27,12 @@ const KLEIS_PROVIDER_ID = "kleis";
 const KLEIS_PROVIDER_NAME = "Kleis";
 const PROXY_API_KEY_ENV = "KLEIS_API_KEY";
 const MODELS_DEV_URL = "https://models.dev/api.json";
+// https://github.com/anomalyco/opencode/blob/1d9dcd2a27736b83d20abc0111141fdd6bffde7e/packages/opencode/src/plugin/codex.ts#L361
 const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
   "gpt-5.1-codex-max",
   "gpt-5.1-codex-mini",
   "gpt-5.2",
+  "gpt-5.4",
   "gpt-5.2-codex",
   "gpt-5.3-codex",
   "gpt-5.1-codex",
