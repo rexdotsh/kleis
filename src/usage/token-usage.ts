@@ -1,3 +1,4 @@
+import { toNonNegativeInteger } from "../utils/number";
 import { isObjectRecord } from "../utils/object";
 
 export type TokenUsage = {
@@ -5,19 +6,6 @@ export type TokenUsage = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
-};
-
-const toNonNegativeInteger = (value: unknown): number => {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.max(0, Math.trunc(value));
-  }
-
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return 0;
-  }
-
-  return Math.max(0, Math.trunc(parsed));
 };
 
 const fromUsage = (

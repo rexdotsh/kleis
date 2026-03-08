@@ -1,26 +1,11 @@
 import { sql } from "drizzle-orm";
 
 import { calculateSuccessRate } from "../../usage/request-outcome";
+import { toNonNegativeInteger } from "../../utils/number";
 import { providers, type requestUsageBuckets, type Provider } from "../schema";
 
 const USAGE_BUCKET_MS = 60_000;
 export const DETAIL_BUCKET_LIMIT = 60;
-
-const toInteger = (value: unknown): number => {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.trunc(value);
-  }
-
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return 0;
-  }
-
-  return Math.trunc(parsed);
-};
-
-export const toNonNegativeInteger = (value: unknown): number =>
-  Math.max(0, toInteger(value));
 
 export const toUsageBucketStart = (timestampMs: number): number =>
   timestampMs - (timestampMs % USAGE_BUCKET_MS);

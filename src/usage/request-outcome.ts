@@ -1,3 +1,5 @@
+import { toNonNegativeInteger } from "../utils/number";
+
 export type UsageRequestSource = "proxy" | "upstream";
 
 type RequestOutcomeCounts = {
@@ -11,8 +13,6 @@ type RequestOutcomeCounts = {
 };
 
 type ClassifiedRequestOutcome = Required<RequestOutcomeCounts>;
-
-const c = (v?: number): number => (v && v > 0 ? Math.trunc(v) : 0);
 
 export const classifyRequestOutcome = (
   statusCode: number,
@@ -40,22 +40,24 @@ export const countUnattributedFailures = (
   counts: RequestOutcomeCounts
 ): number => {
   const totalFailures =
-    c(counts.clientErrorCount) +
-    c(counts.serverErrorCount) +
-    c(counts.authErrorCount);
+    toNonNegativeInteger(counts.clientErrorCount) +
+    toNonNegativeInteger(counts.serverErrorCount) +
+    toNonNegativeInteger(counts.authErrorCount);
   const attributedFailures =
-    c(counts.proxyErrorCount) + c(counts.upstreamErrorCount);
+    toNonNegativeInteger(counts.proxyErrorCount) +
+    toNonNegativeInteger(counts.upstreamErrorCount);
 
   return Math.max(0, totalFailures - attributedFailures);
 };
 
 export const countScoredFailures = (counts: RequestOutcomeCounts): number =>
-  c(counts.proxyErrorCount) + countUnattributedFailures(counts);
+  toNonNegativeInteger(counts.proxyErrorCount) +
+  countUnattributedFailures(counts);
 
 export const calculateSuccessRate = (
   counts: RequestOutcomeCounts
 ): number | null => {
-  const successCount = c(counts.successCount);
+  const successCount = toNonNegativeInteger(counts.successCount);
   const denominator = successCount + countScoredFailures(counts);
 
   if (denominator <= 0) {

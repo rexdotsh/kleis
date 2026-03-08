@@ -1,5 +1,6 @@
 import { and, desc, eq, gte } from "drizzle-orm";
 
+import { toNonNegativeInteger } from "../../utils/number";
 import type { Database } from "../index";
 import { requestUsageBuckets } from "../schema";
 import {
@@ -15,7 +16,6 @@ import {
   selectUsageTokenSums,
   summarizeGroupedUsageRows,
   toAveragedTotals,
-  toNonNegativeInteger,
   toUsageBucketStart,
   type AveragedUsageTotals,
   type UsageBucketRow,

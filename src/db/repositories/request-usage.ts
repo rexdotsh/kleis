@@ -6,6 +6,7 @@ import {
   type UsageRequestSource,
 } from "../../usage/request-outcome";
 import type { TokenUsage } from "../../usage/token-usage";
+import { toNonNegativeInteger } from "../../utils/number";
 import type { Database } from "../index";
 import { requestUsageBuckets, type Provider } from "../schema";
 import {
@@ -21,7 +22,6 @@ import {
   selectUsageTokenSums,
   summarizeGroupedUsageRows,
   toAveragedTotals,
-  toNonNegativeInteger,
   toUsageBucketStart,
   type AveragedUsageTotals,
   type UsageBucketRow,
