@@ -11,6 +11,7 @@ import { getPrimaryProviderAccount } from "../../domain/providers/provider-servi
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../providers/proxies/codex-proxy";
 import { prepareCopilotProxyRequest } from "../../providers/proxies/copilot-proxy";
+import type { UsageRequestSource } from "../../usage/request-outcome";
 import {
   isTokenUsagePopulated,
   type TokenUsage,
@@ -69,6 +70,7 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
   const recordRequestCounters = (
     statusCode: number,
     occurredAt: number,
+    source: UsageRequestSource,
     tokenUsage?: TokenUsage | null
   ): void => {
     const usageInput = {
@@ -77,6 +79,7 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
       provider: input.route.provider,
       endpoint: input.route.endpoint,
       model: input.model,
+      source,
       statusCode,
       durationMs: occurredAt - input.startedAt,
       occurredAt,
@@ -118,11 +121,16 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
     recordImmediate(statusCode: number): void {
       requestOccurredAt = Date.now();
       requestPersisted = true;
-      recordRequestCounters(statusCode, requestOccurredAt);
+      recordRequestCounters(statusCode, requestOccurredAt, "proxy");
     },
     recordFinal(statusCode: number): void {
       requestOccurredAt = Date.now();
-      recordRequestCounters(statusCode, requestOccurredAt, latestTokenUsage);
+      recordRequestCounters(
+        statusCode,
+        requestOccurredAt,
+        "upstream",
+        latestTokenUsage
+      );
       requestPersisted = true;
     },
   };
@@ -280,10 +288,15 @@ const proxyRequest = async (
 
   let responseToClient = upstreamResponse;
   if (responseTransformer) {
-    responseToClient = await responseTransformer(upstreamResponse);
-    // Bun auto-decompresses but keeps Content-Encoding; Anthropic is the main
-    // upstream that returns it, causing ZlibError on clients reading plaintext.
-    responseToClient.headers.delete("content-encoding");
+    try {
+      responseToClient = await responseTransformer(upstreamResponse);
+      // Bun auto-decompresses but keeps Content-Encoding; Anthropic is the main
+      // upstream that returns it, causing ZlibError on clients reading plaintext.
+      responseToClient.headers.delete("content-encoding");
+    } catch (error) {
+      usageRecorder.recordImmediate(500);
+      throw error;
+    }
   }
 
   usageRecorder.recordFinal(upstreamResponse.status);

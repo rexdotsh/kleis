@@ -1,0 +1,2 @@
+ALTER TABLE `request_usage_buckets` ADD `proxy_error_count` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE `request_usage_buckets` ADD `upstream_error_count` integer DEFAULT 0 NOT NULL;

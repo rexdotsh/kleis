@@ -28,10 +28,13 @@ type ProviderAccountUsageSummary = {
   providerAccountId: string;
   requestCount: number;
   successCount: number;
+  successRate: number | null;
   clientErrorCount: number;
   serverErrorCount: number;
   authErrorCount: number;
   rateLimitCount: number;
+  proxyErrorCount: number;
+  upstreamErrorCount: number;
   avgLatencyMs: number;
   maxLatencyMs: number;
   inputTokens: number;
@@ -89,10 +92,13 @@ type ProviderAccountUsageApiKeyBreakdown = {
   apiKeyId: string;
   requestCount: number;
   successCount: number;
+  successRate: number | null;
   clientErrorCount: number;
   serverErrorCount: number;
   authErrorCount: number;
   rateLimitCount: number;
+  proxyErrorCount: number;
+  upstreamErrorCount: number;
   avgLatencyMs: number;
   maxLatencyMs: number;
   inputTokens: number;
@@ -220,10 +226,13 @@ export const getProviderAccountUsageDetail = async (
         apiKeyId: entry.apiKeyId,
         requestCount: averaged.requestCount,
         successCount: averaged.successCount,
+        successRate: averaged.successRate,
         clientErrorCount: averaged.clientErrorCount,
         serverErrorCount: averaged.serverErrorCount,
         authErrorCount: averaged.authErrorCount,
         rateLimitCount: averaged.rateLimitCount,
+        proxyErrorCount: averaged.proxyErrorCount,
+        upstreamErrorCount: averaged.upstreamErrorCount,
         avgLatencyMs: averaged.avgLatencyMs,
         maxLatencyMs: averaged.maxLatencyMs,
         inputTokens: averaged.inputTokens,

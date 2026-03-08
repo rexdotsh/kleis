@@ -102,6 +102,12 @@ export const requestUsageBuckets = sqliteTable(
     rateLimitCount: integer("rate_limit_count", { mode: "number" })
       .notNull()
       .default(0),
+    proxyErrorCount: integer("proxy_error_count", { mode: "number" })
+      .notNull()
+      .default(0),
+    upstreamErrorCount: integer("upstream_error_count", { mode: "number" })
+      .notNull()
+      .default(0),
     totalLatencyMs: integer("total_latency_ms", { mode: "number" })
       .notNull()
       .default(0),

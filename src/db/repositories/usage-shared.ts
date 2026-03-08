@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 
+import { calculateSuccessRate } from "../../usage/request-outcome";
 import { providers, type requestUsageBuckets, type Provider } from "../schema";
 
 const USAGE_BUCKET_MS = 60_000;
@@ -56,6 +57,8 @@ export const selectUsageCounterSums = (table: UsageBucketsTable) => ({
   serverErrorCount: sql<number>`sum(${table.serverErrorCount})`,
   authErrorCount: sql<number>`sum(${table.authErrorCount})`,
   rateLimitCount: sql<number>`sum(${table.rateLimitCount})`,
+  proxyErrorCount: sql<number>`sum(${table.proxyErrorCount})`,
+  upstreamErrorCount: sql<number>`sum(${table.upstreamErrorCount})`,
 });
 
 export const selectUsageLatencySums = (table: UsageBucketsTable) => ({
@@ -81,6 +84,8 @@ export type UsageTotals = {
   serverErrorCount: number;
   authErrorCount: number;
   rateLimitCount: number;
+  proxyErrorCount: number;
+  upstreamErrorCount: number;
   totalLatencyMs: number;
   maxLatencyMs: number;
   inputTokens: number;
@@ -93,10 +98,13 @@ export type UsageTotals = {
 type AveragedUsageTotals = {
   requestCount: number;
   successCount: number;
+  successRate: number | null;
   clientErrorCount: number;
   serverErrorCount: number;
   authErrorCount: number;
   rateLimitCount: number;
+  proxyErrorCount: number;
+  upstreamErrorCount: number;
   avgLatencyMs: number;
   maxLatencyMs: number;
   inputTokens: number;
@@ -113,6 +121,8 @@ export const emptyUsageTotals = (): UsageTotals => ({
   serverErrorCount: 0,
   authErrorCount: 0,
   rateLimitCount: 0,
+  proxyErrorCount: 0,
+  upstreamErrorCount: 0,
   totalLatencyMs: 0,
   maxLatencyMs: 0,
   inputTokens: 0,
@@ -129,6 +139,8 @@ type UsageTotalsRow = {
   serverErrorCount: unknown;
   authErrorCount?: unknown;
   rateLimitCount?: unknown;
+  proxyErrorCount?: unknown;
+  upstreamErrorCount?: unknown;
   totalLatencyMs: unknown;
   maxLatencyMs: unknown;
   inputTokens?: unknown;
@@ -148,6 +160,8 @@ export const applyTotalsRow = (
   target.serverErrorCount += toNonNegativeInteger(row.serverErrorCount);
   target.authErrorCount += toNonNegativeInteger(row.authErrorCount);
   target.rateLimitCount += toNonNegativeInteger(row.rateLimitCount);
+  target.proxyErrorCount += toNonNegativeInteger(row.proxyErrorCount);
+  target.upstreamErrorCount += toNonNegativeInteger(row.upstreamErrorCount);
   target.totalLatencyMs += toNonNegativeInteger(row.totalLatencyMs);
   target.maxLatencyMs = Math.max(
     target.maxLatencyMs,
@@ -163,10 +177,13 @@ export const applyTotalsRow = (
 export const toAveragedTotals = (totals: UsageTotals): AveragedUsageTotals => ({
   requestCount: totals.requestCount,
   successCount: totals.successCount,
+  successRate: calculateSuccessRate(totals),
   clientErrorCount: totals.clientErrorCount,
   serverErrorCount: totals.serverErrorCount,
   authErrorCount: totals.authErrorCount,
   rateLimitCount: totals.rateLimitCount,
+  proxyErrorCount: totals.proxyErrorCount,
+  upstreamErrorCount: totals.upstreamErrorCount,
   avgLatencyMs:
     totals.requestCount > 0
       ? Math.round(totals.totalLatencyMs / totals.requestCount)
@@ -187,6 +204,8 @@ export type UsageProviderSummary = {
   serverErrorCount: number;
   authErrorCount: number;
   rateLimitCount: number;
+  proxyErrorCount: number;
+  upstreamErrorCount: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -201,6 +220,8 @@ type UsageProviderSummaryRow = {
   serverErrorCount: unknown;
   authErrorCount?: unknown;
   rateLimitCount?: unknown;
+  proxyErrorCount?: unknown;
+  upstreamErrorCount?: unknown;
   inputTokens?: unknown;
   outputTokens?: unknown;
   cacheReadTokens?: unknown;
@@ -224,6 +245,8 @@ const ensureProviderSummary = (
     serverErrorCount: 0,
     authErrorCount: 0,
     rateLimitCount: 0,
+    proxyErrorCount: 0,
+    upstreamErrorCount: 0,
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
@@ -243,6 +266,8 @@ const applyProviderSummaryRow = (
   target.serverErrorCount += toNonNegativeInteger(row.serverErrorCount);
   target.authErrorCount += toNonNegativeInteger(row.authErrorCount);
   target.rateLimitCount += toNonNegativeInteger(row.rateLimitCount);
+  target.proxyErrorCount += toNonNegativeInteger(row.proxyErrorCount);
+  target.upstreamErrorCount += toNonNegativeInteger(row.upstreamErrorCount);
   target.inputTokens += toNonNegativeInteger(row.inputTokens);
   target.outputTokens += toNonNegativeInteger(row.outputTokens);
   target.cacheReadTokens += toNonNegativeInteger(row.cacheReadTokens);
@@ -330,6 +355,8 @@ export type UsageEndpointBreakdown = {
   serverErrorCount: number;
   authErrorCount: number;
   rateLimitCount: number;
+  proxyErrorCount: number;
+  upstreamErrorCount: number;
   avgLatencyMs: number;
   maxLatencyMs: number;
   inputTokens: number;
@@ -372,6 +399,8 @@ export const mapEndpointUsageRows = (
       serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
       authErrorCount: toNonNegativeInteger(row.authErrorCount),
       rateLimitCount: toNonNegativeInteger(row.rateLimitCount),
+      proxyErrorCount: toNonNegativeInteger(row.proxyErrorCount),
+      upstreamErrorCount: toNonNegativeInteger(row.upstreamErrorCount),
       avgLatencyMs: requestCount
         ? Math.round(totalLatencyMs / requestCount)
         : 0,
@@ -399,6 +428,8 @@ export type UsageBucketRow = {
   serverErrorCount: number;
   authErrorCount: number;
   rateLimitCount: number;
+  proxyErrorCount: number;
+  upstreamErrorCount: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -413,6 +444,8 @@ type UsageBucketSummaryRow = {
   serverErrorCount: unknown;
   authErrorCount?: unknown;
   rateLimitCount?: unknown;
+  proxyErrorCount?: unknown;
+  upstreamErrorCount?: unknown;
   inputTokens?: unknown;
   outputTokens?: unknown;
   cacheReadTokens?: unknown;
@@ -432,6 +465,8 @@ export const mapUsageBucketRows = (
         serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
         authErrorCount: toNonNegativeInteger(row.authErrorCount),
         rateLimitCount: toNonNegativeInteger(row.rateLimitCount),
+        proxyErrorCount: toNonNegativeInteger(row.proxyErrorCount),
+        upstreamErrorCount: toNonNegativeInteger(row.upstreamErrorCount),
         inputTokens: toNonNegativeInteger(row.inputTokens),
         outputTokens: toNonNegativeInteger(row.outputTokens),
         cacheReadTokens: toNonNegativeInteger(row.cacheReadTokens),
@@ -450,6 +485,8 @@ export type UsageModelBreakdown = {
   serverErrorCount: number;
   authErrorCount: number;
   rateLimitCount: number;
+  proxyErrorCount: number;
+  upstreamErrorCount: number;
   avgLatencyMs: number;
   maxLatencyMs: number;
   inputTokens: number;
@@ -486,6 +523,8 @@ export const mapModelUsageRows = (
       serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
       authErrorCount: toNonNegativeInteger(row.authErrorCount),
       rateLimitCount: toNonNegativeInteger(row.rateLimitCount),
+      proxyErrorCount: toNonNegativeInteger(row.proxyErrorCount),
+      upstreamErrorCount: toNonNegativeInteger(row.upstreamErrorCount),
       avgLatencyMs: requestCount
         ? Math.round(totalLatencyMs / requestCount)
         : 0,

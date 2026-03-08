@@ -1,6 +1,10 @@
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 
 import type { ProxyEndpoint } from "../../providers/proxy-endpoints";
+import {
+  classifyRequestOutcome,
+  type UsageRequestSource,
+} from "../../usage/request-outcome";
 import type { TokenUsage } from "../../usage/token-usage";
 import type { Database } from "../index";
 import { requestUsageBuckets, type Provider } from "../schema";
@@ -27,39 +31,13 @@ import {
 
 export const MISSING_PROVIDER_ACCOUNT_ID = "__missing__";
 
-const statusCounters = (
-  statusCode: number
-): {
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-} => {
-  const isAuthError = statusCode === 401 || statusCode === 403;
-  const isRateLimitError = statusCode === 429;
-  const isClientError = statusCode >= 400 && statusCode < 500;
-
-  const successCount = statusCode >= 200 && statusCode < 400 ? 1 : 0;
-  const clientErrorCount =
-    isClientError && !isAuthError && !isRateLimitError ? 1 : 0;
-  const serverErrorCount = statusCode >= 500 ? 1 : 0;
-
-  return {
-    successCount,
-    clientErrorCount,
-    serverErrorCount,
-    authErrorCount: isAuthError ? 1 : 0,
-    rateLimitCount: isRateLimitError ? 1 : 0,
-  };
-};
-
 type RecordRequestUsageInput = {
   apiKeyId: string;
   providerAccountId: string;
   provider: Provider;
   endpoint: ProxyEndpoint;
   model: string;
+  source: UsageRequestSource;
   statusCode: number;
   durationMs: number;
   occurredAt: number;
@@ -98,7 +76,7 @@ export const recordRequestUsage = async (
 ): Promise<void> => {
   const occurredAt = toNonNegativeInteger(input.occurredAt);
   const durationMs = toNonNegativeInteger(input.durationMs);
-  const counters = statusCounters(input.statusCode);
+  const counters = classifyRequestOutcome(input.statusCode, input.source);
   const tokens = tokenColumns(input.tokenUsage);
 
   const row: typeof requestUsageBuckets.$inferInsert = {
@@ -114,6 +92,8 @@ export const recordRequestUsage = async (
     serverErrorCount: counters.serverErrorCount,
     authErrorCount: counters.authErrorCount,
     rateLimitCount: counters.rateLimitCount,
+    proxyErrorCount: counters.proxyErrorCount,
+    upstreamErrorCount: counters.upstreamErrorCount,
     totalLatencyMs: durationMs,
     maxLatencyMs: durationMs,
     inputTokens: tokens.inputTokens,
@@ -135,6 +115,8 @@ export const recordRequestUsage = async (
         serverErrorCount: sql`${requestUsageBuckets.serverErrorCount} + ${row.serverErrorCount}`,
         authErrorCount: sql`${requestUsageBuckets.authErrorCount} + ${row.authErrorCount}`,
         rateLimitCount: sql`${requestUsageBuckets.rateLimitCount} + ${row.rateLimitCount}`,
+        proxyErrorCount: sql`${requestUsageBuckets.proxyErrorCount} + ${row.proxyErrorCount}`,
+        upstreamErrorCount: sql`${requestUsageBuckets.upstreamErrorCount} + ${row.upstreamErrorCount}`,
         totalLatencyMs: sql`${requestUsageBuckets.totalLatencyMs} + ${row.totalLatencyMs}`,
         maxLatencyMs: sql`max(${requestUsageBuckets.maxLatencyMs}, ${row.maxLatencyMs})`,
         inputTokens: sql`${requestUsageBuckets.inputTokens} + ${row.inputTokens}`,
@@ -166,6 +148,8 @@ export const recordTokenUsage = async (
     serverErrorCount: 0,
     authErrorCount: 0,
     rateLimitCount: 0,
+    proxyErrorCount: 0,
+    upstreamErrorCount: 0,
     totalLatencyMs: 0,
     maxLatencyMs: 0,
     inputTokens: tokens.inputTokens,
@@ -194,10 +178,13 @@ type ApiKeyUsageSummary = {
   apiKeyId: string;
   requestCount: number;
   successCount: number;
+  successRate: number | null;
   clientErrorCount: number;
   serverErrorCount: number;
   authErrorCount: number;
   rateLimitCount: number;
+  proxyErrorCount: number;
+  upstreamErrorCount: number;
   avgLatencyMs: number;
   maxLatencyMs: number;
   inputTokens: number;
