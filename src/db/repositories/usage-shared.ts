@@ -95,7 +95,7 @@ export type UsageTotals = {
   lastRequestAt: number | null;
 };
 
-type AveragedUsageTotals = {
+export type AveragedUsageTotals = {
   requestCount: number;
   successCount: number;
   successRate: number | null;

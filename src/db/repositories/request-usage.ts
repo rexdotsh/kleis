@@ -23,6 +23,7 @@ import {
   toAveragedTotals,
   toNonNegativeInteger,
   toUsageBucketStart,
+  type AveragedUsageTotals,
   type UsageBucketRow,
   type UsageEndpointBreakdown,
   type UsageModelBreakdown,
@@ -174,24 +175,8 @@ export const recordTokenUsage = async (
     });
 };
 
-type ApiKeyUsageSummary = {
+type ApiKeyUsageSummary = AveragedUsageTotals & {
   apiKeyId: string;
-  requestCount: number;
-  successCount: number;
-  successRate: number | null;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-  proxyErrorCount: number;
-  upstreamErrorCount: number;
-  avgLatencyMs: number;
-  maxLatencyMs: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  lastRequestAt: number | null;
   providers: UsageProviderSummary[];
 };
 

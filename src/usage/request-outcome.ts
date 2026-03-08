@@ -1,6 +1,4 @@
-export const usageRequestSources = ["proxy", "upstream"] as const;
-
-export type UsageRequestSource = (typeof usageRequestSources)[number];
+export type UsageRequestSource = "proxy" | "upstream";
 
 type RequestOutcomeCounts = {
   successCount?: number;
@@ -11,6 +9,8 @@ type RequestOutcomeCounts = {
   proxyErrorCount?: number;
   upstreamErrorCount?: number;
 };
+
+type ClassifiedRequestOutcome = Required<RequestOutcomeCounts>;
 
 const toNonNegativeCount = (value: unknown): number => {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -28,15 +28,7 @@ const toNonNegativeCount = (value: unknown): number => {
 export const classifyRequestOutcome = (
   statusCode: number,
   source: UsageRequestSource
-): {
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-  proxyErrorCount: number;
-  upstreamErrorCount: number;
-} => {
+): ClassifiedRequestOutcome => {
   const isSuccess = statusCode >= 200 && statusCode < 400;
   const isAuthError = statusCode === 401 || statusCode === 403;
   const isRateLimitError = statusCode === 429;

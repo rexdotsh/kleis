@@ -250,6 +250,10 @@ function normalizeUsage(rawUsage) {
   const outputTokens = usageNumber(usage.outputTokens);
   const cacheReadTokens = usageNumber(usage.cacheReadTokens);
   const cacheWriteTokens = usageNumber(usage.cacheWriteTokens);
+  const successRate =
+    typeof usage.successRate === "number" && Number.isFinite(usage.successRate)
+      ? Math.max(0, Math.min(100, Math.trunc(usage.successRate)))
+      : null;
   const unclassifiedFailureCount = Math.max(
     0,
     clientErrorCount +
@@ -258,12 +262,6 @@ function normalizeUsage(rawUsage) {
       proxyErrorCount -
       upstreamErrorCount
   );
-  const scoredFailureCount = proxyErrorCount + unclassifiedFailureCount;
-  const successRateBaseCount = successCount + scoredFailureCount;
-  const providedSuccessRate =
-    typeof usage.successRate === "number" && Number.isFinite(usage.successRate)
-      ? Math.max(0, Math.min(100, Math.trunc(usage.successRate)))
-      : null;
 
   return {
     requestCount,
@@ -274,9 +272,8 @@ function normalizeUsage(rawUsage) {
     rateLimitCount,
     proxyErrorCount,
     upstreamErrorCount,
+    successRate,
     unclassifiedFailureCount,
-    scoredFailureCount,
-    successRateBaseCount,
     avgLatencyMs,
     maxLatencyMs,
     inputTokens,
@@ -284,12 +281,6 @@ function normalizeUsage(rawUsage) {
     cacheReadTokens,
     cacheWriteTokens,
     totalTokens: inputTokens + outputTokens,
-    successRate:
-      providedSuccessRate !== null
-        ? providedSuccessRate
-        : successRateBaseCount
-          ? Math.round((successCount / successRateBaseCount) * 100)
-          : null,
     lastRequestAt:
       typeof usage.lastRequestAt === "number" &&
       Number.isFinite(usage.lastRequestAt)
