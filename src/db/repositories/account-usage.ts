@@ -189,28 +189,12 @@ export const getProviderAccountUsageDetail = async (
   }
 
   const apiKeys = mutableApiKeys
-    .map((entry): ProviderAccountUsageApiKeyBreakdown => {
-      const averaged = toAveragedTotals(entry.totals);
-      return {
+    .map(
+      (entry): ProviderAccountUsageApiKeyBreakdown => ({
         apiKeyId: entry.apiKeyId,
-        requestCount: averaged.requestCount,
-        successCount: averaged.successCount,
-        successRate: averaged.successRate,
-        clientErrorCount: averaged.clientErrorCount,
-        serverErrorCount: averaged.serverErrorCount,
-        authErrorCount: averaged.authErrorCount,
-        rateLimitCount: averaged.rateLimitCount,
-        proxyErrorCount: averaged.proxyErrorCount,
-        upstreamErrorCount: averaged.upstreamErrorCount,
-        avgLatencyMs: averaged.avgLatencyMs,
-        maxLatencyMs: averaged.maxLatencyMs,
-        inputTokens: averaged.inputTokens,
-        outputTokens: averaged.outputTokens,
-        cacheReadTokens: averaged.cacheReadTokens,
-        cacheWriteTokens: averaged.cacheWriteTokens,
-        lastRequestAt: averaged.lastRequestAt,
-      };
-    })
+        ...toAveragedTotals(entry.totals),
+      })
+    )
     .sort(
       (left, right) =>
         right.requestCount - left.requestCount ||

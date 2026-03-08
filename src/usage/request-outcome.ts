@@ -12,18 +12,7 @@ type RequestOutcomeCounts = {
 
 type ClassifiedRequestOutcome = Required<RequestOutcomeCounts>;
 
-const toNonNegativeCount = (value: unknown): number => {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return Math.max(0, Math.trunc(value));
-  }
-
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) {
-    return 0;
-  }
-
-  return Math.max(0, Math.trunc(parsed));
-};
+const c = (v?: number): number => (v && v > 0 ? Math.trunc(v) : 0);
 
 export const classifyRequestOutcome = (
   statusCode: number,
@@ -51,24 +40,22 @@ export const countUnattributedFailures = (
   counts: RequestOutcomeCounts
 ): number => {
   const totalFailures =
-    toNonNegativeCount(counts.clientErrorCount) +
-    toNonNegativeCount(counts.serverErrorCount) +
-    toNonNegativeCount(counts.authErrorCount);
+    c(counts.clientErrorCount) +
+    c(counts.serverErrorCount) +
+    c(counts.authErrorCount);
   const attributedFailures =
-    toNonNegativeCount(counts.proxyErrorCount) +
-    toNonNegativeCount(counts.upstreamErrorCount);
+    c(counts.proxyErrorCount) + c(counts.upstreamErrorCount);
 
   return Math.max(0, totalFailures - attributedFailures);
 };
 
 export const countScoredFailures = (counts: RequestOutcomeCounts): number =>
-  toNonNegativeCount(counts.proxyErrorCount) +
-  countUnattributedFailures(counts);
+  c(counts.proxyErrorCount) + countUnattributedFailures(counts);
 
 export const calculateSuccessRate = (
   counts: RequestOutcomeCounts
 ): number | null => {
-  const successCount = toNonNegativeCount(counts.successCount);
+  const successCount = c(counts.successCount);
   const denominator = successCount + countScoredFailures(counts);
 
   if (denominator <= 0) {
