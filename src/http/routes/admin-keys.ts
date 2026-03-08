@@ -18,6 +18,7 @@ import {
   updateApiKey,
 } from "../../db/repositories/api-keys";
 import { providers } from "../../db/schema";
+import { normalizeEditableText, resolvePatchedValue } from "../../utils/patch";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
 import { invalidateModelsRegistryCache } from "../utils/models-cache";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
@@ -56,23 +57,6 @@ const expiresAtInvalidBody = {
   error: "bad_request",
   message: "expiresAt must be in the future",
 } as const;
-
-const normalizeEditableText = (
-  value: string | null | undefined
-): string | null | undefined => {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (value === null) {
-    return null;
-  }
-
-  return value.length > 0 ? value : null;
-};
-
-const resolvePatchedValue = <T>(current: T, patched: T | undefined): T =>
-  patched === undefined ? current : patched;
 
 const normalizeScopeList = (scopes: string[] | null): string[] | null =>
   scopes?.length ? scopes : null;

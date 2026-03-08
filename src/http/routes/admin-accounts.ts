@@ -28,6 +28,7 @@ import {
   resolveImportedProviderAccountId,
   type ProviderAccountMetadata,
 } from "../../providers/metadata";
+import { normalizeEditableText, resolvePatchedValue } from "../../utils/patch";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
 import { invalidateModelsRegistryCache } from "../utils/models-cache";
@@ -73,23 +74,6 @@ const invalidMetadataBody = {
   error: "bad_request",
   message: "Invalid provider metadata payload",
 } as const;
-
-const normalizeEditableText = (
-  value: string | null | undefined
-): string | null | undefined => {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (value === null) {
-    return null;
-  }
-
-  return value.length > 0 ? value : null;
-};
-
-const resolvePatchedValue = <T>(current: T, patched: T | undefined): T =>
-  patched === undefined ? current : patched;
 
 const resolveUpdatedAccountMetadata = (input: {
   account: ProviderAccountRecord;

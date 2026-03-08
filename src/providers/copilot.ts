@@ -5,6 +5,7 @@ import {
   createOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
+import { sleep } from "../utils/sleep";
 import { requireOkResponse } from "./http";
 import type { CopilotAccountMetadata } from "./metadata";
 import { generateState } from "./oauth-utils";
@@ -48,11 +49,6 @@ type GithubUserResponse = {
   login?: string;
   email?: string;
 };
-
-const sleep = (milliseconds: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
 
 const normalizeDomain = (input: string): string | null => {
   const value = input.trim();
