@@ -1,5 +1,6 @@
 import { and, desc, eq, gte } from "drizzle-orm";
 
+import { toNonNegativeInteger } from "../../utils/number";
 import type { Database } from "../index";
 import { requestUsageBuckets } from "../schema";
 import {
@@ -15,8 +16,8 @@ import {
   selectUsageTokenSums,
   summarizeGroupedUsageRows,
   toAveragedTotals,
-  toNonNegativeInteger,
   toUsageBucketStart,
+  type AveragedUsageTotals,
   type UsageBucketRow,
   type UsageEndpointBreakdown,
   type UsageModelBreakdown,
@@ -24,21 +25,8 @@ import {
   type UsageTotals,
 } from "./usage-shared";
 
-type ProviderAccountUsageSummary = {
+type ProviderAccountUsageSummary = AveragedUsageTotals & {
   providerAccountId: string;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-  avgLatencyMs: number;
-  maxLatencyMs: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  lastRequestAt: number | null;
   providers: UsageProviderSummary[];
 };
 
@@ -85,21 +73,8 @@ export const listProviderAccountUsageSummaries = async (
   }));
 };
 
-type ProviderAccountUsageApiKeyBreakdown = {
+type ProviderAccountUsageApiKeyBreakdown = AveragedUsageTotals & {
   apiKeyId: string;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-  avgLatencyMs: number;
-  maxLatencyMs: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  lastRequestAt: number | null;
 };
 
 type ProviderAccountUsageEndpointBreakdown = UsageEndpointBreakdown;
@@ -214,25 +189,12 @@ export const getProviderAccountUsageDetail = async (
   }
 
   const apiKeys = mutableApiKeys
-    .map((entry): ProviderAccountUsageApiKeyBreakdown => {
-      const averaged = toAveragedTotals(entry.totals);
-      return {
+    .map(
+      (entry): ProviderAccountUsageApiKeyBreakdown => ({
         apiKeyId: entry.apiKeyId,
-        requestCount: averaged.requestCount,
-        successCount: averaged.successCount,
-        clientErrorCount: averaged.clientErrorCount,
-        serverErrorCount: averaged.serverErrorCount,
-        authErrorCount: averaged.authErrorCount,
-        rateLimitCount: averaged.rateLimitCount,
-        avgLatencyMs: averaged.avgLatencyMs,
-        maxLatencyMs: averaged.maxLatencyMs,
-        inputTokens: averaged.inputTokens,
-        outputTokens: averaged.outputTokens,
-        cacheReadTokens: averaged.cacheReadTokens,
-        cacheWriteTokens: averaged.cacheWriteTokens,
-        lastRequestAt: averaged.lastRequestAt,
-      };
-    })
+        ...toAveragedTotals(entry.totals),
+      })
+    )
     .sort(
       (left, right) =>
         right.requestCount - left.requestCount ||

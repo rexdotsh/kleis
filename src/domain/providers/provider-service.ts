@@ -15,6 +15,7 @@ import type { Provider } from "../../db/schema";
 import type { ProviderAccountMetadata } from "../../providers/metadata";
 import { getProviderAdapter } from "../../providers/registry";
 import type { ProviderOAuthStartResult } from "../../providers/types";
+import { sleep } from "../../utils/sleep";
 
 const normalizeTokenField = (value: string): string => value.trim();
 
@@ -30,11 +31,6 @@ const assertExpiresAt = (expiresAt: number, now: number): number => {
 
   return expiresAt;
 };
-
-const sleep = (milliseconds: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
 
 const startRefreshLockHeartbeat = (
   database: Database,

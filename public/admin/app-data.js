@@ -251,12 +251,26 @@ function normalizeUsage(rawUsage) {
   const serverErrorCount = usageNumber(usage.serverErrorCount);
   const authErrorCount = usageNumber(usage.authErrorCount);
   const rateLimitCount = usageNumber(usage.rateLimitCount);
+  const proxyErrorCount = usageNumber(usage.proxyErrorCount);
+  const upstreamErrorCount = usageNumber(usage.upstreamErrorCount);
   const avgLatencyMs = usageNumber(usage.avgLatencyMs);
   const maxLatencyMs = usageNumber(usage.maxLatencyMs);
   const inputTokens = usageNumber(usage.inputTokens);
   const outputTokens = usageNumber(usage.outputTokens);
   const cacheReadTokens = usageNumber(usage.cacheReadTokens);
   const cacheWriteTokens = usageNumber(usage.cacheWriteTokens);
+  const successRate =
+    typeof usage.successRate === "number" && Number.isFinite(usage.successRate)
+      ? Math.max(0, Math.min(100, Math.trunc(usage.successRate)))
+      : null;
+  const unclassifiedFailureCount = Math.max(
+    0,
+    clientErrorCount +
+      serverErrorCount +
+      authErrorCount -
+      proxyErrorCount -
+      upstreamErrorCount
+  );
 
   return {
     requestCount,
@@ -265,6 +279,10 @@ function normalizeUsage(rawUsage) {
     serverErrorCount,
     authErrorCount,
     rateLimitCount,
+    proxyErrorCount,
+    upstreamErrorCount,
+    successRate,
+    unclassifiedFailureCount,
     avgLatencyMs,
     maxLatencyMs,
     inputTokens,
@@ -272,9 +290,6 @@ function normalizeUsage(rawUsage) {
     cacheReadTokens,
     cacheWriteTokens,
     totalTokens: inputTokens + outputTokens,
-    successRate: requestCount
-      ? Math.round((successCount / requestCount) * 100)
-      : null,
     lastRequestAt:
       typeof usage.lastRequestAt === "number" &&
       Number.isFinite(usage.lastRequestAt)
@@ -308,15 +323,18 @@ function usageMetaParts(
         `${formatCount(metrics.requestCount)} reqs${windowLabel ? ` (${windowLabel})` : ""}`
       ),
     metrics.successRate !== null && meta(`${metrics.successRate}% success`),
-    metrics.clientErrorCount &&
+    metrics.proxyErrorCount &&
+      meta(`${formatCount(metrics.proxyErrorCount)} proxy fail`, "var(--red)"),
+    metrics.upstreamErrorCount &&
       meta(
-        `${formatCount(metrics.clientErrorCount)} 4xx other`,
-        "var(--amber)"
+        `${formatCount(metrics.upstreamErrorCount)} upstream fail`,
+        "var(--text-secondary)"
       ),
-    metrics.serverErrorCount &&
-      meta(`${formatCount(metrics.serverErrorCount)} 5xx`, "var(--red)"),
-    metrics.authErrorCount &&
-      meta(`${formatCount(metrics.authErrorCount)} auth`, "var(--amber)"),
+    metrics.unclassifiedFailureCount &&
+      meta(
+        `${formatCount(metrics.unclassifiedFailureCount)} other fail`,
+        "var(--text-secondary)"
+      ),
     metrics.rateLimitCount &&
       meta(`${formatCount(metrics.rateLimitCount)} 429`, "var(--amber)"),
     metrics.avgLatencyMs && meta(`${formatCount(metrics.avgLatencyMs)}ms avg`),

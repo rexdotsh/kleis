@@ -57,6 +57,13 @@
       "when": 1772124612673,
       "tag": "0007_usage_models",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1772834753671,
+      "tag": "0008_lean_hercules",
+      "breakpoints": true
     }
   ]
 }

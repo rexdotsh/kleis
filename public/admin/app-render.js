@@ -216,10 +216,12 @@ const DETAIL_LOADING_HTML =
 
 function renderDetailStats(totals) {
   const metrics = normalizeUsage(totals);
-  const rate = metrics.successRate ?? 0;
+  const rate = metrics.successRate !== null ? `${metrics.successRate}%` : "-";
   const stats = [
     [formatCount(metrics.requestCount), "requests"],
-    [`${rate}%`, "success"],
+    [rate, "success rate"],
+    [formatCount(metrics.proxyErrorCount), "proxy fail"],
+    [formatCount(metrics.upstreamErrorCount), "upstream fail"],
     [formatCount(metrics.clientErrorCount), "4xx other"],
     [formatCount(metrics.serverErrorCount), "5xx"],
     [formatCount(metrics.authErrorCount), "auth"],
@@ -241,6 +243,8 @@ function renderDetailStats(totals) {
 const USAGE_TABLE_HEADERS = [
   "reqs",
   "ok",
+  "proxy fail",
+  "upstream fail",
   "4xx other",
   "5xx",
   "auth",
@@ -280,7 +284,7 @@ function usageTableHtml(rows, leadCols) {
   for (const row of rows) {
     const metrics = normalizeUsage(row);
     const lead = leadCols.map((c) => `<td>${c[1](row)}</td>`).join("");
-    html += `<tr>${lead}<td>${formatCount(metrics.requestCount)}</td><td>${formatCount(metrics.successCount)}</td><td>${metrics.clientErrorCount ? formatCount(metrics.clientErrorCount) : "-"}</td><td>${metrics.serverErrorCount ? formatCount(metrics.serverErrorCount) : "-"}</td><td>${metrics.authErrorCount ? formatCount(metrics.authErrorCount) : "-"}</td><td>${metrics.rateLimitCount ? formatCount(metrics.rateLimitCount) : "-"}</td><td>${formatCount(metrics.avgLatencyMs)}</td><td>${formatCount(metrics.maxLatencyMs)}</td><td>${formatCount(metrics.inputTokens)}</td><td>${formatCount(metrics.outputTokens)}</td><td>${formatCount(metrics.cacheReadTokens)}</td><td>${formatCount(metrics.cacheWriteTokens)}</td></tr>`;
+    html += `<tr>${lead}<td>${formatCount(metrics.requestCount)}</td><td>${formatCount(metrics.successCount)}</td><td>${metrics.proxyErrorCount ? formatCount(metrics.proxyErrorCount) : "-"}</td><td>${metrics.upstreamErrorCount ? formatCount(metrics.upstreamErrorCount) : "-"}</td><td>${metrics.clientErrorCount ? formatCount(metrics.clientErrorCount) : "-"}</td><td>${metrics.serverErrorCount ? formatCount(metrics.serverErrorCount) : "-"}</td><td>${metrics.authErrorCount ? formatCount(metrics.authErrorCount) : "-"}</td><td>${metrics.rateLimitCount ? formatCount(metrics.rateLimitCount) : "-"}</td><td>${formatCount(metrics.avgLatencyMs)}</td><td>${formatCount(metrics.maxLatencyMs)}</td><td>${formatCount(metrics.inputTokens)}</td><td>${formatCount(metrics.outputTokens)}</td><td>${formatCount(metrics.cacheReadTokens)}</td><td>${formatCount(metrics.cacheWriteTokens)}</td></tr>`;
   }
   html += "</tbody></table>";
   return html;
@@ -499,12 +503,7 @@ function renderDashKpis(m, pm) {
     {
       label: "success rate",
       value: m.successRate !== null ? `${m.successRate}%` : "-",
-      delta: dashDelta(
-        m.successRate ?? 0,
-        pm.requestCount
-          ? Math.round((pm.successCount / pm.requestCount) * 100)
-          : 0
-      ),
+      delta: dashDelta(m.successRate ?? 0, pm.successRate ?? 0),
       accent: "var(--green)",
     },
     {
@@ -602,14 +601,17 @@ function renderSvgBarChart(buckets, seriesExtractor, bucketSizeMs) {
 
 function requestSeriesExtractor(bucket) {
   const m = normalizeUsage(bucket);
-  const errCount =
-    m.clientErrorCount +
-    m.serverErrorCount +
-    m.authErrorCount +
-    m.rateLimitCount;
+  const upstreamOrOtherFailCount =
+    m.upstreamErrorCount + m.unclassifiedFailureCount;
   return [
     { value: m.successCount, color: "var(--green)", label: "success" },
-    { value: errCount, color: "var(--red)", label: "errors" },
+    { value: m.proxyErrorCount, color: "var(--red)", label: "proxy fail" },
+    {
+      value: upstreamOrOtherFailCount,
+      color: "var(--text-secondary)",
+      label: "upstream/other fail",
+    },
+    { value: m.rateLimitCount, color: "var(--amber)", label: "429" },
   ];
 }
 
@@ -698,7 +700,7 @@ function renderDashboard(data) {
   if (reqChart || tokChart) {
     html += '<div class="dash-grid-2">';
     if (reqChart) {
-      html += `<div class="dash-card"><div class="dash-chart-title">request volume</div>${reqChart}<div class="dash-legend"><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--green)"></span>success</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--red)"></span>errors</span></div></div>`;
+      html += `<div class="dash-card"><div class="dash-chart-title">request volume</div>${reqChart}<div class="dash-legend"><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--green)"></span>success</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--red)"></span>proxy fail</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--text-secondary)"></span>upstream/other fail</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--amber)"></span>429</span></div></div>`;
     }
     if (tokChart) {
       html += `<div class="dash-card"><div class="dash-chart-title">token usage</div>${tokChart}<div class="dash-legend"><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--amber)"></span>input</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--green)"></span>output</span></div></div>`;

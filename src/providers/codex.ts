@@ -16,6 +16,7 @@ import {
   parseAuthorizationCodeInput,
 } from "./oauth-utils";
 import { parseOAuthStateMetadata } from "./oauth-state";
+import { sleep } from "../utils/sleep";
 import type {
   ProviderAdapter,
   ProviderOAuthCompleteInput,
@@ -82,11 +83,6 @@ type CodexDeviceTokenResponse = {
   authorization_code?: string;
   code_verifier?: string;
 };
-
-const sleep = (milliseconds: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
 
 const resolveCodexOAuthMode = (
   options: Record<string, unknown> | undefined
