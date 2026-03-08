@@ -245,12 +245,8 @@ const USAGE_TABLE_HEADERS = [
   "ok",
   "proxy fail",
   "upstream fail",
-  "4xx other",
-  "5xx",
-  "auth",
   "429",
   "avg ms",
-  "max ms",
   "input tok",
   "output tok",
   "cache read",
@@ -284,7 +280,7 @@ function usageTableHtml(rows, leadCols) {
   for (const row of rows) {
     const metrics = normalizeUsage(row);
     const lead = leadCols.map((c) => `<td>${c[1](row)}</td>`).join("");
-    html += `<tr>${lead}<td>${formatCount(metrics.requestCount)}</td><td>${formatCount(metrics.successCount)}</td><td>${metrics.proxyErrorCount ? formatCount(metrics.proxyErrorCount) : "-"}</td><td>${metrics.upstreamErrorCount ? formatCount(metrics.upstreamErrorCount) : "-"}</td><td>${metrics.clientErrorCount ? formatCount(metrics.clientErrorCount) : "-"}</td><td>${metrics.serverErrorCount ? formatCount(metrics.serverErrorCount) : "-"}</td><td>${metrics.authErrorCount ? formatCount(metrics.authErrorCount) : "-"}</td><td>${metrics.rateLimitCount ? formatCount(metrics.rateLimitCount) : "-"}</td><td>${formatCount(metrics.avgLatencyMs)}</td><td>${formatCount(metrics.maxLatencyMs)}</td><td>${formatCount(metrics.inputTokens)}</td><td>${formatCount(metrics.outputTokens)}</td><td>${formatCount(metrics.cacheReadTokens)}</td><td>${formatCount(metrics.cacheWriteTokens)}</td></tr>`;
+    html += `<tr>${lead}<td>${formatCount(metrics.requestCount)}</td><td>${formatCount(metrics.successCount)}</td><td>${metrics.proxyErrorCount ? formatCount(metrics.proxyErrorCount) : "-"}</td><td>${metrics.upstreamErrorCount ? formatCount(metrics.upstreamErrorCount) : "-"}</td><td>${metrics.rateLimitCount ? formatCount(metrics.rateLimitCount) : "-"}</td><td>${formatCount(metrics.avgLatencyMs)}</td><td>${formatCount(metrics.inputTokens)}</td><td>${formatCount(metrics.outputTokens)}</td><td>${formatCount(metrics.cacheReadTokens)}</td><td>${formatCount(metrics.cacheWriteTokens)}</td></tr>`;
   }
   html += "</tbody></table>";
   return html;
