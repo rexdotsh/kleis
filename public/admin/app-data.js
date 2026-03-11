@@ -289,7 +289,8 @@ function normalizeUsage(rawUsage) {
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
-    totalTokens: inputTokens + outputTokens,
+    totalTokens:
+      inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
     lastRequestAt:
       typeof usage.lastRequestAt === "number" &&
       Number.isFinite(usage.lastRequestAt)
