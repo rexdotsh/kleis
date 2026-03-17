@@ -89,13 +89,11 @@ jobs:
 
       - name: Configure SSH
         env:
-          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$DEPLOY_HOST" > ~/.ssh/known_hosts
 
       - name: Deploy release
         env:
@@ -107,10 +105,12 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MIGRATE_IMAGE: ${{ env.REGISTRY }}/${{ env.MIGRATE_IMAGE_NAME }}:sha-${{ github.sha }}
         run: |
-          printf '%s\n' "$GHCR_TOKEN" | ssh "$DEPLOY_USER@$DEPLOY_HOST" "docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin"
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
-          cat docker-compose.deploy.yml | ssh "$DEPLOY_USER@$DEPLOY_HOST" "cat > '$DEPLOY_PATH/docker-compose.deploy.yml'"
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" <<EOF
+          SSH_TARGET="$DEPLOY_USER@$DEPLOY_HOST"
+          SSH_OPTIONS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+          printf '%s\n' "$GHCR_TOKEN" | ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" "docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin"
+          ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" "mkdir -p '$DEPLOY_PATH'"
+          cat docker-compose.deploy.yml | ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" "cat > '$DEPLOY_PATH/docker-compose.deploy.yml'"
+          ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" <<EOF
           set -e
           cd "$DEPLOY_PATH"
           export KLEIS_APP_IMAGE="$APP_IMAGE"
