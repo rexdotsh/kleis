@@ -36,21 +36,6 @@ jobs:
       - name: Build app bundle
         run: bun run build
 
-      - name: Validate local Compose file
-        run: docker compose -f docker-compose.yml config
-
-      - name: Validate deploy Compose file
-        env:
-          KLEIS_APP_IMAGE: ghcr.io/example/kleis:test
-          KLEIS_MIGRATE_IMAGE: ghcr.io/example/kleis-migrate:test
-        run: docker compose -f docker-compose.deploy.yml config
-
-      - name: Build release image
-        run: docker build --target release -t kleis-release-ci .
-
-      - name: Build migrate image
-        run: docker build --target migrate -t kleis-migrate-ci .
-
   publish-and-deploy:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: verify

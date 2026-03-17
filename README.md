@@ -106,20 +106,6 @@ If you want to rerun migrations manually:
 docker compose run --rm migrate
 ```
 
-### GitHub Actions Deploy
-
-`.github/workflows/deploy.yml` builds and validates the app on pull requests, then on `main` it publishes two GHCR images and deploys them over SSH with `docker-compose.deploy.yml`.
-
-Set these repository or environment secrets before enabling deploys:
-
-- `DEPLOY_HOST`
-- `DEPLOY_USER`
-- `DEPLOY_PATH`
-- `DEPLOY_SSH_KEY`
-- `DEPLOY_SSH_KNOWN_HOSTS`
-
-The server should already have Docker Compose installed and an `.env` file at `DEPLOY_PATH`.
-
 ### Why not Vercel?
 
 Kleis proxies long-lived streaming AI responses. On Vercel that means request and response bytes repeatedly move between the CDN and the function runtime, which can turn into expensive `Fast Origin Transfer` usage for a proxy-heavy workload.
@@ -130,15 +116,7 @@ For historical context, the earlier Vercel import/static-serving issue is docume
 
 ### Cron
 
-For refreshing provider tokens, prefer an external scheduler that calls `GET /cron/refresh-provider-accounts` with `Authorization: Bearer $CRON_SECRET`.
-
-Why external is better:
-
-- it keeps scheduling explicit and easy to inspect
-- it avoids duplicate jobs when you ever run more than one app instance
-- it still works even if the app restarts or deploys during the scheduled window
-
-An in-process timer is possible, but it is usually worse operationally unless you also add leader election / singleton guarantees. For a single VPS, a normal cron job or `systemd` timer is the simplest and most reliable setup.
+For refreshing provider tokens, prefer an external scheduler that calls `GET /cron/refresh-provider-accounts` with `Authorization: Bearer $CRON_SECRET`. For a single VPS, a normal cron job or `systemd` timer is the simplest setup and avoids in-process scheduling edge cases.
 
 ---
 
