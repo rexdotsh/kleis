@@ -82,15 +82,34 @@ KLEIS_API_KEY=your-issued-key
 Set `ADMIN_TOKEN`, `CRON_SECRET`, `TURSO_CONNECTION_URL`, and `TURSO_AUTH_TOKEN`, then run:
 
 ```sh
-bun run build
 bun run start
 ```
 
-Run `bun run db:migrate` as part of your deploy before restarting the app.
+Run `bun run db:migrate` before first start and during deploys that include schema changes.
+
+`bun run build` is optional if you want a prebundled artifact for CI, Docker, or a release pipeline. If you do that, run `bun run start:dist`.
 
 The Bun app serves `public/admin/` directly, so the admin UI works the same in local dev and production.
 
-To keep provider tokens warm, schedule a daily request to `GET /cron/refresh-provider-accounts` with `Authorization: Bearer $CRON_SECRET` from your server cron, systemd timer, or external scheduler.
+### Why not Vercel?
+
+Kleis proxies long-lived streaming AI responses. On Vercel that means request and response bytes repeatedly move between the CDN and the function runtime, which can turn into expensive `Fast Origin Transfer` usage for a proxy-heavy workload.
+
+Vercel also pushed this repo into a few platform-specific workarounds around bundling, static admin asset serving, cache tags, and background tasks. The current code intentionally removes those assumptions so the app behaves the same way on a normal Bun server.
+
+For historical context, the earlier Vercel import/static-serving issue is documented in `vercel/vercel#14910`, and a fix was proposed in `vercel/vercel#15216`.
+
+### Cron
+
+For refreshing provider tokens, prefer an external scheduler that calls `GET /cron/refresh-provider-accounts` with `Authorization: Bearer $CRON_SECRET`.
+
+Why external is better:
+
+- it keeps scheduling explicit and easy to inspect
+- it avoids duplicate jobs when you ever run more than one app instance
+- it still works even if the app restarts or deploys during the scheduled window
+
+An in-process timer is possible, but it is usually worse operationally unless you also add leader election / singleton guarantees. For a single VPS, a normal cron job or `systemd` timer is the simplest and most reliable setup.
 
 ---
 

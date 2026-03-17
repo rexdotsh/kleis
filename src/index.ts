@@ -12,7 +12,7 @@ import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
 import { proxyRoutes } from "./http/routes/proxy";
 
-export const app = new Hono();
+const app = new Hono();
 
 app.onError((error, context) => {
   if (error instanceof HTTPException) {

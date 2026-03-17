@@ -15,7 +15,6 @@ import {
   isTokenUsagePopulated,
   type TokenUsage,
 } from "../../usage/token-usage";
-import { runInBackground } from "../../utils/background";
 import { isObjectRecord } from "../../utils/object";
 import {
   parseModelForProxyRoute,
@@ -48,6 +47,10 @@ const tryParseJsonBody = (bodyText: string | null): unknown | null => {
   } catch {
     return null;
   }
+};
+
+const runInBackground = (promise: Promise<unknown>): void => {
+  promise.catch(() => undefined);
 };
 
 type UsageRecorderInput = {
