@@ -39,7 +39,7 @@ jobs:
   publish-and-deploy:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     environment: production
     concurrency:
       group: production-deploy
@@ -66,6 +66,7 @@ jobs:
         with:
           context: .
           pull: true
+          platforms: linux/arm64
           push: true
           target: release
           tags: |
@@ -79,6 +80,7 @@ jobs:
         with:
           context: .
           pull: true
+          platforms: linux/arm64
           push: true
           target: migrate
           tags: |
