@@ -77,46 +77,16 @@ KLEIS_API_KEY=your-issued-key
 
 ---
 
-## Self-hosting
+## Deploying to Vercel
 
-Set `ADMIN_TOKEN`, `CRON_SECRET`, `TURSO_CONNECTION_URL`, and `TURSO_AUTH_TOKEN`, then run:
+Set `ADMIN_TOKEN`, `CRON_SECRET`, `TURSO_CONNECTION_URL`, and `TURSO_AUTH_TOKEN` in your Vercel project, then deploy. Migrations run on build. Bun runtime.
 
-```sh
-bun run start
-```
+`vercel.json` includes a daily cron that calls `GET /cron/refresh-provider-accounts` to force-refresh all saved provider accounts.
 
-Run `bun run db:migrate` before first start and during deploys that include schema changes.
+Build pre-bundles everything into `dist/index.js` because Vercel's `@vercel/node` esbuild pass can't resolve extensionless TypeScript imports ([vercel/vercel#14910](https://github.com/vercel/vercel/issues/14910)) unless you use an experimental flag, which... breaks serving files from the `public` directory. Filed [vercel/vercel#15216](https://github.com/vercel/vercel/pull/15216) to fix this.
 
-The Bun app serves `public/admin/` directly, so the admin UI works the same in local dev and production.
-
-### Docker Compose
-
-This repo includes a multi-stage `Dockerfile` and `docker-compose.yml` for local/self-hosted runs.
-
-```sh
-docker compose build
-docker compose up -d
-```
-
-The Compose setup runs migrations in a one-shot `migrate` service before starting `app`, binds the app to `127.0.0.1:3000`, and includes a healthcheck against `/healthz`.
-
-If you want to rerun migrations manually:
-
-```sh
-docker compose run --rm migrate
-```
-
-### Why not Vercel?
-
-Kleis proxies long-lived streaming AI responses. On Vercel that means request and response bytes repeatedly move between the CDN and the function runtime, which can turn into expensive `Fast Origin Transfer` usage for a proxy-heavy workload.
-
-Vercel also pushed this repo into a few platform-specific workarounds around bundling, static admin asset serving, cache tags, and background tasks. The current code intentionally removes those assumptions so the app behaves the same way on a normal Bun server.
-
-For historical context, the earlier Vercel import/static-serving issue is documented in `vercel/vercel#14910`, and a fix was proposed in `vercel/vercel#15216`.
-
-### Cron
-
-For refreshing provider tokens, prefer an external scheduler that calls `GET /cron/refresh-provider-accounts` with `Authorization: Bearer $CRON_SECRET`. For a single VPS, a normal cron job or `systemd` timer is the simplest setup and avoids in-process scheduling edge cases.
+> [!NOTE]
+> Ended up [switching off Vercel](https://github.com/rexdotsh/kleis/pull/12) in favor of self-hosting because of `Fast Origin Transfer` costs.
 
 ---
 
