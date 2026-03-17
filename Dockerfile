@@ -27,5 +27,5 @@ COPY package.json bun.lock ./
 COPY src ./src
 COPY public ./public
 USER bun
-EXPOSE 3000/tcp
+EXPOSE 3003/tcp
 CMD ["bun", "run", "start"]

@@ -52,7 +52,7 @@ bun run db:migrate
 bun run dev
 ```
 
-Admin panel lives at `http://localhost:3000/admin/`.
+Admin panel lives at `http://localhost:3003/admin/`.
 
 ---
 
