@@ -6,6 +6,12 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      rebuild_migrate:
+        description: Rebuild and publish the migrate image before deploy
+        required: false
+        default: false
+        type: boolean
 
 env:
   REGISTRY: ghcr.io
@@ -61,6 +67,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve migrate image
+        id: migrate-image
+        env:
+          FORCE_REBUILD_MIGRATE: ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild_migrate || 'false' }}
+          MIGRATE_IMAGE_TAG: inputs-${{ hashFiles('Dockerfile', 'package.json', 'bun.lock', 'drizzle.config.ts', 'drizzle/**', 'src/db/**') }}
+        run: |
+          set -euo pipefail
+
+          cache_image="$REGISTRY/$MIGRATE_IMAGE_NAME:$MIGRATE_IMAGE_TAG"
+          build_migrate=false
+
+          if [ "$FORCE_REBUILD_MIGRATE" = "true" ]; then
+            build_migrate=true
+          elif ! docker buildx imagetools inspect "$cache_image" >/dev/null 2>&1; then
+            build_migrate=true
+          fi
+
+          echo "build=$build_migrate" >> "$GITHUB_OUTPUT"
+          echo "cache_image=$cache_image" >> "$GITHUB_OUTPUT"
+
       - name: Build and push app image
         uses: docker/build-push-action@v7
         with:
@@ -76,6 +102,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build and push migrate image
+        if: steps.migrate-image.outputs.build == 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -84,6 +111,7 @@ jobs:
           push: true
           target: migrate
           tags: |
+            ${{ steps.migrate-image.outputs.cache_image }}
             ${{ env.REGISTRY }}/${{ env.MIGRATE_IMAGE_NAME }}:latest
             ${{ env.REGISTRY }}/${{ env.MIGRATE_IMAGE_NAME }}:sha-${{ github.sha }}
           cache-from: type=gha
@@ -107,7 +135,7 @@ jobs:
           APP_IMAGE: ${{ env.REGISTRY }}/${{ env.APP_IMAGE_NAME }}:sha-${{ github.sha }}
           GHCR_USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MIGRATE_IMAGE: ${{ env.REGISTRY }}/${{ env.MIGRATE_IMAGE_NAME }}:sha-${{ github.sha }}
+          MIGRATE_IMAGE: ${{ steps.migrate-image.outputs.cache_image }}
         run: |
           printf '%s\n' "$GHCR_TOKEN" | ssh "$DEPLOY_USER@$DEPLOY_HOST" "docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin"
           ssh "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
@@ -118,7 +146,7 @@ jobs:
           export KLEIS_APP_IMAGE="$APP_IMAGE"
           export KLEIS_MIGRATE_IMAGE="$MIGRATE_IMAGE"
           docker compose -f docker-compose.deploy.yml pull
-          docker compose -f docker-compose.deploy.yml run --rm migrate
+          docker compose -f docker-compose.deploy.yml run --rm --interactive=false migrate
           docker compose -f docker-compose.deploy.yml up -d app
           docker image prune -f
           EOF

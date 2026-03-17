@@ -15,7 +15,7 @@ FROM base AS migrate
 ENV NODE_ENV=production
 COPY --from=full-deps /usr/src/app/node_modules ./node_modules
 COPY package.json bun.lock drizzle.config.ts ./
-COPY src ./src
+COPY src/db ./src/db
 COPY drizzle ./drizzle
 USER bun
 CMD ["bun", "run", "db:migrate"]
