@@ -1,0 +1,16 @@
+.agents
+.dockerignore
+.env
+.env.*
+.git
+.github
+.gitignore
+.vscode
+Dockerfile*
+compose*.yml
+compose*.yaml
+coverage
+dist
+node_modules
+opensrc
+tests

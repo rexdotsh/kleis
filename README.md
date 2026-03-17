@@ -87,9 +87,24 @@ bun run start
 
 Run `bun run db:migrate` before first start and during deploys that include schema changes.
 
-`bun run build` is optional if you want a prebundled artifact for CI, Docker, or a release pipeline. If you do that, run `bun run start:dist`.
-
 The Bun app serves `public/admin/` directly, so the admin UI works the same in local dev and production.
+
+### Docker Compose
+
+The repo now ships with a multi-stage `Dockerfile` and `compose.yml`.
+
+```sh
+docker compose build
+docker compose up -d
+```
+
+The Compose setup runs migrations in a one-shot `migrate` service before starting `app`, binds the app to `127.0.0.1:3000`, and includes a healthcheck against `/healthz`.
+
+If you want to rerun migrations manually:
+
+```sh
+docker compose run --rm migrate
+```
 
 ### Why not Vercel?
 
