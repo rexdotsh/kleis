@@ -54,6 +54,7 @@ app.use("/copilot/v1/*", requireProxyApiKey);
 app.route("/", proxyRoutes);
 
 export default {
+  idleTimeout: 255,
   port: Number(process.env.PORT ?? 3003),
   fetch: app.fetch,
 };
