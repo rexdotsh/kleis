@@ -1,6 +1,7 @@
 {
   "name": "kleis",
   "type": "module",
+  "packageManager": "bun@1.3.10",
   "scripts": {
     "dev": "bun run --hot --no-clear-screen src/index.ts",
     "build": "bun build src/index.ts --target=bun --outdir=dist --packages=external",

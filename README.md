@@ -91,7 +91,7 @@ The Bun app serves `public/admin/` directly, so the admin UI works the same in l
 
 ### Docker Compose
 
-The repo now ships with a multi-stage `Dockerfile` and `compose.yml`.
+This repo includes a multi-stage `Dockerfile` and `docker-compose.yml` for local/self-hosted runs.
 
 ```sh
 docker compose build
@@ -105,6 +105,20 @@ If you want to rerun migrations manually:
 ```sh
 docker compose run --rm migrate
 ```
+
+### GitHub Actions Deploy
+
+`.github/workflows/deploy.yml` builds and validates the app on pull requests, then on `main` it publishes two GHCR images and deploys them over SSH with `docker-compose.deploy.yml`.
+
+Set these repository or environment secrets before enabling deploys:
+
+- `DEPLOY_HOST`
+- `DEPLOY_USER`
+- `DEPLOY_PATH`
+- `DEPLOY_SSH_KEY`
+- `DEPLOY_SSH_KNOWN_HOSTS`
+
+The server should already have Docker Compose installed and an `.env` file at `DEPLOY_PATH`.
 
 ### Why not Vercel?
 

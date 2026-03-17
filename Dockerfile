@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM oven/bun:1 AS base
+ARG BUN_VERSION=1.3.10
+
+FROM oven/bun:${BUN_VERSION} AS base
 WORKDIR /usr/src/app
 
 FROM base AS prod-deps

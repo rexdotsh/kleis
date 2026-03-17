@@ -1,0 +1,160 @@
+name: CI and Deploy
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  APP_IMAGE_NAME: ${{ github.repository }}
+  MIGRATE_IMAGE_NAME: ${{ github.repository }}-migrate
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun typecheck
+
+      - name: Test
+        run: bun test
+
+      - name: Build app bundle
+        run: bun run build
+
+      - name: Validate local Compose file
+        run: docker compose -f docker-compose.yml config
+
+      - name: Validate deploy Compose file
+        env:
+          KLEIS_APP_IMAGE: ghcr.io/example/kleis:test
+          KLEIS_MIGRATE_IMAGE: ghcr.io/example/kleis-migrate:test
+        run: docker compose -f docker-compose.deploy.yml config
+
+      - name: Build release image
+        run: docker build --target release -t kleis-release-ci .
+
+      - name: Build migrate image
+        run: docker build --target migrate -t kleis-migrate-ci .
+
+  publish-and-deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract app image metadata
+        id: meta-app
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.APP_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long,prefix=sha-
+
+      - name: Extract migrate image metadata
+        id: meta-migrate
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.MIGRATE_IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long,prefix=sha-
+
+      - name: Build and push app image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          pull: true
+          push: true
+          target: release
+          tags: ${{ steps.meta-app.outputs.tags }}
+          labels: ${{ steps.meta-app.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push migrate image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          pull: true
+          push: true
+          target: migrate
+          tags: ${{ steps.meta-migrate.outputs.tags }}
+          labels: ${{ steps.meta-migrate.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Upload deploy Compose file
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
+          cat docker-compose.deploy.yml | ssh "$DEPLOY_USER@$DEPLOY_HOST" "cat > '$DEPLOY_PATH/docker-compose.deploy.yml'"
+
+      - name: Deploy release
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          APP_IMAGE: ${{ env.REGISTRY }}/${{ env.APP_IMAGE_NAME }}:sha-${{ github.sha }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MIGRATE_IMAGE: ${{ env.REGISTRY }}/${{ env.MIGRATE_IMAGE_NAME }}:sha-${{ github.sha }}
+        run: |
+          printf '%s\n' "$GHCR_TOKEN" | ssh "$DEPLOY_USER@$DEPLOY_HOST" "docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin"
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" <<EOF
+          set -e
+          cd "$DEPLOY_PATH"
+          export KLEIS_APP_IMAGE="$APP_IMAGE"
+          export KLEIS_MIGRATE_IMAGE="$MIGRATE_IMAGE"
+          docker compose -f docker-compose.deploy.yml pull
+          docker compose -f docker-compose.deploy.yml run --rm migrate
+          docker compose -f docker-compose.deploy.yml up -d app
+          docker image prune -f
+          EOF
