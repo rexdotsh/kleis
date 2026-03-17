@@ -7,6 +7,7 @@ import {
   buildProxyModelsRegistry,
   fetchModelsDevRegistry,
 } from "../../domain/models/models-dev";
+import { resolveExternalRequestUrl } from "../utils/request-origin";
 
 const MODELS_ROUTE_PATH = "/api.json";
 const SCOPED_MODELS_ROUTE_PATH = "/api/:modelsToken/api.json";
@@ -47,7 +48,7 @@ const buildRegistryForRequest = async (
   context: Context,
   apiKeyScopes?: ApiKeyScopes
 ) => {
-  const requestUrl = new URL(context.req.url);
+  const requestUrl = resolveExternalRequestUrl(context.req.raw);
   const [upstreamRegistry, configuredProviders] = await Promise.all([
     fetchModelsDevRegistry(),
     listConfiguredProviders(db),

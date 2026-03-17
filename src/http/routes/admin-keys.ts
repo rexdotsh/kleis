@@ -20,6 +20,7 @@ import {
 import { providers } from "../../db/schema";
 import { normalizeEditableText, resolvePatchedValue } from "../../utils/patch";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
+import { resolveExternalRequestUrl } from "../utils/request-origin";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 
 const providerScopeListSchema = z
@@ -99,7 +100,7 @@ const toApiKeyView = (requestUrl: URL, key: ApiKeyRecord): ApiKeyView => ({
 
 export const adminKeysRoutes = new Hono()
   .get("/", async (context) => {
-    const requestUrl = new URL(context.req.url);
+    const requestUrl = resolveExternalRequestUrl(context.req.raw);
     const keys = await listApiKeys(db);
     return context.json({
       keys: keys.map((key) => toApiKeyView(requestUrl, key)),
@@ -146,7 +147,7 @@ export const adminKeysRoutes = new Hono()
     const key = await createApiKey(db, payload, now);
     return context.json(
       {
-        key: toApiKeyView(new URL(context.req.url), key),
+        key: toApiKeyView(resolveExternalRequestUrl(context.req.raw), key),
       },
       201
     );
@@ -203,7 +204,7 @@ export const adminKeysRoutes = new Hono()
       }
 
       return context.json({
-        key: toApiKeyView(new URL(context.req.url), updated),
+        key: toApiKeyView(resolveExternalRequestUrl(context.req.raw), updated),
         updated: true,
       });
     }
