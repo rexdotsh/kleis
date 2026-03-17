@@ -1,4 +1,3 @@
-import { waitUntil } from "@vercel/functions";
 import { Hono, type Context } from "hono";
 
 import { db } from "../../db";
@@ -16,6 +15,7 @@ import {
   isTokenUsagePopulated,
   type TokenUsage,
 } from "../../usage/token-usage";
+import { runInBackground } from "../../utils/background";
 import { isObjectRecord } from "../../utils/object";
 import {
   parseModelForProxyRoute,
@@ -48,10 +48,6 @@ const tryParseJsonBody = (bodyText: string | null): unknown | null => {
   } catch {
     return null;
   }
-};
-
-const runInBackground = (promise: Promise<unknown>): void => {
-  waitUntil(promise.catch(() => undefined));
 };
 
 type UsageRecorderInput = {

@@ -4,7 +4,7 @@ Single OAuth account proxy for coding agents. One base URL that stores OAuth cre
 
 ## Architecture
 
-- **Runtime**: Bun + Hono, deployed on Vercel Functions
+- **Runtime**: Bun + Hono, self-hosted as a long-running server
 - **Database**: Turso (libSQL) via Drizzle ORM
 - **Admin UI**: Vanilla HTML/CSS/JS SPA in `public/admin/`
 - **Linting**: `bun fix` (Biome-based via Ultracite)
@@ -75,7 +75,7 @@ To fetch source code for a package or repository you need to understand, run:
 npx opensrc <package>           # npm package (e.g., npx opensrc zod)
 npx opensrc pypi:<package>      # Python package (e.g., npx opensrc pypi:requests)
 npx opensrc crates:<package>    # Rust crate (e.g., npx opensrc crates:serde)
-npx opensrc <owner>/<repo>      # GitHub repo (e.g., npx opensrc vercel/ai)
+npx opensrc <owner>/<repo>      # GitHub repo (e.g., npx opensrc anomalyco/opencode)
 ```
 
 <!-- opensrc:end -->

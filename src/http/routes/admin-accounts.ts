@@ -31,7 +31,6 @@ import {
 import { normalizeEditableText, resolvePatchedValue } from "../../utils/patch";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
-import { invalidateModelsRegistryCache } from "../utils/models-cache";
 
 const accountIdParamsSchema = z.strictObject({
   id: z.string().trim().min(1).max(120),
@@ -242,7 +241,6 @@ export const adminAccountsRoutes = new Hono()
         return context.json(accountNotFoundBody, 404);
       }
 
-      invalidateModelsRegistryCache();
       return context.json({ deleted: true });
     }
   )
@@ -257,7 +255,6 @@ export const adminAccountsRoutes = new Hono()
         return context.json(accountNotFoundBody, 404);
       }
 
-      invalidateModelsRegistryCache();
       return context.json({ account: toAdminAccountView(updated) });
     }
   )
@@ -343,7 +340,6 @@ export const adminAccountsRoutes = new Hono()
         Date.now()
       );
 
-      invalidateModelsRegistryCache();
       return context.json({ account: toAdminAccountView(account) });
     }
   )
@@ -406,7 +402,6 @@ export const adminAccountsRoutes = new Hono()
         now
       );
 
-      invalidateModelsRegistryCache();
       return context.json({
         account: toAdminAccountView(account),
         imported: true,

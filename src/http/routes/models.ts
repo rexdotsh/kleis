@@ -7,7 +7,10 @@ import {
   buildProxyModelsRegistry,
   fetchModelsDevRegistry,
 } from "../../domain/models/models-dev";
-import { modelsRegistryCacheHeaders } from "../utils/models-cache";
+
+const modelsRegistryResponseHeaders = {
+  "Cache-Control": "no-store",
+} as const;
 
 const MODELS_ROUTE_PATH = "/api.json";
 const SCOPED_MODELS_ROUTE_PATH = "/api/:modelsToken/api.json";
@@ -83,7 +86,7 @@ const findApiKeyScopesByToken = async (
 export const modelsRoutes = new Hono()
   .get(MODELS_ROUTE_PATH, async (context) => {
     const registry = await buildRegistryForRequest(context);
-    return context.json(registry, { headers: modelsRegistryCacheHeaders });
+    return context.json(registry, { headers: modelsRegistryResponseHeaders });
   })
   .get(SCOPED_MODELS_ROUTE_PATH, async (context) => {
     const modelsToken = parseModelsTokenParam(context.req.param("modelsToken"));
@@ -97,5 +100,5 @@ export const modelsRoutes = new Hono()
     }
 
     const registry = await buildRegistryForRequest(context, apiKeyScopes);
-    return context.json(registry, { headers: modelsRegistryCacheHeaders });
+    return context.json(registry, { headers: modelsRegistryResponseHeaders });
   });

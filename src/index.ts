@@ -1,4 +1,3 @@
-import { feature } from "bun:bundle";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 
@@ -6,13 +5,14 @@ import { requireAdminAuth } from "./http/middleware/bearer-env-auth";
 import { requireProxyApiKey } from "./http/middleware/api-key-auth";
 import { adminAccountsRoutes } from "./http/routes/admin-accounts";
 import { adminKeysRoutes } from "./http/routes/admin-keys";
+import { adminUiRoutes } from "./http/routes/admin-ui";
 import { adminUsageRoutes } from "./http/routes/admin-usage";
 import { cronRoutes } from "./http/routes/cron";
 import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
 import { proxyRoutes } from "./http/routes/proxy";
 
-const app = new Hono();
+export const app = new Hono();
 
 app.onError((error, context) => {
   if (error instanceof HTTPException) {
@@ -39,6 +39,7 @@ app.get("/", (context) => context.redirect("/admin"));
 app.route("/", healthRoutes);
 app.route("/", modelsRoutes);
 app.route("/", cronRoutes);
+app.route("/", adminUiRoutes);
 
 const adminApi = new Hono();
 adminApi.use("/*", requireAdminAuth);
@@ -52,17 +53,7 @@ app.use("/anthropic/v1/*", requireProxyApiKey);
 app.use("/copilot/v1/*", requireProxyApiKey);
 app.route("/", proxyRoutes);
 
-// feature("DEV") is resolved at compile time; dead-code eliminated in production builds.
-// Locally, Bun's routes serve admin HTML with HMR. Vercel serves public/ via CDN.
-// https://bun.sh/docs/bundler#features
-const dev = feature("DEV")
-  ? { page: (await import("../public/admin/index.html")).default }
-  : null;
-
 export default {
   port: Number(process.env.PORT ?? 3000),
-  // Bun's router treats "/admin" and "/admin/" as distinct URLs
-  routes: dev && { "/admin": dev.page, "/admin/": dev.page },
-  development: !!dev,
   fetch: app.fetch,
 };

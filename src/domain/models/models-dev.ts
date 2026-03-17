@@ -27,6 +27,7 @@ const KLEIS_PROVIDER_ID = "kleis";
 const KLEIS_PROVIDER_NAME = "Kleis";
 const PROXY_API_KEY_ENV = "KLEIS_API_KEY";
 const MODELS_DEV_URL = "https://models.dev/api.json";
+const MODELS_DEV_CACHE_TTL_MS = 60 * 60 * 1000;
 // https://github.com/anomalyco/opencode/blob/1d9dcd2a27736b83d20abc0111141fdd6bffde7e/packages/opencode/src/plugin/codex.ts#L361
 const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
   "gpt-5.1-codex-max",
@@ -56,19 +57,55 @@ const parseRegistry = (value: unknown): ModelsDevRegistry => {
   return value;
 };
 
-export const fetchModelsDevRegistry = async (): Promise<ModelsDevRegistry> => {
-  const response = await fetch(MODELS_DEV_URL, {
-    method: "GET",
-    headers: {
-      accept: "application/json",
-    },
-  });
+let cachedModelsDevRegistry: ModelsDevRegistry | null = null;
+let cachedModelsDevRegistryExpiresAt = 0;
+let inFlightModelsDevRegistryRequest: Promise<ModelsDevRegistry> | null = null;
 
-  if (!response.ok) {
-    throw new Error(`models.dev request failed with status ${response.status}`);
+const fetchModelsDevRegistryFromUpstream =
+  async (): Promise<ModelsDevRegistry> => {
+    const response = await fetch(MODELS_DEV_URL, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `models.dev request failed with status ${response.status}`
+      );
+    }
+
+    return parseRegistry(await response.json());
+  };
+
+export const fetchModelsDevRegistry = async (): Promise<ModelsDevRegistry> => {
+  const now = Date.now();
+  if (cachedModelsDevRegistry && now < cachedModelsDevRegistryExpiresAt) {
+    return cachedModelsDevRegistry;
   }
 
-  return parseRegistry(await response.json());
+  if (!inFlightModelsDevRegistryRequest) {
+    inFlightModelsDevRegistryRequest = fetchModelsDevRegistryFromUpstream()
+      .then((registry) => {
+        cachedModelsDevRegistry = registry;
+        cachedModelsDevRegistryExpiresAt = Date.now() + MODELS_DEV_CACHE_TTL_MS;
+        return registry;
+      })
+      .finally(() => {
+        inFlightModelsDevRegistryRequest = null;
+      });
+  }
+
+  try {
+    return await inFlightModelsDevRegistryRequest;
+  } catch (error) {
+    if (cachedModelsDevRegistry) {
+      return cachedModelsDevRegistry;
+    }
+
+    throw error;
+  }
 };
 
 const normalizeOrigin = (value: string): string => value.replace(/\/+$/u, "");

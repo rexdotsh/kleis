@@ -20,7 +20,6 @@ import {
 import { providers } from "../../db/schema";
 import { normalizeEditableText, resolvePatchedValue } from "../../utils/patch";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
-import { invalidateModelsRegistryCache } from "../utils/models-cache";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 
 const providerScopeListSchema = z
@@ -145,7 +144,6 @@ export const adminKeysRoutes = new Hono()
     }
 
     const key = await createApiKey(db, payload, now);
-    invalidateModelsRegistryCache();
     return context.json(
       {
         key: toApiKeyView(new URL(context.req.url), key),
@@ -204,7 +202,6 @@ export const adminKeysRoutes = new Hono()
         return context.json(apiKeyNotFoundBody, 404);
       }
 
-      invalidateModelsRegistryCache();
       return context.json({
         key: toApiKeyView(new URL(context.req.url), updated),
         updated: true,
@@ -227,7 +224,6 @@ export const adminKeysRoutes = new Hono()
         );
       }
 
-      invalidateModelsRegistryCache();
       return context.json({ revoked: true });
     }
   )
@@ -255,7 +251,6 @@ export const adminKeysRoutes = new Hono()
       );
     }
 
-    invalidateModelsRegistryCache();
     return context.json({ deleted: true });
   })
   .get(
