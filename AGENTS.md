@@ -4,7 +4,7 @@ Single OAuth account proxy for coding agents. One base URL that stores OAuth cre
 
 ## Architecture
 
-- **Runtime**: Bun + Hono, deployed on Vercel Functions
+- **Runtime**: Bun + Hono, self-hosted as a long-running server
 - **Database**: Turso (libSQL) via Drizzle ORM
 - **Admin UI**: Vanilla HTML/CSS/JS SPA in `public/admin/`
 - **Linting**: `bun fix` (Biome-based via Ultracite)

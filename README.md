@@ -85,6 +85,9 @@ Set `ADMIN_TOKEN`, `CRON_SECRET`, `TURSO_CONNECTION_URL`, and `TURSO_AUTH_TOKEN`
 
 Build pre-bundles everything into `dist/index.js` because Vercel's `@vercel/node` esbuild pass can't resolve extensionless TypeScript imports ([vercel/vercel#14910](https://github.com/vercel/vercel/issues/14910)) unless you use an experimental flag, which... breaks serving files from the `public` directory. Filed [vercel/vercel#15216](https://github.com/vercel/vercel/pull/15216) to fix this.
 
+> [!NOTE]
+> Ended up [switching off Vercel](https://github.com/rexdotsh/kleis/pull/12) in favor of self-hosting because of `Fast Origin Transfer` costs.
+
 ---
 
 ## Stack
