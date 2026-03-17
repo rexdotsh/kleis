@@ -53,6 +53,10 @@ const runInBackground = (promise: Promise<unknown>): void => {
   promise.catch(() => undefined);
 };
 
+type BunFetchRequestInit = RequestInit & {
+  timeout?: number | false;
+};
+
 type UsageRecorderInput = {
   startedAt: number;
   apiKeyId: string;
@@ -275,11 +279,14 @@ const proxyRequest = async (
 
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(upstreamUrl, {
+    const upstreamRequestInit: BunFetchRequestInit = {
       method: context.req.method,
       headers,
       body: requestBody,
-    });
+      // Provider streams can pause for minutes while a model is thinking.
+      timeout: false,
+    };
+    upstreamResponse = await fetch(upstreamUrl, upstreamRequestInit);
   } catch (error) {
     usageRecorder.recordImmediate(500);
     throw error;

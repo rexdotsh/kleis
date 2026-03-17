@@ -1,5 +1,14 @@
 kleis.rex.wf {
-	encode zstd gzip
+	@streaming path /openai/v1/* /anthropic/v1/* /copilot/v1/*
 
-	reverse_proxy 127.0.0.1:3003
+	handle @streaming {
+		reverse_proxy 127.0.0.1:3003 {
+			flush_interval 100ms
+		}
+	}
+
+	handle {
+		encode zstd gzip
+		reverse_proxy 127.0.0.1:3003
+	}
 }

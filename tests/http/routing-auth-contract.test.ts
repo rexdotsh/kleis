@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { parseBearerToken } from "../../src/http/utils/bearer";
+import { resolveRequestIdleTimeout } from "../../src/http/utils/request-timeout";
 import {
   modelScopeCandidates,
   parseModelForProxyRoute,
@@ -68,5 +69,19 @@ describe("proxy route mapping", () => {
 
     const parsed = parseModelForProxyRoute("openai/gpt-5", route);
     expect(modelScopeCandidates(parsed, route)).toEqual([]);
+  });
+});
+
+describe("request idle timeouts", () => {
+  test("disables Bun idle timeouts for streaming proxy routes", () => {
+    expect(resolveRequestIdleTimeout("/openai/v1/responses")).toBe(0);
+    expect(resolveRequestIdleTimeout("/anthropic/v1/messages")).toBe(0);
+    expect(resolveRequestIdleTimeout("/copilot/v1/chat/completions")).toBe(0);
+  });
+
+  test("leaves normal app routes on the server default idle timeout", () => {
+    expect(resolveRequestIdleTimeout("/admin")).toBeNull();
+    expect(resolveRequestIdleTimeout("/api.json")).toBeNull();
+    expect(resolveRequestIdleTimeout("/openai/v2/responses")).toBeNull();
   });
 });

@@ -11,6 +11,7 @@ import { cronRoutes } from "./http/routes/cron";
 import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
 import { proxyRoutes } from "./http/routes/proxy";
+import { resolveRequestIdleTimeout } from "./http/utils/request-timeout";
 
 const app = new Hono();
 
@@ -56,5 +57,14 @@ app.route("/", proxyRoutes);
 export default {
   idleTimeout: 255,
   port: Number(process.env.PORT ?? 3003),
-  fetch: app.fetch,
+  fetch(request: Request, server: Bun.Server<unknown>) {
+    const requestIdleTimeout = resolveRequestIdleTimeout(
+      new URL(request.url).pathname
+    );
+    if (requestIdleTimeout !== null) {
+      server.timeout(request, requestIdleTimeout);
+    }
+
+    return app.fetch(request);
+  },
 };
