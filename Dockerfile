@@ -20,19 +20,13 @@ COPY drizzle ./drizzle
 USER bun
 CMD ["bun", "run", "db:migrate"]
 
-FROM base AS build
-ENV NODE_ENV=production
-COPY --from=prod-deps /usr/src/app/node_modules ./node_modules
-COPY package.json bun.lock ./
-COPY src ./src
-RUN bun run build
-
 FROM base AS release
 ENV NODE_ENV=production
 COPY --from=prod-deps /usr/src/app/node_modules ./node_modules
 COPY package.json bun.lock ./
-COPY --from=build /usr/src/app/dist ./dist
+COPY src ./src
 COPY public ./public
+RUN bun run build
 USER bun
 EXPOSE 3003/tcp
 CMD ["bun", "dist/index.js"]
