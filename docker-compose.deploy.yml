@@ -8,6 +8,7 @@ services:
 
   app:
     image: ${KLEIS_APP_IMAGE:?set KLEIS_APP_IMAGE}
+    container_name: kleis-app
     env_file:
       - path: .env
         required: false
