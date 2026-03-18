@@ -17,7 +17,8 @@ import {
   type UpdateApiKeyInput,
   updateApiKey,
 } from "../../db/repositories/api-keys";
-import { providers } from "../../db/schema";
+import { findProviderAccountsByIds } from "../../db/repositories/provider-accounts";
+import { providers, type Provider } from "../../db/schema";
 import { normalizeEditableText, resolvePatchedValue } from "../../utils/patch";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
 import { resolveExternalRequestUrl } from "../utils/request-origin";
@@ -29,11 +30,13 @@ const providerScopeListSchema = z
 const modelScopeListSchema = z
   .array(z.string().trim().min(1).max(200))
   .max(200);
+const accountScopeListSchema = z.array(z.uuid()).max(200);
 
 const createApiKeyBodySchema = z.strictObject({
   label: z.string().trim().min(1).max(120).optional(),
   providerScopes: providerScopeListSchema.min(1).optional(),
   modelScopes: modelScopeListSchema.min(1).optional(),
+  accountScopes: accountScopeListSchema.min(1).optional(),
   expiresAt: z.int().positive().nullable().optional(),
 });
 
@@ -41,6 +44,7 @@ const updateApiKeyBodySchema = z.strictObject({
   label: z.string().trim().max(120).nullable().optional(),
   providerScopes: providerScopeListSchema.nullable().optional(),
   modelScopes: modelScopeListSchema.nullable().optional(),
+  accountScopes: accountScopeListSchema.nullable().optional(),
   expiresAt: z.int().positive().nullable().optional(),
 });
 
@@ -58,8 +62,75 @@ const expiresAtInvalidBody = {
   message: "expiresAt must be in the future",
 } as const;
 
-const normalizeScopeList = (scopes: string[] | null): string[] | null =>
-  scopes?.length ? scopes : null;
+const invalidAccountScopesBody = {
+  error: "bad_request",
+  message: "accountScopes must reference existing provider accounts",
+} as const;
+
+const invalidScopedAccountProvidersBody = {
+  error: "bad_request",
+  message: "accountScopes must belong to providers allowed by providerScopes",
+} as const;
+
+const duplicateScopedAccountProvidersBody = {
+  error: "bad_request",
+  message: "accountScopes can include at most one account per provider",
+} as const;
+
+const normalizeStringScopeList = (
+  scopes: readonly string[] | null | undefined
+): string[] | null => {
+  if (!scopes?.length) {
+    return null;
+  }
+
+  const normalized = new Set<string>();
+  for (const scope of scopes) {
+    const value = scope.trim();
+    if (value) {
+      normalized.add(value);
+    }
+  }
+
+  return normalized.size ? Array.from(normalized) : null;
+};
+
+const normalizeProviderScopeList = (
+  scopes: readonly Provider[] | null | undefined
+): Provider[] | null => (scopes?.length ? Array.from(new Set(scopes)) : null);
+
+const validateAccountScopes = async (input: {
+  providerScopes: readonly Provider[] | null;
+  accountScopes: readonly string[] | null;
+}) => {
+  if (!input.accountScopes) {
+    return null;
+  }
+
+  const accounts = await findProviderAccountsByIds(db, input.accountScopes);
+  if (accounts.length !== input.accountScopes.length) {
+    return invalidAccountScopesBody;
+  }
+
+  const seenProviders = new Set<Provider>();
+  for (const account of accounts) {
+    if (seenProviders.has(account.provider)) {
+      return duplicateScopedAccountProvidersBody;
+    }
+    seenProviders.add(account.provider);
+  }
+
+  if (
+    input.providerScopes?.length &&
+    accounts.some(
+      (account) => !input.providerScopes?.includes(account.provider)
+    )
+  ) {
+    return invalidScopedAccountProvidersBody;
+  }
+
+  return null;
+};
 
 const resolvePatchedExpiresAt = (
   current: number | null,
@@ -128,20 +199,34 @@ export const adminKeysRoutes = new Hono()
     const now = Date.now();
     const expiresAt =
       input.expiresAt != null ? toMillisecondsTimestamp(input.expiresAt) : null;
+    const providerScopes = normalizeProviderScopeList(input.providerScopes);
+    const modelScopes = normalizeStringScopeList(input.modelScopes);
+    const accountScopes = normalizeStringScopeList(input.accountScopes);
 
     if (expiresAt !== null && expiresAt <= now) {
       return context.json(expiresAtInvalidBody, 400);
+    }
+
+    const accountScopeError = await validateAccountScopes({
+      providerScopes,
+      accountScopes,
+    });
+    if (accountScopeError) {
+      return context.json(accountScopeError, 400);
     }
 
     const payload: CreateApiKeyInput = {
       label: input.label ?? null,
       expiresAt,
     };
-    if (input.providerScopes) {
-      payload.providerScopes = input.providerScopes;
+    if (providerScopes) {
+      payload.providerScopes = providerScopes;
     }
-    if (input.modelScopes) {
-      payload.modelScopes = input.modelScopes;
+    if (modelScopes) {
+      payload.modelScopes = modelScopes;
+    }
+    if (accountScopes) {
+      payload.accountScopes = accountScopes;
     }
 
     const key = await createApiKey(db, payload, now);
@@ -178,6 +263,10 @@ export const adminKeysRoutes = new Hono()
         existing.modelScopes,
         body.modelScopes
       );
+      const accountScopes = resolvePatchedValue(
+        existing.accountScopes,
+        body.accountScopes
+      );
       const expiresAt = resolvePatchedExpiresAt(
         existing.expiresAt,
         body.expiresAt
@@ -191,10 +280,23 @@ export const adminKeysRoutes = new Hono()
         return context.json(expiresAtInvalidBody, 400);
       }
 
+      const normalizedProviderScopes =
+        normalizeProviderScopeList(providerScopes);
+      const normalizedModelScopes = normalizeStringScopeList(modelScopes);
+      const normalizedAccountScopes = normalizeStringScopeList(accountScopes);
+      const accountScopeError = await validateAccountScopes({
+        providerScopes: normalizedProviderScopes,
+        accountScopes: normalizedAccountScopes,
+      });
+      if (accountScopeError) {
+        return context.json(accountScopeError, 400);
+      }
+
       const payload: UpdateApiKeyInput = {
         label,
-        providerScopes: normalizeScopeList(providerScopes),
-        modelScopes: normalizeScopeList(modelScopes),
+        providerScopes: normalizedProviderScopes,
+        modelScopes: normalizedModelScopes,
+        accountScopes: normalizedAccountScopes,
         expiresAt,
       };
 

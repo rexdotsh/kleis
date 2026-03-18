@@ -1,17 +1,27 @@
 import { and, desc, eq, gt, isNull, or, type SQL } from "drizzle-orm";
 
-import { apiKeys, requestUsageBuckets } from "../schema";
+import {
+  apiKeys,
+  providers,
+  requestUsageBuckets,
+  type Provider,
+} from "../schema";
 import type { Database } from "../index";
 
 type ScopeList = string[] | null;
+type ProviderScopeList = Provider[] | null;
+
+const isProvider = (value: string): value is Provider =>
+  providers.some((provider) => provider === value);
 
 type ApiKeyRecord = {
   id: string;
   key: string;
   modelsDiscoveryToken: string | null;
   label: string | null;
-  providerScopes: ScopeList;
+  providerScopes: ProviderScopeList;
   modelScopes: ScopeList;
+  accountScopes: ScopeList;
   expiresAt: number | null;
   revokedAt: number | null;
   createdAt: number;
@@ -19,32 +29,34 @@ type ApiKeyRecord = {
 
 export type CreateApiKeyInput = {
   label?: string | null;
-  providerScopes?: string[];
+  providerScopes?: Provider[];
   modelScopes?: string[];
+  accountScopes?: string[];
   expiresAt?: number | null;
 };
 
 export type UpdateApiKeyInput = {
   label: string | null;
-  providerScopes: string[] | null;
+  providerScopes: Provider[] | null;
   modelScopes: string[] | null;
+  accountScopes: string[] | null;
   expiresAt: number | null;
 };
 
-const parseScopeList = (value: string | null): ScopeList => {
+const parseJsonStringList = (value: string | null): string[] => {
   if (!value) {
-    return null;
+    return [];
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
   } catch {
-    return null;
+    return [];
   }
 
   if (!Array.isArray(parsed)) {
-    return null;
+    return [];
   }
 
   const scopes: string[] = [];
@@ -57,13 +69,42 @@ const parseScopeList = (value: string | null): ScopeList => {
   return scopes;
 };
 
+const parseScopeList = (value: string | null): ScopeList => {
+  const scopes = parseJsonStringList(value);
+  return scopes.length ? scopes : null;
+};
+
+const parseProviderScopeList = (value: string | null): ProviderScopeList => {
+  const scopes = parseJsonStringList(value).filter(isProvider);
+  return scopes.length ? scopes : null;
+};
+
+const serializeScopeList = (
+  scopes: readonly string[] | null | undefined
+): string | null => {
+  if (!scopes?.length) {
+    return null;
+  }
+
+  const normalized = new Set<string>();
+  for (const scope of scopes) {
+    const value = scope.trim();
+    if (value) {
+      normalized.add(value);
+    }
+  }
+
+  return normalized.size ? JSON.stringify(Array.from(normalized)) : null;
+};
+
 const toRecord = (row: typeof apiKeys.$inferSelect): ApiKeyRecord => ({
   id: row.id,
   key: row.key,
   modelsDiscoveryToken: row.modelsDiscoveryToken,
   label: row.label,
-  providerScopes: parseScopeList(row.providerScopeJson),
+  providerScopes: parseProviderScopeList(row.providerScopeJson),
   modelScopes: parseScopeList(row.modelScopeJson),
+  accountScopes: parseScopeList(row.accountScopeJson),
   expiresAt: row.expiresAt,
   revokedAt: row.revokedAt,
   createdAt: row.createdAt,
@@ -110,12 +151,9 @@ export const createApiKey = async (
     key: generateApiKeyValue(),
     modelsDiscoveryToken: generateModelsDiscoveryToken(),
     label: input.label?.trim() || null,
-    providerScopeJson: input.providerScopes?.length
-      ? JSON.stringify(input.providerScopes)
-      : null,
-    modelScopeJson: input.modelScopes?.length
-      ? JSON.stringify(input.modelScopes)
-      : null,
+    providerScopeJson: serializeScopeList(input.providerScopes),
+    modelScopeJson: serializeScopeList(input.modelScopes),
+    accountScopeJson: serializeScopeList(input.accountScopes),
     expiresAt: input.expiresAt ?? null,
     revokedAt: null,
     createdAt: now,
@@ -128,6 +166,7 @@ export const createApiKey = async (
     label: row.label ?? null,
     providerScopeJson: row.providerScopeJson ?? null,
     modelScopeJson: row.modelScopeJson ?? null,
+    accountScopeJson: row.accountScopeJson ?? null,
     expiresAt: row.expiresAt ?? null,
     revokedAt: row.revokedAt ?? null,
   });
@@ -155,12 +194,9 @@ export const updateApiKey = async (
     .update(apiKeys)
     .set({
       label: input.label,
-      providerScopeJson: input.providerScopes?.length
-        ? JSON.stringify(input.providerScopes)
-        : null,
-      modelScopeJson: input.modelScopes?.length
-        ? JSON.stringify(input.modelScopes)
-        : null,
+      providerScopeJson: serializeScopeList(input.providerScopes),
+      modelScopeJson: serializeScopeList(input.modelScopes),
+      accountScopeJson: serializeScopeList(input.accountScopes),
       expiresAt: input.expiresAt,
     })
     .where(eq(apiKeys.id, id));

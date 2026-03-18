@@ -2,7 +2,11 @@ import { Hono, type Context } from "hono";
 
 import { db } from "../../db";
 import { findActiveApiKeyByModelsDiscoveryToken } from "../../db/repositories/api-keys";
-import { listConfiguredProviders } from "../../db/repositories/provider-accounts";
+import {
+  findProviderAccountsByIds,
+  listConfiguredProviders,
+} from "../../db/repositories/provider-accounts";
+import type { Provider } from "../../db/schema";
 import {
   buildProxyModelsRegistry,
   fetchModelsDevRegistry,
@@ -19,6 +23,7 @@ const SCOPED_MODELS_NOT_FOUND = {
 type ApiKeyScopes = {
   providerScopes: readonly string[] | null;
   modelScopes: readonly string[] | null;
+  accountProviderScopes: readonly Provider[] | null;
 };
 
 const resolveBaseOriginWithPath = (requestUrl: URL): string => {
@@ -74,9 +79,20 @@ const findApiKeyScopesByToken = async (
     return null;
   }
 
+  const accountProviderScopes = apiKey.accountScopes
+    ? Array.from(
+        new Set(
+          (await findProviderAccountsByIds(db, apiKey.accountScopes)).map(
+            (account) => account.provider
+          )
+        )
+      )
+    : null;
+
   return {
     providerScopes: apiKey.providerScopes,
     modelScopes: apiKey.modelScopes,
+    accountProviderScopes,
   };
 };
 

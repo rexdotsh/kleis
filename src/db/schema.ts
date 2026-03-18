@@ -55,6 +55,7 @@ export const apiKeys = sqliteTable(
     label: text("label"),
     providerScopeJson: text("provider_scope_json"),
     modelScopeJson: text("model_scope_json"),
+    accountScopeJson: text("account_scope_json"),
     expiresAt: integer("expires_at", { mode: "number" }),
     revokedAt: integer("revoked_at", { mode: "number" }),
     createdAt: integer("created_at", { mode: "number" }).notNull(),

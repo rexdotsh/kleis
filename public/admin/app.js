@@ -31,6 +31,7 @@ import {
   syncAccountWindowButtons,
   switchToTab,
   syncDashboardWindowButtons,
+  syncKeyScopeModalState,
   toast,
   updateOAuthProviderUI,
   verifyToken,
@@ -149,6 +150,53 @@ $("#btn-import-account").addEventListener("click", importAccount);
 $("#toggle-show-revoked-keys").addEventListener("change", (e) => {
   state.showRevokedKeys = e.target.checked;
   renderKeys();
+});
+
+function bindKeyScopeModal({
+  modalSelector,
+  accountSelector,
+  providerSelector,
+  modelInputId,
+  mode,
+}) {
+  const modal = $(modalSelector);
+
+  modal.addEventListener("change", (e) => {
+    if (e.target.matches(accountSelector) && e.target.checked) {
+      for (const input of $$(
+        `${accountSelector}[data-provider="${e.target.dataset.provider}"]`
+      )) {
+        if (input !== e.target) {
+          input.checked = false;
+        }
+      }
+    }
+
+    if (e.target.matches(`${providerSelector}, ${accountSelector}`)) {
+      syncKeyScopeModalState(mode);
+    }
+  });
+
+  modal.addEventListener("input", (e) => {
+    if (e.target.id === modelInputId) {
+      syncKeyScopeModalState(mode);
+    }
+  });
+}
+
+bindKeyScopeModal({
+  modalSelector: "#modal-create-key",
+  accountSelector: ".key-scope-account",
+  providerSelector: ".key-scope-provider",
+  modelInputId: "key-model-scopes",
+  mode: "create",
+});
+bindKeyScopeModal({
+  modalSelector: "#modal-edit-key",
+  accountSelector: ".edit-key-scope-account",
+  providerSelector: ".edit-key-scope-provider",
+  modelInputId: "edit-key-model-scopes",
+  mode: "edit",
 });
 
 $("#oauth-provider").addEventListener("change", updateOAuthProviderUI);

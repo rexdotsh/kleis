@@ -9,6 +9,7 @@ import {
 
 const DEFAULT_KEY_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const ADMIN_TOKEN_STORAGE_KEY = "kleis_admin_token";
+const PROVIDER_ORDER = ["copilot", "codex", "claude"];
 
 const readPersistedToken = () =>
   localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || "";
@@ -413,10 +414,14 @@ const trimmedOrNull = (value) => value.trim() || null;
 
 const parseCommaSeparatedList = (value) =>
   value
-    ? value
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean)
+    ? Array.from(
+        new Set(
+          value
+            .split(/[\n,]/)
+            .map((item) => item.trim())
+            .filter(Boolean)
+        )
+      )
     : [];
 
 const checkedValues = (selector) =>
@@ -429,6 +434,182 @@ function setCheckedValues(selector, values) {
   for (const input of $$(selector)) {
     input.checked = allowed.has(input.value);
   }
+}
+
+const KEY_SCOPE_MODAL_CONFIG = {
+  create: {
+    modalSelector: "#modal-create-key",
+    providerSelector: ".key-scope-provider",
+    accountSelector: ".key-scope-account",
+    accountInputClass: "key-scope-account",
+    accountContainer: "#key-account-scopes",
+    modelInput: "#key-model-scopes",
+    summary: "#key-scope-summary",
+  },
+  edit: {
+    modalSelector: "#modal-edit-key",
+    providerSelector: ".edit-key-scope-provider",
+    accountSelector: ".edit-key-scope-account",
+    accountInputClass: "edit-key-scope-account",
+    accountContainer: "#edit-key-account-scopes",
+    modelInput: "#edit-key-model-scopes",
+    summary: "#edit-key-scope-summary",
+  },
+};
+
+function shortIdentifier(value) {
+  if (!value) return "";
+  return value.length > 18
+    ? `${value.slice(0, 8)}...${value.slice(-4)}`
+    : value;
+}
+
+function accountScopeLabel(accountId) {
+  const account = accountById(accountId);
+  if (!account) {
+    return `missing ${shortIdentifier(accountId)}`;
+  }
+
+  return account.label || account.accountId || shortIdentifier(account.id);
+}
+
+function accountScopeMeta(account) {
+  const parts = [];
+  if (account.accountId && account.accountId !== account.label) {
+    parts.push(account.accountId);
+  }
+  parts.push(shortIdentifier(account.id));
+  if (account.expiresAt) {
+    parts.push(expiryCountdown(account.expiresAt));
+  }
+  return parts.join(" · ");
+}
+
+function summarizeSelection(values, fallback) {
+  if (!values.length) {
+    return fallback;
+  }
+
+  if (values.length <= 2) {
+    return values.join(", ");
+  }
+
+  return `${values.slice(0, 2).join(", ")} +${values.length - 2} more`;
+}
+
+function renderAccountScopeOptions(mode, selectedAccountIds = []) {
+  const config = KEY_SCOPE_MODAL_CONFIG[mode];
+  const container = $(config.accountContainer);
+  if (!container) {
+    return;
+  }
+
+  if (!state.accounts.length) {
+    container.innerHTML =
+      '<div class="scope-empty">No provider accounts connected yet. Leave this empty to keep using each provider\'s primary account once one exists.</div>';
+    return;
+  }
+
+  const selectedIds = new Set(selectedAccountIds || []);
+  const groups = PROVIDER_ORDER.map((provider) => ({
+    provider,
+    accounts: state.accounts
+      .filter((account) => account.provider === provider)
+      .sort(
+        (left, right) =>
+          Number(right.isPrimary) - Number(left.isPrimary) ||
+          right.createdAt - left.createdAt
+      ),
+  })).filter((group) => group.accounts.length);
+
+  container.innerHTML = groups
+    .map(
+      ({ provider, accounts }) => `<div class="scope-account-group">
+        <div class="scope-account-group-header">
+          <span class="badge badge-${provider}">${provider}</span>
+          <span class="scope-account-group-count">${accounts.length} account${accounts.length === 1 ? "" : "s"}</span>
+        </div>
+        <div class="scope-account-list">
+          ${accounts
+            .map(
+              (account) => `<label class="scope-account-option">
+                <input
+                  type="checkbox"
+                  value="${account.id}"
+                  class="${config.accountInputClass}"
+                  data-provider="${account.provider}"
+                  ${selectedIds.has(account.id) ? "checked" : ""}
+                >
+                <span class="scope-account-copy">
+                  <span class="scope-account-title">
+                    ${escapeHtml(account.label || account.accountId || shortIdentifier(account.id))}
+                    ${account.isPrimary ? '<span class="badge badge-primary">primary</span>' : ""}
+                  </span>
+                  <span class="scope-account-meta">${escapeHtml(accountScopeMeta(account))}</span>
+                </span>
+              </label>`
+            )
+            .join("")}
+        </div>
+      </div>`
+    )
+    .join("");
+}
+
+function syncScopedAccountAvailability(mode) {
+  const config = KEY_SCOPE_MODAL_CONFIG[mode];
+  const selectedProviders = new Set(checkedValues(config.providerSelector));
+  const hasProviderFilter = selectedProviders.size > 0;
+
+  for (const input of $$(config.accountSelector)) {
+    const provider = input.dataset.provider || "";
+    const allowed = !hasProviderFilter || selectedProviders.has(provider);
+    input.disabled = !allowed;
+    if (!allowed) {
+      input.checked = false;
+    }
+    input
+      .closest(".scope-account-option")
+      ?.classList.toggle("disabled", !allowed);
+  }
+}
+
+function updateKeyScopeSummary(mode) {
+  const config = KEY_SCOPE_MODAL_CONFIG[mode];
+  const summary = $(config.summary);
+  const modelInput = $(config.modelInput);
+  if (!summary || !modelInput) {
+    return;
+  }
+
+  const providers = checkedValues(config.providerSelector);
+  const accountIds = checkedValues(config.accountSelector);
+  const modelScopes = parseCommaSeparatedList(modelInput.value);
+
+  summary.textContent = [
+    `Providers: ${summarizeSelection(providers, "all providers")}`,
+    `Accounts: ${summarizeSelection(
+      accountIds.map((accountId) => accountScopeLabel(accountId)),
+      "provider primary accounts"
+    )}`,
+    `Models: ${modelScopes.length ? `${modelScopes.length} scoped model${modelScopes.length === 1 ? "" : "s"}` : "all models"}`,
+  ].join(". ");
+}
+
+function syncKeyScopeModalState(mode) {
+  syncScopedAccountAvailability(mode);
+  updateKeyScopeSummary(mode);
+}
+
+function refreshOpenKeyScopeModal(mode) {
+  const config = KEY_SCOPE_MODAL_CONFIG[mode];
+  if (!$(config.modalSelector).classList.contains("open")) {
+    return;
+  }
+
+  const selectedAccountScopes = checkedValues(config.accountSelector);
+  renderAccountScopeOptions(mode, selectedAccountScopes);
+  syncKeyScopeModalState(mode);
 }
 
 function parseOptionalJsonObject(raw, fieldLabel) {
@@ -518,6 +699,9 @@ async function loadAccounts() {
     }
 
     syncAccountWindowButtons();
+
+    refreshOpenKeyScopeModal("create");
+    refreshOpenKeyScopeModal("edit");
 
     renderAccounts();
   } catch (e) {
@@ -692,16 +876,20 @@ function openCreateKeyModal() {
   $("#key-label").value = "";
   $("#key-model-scopes").value = "";
   for (const cb of $$(".key-scope-provider")) cb.checked = false;
+  renderAccountScopeOptions("create");
+  syncKeyScopeModalState("create");
   $("#modal-create-key").classList.add("open");
 }
 
 async function createKey() {
   const label = trimmedOrNull($("#key-label").value);
   const providerScopes = checkedValues(".key-scope-provider");
+  const accountScopes = checkedValues(".key-scope-account");
   const modelScopes = parseCommaSeparatedList($("#key-model-scopes").value);
   const body = {
     ...(label ? { label } : {}),
     ...(providerScopes.length ? { providerScopes } : {}),
+    ...(accountScopes.length ? { accountScopes } : {}),
     ...(modelScopes.length ? { modelScopes } : {}),
   };
 
@@ -731,6 +919,8 @@ function openEditKeyModal(id) {
   $("#edit-key-expires-at").value =
     key.expiresAt === null ? "" : String(key.expiresAt);
   setCheckedValues(".edit-key-scope-provider", key.providerScopes);
+  renderAccountScopeOptions("edit", key.accountScopes);
+  syncKeyScopeModalState("edit");
 
   const saveButton = $("#btn-modal-save-key");
   saveButton.dataset.keyId = key.id;
@@ -749,6 +939,7 @@ async function saveKeyEdits() {
 
   const label = trimmedOrNull($("#edit-key-label").value);
   const providerScopes = checkedValues(".edit-key-scope-provider");
+  const accountScopes = checkedValues(".edit-key-scope-account");
   const modelScopes = parseCommaSeparatedList(
     $("#edit-key-model-scopes").value
   );
@@ -756,6 +947,7 @@ async function saveKeyEdits() {
   const body = {
     label,
     providerScopes: providerScopes.length ? providerScopes : null,
+    accountScopes: accountScopes.length ? accountScopes : null,
     modelScopes: modelScopes.length ? modelScopes : null,
   };
 
@@ -815,6 +1007,9 @@ async function rotateKey(id, button) {
     label: existing.label || undefined,
     providerScopes: existing.providerScopes?.length
       ? existing.providerScopes
+      : undefined,
+    accountScopes: existing.accountScopes?.length
+      ? existing.accountScopes
       : undefined,
     modelScopes: existing.modelScopes?.length
       ? existing.modelScopes
@@ -1165,6 +1360,7 @@ export {
   switchToTab,
   syncAccountWindowButtons,
   syncDashboardWindowButtons,
+  syncKeyScopeModalState,
   toast,
   tokenStatus,
   updateOAuthProviderUI,

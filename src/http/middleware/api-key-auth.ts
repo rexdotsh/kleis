@@ -96,5 +96,6 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
   }
 
   context.set("proxyApiKeyId", apiKey.id);
+  context.set("proxyApiKeyAccountScopeIds", apiKey.accountScopes);
   await next();
 });

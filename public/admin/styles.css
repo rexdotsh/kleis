@@ -493,6 +493,12 @@ select.field-input {
   margin-top: 4px;
 }
 
+.scope-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+}
+
 .scope-check {
   display: flex;
   align-items: center;
@@ -501,6 +507,123 @@ select.field-input {
   cursor: pointer;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.scope-grid .scope-check {
+  margin-bottom: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.scope-grid .scope-check:has(input:checked) {
+  border-color: var(--amber-dim);
+  background:
+    linear-gradient(135deg, var(--amber-glow), transparent 70%),
+    var(--bg-elevated);
+}
+
+.scope-account-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.scope-account-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  padding: 12px;
+}
+
+.scope-account-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.scope-account-group-count {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.scope-account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.scope-account-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  cursor: pointer;
+}
+
+.scope-account-option:has(input:checked) {
+  border-color: var(--amber-dim);
+  background:
+    linear-gradient(135deg, var(--amber-glow), transparent 72%), var(--bg-input);
+}
+
+.scope-account-option.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scope-account-option input {
+  margin-top: 2px;
+}
+
+.scope-account-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.scope-account-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.scope-account-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.45;
+}
+
+.scope-empty {
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.5;
+}
+
+.scope-summary {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background:
+    linear-gradient(135deg, var(--amber-glow), transparent 65%),
+    var(--bg-elevated);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.5;
 }
 
 .modal-backdrop {
