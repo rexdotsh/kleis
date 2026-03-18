@@ -294,6 +294,14 @@ body {
   margin-left: 8px;
 }
 
+.section-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
 .section-actions {
   display: flex;
   align-items: center;

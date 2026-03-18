@@ -101,30 +101,46 @@ function renderAccounts() {
   $("#accounts-list").innerHTML = accounts.map(accountCardHtml).join("");
 }
 
-function keyScopeSummaryHtml(key) {
+function keyProviderSummaryHtml(key, usage) {
   const parts = [];
 
-  if (key.providerScopes?.length) {
-    parts.push(
-      `<span class="card-meta-item">${key.providerScopes
-        .map(
-          (provider) =>
-            `<span class="badge badge-${provider}">${provider}</span>`
-        )
-        .join(" ")}</span>`
-    );
+  const pinnedByProvider = new Map();
+  if (key.accountScopes?.length) {
+    for (const accountId of key.accountScopes) {
+      const account = accountById(accountId);
+      if (account) {
+        pinnedByProvider.set(
+          account.provider,
+          account.label || account.accountId || maskKey(account.id)
+        );
+      }
+    }
   }
 
-  if (key.accountScopes?.length) {
-    const label = key.accountScopes
-      .map((accountId) => {
-        const account = accountById(accountId);
-        if (!account) return "missing";
-        return account.label || account.accountId || maskKey(account.id);
-      })
-      .join(", ");
+  const countByProvider = new Map();
+  if (usage?.providers?.length) {
+    for (const pu of usage.providers) {
+      countByProvider.set(pu.provider, normalizeUsage(pu));
+    }
+  }
+
+  const providers = key.providerScopes?.length
+    ? key.providerScopes
+    : countByProvider.size
+      ? Array.from(countByProvider.keys())
+      : Array.from(pinnedByProvider.keys());
+
+  for (const provider of providers) {
+    const metrics = countByProvider.get(provider);
+    const pinned = pinnedByProvider.get(provider);
+    const countPart = metrics
+      ? ` ${formatCount(metrics.requestCount)} reqs`
+      : "";
+    const pinnedPart = pinned
+      ? ` <span class="text-muted">via ${escapeHtml(pinned)}</span>`
+      : "";
     parts.push(
-      `<span class="card-meta-item text-muted">pinned: ${escapeHtml(label)}</span>`
+      `<span class="card-meta-item"><span class="badge badge-${provider}">${provider}</span>${countPart}${pinnedPart}</span>`
     );
   }
 
@@ -154,7 +170,7 @@ function keyCardHtml(key) {
   const windowLabel = usageWindowLabel(state.keyUsageWindowMs);
   const modelsUrl = status === "active" ? modelsUrlForKey(key) : null;
 
-  const scopeParts = keyScopeSummaryHtml(key);
+  const providerParts = keyProviderSummaryHtml(key, usage);
   const metaParts = [];
 
   metaParts.push(
@@ -167,18 +183,6 @@ function keyCardHtml(key) {
     metaParts.push(
       `<span class="card-meta-item"><span class="badge badge-${status}">${escapeHtml(expiryCountdown(key.expiresAt))}</span></span>`
     );
-  }
-
-  const providerUsageParts = [];
-  if (usage?.providers?.length) {
-    for (const pu of usage.providers) {
-      const metrics = normalizeUsage(pu);
-      const puRate = metrics.successRate;
-      const ratePart = puRate !== null ? ` (${puRate}% ok)` : "";
-      providerUsageParts.push(
-        `<span class="card-meta-item"><span class="badge badge-${pu.provider}">${pu.provider}</span> ${formatCount(metrics.requestCount)} reqs${ratePart}</span>`
-      );
-    }
   }
 
   const actionButtons = revoked
@@ -199,8 +203,8 @@ function keyCardHtml(key) {
       </div>
     </div>
     <div class="card-key"><code>${escapeHtml(keyDisplay)}</code></div>
-    <div class="card-meta">${[...scopeParts, ...metaParts].join("")}</div>
-    ${providerUsageParts.length ? `<div class="card-meta">${providerUsageParts.join("")}</div>` : ""}
+    <div class="card-meta">${providerParts.join("")}</div>
+    ${metaParts.length ? `<div class="card-meta">${metaParts.join("")}</div>` : ""}
   </div>`;
 }
 

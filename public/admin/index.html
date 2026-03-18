@@ -181,48 +181,50 @@
               <span class="section-title">API Keys</span>
               <span id="keys-count" class="section-count"></span>
             </div>
+            <div class="dash-window-selector" id="keys-window-selector">
+              <button
+                class="dash-window-btn"
+                data-window="3600000"
+                type="button"
+              >
+                1h
+              </button>
+              <button
+                class="dash-window-btn"
+                data-window="21600000"
+                type="button"
+              >
+                6h
+              </button>
+              <button
+                class="dash-window-btn active"
+                data-window="86400000"
+                type="button"
+              >
+                24h
+              </button>
+              <button
+                class="dash-window-btn"
+                data-window="604800000"
+                type="button"
+              >
+                7d
+              </button>
+              <button
+                class="dash-window-btn"
+                data-window="2592000000"
+                type="button"
+              >
+                30d
+              </button>
+            </div>
+          </div>
+          <div class="section-toolbar">
+            <label class="toggle-inline">
+              <input id="toggle-show-revoked-keys" type="checkbox">
+              show revoked
+            </label>
             <div class="section-actions">
-              <div class="dash-window-selector" id="keys-window-selector">
-                <button
-                  class="dash-window-btn"
-                  data-window="3600000"
-                  type="button"
-                >
-                  1h
-                </button>
-                <button
-                  class="dash-window-btn"
-                  data-window="21600000"
-                  type="button"
-                >
-                  6h
-                </button>
-                <button
-                  class="dash-window-btn active"
-                  data-window="86400000"
-                  type="button"
-                >
-                  24h
-                </button>
-                <button
-                  class="dash-window-btn"
-                  data-window="604800000"
-                  type="button"
-                >
-                  7d
-                </button>
-                <button
-                  class="dash-window-btn"
-                  data-window="2592000000"
-                  type="button"
-                >
-                  30d
-                </button>
-              </div>
-              <label class="toggle-inline">
-                <input id="toggle-show-revoked-keys" type="checkbox">
-                show revoked
-              </label>
               <button
                 id="btn-open-setup"
                 class="btn btn-ghost btn-sm"
