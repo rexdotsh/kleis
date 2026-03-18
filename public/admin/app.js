@@ -31,7 +31,7 @@ import {
   syncAccountWindowButtons,
   switchToTab,
   syncDashboardWindowButtons,
-  syncKeyScopeModalState,
+  syncScopedAccountAvailability,
   toast,
   updateOAuthProviderUI,
   verifyToken,
@@ -152,52 +152,27 @@ $("#toggle-show-revoked-keys").addEventListener("change", (e) => {
   renderKeys();
 });
 
-function bindKeyScopeModal({
-  modalSelector,
-  accountSelector,
-  providerSelector,
-  modelInputId,
-  mode,
-}) {
-  const modal = $(modalSelector);
-
-  modal.addEventListener("change", (e) => {
-    if (e.target.matches(accountSelector) && e.target.checked) {
+for (const [sel, acct, prov, mode] of [
+  ["#modal-create-key", ".key-scope-account", ".key-scope-provider", "create"],
+  [
+    "#modal-edit-key",
+    ".edit-key-scope-account",
+    ".edit-key-scope-provider",
+    "edit",
+  ],
+]) {
+  $(sel).addEventListener("change", (e) => {
+    if (e.target.matches(acct) && e.target.checked) {
       for (const input of $$(
-        `${accountSelector}[data-provider="${e.target.dataset.provider}"]`
+        `${acct}[data-provider="${e.target.dataset.provider}"]`
       )) {
-        if (input !== e.target) {
-          input.checked = false;
-        }
+        if (input !== e.target) input.checked = false;
       }
     }
-
-    if (e.target.matches(`${providerSelector}, ${accountSelector}`)) {
-      syncKeyScopeModalState(mode);
-    }
-  });
-
-  modal.addEventListener("input", (e) => {
-    if (e.target.id === modelInputId) {
-      syncKeyScopeModalState(mode);
-    }
+    if (e.target.matches(`${prov}, ${acct}`))
+      syncScopedAccountAvailability(mode);
   });
 }
-
-bindKeyScopeModal({
-  modalSelector: "#modal-create-key",
-  accountSelector: ".key-scope-account",
-  providerSelector: ".key-scope-provider",
-  modelInputId: "key-model-scopes",
-  mode: "create",
-});
-bindKeyScopeModal({
-  modalSelector: "#modal-edit-key",
-  accountSelector: ".edit-key-scope-account",
-  providerSelector: ".edit-key-scope-provider",
-  modelInputId: "edit-key-model-scopes",
-  mode: "edit",
-});
 
 $("#oauth-provider").addEventListener("change", updateOAuthProviderUI);
 updateOAuthProviderUI();

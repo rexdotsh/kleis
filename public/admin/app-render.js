@@ -32,10 +32,7 @@ function accountCardHtml(account) {
   const name = account.label || account.accountId || account.id;
   const usage = accountUsageForId(account.id);
   const windowLabel = usageWindowLabel(state.accountUsageWindowMs);
-  const shortId =
-    account.id.length > 12
-      ? `${account.id.slice(0, 8)}...${account.id.slice(-4)}`
-      : account.id;
+  const shortAccountId = maskKey(account.id);
 
   const setPrimaryBtn = account.isPrimary
     ? ""
@@ -45,15 +42,15 @@ function accountCardHtml(account) {
   const identityParts = [];
   if (account.accountId && account.accountId !== name) {
     identityParts.push(
-      `<span class="card-meta-item"><span style="color:var(--text-tertiary)">account:</span> ${escapeHtml(account.accountId)}</span>`
+      `<span class="card-meta-item"><span class="text-muted">account:</span> ${escapeHtml(account.accountId)}</span>`
     );
   }
   identityParts.push(
-    `<span class="card-meta-item"><span style="color:var(--text-tertiary)">id:</span> ${escapeHtml(shortId)}</span>`
+    `<span class="card-meta-item"><span class="text-muted">id:</span> ${escapeHtml(shortAccountId)}</span>`
   );
   if (account.createdAt) {
     identityParts.push(
-      `<span class="card-meta-item"><span style="color:var(--text-tertiary)">created:</span> ${escapeHtml(relativeTime(account.createdAt))}</span>`
+      `<span class="card-meta-item"><span class="text-muted">created:</span> ${escapeHtml(relativeTime(account.createdAt))}</span>`
     );
   }
 
@@ -61,7 +58,7 @@ function accountCardHtml(account) {
 
   const meta = metadataHtml(account.metadata);
 
-  return `<div class="card" data-account-id="${account.id}" style="cursor:pointer">
+  return `<div class="card" data-account-id="${account.id}">
     <div class="card-top">
       <div class="card-identity">
         <span class="badge badge-${account.provider}">${account.provider}</span>
@@ -81,11 +78,11 @@ function accountCardHtml(account) {
       <span class="dot-sep"></span>
       <span>${escapeHtml(expiryCountdown(account.expiresAt))}</span>
       ${account.lastRefreshAt ? `<span class="dot-sep"></span><span title="${escapeHtml(new Date(account.lastRefreshAt).toLocaleString())}">refreshed ${escapeHtml(relativeTime(account.lastRefreshAt))}</span>` : ""}
-      ${account.lastRefreshStatus && account.lastRefreshStatus !== "success" ? `<span class="dot-sep"></span><span style="color:var(--red)">${escapeHtml(account.lastRefreshStatus)}</span>` : ""}
+      ${account.lastRefreshStatus && account.lastRefreshStatus !== "success" ? `<span class="dot-sep"></span><span class="text-error">${escapeHtml(account.lastRefreshStatus)}</span>` : ""}
     </div>
     <div class="card-meta">${identityParts.join("")}</div>
-    ${usageParts.length ? `<div class="card-meta" style="margin-top:6px">${usageParts.join("")}</div>` : ""}
-    ${meta ? `<div class="card-meta" style="margin-top:6px">${meta}</div>` : ""}
+    ${usageParts.length ? `<div class="card-meta">${usageParts.join("")}</div>` : ""}
+    ${meta ? `<div class="card-meta">${meta}</div>` : ""}
   </div>`;
 }
 
@@ -127,7 +124,7 @@ function keyScopeSummaryHtml(key) {
       })
       .join(", ");
     parts.push(
-      `<span class="card-meta-item" style="color:var(--text-tertiary)">pinned: ${escapeHtml(label)}</span>`
+      `<span class="card-meta-item text-muted">pinned: ${escapeHtml(label)}</span>`
     );
   }
 
@@ -137,14 +134,12 @@ function keyScopeSummaryHtml(key) {
         ? key.modelScopes.join(", ")
         : `${key.modelScopes.slice(0, 2).join(", ")} +${key.modelScopes.length - 2}`;
     parts.push(
-      `<span class="card-meta-item" style="color:var(--text-tertiary)">models: ${escapeHtml(label)}</span>`
+      `<span class="card-meta-item text-muted">models: ${escapeHtml(label)}</span>`
     );
   }
 
   if (!parts.length) {
-    parts.push(
-      '<span class="card-meta-item" style="color:var(--text-tertiary)">all providers</span>'
-    );
+    parts.push('<span class="card-meta-item text-muted">all providers</span>');
   }
 
   return parts;
@@ -190,7 +185,7 @@ function keyCardHtml(key) {
     ? `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">edit</button><button class="btn btn-danger btn-sm" data-action="delete-key" data-key-id="${key.id}" type="button">delete</button>`
     : `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">edit</button><button class="btn btn-ghost btn-sm" data-action="rotate-key" data-key-id="${key.id}" type="button">rotate</button><button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${key.id}" type="button">revoke</button>`;
 
-  return `<div class="card" data-key-id="${key.id}" style="cursor:pointer">
+  return `<div class="card" data-key-id="${key.id}">
     <div class="card-top">
       <div class="card-identity">
         <span class="card-label">${escapeHtml(key.label || "untitled")}</span>
@@ -205,7 +200,7 @@ function keyCardHtml(key) {
     </div>
     <div class="card-key"><code>${escapeHtml(keyDisplay)}</code></div>
     <div class="card-meta">${[...scopeParts, ...metaParts].join("")}</div>
-    ${providerUsageParts.length ? `<div class="card-meta" style="margin-top:6px">${providerUsageParts.join("")}</div>` : ""}
+    ${providerUsageParts.length ? `<div class="card-meta">${providerUsageParts.join("")}</div>` : ""}
   </div>`;
 }
 
@@ -395,7 +390,7 @@ async function openUsageDetailModal({ title, path, renderBody }) {
     $("#key-detail-body").innerHTML = renderBody(data);
   } catch (e) {
     $("#key-detail-body").innerHTML =
-      `<div class="empty-state"><div class="empty-state-text" style="color:var(--red)">${escapeHtml(e.message)}</div></div>`;
+      `<div class="empty-state"><div class="empty-state-text text-error">${escapeHtml(e.message)}</div></div>`;
   }
 }
 

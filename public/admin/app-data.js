@@ -397,7 +397,7 @@ function metadataHtml(metadata) {
   return entries
     .map(([k, v]) => {
       const display = Array.isArray(v) ? v.join(", ") : String(v);
-      return `<span class="card-meta-item"><span style="color:var(--text-tertiary)">${escapeHtml(k)}:</span> ${escapeHtml(display)}</span>`;
+      return `<span class="card-meta-item"><span class="text-muted">${escapeHtml(k)}:</span> ${escapeHtml(display)}</span>`;
     })
     .join("");
 }
@@ -441,61 +441,20 @@ const KEY_SCOPE_MODAL_CONFIG = {
     modalSelector: "#modal-create-key",
     providerSelector: ".key-scope-provider",
     accountSelector: ".key-scope-account",
-    accountInputClass: "key-scope-account",
     accountContainer: "#key-account-scopes",
-    modelInput: "#key-model-scopes",
-    summary: "#key-scope-summary",
   },
   edit: {
     modalSelector: "#modal-edit-key",
     providerSelector: ".edit-key-scope-provider",
     accountSelector: ".edit-key-scope-account",
-    accountInputClass: "edit-key-scope-account",
     accountContainer: "#edit-key-account-scopes",
-    modelInput: "#edit-key-model-scopes",
-    summary: "#edit-key-scope-summary",
   },
 };
 
-function shortIdentifier(value) {
-  if (!value) return "";
-  return value.length > 18
+const shortId = (value) =>
+  value && value.length > 14
     ? `${value.slice(0, 8)}...${value.slice(-4)}`
-    : value;
-}
-
-function accountScopeLabel(accountId) {
-  const account = accountById(accountId);
-  if (!account) {
-    return `missing ${shortIdentifier(accountId)}`;
-  }
-
-  return account.label || account.accountId || shortIdentifier(account.id);
-}
-
-function accountScopeMeta(account) {
-  const parts = [];
-  if (account.accountId && account.accountId !== account.label) {
-    parts.push(account.accountId);
-  }
-  parts.push(shortIdentifier(account.id));
-  if (account.expiresAt) {
-    parts.push(expiryCountdown(account.expiresAt));
-  }
-  return parts.join(" · ");
-}
-
-function summarizeSelection(values, fallback) {
-  if (!values.length) {
-    return fallback;
-  }
-
-  if (values.length <= 2) {
-    return values.join(", ");
-  }
-
-  return `${values.slice(0, 2).join(", ")} +${values.length - 2} more`;
-}
+    : value || "";
 
 function renderAccountScopeOptions(mode, selectedAccountIds = []) {
   const config = KEY_SCOPE_MODAL_CONFIG[mode];
@@ -524,10 +483,8 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
 
   container.innerHTML = groups
     .map(
-      ({ provider, accounts }) => `<div class="scope-account-group">
-        <div class="scope-account-group-header">
+      ({ provider, accounts }) => `<div class="scope-account-group-header">
           <span class="badge badge-${provider}">${provider}</span>
-          <span class="scope-account-group-count">${accounts.length} account${accounts.length === 1 ? "" : "s"}</span>
         </div>
         <div class="scope-account-list">
           ${accounts
@@ -536,22 +493,19 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
                 <input
                   type="checkbox"
                   value="${account.id}"
-                  class="${config.accountInputClass}"
+                  class="${config.accountSelector.slice(1)}"
                   data-provider="${account.provider}"
                   ${selectedIds.has(account.id) ? "checked" : ""}
                 >
                 <span class="scope-account-copy">
-                  <span class="scope-account-title">
-                    ${escapeHtml(account.label || account.accountId || shortIdentifier(account.id))}
-                    ${account.isPrimary ? '<span class="badge badge-primary">primary</span>' : ""}
-                  </span>
-                  <span class="scope-account-meta">${escapeHtml(accountScopeMeta(account))}</span>
+                  <span class="scope-account-name">${escapeHtml(account.label || account.accountId || shortId(account.id))}</span>
+                  ${account.isPrimary ? '<span class="badge badge-primary">primary</span>' : ""}
+                  <span class="scope-account-meta">${escapeHtml([shortId(account.id), account.expiresAt ? expiryCountdown(account.expiresAt) : ""].filter(Boolean).join(" · "))}</span>
                 </span>
               </label>`
             )
             .join("")}
-        </div>
-      </div>`
+        </div>`
     )
     .join("");
 }
@@ -574,33 +528,6 @@ function syncScopedAccountAvailability(mode) {
   }
 }
 
-function updateKeyScopeSummary(mode) {
-  const config = KEY_SCOPE_MODAL_CONFIG[mode];
-  const summary = $(config.summary);
-  const modelInput = $(config.modelInput);
-  if (!summary || !modelInput) {
-    return;
-  }
-
-  const providers = checkedValues(config.providerSelector);
-  const accountIds = checkedValues(config.accountSelector);
-  const modelScopes = parseCommaSeparatedList(modelInput.value);
-
-  summary.textContent = [
-    `Providers: ${summarizeSelection(providers, "all providers")}`,
-    `Accounts: ${summarizeSelection(
-      accountIds.map((accountId) => accountScopeLabel(accountId)),
-      "provider primary accounts"
-    )}`,
-    `Models: ${modelScopes.length ? `${modelScopes.length} scoped model${modelScopes.length === 1 ? "" : "s"}` : "all models"}`,
-  ].join(". ");
-}
-
-function syncKeyScopeModalState(mode) {
-  syncScopedAccountAvailability(mode);
-  updateKeyScopeSummary(mode);
-}
-
 function refreshOpenKeyScopeModal(mode) {
   const config = KEY_SCOPE_MODAL_CONFIG[mode];
   if (!$(config.modalSelector).classList.contains("open")) {
@@ -609,7 +536,7 @@ function refreshOpenKeyScopeModal(mode) {
 
   const selectedAccountScopes = checkedValues(config.accountSelector);
   renderAccountScopeOptions(mode, selectedAccountScopes);
-  syncKeyScopeModalState(mode);
+  syncScopedAccountAvailability(mode);
 }
 
 function parseOptionalJsonObject(raw, fieldLabel) {
@@ -663,7 +590,7 @@ async function loadDashboard() {
     if (requestSeq !== state.dashboardRequestSeq) return;
     state.dashboardData = null;
     const message = e instanceof Error ? e.message : "Failed to load usage";
-    el.innerHTML = `<div class="dash-empty" style="color:var(--red)">${escapeHtml(message)}</div>`;
+    el.innerHTML = `<div class="dash-empty text-error">${escapeHtml(message)}</div>`;
   } finally {
     if (requestSeq === state.dashboardRequestSeq) {
       state.dashboardLoading = false;
@@ -709,7 +636,7 @@ async function loadAccounts() {
     state.accountsById = new Map();
     state.accountUsageById = new Map();
     $("#accounts-list").innerHTML =
-      `<div class="empty-state"><div class="empty-state-text" style="color:var(--red)">${escapeHtml(e.message)}</div></div>`;
+      `<div class="empty-state"><div class="empty-state-text text-error">${escapeHtml(e.message)}</div></div>`;
     toast(e.message, "error");
   }
 }
@@ -749,7 +676,7 @@ async function loadKeys() {
     state.keysById = new Map();
     state.keyUsageById = new Map();
     $("#keys-list").innerHTML =
-      `<div class="empty-state"><div class="empty-state-text" style="color:var(--red)">${escapeHtml(e.message)}</div></div>`;
+      `<div class="empty-state"><div class="empty-state-text text-error">${escapeHtml(e.message)}</div></div>`;
     toast(e.message, "error");
   }
 }
@@ -877,7 +804,7 @@ function openCreateKeyModal() {
   $("#key-model-scopes").value = "";
   for (const cb of $$(".key-scope-provider")) cb.checked = false;
   renderAccountScopeOptions("create");
-  syncKeyScopeModalState("create");
+  syncScopedAccountAvailability("create");
   $("#modal-create-key").classList.add("open");
 }
 
@@ -920,7 +847,7 @@ function openEditKeyModal(id) {
     key.expiresAt === null ? "" : String(key.expiresAt);
   setCheckedValues(".edit-key-scope-provider", key.providerScopes);
   renderAccountScopeOptions("edit", key.accountScopes);
-  syncKeyScopeModalState("edit");
+  syncScopedAccountAvailability("edit");
 
   const saveButton = $("#btn-modal-save-key");
   saveButton.dataset.keyId = key.id;
@@ -1360,7 +1287,7 @@ export {
   switchToTab,
   syncAccountWindowButtons,
   syncDashboardWindowButtons,
-  syncKeyScopeModalState,
+  syncScopedAccountAvailability,
   toast,
   tokenStatus,
   updateOAuthProviderUI,

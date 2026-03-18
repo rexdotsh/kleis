@@ -63,6 +63,13 @@ body {
   background: var(--text-tertiary);
 }
 
+.text-muted {
+  color: var(--text-tertiary);
+}
+.text-error {
+  color: var(--red);
+}
+
 #login-gate {
   position: fixed;
   inset: 0;
@@ -291,6 +298,7 @@ body {
   border-radius: var(--radius-lg);
   padding: 20px;
   margin-bottom: 12px;
+  cursor: pointer;
   transition: border-color 200ms ease;
 }
 .card:hover {
@@ -350,6 +358,9 @@ body {
   margin-top: 12px;
   font-size: 11px;
   color: var(--text-tertiary);
+}
+.card-meta + .card-meta {
+  margin-top: 6px;
 }
 .card-meta-item {
   display: inline-flex;
@@ -538,23 +549,20 @@ select.field-input {
 .scope-account-groups {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-.scope-account-group {
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  overflow: hidden;
 }
 
 .scope-account-group-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.scope-account-group-count {
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
   font-size: 10px;
   color: var(--text-tertiary);
 }
@@ -562,32 +570,26 @@ select.field-input {
 .scope-account-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
 .scope-account-option {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  gap: 8px;
+  padding: 5px 10px;
   cursor: pointer;
-  transition:
-    border-color 150ms ease,
-    background 150ms ease;
+  transition: background 100ms ease;
 }
 .scope-account-option:hover {
   background: var(--bg-elevated);
 }
 
 .scope-account-option:has(input:checked) {
-  border-color: var(--amber-dim);
   background: var(--amber-glow);
 }
 
 .scope-account-option.disabled {
-  opacity: 0.4;
+  opacity: 0.35;
   cursor: not-allowed;
   pointer-events: none;
 }
@@ -596,26 +598,30 @@ select.field-input {
   flex-shrink: 0;
 }
 
+.scope-account-option + .scope-account-option {
+  border-top: 1px solid var(--border-subtle);
+}
+
 .scope-account-copy {
   min-width: 0;
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
+  overflow: hidden;
 }
 
-.scope-account-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.scope-account-name {
   font-size: 12px;
   color: var(--text-primary);
+  white-space: nowrap;
 }
 
 .scope-account-meta {
   font-size: 10px;
   color: var(--text-tertiary);
-  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .scope-empty {
@@ -625,20 +631,6 @@ select.field-input {
   font-size: 11px;
   color: var(--text-tertiary);
   line-height: 1.5;
-}
-
-.scope-summary {
-  margin-top: 8px;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
-  font-size: 10px;
-  color: var(--text-tertiary);
-  line-height: 1.6;
-  letter-spacing: 0.01em;
-}
-.scope-summary:empty {
-  display: none;
 }
 
 .modal-backdrop {
