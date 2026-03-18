@@ -515,13 +515,9 @@ function dashDelta(current, previous) {
 
 function dashDeltaHtml(value, inverted) {
   if (value === null || value === undefined) return "";
+  if (value === 0) return '<div class="dash-kpi-delta neutral">\u2014</div>';
   const sign = value > 0 ? "+" : "";
-  const cls =
-    value === 0
-      ? "neutral"
-      : value > 0 !== (inverted || false)
-        ? "positive"
-        : "negative";
+  const cls = value > 0 !== (inverted || false) ? "positive" : "negative";
   return `<div class="dash-kpi-delta ${cls}">${sign}${value}% vs prev</div>`;
 }
 
