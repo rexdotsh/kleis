@@ -148,5 +148,5 @@ jobs:
           docker compose -f docker-compose.deploy.yml pull
           docker compose -f docker-compose.deploy.yml run --rm --interactive=false migrate
           docker compose -f docker-compose.deploy.yml up -d app
-          docker image prune -f
+          docker image prune -af
           EOF
