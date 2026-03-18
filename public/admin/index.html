@@ -374,7 +374,7 @@
     </div>
 
     <div id="modal-create-key" class="modal-backdrop">
-      <div class="modal">
+      <div class="modal modal-wide">
         <div class="modal-title">Create API Key</div>
         <div class="field">
           <label class="field-label" for="key-label">Label</label>
@@ -421,11 +421,12 @@
           </label>
           <textarea
             id="key-model-scopes"
-            class="field-input"
+            class="field-input field-input-compact"
             placeholder="github-copilot/gpt-5-mini, anthropic/claude-sonnet-4-5"
+            rows="2"
           ></textarea>
           <div class="field-hint">
-            Comma or newline separated model patterns. Leave empty for all.
+            Comma or newline separated. Leave empty for all.
           </div>
         </div>
         <div id="key-scope-summary" class="scope-summary"></div>
@@ -499,7 +500,7 @@
     </div>
 
     <div id="modal-edit-key" class="modal-backdrop">
-      <div class="modal">
+      <div class="modal modal-wide">
         <div class="modal-title">Edit API Key</div>
         <div class="field">
           <label class="field-label" for="edit-key-label">Label</label>
@@ -557,11 +558,12 @@
           </label>
           <textarea
             id="edit-key-model-scopes"
-            class="field-input"
+            class="field-input field-input-compact"
             placeholder="github-copilot/gpt-5-mini, anthropic/claude-sonnet-4-5"
+            rows="2"
           ></textarea>
           <div class="field-hint">
-            Comma or newline separated model patterns. Leave empty for all.
+            Comma or newline separated. Leave empty for all.
           </div>
         </div>
         <div id="edit-key-scope-summary" class="scope-summary"></div>

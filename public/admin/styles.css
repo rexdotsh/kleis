@@ -476,8 +476,11 @@ body {
 }
 textarea.field-input {
   resize: vertical;
-  min-height: 80px;
+  min-height: 60px;
   line-height: 1.45;
+}
+textarea.field-input-compact {
+  min-height: 38px;
 }
 select.field-input {
   cursor: pointer;
@@ -495,8 +498,8 @@ select.field-input {
 
 .scope-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
 }
 
 .scope-check {
@@ -507,123 +510,135 @@ select.field-input {
   cursor: pointer;
   font-size: 12px;
   color: var(--text-secondary);
+  transition: color 120ms ease;
 }
 
 .scope-grid .scope-check {
   margin-bottom: 0;
-  padding: 10px 12px;
+  padding: 9px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
+  background: var(--bg-input);
+  transition:
+    border-color 150ms ease,
+    background 150ms ease,
+    color 150ms ease;
+}
+.scope-grid .scope-check:hover {
+  border-color: var(--text-tertiary);
+  color: var(--text-primary);
 }
 
 .scope-grid .scope-check:has(input:checked) {
   border-color: var(--amber-dim);
-  background:
-    linear-gradient(135deg, var(--amber-glow), transparent 70%),
-    var(--bg-elevated);
+  background: var(--amber-glow);
+  color: var(--text-primary);
 }
 
 .scope-account-groups {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .scope-account-group {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
-  background: var(--bg-elevated);
-  padding: 12px;
+  padding: 10px 12px;
 }
 
 .scope-account-group-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .scope-account-group-count {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-tertiary);
 }
 
 .scope-account-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .scope-account-option {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
+  padding: 8px 10px;
+  border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  background: var(--bg-input);
   cursor: pointer;
+  transition:
+    border-color 150ms ease,
+    background 150ms ease;
+}
+.scope-account-option:hover {
+  background: var(--bg-elevated);
 }
 
 .scope-account-option:has(input:checked) {
   border-color: var(--amber-dim);
-  background:
-    linear-gradient(135deg, var(--amber-glow), transparent 72%), var(--bg-input);
+  background: var(--amber-glow);
 }
 
 .scope-account-option.disabled {
-  opacity: 0.5;
+  opacity: 0.4;
   cursor: not-allowed;
+  pointer-events: none;
 }
 
 .scope-account-option input {
-  margin-top: 2px;
+  flex-shrink: 0;
 }
 
 .scope-account-copy {
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .scope-account-title {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
   font-size: 12px;
   color: var(--text-primary);
 }
 
 .scope-account-meta {
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-tertiary);
-  line-height: 1.45;
+  line-height: 1;
 }
 
 .scope-empty {
-  padding: 12px;
+  padding: 10px 12px;
   border: 1px dashed var(--border);
   border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
   font-size: 11px;
   color: var(--text-tertiary);
   line-height: 1.5;
 }
 
 .scope-summary {
-  margin-top: 6px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
+  margin-top: 8px;
+  padding: 8px 12px;
   border-radius: var(--radius-sm);
-  background:
-    linear-gradient(135deg, var(--amber-glow), transparent 65%),
-    var(--bg-elevated);
-  font-size: 11px;
-  color: var(--text-secondary);
-  line-height: 1.5;
+  background: var(--bg-elevated);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+}
+.scope-summary:empty {
+  display: none;
 }
 
 .modal-backdrop {
@@ -645,13 +660,18 @@ select.field-input {
   border-radius: var(--radius-lg);
   padding: 28px;
   width: 440px;
-  max-width: 90vw;
-  max-height: 85vh;
+  max-width: 92vw;
+  max-height: 88vh;
   overflow-y: auto;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+  box-shadow:
+    0 24px 80px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(255, 255, 255, 0.03);
 }
 .modal-sm {
   width: 380px;
+}
+.modal-wide {
+  width: 580px;
 }
 .modal-title {
   font-family: var(--font-display);

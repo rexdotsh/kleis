@@ -105,45 +105,49 @@ function renderAccounts() {
 }
 
 function keyScopeSummaryHtml(key) {
-  const providerSummary = key.providerScopes?.length
-    ? key.providerScopes
+  const parts = [];
+
+  if (key.providerScopes?.length) {
+    parts.push(
+      `<span class="card-meta-item">${key.providerScopes
         .map(
           (provider) =>
             `<span class="badge badge-${provider}">${provider}</span>`
         )
-        .join(" ")
-    : '<span style="color:var(--text-tertiary)">all providers</span>';
+        .join(" ")}</span>`
+    );
+  }
 
-  const accountSummary = key.accountScopes?.length
-    ? escapeHtml(
-        key.accountScopes
-          .map((accountId) => {
-            const account = accountById(accountId);
-            if (!account) {
-              return "missing account";
-            }
+  if (key.accountScopes?.length) {
+    const label = key.accountScopes
+      .map((accountId) => {
+        const account = accountById(accountId);
+        if (!account) return "missing";
+        return account.label || account.accountId || maskKey(account.id);
+      })
+      .join(", ");
+    parts.push(
+      `<span class="card-meta-item" style="color:var(--text-tertiary)">pinned: ${escapeHtml(label)}</span>`
+    );
+  }
 
-            const label =
-              account.label || account.accountId || maskKey(account.id);
-            return `${account.provider}: ${label}${account.isPrimary ? " (primary)" : ""}`;
-          })
-          .join(", ")
-      )
-    : '<span style="color:var(--text-tertiary)">provider primary accounts</span>';
+  if (key.modelScopes?.length) {
+    const label =
+      key.modelScopes.length <= 2
+        ? key.modelScopes.join(", ")
+        : `${key.modelScopes.slice(0, 2).join(", ")} +${key.modelScopes.length - 2}`;
+    parts.push(
+      `<span class="card-meta-item" style="color:var(--text-tertiary)">models: ${escapeHtml(label)}</span>`
+    );
+  }
 
-  const modelSummary = key.modelScopes?.length
-    ? escapeHtml(
-        key.modelScopes.length <= 2
-          ? key.modelScopes.join(", ")
-          : `${key.modelScopes.slice(0, 2).join(", ")} +${key.modelScopes.length - 2} more`
-      )
-    : '<span style="color:var(--text-tertiary)">all models</span>';
+  if (!parts.length) {
+    parts.push(
+      '<span class="card-meta-item" style="color:var(--text-tertiary)">all providers</span>'
+    );
+  }
 
-  return [
-    `<span class="card-meta-item"><span style="color:var(--text-tertiary)">providers:</span> ${providerSummary}</span>`,
-    `<span class="card-meta-item"><span style="color:var(--text-tertiary)">accounts:</span> ${accountSummary}</span>`,
-    `<span class="card-meta-item"><span style="color:var(--text-tertiary)">models:</span> ${modelSummary}</span>`,
-  ];
+  return parts;
 }
 
 function keyCardHtml(key) {
@@ -200,8 +204,7 @@ function keyCardHtml(key) {
       </div>
     </div>
     <div class="card-key"><code>${escapeHtml(keyDisplay)}</code></div>
-    <div class="card-meta">${scopeParts.join("")}</div>
-    <div class="card-meta" style="margin-top:6px">${metaParts.join("")}</div>
+    <div class="card-meta">${[...scopeParts, ...metaParts].join("")}</div>
     ${providerUsageParts.length ? `<div class="card-meta" style="margin-top:6px">${providerUsageParts.join("")}</div>` : ""}
   </div>`;
 }
