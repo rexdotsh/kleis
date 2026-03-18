@@ -77,23 +77,27 @@ const duplicateScopedAccountProvidersBody = {
   message: "accountScopes can include at most one account per provider",
 } as const;
 
-const normalizeScopeList = <T extends string>(
-  scopes: readonly T[] | null | undefined
-): T[] | null => {
+const normalizeStringScopeList = (
+  scopes: readonly string[] | null | undefined
+): string[] | null => {
   if (!scopes?.length) {
     return null;
   }
 
-  const normalized = new Set<T>();
+  const normalized = new Set<string>();
   for (const scope of scopes) {
     const value = scope.trim();
     if (value) {
-      normalized.add(value as T);
+      normalized.add(value);
     }
   }
 
   return normalized.size ? Array.from(normalized) : null;
 };
+
+const normalizeProviderScopeList = (
+  scopes: readonly Provider[] | null | undefined
+): Provider[] | null => (scopes?.length ? Array.from(new Set(scopes)) : null);
 
 const validateAccountScopes = async (input: {
   providerScopes: readonly Provider[] | null;
@@ -195,11 +199,9 @@ export const adminKeysRoutes = new Hono()
     const now = Date.now();
     const expiresAt =
       input.expiresAt != null ? toMillisecondsTimestamp(input.expiresAt) : null;
-    const providerScopes = normalizeScopeList(input.providerScopes) as
-      | Provider[]
-      | null;
-    const modelScopes = normalizeScopeList(input.modelScopes);
-    const accountScopes = normalizeScopeList(input.accountScopes);
+    const providerScopes = normalizeProviderScopeList(input.providerScopes);
+    const modelScopes = normalizeStringScopeList(input.modelScopes);
+    const accountScopes = normalizeStringScopeList(input.accountScopes);
 
     if (expiresAt !== null && expiresAt <= now) {
       return context.json(expiresAtInvalidBody, 400);
@@ -256,7 +258,7 @@ export const adminKeysRoutes = new Hono()
       const providerScopes = resolvePatchedValue(
         existing.providerScopes,
         body.providerScopes
-      ) as Provider[] | null;
+      );
       const modelScopes = resolvePatchedValue(
         existing.modelScopes,
         body.modelScopes
@@ -278,11 +280,10 @@ export const adminKeysRoutes = new Hono()
         return context.json(expiresAtInvalidBody, 400);
       }
 
-      const normalizedProviderScopes = normalizeScopeList(providerScopes) as
-        | Provider[]
-        | null;
-      const normalizedModelScopes = normalizeScopeList(modelScopes);
-      const normalizedAccountScopes = normalizeScopeList(accountScopes);
+      const normalizedProviderScopes =
+        normalizeProviderScopeList(providerScopes);
+      const normalizedModelScopes = normalizeStringScopeList(modelScopes);
+      const normalizedAccountScopes = normalizeStringScopeList(accountScopes);
       const accountScopeError = await validateAccountScopes({
         providerScopes: normalizedProviderScopes,
         accountScopes: normalizedAccountScopes,

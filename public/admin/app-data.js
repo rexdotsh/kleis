@@ -438,15 +438,19 @@ function setCheckedValues(selector, values) {
 
 const KEY_SCOPE_MODAL_CONFIG = {
   create: {
+    modalSelector: "#modal-create-key",
     providerSelector: ".key-scope-provider",
     accountSelector: ".key-scope-account",
+    accountInputClass: "key-scope-account",
     accountContainer: "#key-account-scopes",
     modelInput: "#key-model-scopes",
     summary: "#key-scope-summary",
   },
   edit: {
+    modalSelector: "#modal-edit-key",
     providerSelector: ".edit-key-scope-provider",
     accountSelector: ".edit-key-scope-account",
+    accountInputClass: "edit-key-scope-account",
     accountContainer: "#edit-key-account-scopes",
     modelInput: "#edit-key-model-scopes",
     summary: "#edit-key-scope-summary",
@@ -532,7 +536,7 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
                 <input
                   type="checkbox"
                   value="${account.id}"
-                  class="${mode === "create" ? "key-scope-account" : "edit-key-scope-account"}"
+                  class="${config.accountInputClass}"
                   data-provider="${account.provider}"
                   ${selectedIds.has(account.id) ? "checked" : ""}
                 >
@@ -595,6 +599,17 @@ function updateKeyScopeSummary(mode) {
 function syncKeyScopeModalState(mode) {
   syncScopedAccountAvailability(mode);
   updateKeyScopeSummary(mode);
+}
+
+function refreshOpenKeyScopeModal(mode) {
+  const config = KEY_SCOPE_MODAL_CONFIG[mode];
+  if (!$(config.modalSelector).classList.contains("open")) {
+    return;
+  }
+
+  const selectedAccountScopes = checkedValues(config.accountSelector);
+  renderAccountScopeOptions(mode, selectedAccountScopes);
+  syncKeyScopeModalState(mode);
 }
 
 function parseOptionalJsonObject(raw, fieldLabel) {
@@ -685,16 +700,8 @@ async function loadAccounts() {
 
     syncAccountWindowButtons();
 
-    if ($("#modal-create-key").classList.contains("open")) {
-      const selectedAccountScopes = checkedValues(".key-scope-account");
-      renderAccountScopeOptions("create", selectedAccountScopes);
-      syncKeyScopeModalState("create");
-    }
-    if ($("#modal-edit-key").classList.contains("open")) {
-      const selectedAccountScopes = checkedValues(".edit-key-scope-account");
-      renderAccountScopeOptions("edit", selectedAccountScopes);
-      syncKeyScopeModalState("edit");
-    }
+    refreshOpenKeyScopeModal("create");
+    refreshOpenKeyScopeModal("edit");
 
     renderAccounts();
   } catch (e) {

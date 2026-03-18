@@ -115,18 +115,20 @@ function keyScopeSummaryHtml(key) {
     : '<span style="color:var(--text-tertiary)">all providers</span>';
 
   const accountSummary = key.accountScopes?.length
-    ? key.accountScopes
-        .map((accountId) => {
-          const account = accountById(accountId);
-          if (!account) {
-            return "missing account";
-          }
+    ? escapeHtml(
+        key.accountScopes
+          .map((accountId) => {
+            const account = accountById(accountId);
+            if (!account) {
+              return "missing account";
+            }
 
-          const label =
-            account.label || account.accountId || maskKey(account.id);
-          return `${account.provider}: ${label}${account.isPrimary ? " (primary)" : ""}`;
-        })
-        .join(", ")
+            const label =
+              account.label || account.accountId || maskKey(account.id);
+            return `${account.provider}: ${label}${account.isPrimary ? " (primary)" : ""}`;
+          })
+          .join(", ")
+      )
     : '<span style="color:var(--text-tertiary)">provider primary accounts</span>';
 
   const modelSummary = key.modelScopes?.length
@@ -139,7 +141,7 @@ function keyScopeSummaryHtml(key) {
 
   return [
     `<span class="card-meta-item"><span style="color:var(--text-tertiary)">providers:</span> ${providerSummary}</span>`,
-    `<span class="card-meta-item"><span style="color:var(--text-tertiary)">accounts:</span> ${accountSummary.startsWith("<span") ? accountSummary : escapeHtml(accountSummary)}</span>`,
+    `<span class="card-meta-item"><span style="color:var(--text-tertiary)">accounts:</span> ${accountSummary}</span>`,
     `<span class="card-meta-item"><span style="color:var(--text-tertiary)">models:</span> ${modelSummary}</span>`,
   ];
 }

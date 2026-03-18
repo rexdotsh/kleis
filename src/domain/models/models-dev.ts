@@ -12,7 +12,7 @@ type ModelsDevRegistry = JsonObject;
 type ApiKeyScopes = {
   providerScopes: readonly string[] | null;
   modelScopes: readonly string[] | null;
-  accountProviderScopes?: readonly Provider[] | null;
+  accountProviderScopes: readonly Provider[] | null;
 };
 
 type BuildProxyModelsRegistryInput = {
@@ -200,7 +200,7 @@ const cloneProviderModels = (input: {
 const resolveAllowedMappings = (input: {
   configuredProviders: ReadonlySet<Provider>;
   providerScopes: readonly string[] | null;
-  accountProviderScopes?: readonly Provider[] | null | undefined;
+  accountProviderScopes: readonly Provider[] | null;
 }): ProxyMapping[] => {
   return proxyProviderMappings.filter((mapping) => {
     if (!input.configuredProviders.has(mapping.internalProvider)) {
@@ -215,8 +215,7 @@ const resolveAllowedMappings = (input: {
     }
 
     if (
-      input.accountProviderScopes !== undefined &&
-      input.accountProviderScopes !== null &&
+      input.accountProviderScopes &&
       !input.accountProviderScopes.includes(mapping.internalProvider)
     ) {
       return false;
@@ -368,10 +367,12 @@ export const buildProxyModelsRegistry = (
 ): ModelsDevRegistry => {
   const providerScopes = normalizeScopeList(input.apiKeyScopes?.providerScopes);
   const modelScopes = normalizeScopeList(input.apiKeyScopes?.modelScopes);
+  const accountProviderScopes =
+    input.apiKeyScopes?.accountProviderScopes ?? null;
   const mappings = resolveAllowedMappings({
     configuredProviders: new Set(input.configuredProviders),
     providerScopes,
-    accountProviderScopes: input.apiKeyScopes?.accountProviderScopes,
+    accountProviderScopes,
   });
   const registry: ModelsDevRegistry = input.apiKeyScopes
     ? {}

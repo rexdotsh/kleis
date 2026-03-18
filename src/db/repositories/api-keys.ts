@@ -1,16 +1,25 @@
 import { and, desc, eq, gt, isNull, or, type SQL } from "drizzle-orm";
 
-import { apiKeys, requestUsageBuckets } from "../schema";
+import {
+  apiKeys,
+  providers,
+  requestUsageBuckets,
+  type Provider,
+} from "../schema";
 import type { Database } from "../index";
 
 type ScopeList = string[] | null;
+type ProviderScopeList = Provider[] | null;
+
+const isProvider = (value: string): value is Provider =>
+  providers.some((provider) => provider === value);
 
 type ApiKeyRecord = {
   id: string;
   key: string;
   modelsDiscoveryToken: string | null;
   label: string | null;
-  providerScopes: ScopeList;
+  providerScopes: ProviderScopeList;
   modelScopes: ScopeList;
   accountScopes: ScopeList;
   expiresAt: number | null;
@@ -20,7 +29,7 @@ type ApiKeyRecord = {
 
 export type CreateApiKeyInput = {
   label?: string | null;
-  providerScopes?: string[];
+  providerScopes?: Provider[];
   modelScopes?: string[];
   accountScopes?: string[];
   expiresAt?: number | null;
@@ -28,26 +37,26 @@ export type CreateApiKeyInput = {
 
 export type UpdateApiKeyInput = {
   label: string | null;
-  providerScopes: string[] | null;
+  providerScopes: Provider[] | null;
   modelScopes: string[] | null;
   accountScopes: string[] | null;
   expiresAt: number | null;
 };
 
-const parseScopeList = (value: string | null): ScopeList => {
+const parseJsonStringList = (value: string | null): string[] => {
   if (!value) {
-    return null;
+    return [];
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
   } catch {
-    return null;
+    return [];
   }
 
   if (!Array.isArray(parsed)) {
-    return null;
+    return [];
   }
 
   const scopes: string[] = [];
@@ -58,6 +67,16 @@ const parseScopeList = (value: string | null): ScopeList => {
   }
 
   return scopes;
+};
+
+const parseScopeList = (value: string | null): ScopeList => {
+  const scopes = parseJsonStringList(value);
+  return scopes.length ? scopes : null;
+};
+
+const parseProviderScopeList = (value: string | null): ProviderScopeList => {
+  const scopes = parseJsonStringList(value).filter(isProvider);
+  return scopes.length ? scopes : null;
 };
 
 const serializeScopeList = (
@@ -83,7 +102,7 @@ const toRecord = (row: typeof apiKeys.$inferSelect): ApiKeyRecord => ({
   key: row.key,
   modelsDiscoveryToken: row.modelsDiscoveryToken,
   label: row.label,
-  providerScopes: parseScopeList(row.providerScopeJson),
+  providerScopes: parseProviderScopeList(row.providerScopeJson),
   modelScopes: parseScopeList(row.modelScopeJson),
   accountScopes: parseScopeList(row.accountScopeJson),
   expiresAt: row.expiresAt,

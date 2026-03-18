@@ -152,43 +152,51 @@ $("#toggle-show-revoked-keys").addEventListener("change", (e) => {
   renderKeys();
 });
 
-$("#modal-create-key").addEventListener("change", (e) => {
-  if (e.target.matches(".key-scope-account") && e.target.checked) {
-    for (const input of $$(
-      `.key-scope-account[data-provider="${e.target.dataset.provider}"]`
-    )) {
-      if (input !== e.target) {
-        input.checked = false;
+function bindKeyScopeModal({
+  modalSelector,
+  accountSelector,
+  providerSelector,
+  modelInputId,
+  mode,
+}) {
+  const modal = $(modalSelector);
+
+  modal.addEventListener("change", (e) => {
+    if (e.target.matches(accountSelector) && e.target.checked) {
+      for (const input of $$(
+        `${accountSelector}[data-provider="${e.target.dataset.provider}"]`
+      )) {
+        if (input !== e.target) {
+          input.checked = false;
+        }
       }
     }
-  }
-  if (e.target.matches(".key-scope-provider, .key-scope-account")) {
-    syncKeyScopeModalState("create");
-  }
-});
-$("#modal-create-key").addEventListener("input", (e) => {
-  if (e.target.id === "key-model-scopes") {
-    syncKeyScopeModalState("create");
-  }
-});
-$("#modal-edit-key").addEventListener("change", (e) => {
-  if (e.target.matches(".edit-key-scope-account") && e.target.checked) {
-    for (const input of $$(
-      `.edit-key-scope-account[data-provider="${e.target.dataset.provider}"]`
-    )) {
-      if (input !== e.target) {
-        input.checked = false;
-      }
+
+    if (e.target.matches(`${providerSelector}, ${accountSelector}`)) {
+      syncKeyScopeModalState(mode);
     }
-  }
-  if (e.target.matches(".edit-key-scope-provider, .edit-key-scope-account")) {
-    syncKeyScopeModalState("edit");
-  }
+  });
+
+  modal.addEventListener("input", (e) => {
+    if (e.target.id === modelInputId) {
+      syncKeyScopeModalState(mode);
+    }
+  });
+}
+
+bindKeyScopeModal({
+  modalSelector: "#modal-create-key",
+  accountSelector: ".key-scope-account",
+  providerSelector: ".key-scope-provider",
+  modelInputId: "key-model-scopes",
+  mode: "create",
 });
-$("#modal-edit-key").addEventListener("input", (e) => {
-  if (e.target.id === "edit-key-model-scopes") {
-    syncKeyScopeModalState("edit");
-  }
+bindKeyScopeModal({
+  modalSelector: "#modal-edit-key",
+  accountSelector: ".edit-key-scope-account",
+  providerSelector: ".edit-key-scope-provider",
+  modelInputId: "edit-key-model-scopes",
+  mode: "edit",
 });
 
 $("#oauth-provider").addEventListener("change", updateOAuthProviderUI);
