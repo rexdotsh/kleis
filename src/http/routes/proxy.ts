@@ -6,7 +6,7 @@ import {
   recordRequestUsage,
   recordTokenUsage,
 } from "../../db/repositories/request-usage";
-import { getPrimaryProviderAccount } from "../../domain/providers/provider-service";
+import { getRoutableProviderAccount } from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../providers/proxies/codex-proxy";
 import { prepareCopilotProxyRequest } from "../../providers/proxies/copilot-proxy";
@@ -145,6 +145,7 @@ const proxyRequest = async (
 ): Promise<Response> => {
   const startedAt = Date.now();
   const apiKeyId = context.get("proxyApiKeyId");
+  const accountScopeIds = context.get("proxyApiKeyAccountScopeIds");
   let providerAccountId = MISSING_PROVIDER_ACCOUNT_ID;
 
   const requestUrl = new URL(context.req.url);
@@ -178,9 +179,11 @@ const proxyRequest = async (
   }
 
   const now = Date.now();
-  let account: Awaited<ReturnType<typeof getPrimaryProviderAccount>>;
+  let account: Awaited<ReturnType<typeof getRoutableProviderAccount>>;
   try {
-    account = await getPrimaryProviderAccount(db, route.provider, now);
+    account = await getRoutableProviderAccount(db, route.provider, now, {
+      allowedAccountIds: accountScopeIds,
+    });
   } catch {
     usageRecorder.recordImmediate(502);
     return context.json(
@@ -193,13 +196,16 @@ const proxyRequest = async (
   }
 
   if (!account) {
-    usageRecorder.recordImmediate(400);
+    const isAccountScoped = Boolean(accountScopeIds?.length);
+    usageRecorder.recordImmediate(isAccountScoped ? 403 : 400);
     return context.json(
       proxyErrorResponse(
-        `No primary ${route.provider} account is configured`,
-        "account_missing"
+        isAccountScoped
+          ? `No scoped ${route.provider} account is configured for this API key`
+          : `No primary ${route.provider} account is configured`,
+        isAccountScoped ? "account_scope_missing" : "account_missing"
       ),
-      400
+      isAccountScoped ? 403 : 400
     );
   }
 

@@ -2,6 +2,7 @@ import type { Database } from "../../db";
 import {
   extendProviderAccountRefreshLock,
   findProviderAccountById,
+  findProviderAccountsByIds,
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
   recordProviderAccountRefreshFailure,
@@ -301,12 +302,63 @@ export const refreshProviderAccount = async (
   );
 };
 
+const pickPreferredProviderAccount = (
+  accounts: readonly ProviderAccountRecord[]
+): ProviderAccountRecord | null => {
+  if (!accounts.length) {
+    return null;
+  }
+
+  return (
+    [...accounts].sort(
+      (left, right) =>
+        Number(right.isPrimary) - Number(left.isPrimary) ||
+        right.createdAt - left.createdAt
+    )[0] ?? null
+  );
+};
+
 export const getPrimaryProviderAccount = async (
   database: Database,
   provider: Provider,
   now: number
 ): Promise<ProviderAccountRecord | null> => {
   const account = await findPrimaryProviderAccount(database, provider);
+  if (!account) {
+    return null;
+  }
+
+  if (account.expiresAt > now) {
+    return account;
+  }
+
+  return refreshProviderAccount(database, account.id, now);
+};
+
+export const getRoutableProviderAccount = async (
+  database: Database,
+  provider: Provider,
+  now: number,
+  input?: {
+    allowedAccountIds?: readonly string[] | null;
+  }
+): Promise<ProviderAccountRecord | null> => {
+  const allowedAccountIds = Array.from(
+    new Set(
+      input?.allowedAccountIds
+        ?.map((accountId) => accountId.trim())
+        .filter((accountId) => accountId.length > 0) ?? []
+    )
+  );
+  if (!allowedAccountIds.length) {
+    return getPrimaryProviderAccount(database, provider, now);
+  }
+
+  const account = pickPreferredProviderAccount(
+    (await findProviderAccountsByIds(database, allowedAccountIds)).filter(
+      (candidate) => candidate.provider === provider
+    )
+  );
   if (!account) {
     return null;
   }

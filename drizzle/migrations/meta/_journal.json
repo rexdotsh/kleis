@@ -64,6 +64,13 @@
       "when": 1772834753671,
       "tag": "0008_lean_hercules",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1773857211769,
+      "tag": "0009_jittery_silver_centurion",
+      "breakpoints": true
     }
   ]
 }

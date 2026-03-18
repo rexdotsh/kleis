@@ -31,6 +31,7 @@ import {
   syncAccountWindowButtons,
   switchToTab,
   syncDashboardWindowButtons,
+  syncKeyScopeModalState,
   toast,
   updateOAuthProviderUI,
   verifyToken,
@@ -149,6 +150,45 @@ $("#btn-import-account").addEventListener("click", importAccount);
 $("#toggle-show-revoked-keys").addEventListener("change", (e) => {
   state.showRevokedKeys = e.target.checked;
   renderKeys();
+});
+
+$("#modal-create-key").addEventListener("change", (e) => {
+  if (e.target.matches(".key-scope-account") && e.target.checked) {
+    for (const input of $$(
+      `.key-scope-account[data-provider="${e.target.dataset.provider}"]`
+    )) {
+      if (input !== e.target) {
+        input.checked = false;
+      }
+    }
+  }
+  if (e.target.matches(".key-scope-provider, .key-scope-account")) {
+    syncKeyScopeModalState("create");
+  }
+});
+$("#modal-create-key").addEventListener("input", (e) => {
+  if (e.target.id === "key-model-scopes") {
+    syncKeyScopeModalState("create");
+  }
+});
+$("#modal-edit-key").addEventListener("change", (e) => {
+  if (e.target.matches(".edit-key-scope-account") && e.target.checked) {
+    for (const input of $$(
+      `.edit-key-scope-account[data-provider="${e.target.dataset.provider}"]`
+    )) {
+      if (input !== e.target) {
+        input.checked = false;
+      }
+    }
+  }
+  if (e.target.matches(".edit-key-scope-provider, .edit-key-scope-account")) {
+    syncKeyScopeModalState("edit");
+  }
+});
+$("#modal-edit-key").addEventListener("input", (e) => {
+  if (e.target.id === "edit-key-model-scopes") {
+    syncKeyScopeModalState("edit");
+  }
 });
 
 $("#oauth-provider").addEventListener("change", updateOAuthProviderUI);

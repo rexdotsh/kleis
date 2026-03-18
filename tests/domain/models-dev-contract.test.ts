@@ -307,4 +307,52 @@ describe("models registry contract", () => {
     };
     expect(Object.keys(kleis.models ?? {})).toEqual(["openai/gpt-5.3-codex"]);
   });
+
+  test("account-scoped mode only exposes providers backed by scoped accounts", () => {
+    const registry = buildProxyModelsRegistry({
+      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
+      baseOrigin: "https://kleis.example/api/kmd_acc123",
+      configuredProviders: ["codex", "claude", "copilot"],
+      apiKeyScopes: {
+        providerScopes: null,
+        modelScopes: null,
+        accountProviderScopes: ["claude"],
+      },
+    });
+
+    expect(Object.keys(registry).sort()).toEqual(["anthropic", "kleis"]);
+
+    const anthropic = registry.anthropic as {
+      env?: string[];
+      models?: Record<string, { id?: string; provider?: { api?: string } }>;
+    };
+    expect(anthropic.env).toEqual(["KLEIS_API_KEY"]);
+    expect(Object.keys(anthropic.models ?? {})).toEqual(["claude-sonnet-4"]);
+    expect(anthropic.models?.["claude-sonnet-4"]?.provider?.api).toBe(
+      "https://kleis.example/api/kmd_acc123/anthropic/v1"
+    );
+  });
+
+  test("account scopes further narrow provider scopes", () => {
+    const registry = buildProxyModelsRegistry({
+      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
+      baseOrigin: "https://kleis.example/api/kmd_acc456",
+      configuredProviders: ["codex", "claude", "copilot"],
+      apiKeyScopes: {
+        providerScopes: ["codex", "claude"],
+        modelScopes: null,
+        accountProviderScopes: ["claude"],
+      },
+    });
+
+    expect(registry.openai).toBeUndefined();
+    expect(registry.anthropic).toBeDefined();
+
+    const kleis = registry.kleis as {
+      models?: Record<string, unknown>;
+    };
+    expect(Object.keys(kleis.models ?? {})).toEqual([
+      "anthropic/claude-sonnet-4",
+    ]);
+  });
 });

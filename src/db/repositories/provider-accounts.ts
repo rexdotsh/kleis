@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, lte, or } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 
 import type { Database } from "../index";
 import { providerAccounts, type Provider } from "../schema";
@@ -85,6 +85,31 @@ export const findProviderAccountById = async (
   }
 
   return toRecord(row);
+};
+
+export const findProviderAccountsByIds = async (
+  database: Database,
+  ids: readonly string[]
+): Promise<ProviderAccountRecord[]> => {
+  const uniqueIds = Array.from(
+    new Set(ids.map((id) => id.trim()).filter((id) => id.length > 0))
+  );
+  if (!uniqueIds.length) {
+    return [];
+  }
+
+  const rows = await database
+    .select()
+    .from(providerAccounts)
+    .where(inArray(providerAccounts.id, uniqueIds));
+
+  return rows
+    .map(toRecord)
+    .sort(
+      (left, right) =>
+        Number(right.isPrimary) - Number(left.isPrimary) ||
+        right.createdAt - left.createdAt
+    );
 };
 
 export const findPrimaryProviderAccount = async (

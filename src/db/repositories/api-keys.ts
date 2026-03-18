@@ -12,6 +12,7 @@ type ApiKeyRecord = {
   label: string | null;
   providerScopes: ScopeList;
   modelScopes: ScopeList;
+  accountScopes: ScopeList;
   expiresAt: number | null;
   revokedAt: number | null;
   createdAt: number;
@@ -21,6 +22,7 @@ export type CreateApiKeyInput = {
   label?: string | null;
   providerScopes?: string[];
   modelScopes?: string[];
+  accountScopes?: string[];
   expiresAt?: number | null;
 };
 
@@ -28,6 +30,7 @@ export type UpdateApiKeyInput = {
   label: string | null;
   providerScopes: string[] | null;
   modelScopes: string[] | null;
+  accountScopes: string[] | null;
   expiresAt: number | null;
 };
 
@@ -57,6 +60,24 @@ const parseScopeList = (value: string | null): ScopeList => {
   return scopes;
 };
 
+const serializeScopeList = (
+  scopes: readonly string[] | null | undefined
+): string | null => {
+  if (!scopes?.length) {
+    return null;
+  }
+
+  const normalized = new Set<string>();
+  for (const scope of scopes) {
+    const value = scope.trim();
+    if (value) {
+      normalized.add(value);
+    }
+  }
+
+  return normalized.size ? JSON.stringify(Array.from(normalized)) : null;
+};
+
 const toRecord = (row: typeof apiKeys.$inferSelect): ApiKeyRecord => ({
   id: row.id,
   key: row.key,
@@ -64,6 +85,7 @@ const toRecord = (row: typeof apiKeys.$inferSelect): ApiKeyRecord => ({
   label: row.label,
   providerScopes: parseScopeList(row.providerScopeJson),
   modelScopes: parseScopeList(row.modelScopeJson),
+  accountScopes: parseScopeList(row.accountScopeJson),
   expiresAt: row.expiresAt,
   revokedAt: row.revokedAt,
   createdAt: row.createdAt,
@@ -110,12 +132,9 @@ export const createApiKey = async (
     key: generateApiKeyValue(),
     modelsDiscoveryToken: generateModelsDiscoveryToken(),
     label: input.label?.trim() || null,
-    providerScopeJson: input.providerScopes?.length
-      ? JSON.stringify(input.providerScopes)
-      : null,
-    modelScopeJson: input.modelScopes?.length
-      ? JSON.stringify(input.modelScopes)
-      : null,
+    providerScopeJson: serializeScopeList(input.providerScopes),
+    modelScopeJson: serializeScopeList(input.modelScopes),
+    accountScopeJson: serializeScopeList(input.accountScopes),
     expiresAt: input.expiresAt ?? null,
     revokedAt: null,
     createdAt: now,
@@ -128,6 +147,7 @@ export const createApiKey = async (
     label: row.label ?? null,
     providerScopeJson: row.providerScopeJson ?? null,
     modelScopeJson: row.modelScopeJson ?? null,
+    accountScopeJson: row.accountScopeJson ?? null,
     expiresAt: row.expiresAt ?? null,
     revokedAt: row.revokedAt ?? null,
   });
@@ -155,12 +175,9 @@ export const updateApiKey = async (
     .update(apiKeys)
     .set({
       label: input.label,
-      providerScopeJson: input.providerScopes?.length
-        ? JSON.stringify(input.providerScopes)
-        : null,
-      modelScopeJson: input.modelScopes?.length
-        ? JSON.stringify(input.modelScopes)
-        : null,
+      providerScopeJson: serializeScopeList(input.providerScopes),
+      modelScopeJson: serializeScopeList(input.modelScopes),
+      accountScopeJson: serializeScopeList(input.accountScopes),
       expiresAt: input.expiresAt,
     })
     .where(eq(apiKeys.id, id));

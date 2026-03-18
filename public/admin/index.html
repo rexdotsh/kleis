@@ -391,33 +391,44 @@
           <div class="field-hint" style="margin-bottom:8px">
             Leave empty for all providers.
           </div>
-          <label class="scope-check">
-            <input type="checkbox" value="copilot" class="key-scope-provider">
-            copilot
-          </label>
-          <label class="scope-check">
-            <input type="checkbox" value="codex" class="key-scope-provider">
-            codex
-          </label>
-          <label class="scope-check">
-            <input type="checkbox" value="claude" class="key-scope-provider">
-            claude
-          </label>
+          <div class="scope-grid">
+            <label class="scope-check">
+              <input type="checkbox" value="copilot" class="key-scope-provider">
+              copilot
+            </label>
+            <label class="scope-check">
+              <input type="checkbox" value="codex" class="key-scope-provider">
+              codex
+            </label>
+            <label class="scope-check">
+              <input type="checkbox" value="claude" class="key-scope-provider">
+              claude
+            </label>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">Account Scopes</label>
+          <div class="field-hint" style="margin-bottom:10px">
+            Optional. Leave empty to use each provider's primary account. Pick
+            up to one account per provider to pin requests, even if that account
+            is not primary.
+          </div>
+          <div id="key-account-scopes" class="scope-account-groups"></div>
         </div>
         <div class="field">
           <label class="field-label" for="key-model-scopes">
             Model Scopes
           </label>
-          <input
+          <textarea
             id="key-model-scopes"
             class="field-input"
-            type="text"
             placeholder="github-copilot/gpt-5-mini, anthropic/claude-sonnet-4-5"
-          >
+          ></textarea>
           <div class="field-hint">
-            Comma-separated model patterns. Leave empty for all.
+            Comma or newline separated model patterns. Leave empty for all.
           </div>
         </div>
+        <div id="key-scope-summary" class="scope-summary"></div>
         <div class="modal-footer">
           <button class="btn btn-ghost modal-close" type="button">
             cancel
@@ -505,45 +516,55 @@
           <div class="field-hint" style="margin-bottom:8px">
             Leave empty for all providers.
           </div>
-          <label class="scope-check">
-            <input
-              type="checkbox"
-              value="copilot"
-              class="edit-key-scope-provider"
-            >
-            copilot
-          </label>
-          <label class="scope-check">
-            <input
-              type="checkbox"
-              value="codex"
-              class="edit-key-scope-provider"
-            >
-            codex
-          </label>
-          <label class="scope-check">
-            <input
-              type="checkbox"
-              value="claude"
-              class="edit-key-scope-provider"
-            >
-            claude
-          </label>
+          <div class="scope-grid">
+            <label class="scope-check">
+              <input
+                type="checkbox"
+                value="copilot"
+                class="edit-key-scope-provider"
+              >
+              copilot
+            </label>
+            <label class="scope-check">
+              <input
+                type="checkbox"
+                value="codex"
+                class="edit-key-scope-provider"
+              >
+              codex
+            </label>
+            <label class="scope-check">
+              <input
+                type="checkbox"
+                value="claude"
+                class="edit-key-scope-provider"
+              >
+              claude
+            </label>
+          </div>
+        </div>
+        <div class="field">
+          <label class="field-label">Account Scopes</label>
+          <div class="field-hint" style="margin-bottom:10px">
+            Optional. Leave empty to follow the provider primary account. Pick
+            up to one account per provider to pin requests.
+          </div>
+          <div id="edit-key-account-scopes" class="scope-account-groups"></div>
         </div>
         <div class="field">
           <label class="field-label" for="edit-key-model-scopes">
             Model Scopes
           </label>
-          <input
+          <textarea
             id="edit-key-model-scopes"
             class="field-input"
-            type="text"
             placeholder="github-copilot/gpt-5-mini, anthropic/claude-sonnet-4-5"
-          >
+          ></textarea>
           <div class="field-hint">
-            Comma-separated model patterns. Leave empty for all.
+            Comma or newline separated model patterns. Leave empty for all.
           </div>
         </div>
+        <div id="edit-key-scope-summary" class="scope-summary"></div>
         <div class="field">
           <label class="field-label" for="edit-key-expires-at">
             Expires At (unix seconds or ms)

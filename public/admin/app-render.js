@@ -104,6 +104,46 @@ function renderAccounts() {
   $("#accounts-list").innerHTML = accounts.map(accountCardHtml).join("");
 }
 
+function keyScopeSummaryHtml(key) {
+  const providerSummary = key.providerScopes?.length
+    ? key.providerScopes
+        .map(
+          (provider) =>
+            `<span class="badge badge-${provider}">${provider}</span>`
+        )
+        .join(" ")
+    : '<span style="color:var(--text-tertiary)">all providers</span>';
+
+  const accountSummary = key.accountScopes?.length
+    ? key.accountScopes
+        .map((accountId) => {
+          const account = accountById(accountId);
+          if (!account) {
+            return "missing account";
+          }
+
+          const label =
+            account.label || account.accountId || maskKey(account.id);
+          return `${account.provider}: ${label}${account.isPrimary ? " (primary)" : ""}`;
+        })
+        .join(", ")
+    : '<span style="color:var(--text-tertiary)">provider primary accounts</span>';
+
+  const modelSummary = key.modelScopes?.length
+    ? escapeHtml(
+        key.modelScopes.length <= 2
+          ? key.modelScopes.join(", ")
+          : `${key.modelScopes.slice(0, 2).join(", ")} +${key.modelScopes.length - 2} more`
+      )
+    : '<span style="color:var(--text-tertiary)">all models</span>';
+
+  return [
+    `<span class="card-meta-item"><span style="color:var(--text-tertiary)">providers:</span> ${providerSummary}</span>`,
+    `<span class="card-meta-item"><span style="color:var(--text-tertiary)">accounts:</span> ${accountSummary.startsWith("<span") ? accountSummary : escapeHtml(accountSummary)}</span>`,
+    `<span class="card-meta-item"><span style="color:var(--text-tertiary)">models:</span> ${modelSummary}</span>`,
+  ];
+}
+
 function keyCardHtml(key) {
   const revoked = !!key.revokedAt;
   const status = revoked ? "revoked" : isKeyActive(key) ? "active" : "expired";
@@ -113,13 +153,8 @@ function keyCardHtml(key) {
   const windowLabel = usageWindowLabel(state.keyUsageWindowMs);
   const modelsUrl = status === "active" ? modelsUrlForKey(key) : null;
 
-  const scopeBadges = key.providerScopes
-    ? key.providerScopes
-        .map((p) => `<span class="badge badge-${p}">${p}</span>`)
-        .join(" ")
-    : '<span style="color:var(--text-tertiary)">all providers</span>';
-
-  const metaParts = [`<span class="card-meta-item">${scopeBadges}</span>`];
+  const scopeParts = keyScopeSummaryHtml(key);
+  const metaParts = [];
 
   metaParts.push(
     ...usageMetaParts(usage, {
@@ -163,7 +198,8 @@ function keyCardHtml(key) {
       </div>
     </div>
     <div class="card-key"><code>${escapeHtml(keyDisplay)}</code></div>
-    <div class="card-meta">${metaParts.join("")}</div>
+    <div class="card-meta">${scopeParts.join("")}</div>
+    <div class="card-meta" style="margin-top:6px">${metaParts.join("")}</div>
     ${providerUsageParts.length ? `<div class="card-meta" style="margin-top:6px">${providerUsageParts.join("")}</div>` : ""}
   </div>`;
 }

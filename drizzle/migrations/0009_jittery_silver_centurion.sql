@@ -1,0 +1,1 @@
+ALTER TABLE `api_keys` ADD `account_scope_json` text;
