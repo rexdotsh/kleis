@@ -32,6 +32,7 @@ const state = {
   keysById: new Map(),
   keyUsageById: new Map(),
   keyUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
+  keysLoaded: false,
   showRevokedKeys: false,
   activeOAuth: null,
   revealedKeyIds: new Set(),
@@ -240,6 +241,15 @@ function syncAccountWindowButtons() {
     btn.classList.toggle(
       "active",
       Number(btn.dataset.window) === state.accountUsageWindowMs
+    );
+  }
+}
+
+function syncKeyWindowButtons() {
+  for (const btn of $$("#keys-window-selector .dash-window-btn")) {
+    btn.classList.toggle(
+      "active",
+      Number(btn.dataset.window) === state.keyUsageWindowMs
     );
   }
 }
@@ -631,6 +641,9 @@ async function loadAccounts() {
     refreshOpenKeyScopeModal("edit");
 
     renderAccounts();
+    if (state.keysLoaded) {
+      renderKeys();
+    }
   } catch (e) {
     state.accounts = [];
     state.accountsById = new Map();
@@ -653,6 +666,7 @@ async function loadKeys() {
 
     state.keys = keysResult.value.keys || [];
     state.keysById = usageMapFromList(state.keys, "id");
+    state.keysLoaded = true;
 
     if (usageResult.status === "fulfilled") {
       if (typeof usageResult.value.windowMs === "number") {
@@ -667,6 +681,7 @@ async function loadKeys() {
       toast("Failed to load API key usage", "error");
     }
 
+    syncKeyWindowButtons();
     renderKeys();
     if (state.dashboardData && !state.dashboardLoading) {
       renderDashboard(state.dashboardData);
@@ -675,6 +690,7 @@ async function loadKeys() {
     state.keys = [];
     state.keysById = new Map();
     state.keyUsageById = new Map();
+    state.keysLoaded = true;
     $("#keys-list").innerHTML =
       `<div class="empty-state"><div class="empty-state-text text-error">${escapeHtml(e.message)}</div></div>`;
     toast(e.message, "error");
@@ -1202,6 +1218,7 @@ function enterApp() {
   if (hash && $(`#panel-${hash}`)) switchToTab(hash);
   syncDashboardWindowButtons();
   syncAccountWindowButtons();
+  syncKeyWindowButtons();
   loadDashboard();
   loadAccounts();
   loadKeys();
@@ -1218,6 +1235,7 @@ function logout() {
   state.keysById = new Map();
   state.keyUsageById = new Map();
   state.keyUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
+  state.keysLoaded = false;
   state.showRevokedKeys = false;
   state.activeOAuth = null;
   state.revealedKeyIds.clear();
@@ -1295,4 +1313,5 @@ export {
   usageMetaParts,
   usageWindowLabel,
   verifyToken,
+  syncKeyWindowButtons,
 };

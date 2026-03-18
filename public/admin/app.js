@@ -31,6 +31,7 @@ import {
   syncAccountWindowButtons,
   switchToTab,
   syncDashboardWindowButtons,
+  syncKeyWindowButtons,
   syncScopedAccountAvailability,
   toast,
   updateOAuthProviderUI,
@@ -139,6 +140,15 @@ $("#accounts-window-selector").addEventListener("click", (e) => {
   state.accountUsageWindowMs = windowMs;
   syncAccountWindowButtons();
   loadAccounts();
+});
+$("#keys-window-selector").addEventListener("click", (e) => {
+  const btn = e.target.closest(".dash-window-btn");
+  if (!btn) return;
+  const windowMs = Number(btn.dataset.window);
+  if (!windowMs || windowMs === state.keyUsageWindowMs) return;
+  state.keyUsageWindowMs = windowMs;
+  syncKeyWindowButtons();
+  loadKeys();
 });
 $("#btn-create-key").addEventListener("click", openCreateKeyModal);
 $("#btn-open-setup").addEventListener("click", openSetupModal);

@@ -69,7 +69,7 @@
         <div id="panel-usage" class="tab-panel active fade-in-delay">
           <div class="dash-controls">
             <div><span class="section-title">Usage</span></div>
-            <div style="display:flex;gap:8px;align-items:center">
+            <div class="section-actions">
               <div class="dash-window-selector" id="dash-window-selector">
                 <button
                   class="dash-window-btn"
@@ -125,7 +125,7 @@
               <span class="section-title">Provider Accounts</span>
               <span id="accounts-count" class="section-count"></span>
             </div>
-            <div style="display:flex;gap:8px;align-items:center">
+            <div class="section-actions">
               <div class="dash-window-selector" id="accounts-window-selector">
                 <button
                   class="dash-window-btn"
@@ -181,10 +181,45 @@
               <span class="section-title">API Keys</span>
               <span id="keys-count" class="section-count"></span>
             </div>
-            <div style="display:flex;gap:8px">
-              <label
-                style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);margin-right:2px;cursor:pointer"
-              >
+            <div class="section-actions">
+              <div class="dash-window-selector" id="keys-window-selector">
+                <button
+                  class="dash-window-btn"
+                  data-window="3600000"
+                  type="button"
+                >
+                  1h
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="21600000"
+                  type="button"
+                >
+                  6h
+                </button>
+                <button
+                  class="dash-window-btn active"
+                  data-window="86400000"
+                  type="button"
+                >
+                  24h
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="604800000"
+                  type="button"
+                >
+                  7d
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="2592000000"
+                  type="button"
+                >
+                  30d
+                </button>
+              </div>
+              <label class="toggle-inline">
                 <input id="toggle-show-revoked-keys" type="checkbox">
                 show revoked
               </label>
