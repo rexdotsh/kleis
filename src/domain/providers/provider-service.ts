@@ -318,7 +318,7 @@ const pickPreferredProviderAccount = (
   );
 };
 
-export const getPrimaryProviderAccount = async (
+const getPrimaryProviderAccount = async (
   database: Database,
   provider: Provider,
   now: number
