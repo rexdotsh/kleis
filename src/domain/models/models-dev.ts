@@ -226,13 +226,14 @@ const resolveAllowedMappings = (input: {
   });
 };
 
-const patchCanonicalProviders = (input: {
-  registry: ModelsDevRegistry;
+const mergeKleisProviderModels = (input: {
   upstreamRegistry: ModelsDevRegistry;
   baseOrigin: string;
   mappings: readonly ProxyMapping[];
   modelScopes: readonly string[] | null;
-}): void => {
+}): JsonObject => {
+  const models: JsonObject = {};
+
   for (const mapping of input.mappings) {
     const sourceProvider = getObjectProperty(
       input.upstreamRegistry,
@@ -249,49 +250,6 @@ const patchCanonicalProviders = (input: {
       continue;
     }
 
-    const apiUrl = `${input.baseOrigin}${mapping.routeBasePath}`;
-    const providerModels = cloneProviderModels({
-      sourceModels: getObjectProperty(sourceProvider, "models") ?? {},
-      apiUrl,
-      npm: mapping.npm,
-      shouldIncludeModel: (modelId) =>
-        isModelSupportedByProxyProvider(mapping.internalProvider, modelId) &&
-        isModelInScope({
-          model: modelId,
-          route,
-          modelScopes: input.modelScopes,
-        }),
-    });
-    if (!Object.keys(providerModels).length) {
-      continue;
-    }
-
-    const provider = cloneJsonValue(sourceProvider);
-    provider.id = mapping.canonicalProvider;
-    provider.env = [PROXY_API_KEY_ENV];
-    provider.api = apiUrl;
-    provider.npm = mapping.npm;
-    provider.models = providerModels;
-    input.registry[mapping.canonicalProvider] = provider;
-  }
-};
-
-const mergeKleisProviderModels = (input: {
-  registry: ModelsDevRegistry;
-  baseOrigin: string;
-  mappings: readonly ProxyMapping[];
-}): JsonObject => {
-  const models: JsonObject = {};
-
-  for (const mapping of input.mappings) {
-    const sourceProvider = getObjectProperty(
-      input.registry,
-      mapping.canonicalProvider
-    );
-    if (!sourceProvider) {
-      continue;
-    }
-
     Object.assign(
       models,
       cloneProviderModels({
@@ -301,7 +259,12 @@ const mergeKleisProviderModels = (input: {
         modelPrefix: mapping.canonicalProvider,
         sourceLabel: mapping.canonicalProvider,
         shouldIncludeModel: (modelId) =>
-          isModelSupportedByProxyProvider(mapping.internalProvider, modelId),
+          isModelSupportedByProxyProvider(mapping.internalProvider, modelId) &&
+          isModelInScope({
+            model: modelId,
+            route,
+            modelScopes: input.modelScopes,
+          }),
       })
     );
   }
@@ -310,9 +273,10 @@ const mergeKleisProviderModels = (input: {
 };
 
 const toKleisProviderEntry = (input: {
-  registry: ModelsDevRegistry;
+  upstreamRegistry: ModelsDevRegistry;
   baseOrigin: string;
   mappings: readonly ProxyMapping[];
+  modelScopes: readonly string[] | null;
 }): JsonObject => {
   return {
     id: KLEIS_PROVIDER_ID,
@@ -324,13 +288,16 @@ const toKleisProviderEntry = (input: {
 
 const appendKleisProviderEntry = (input: {
   registry: ModelsDevRegistry;
+  upstreamRegistry: ModelsDevRegistry;
   baseOrigin: string;
   mappings: readonly ProxyMapping[];
+  modelScopes: readonly string[] | null;
 }): void => {
   const generatedProvider = toKleisProviderEntry({
-    registry: input.registry,
+    upstreamRegistry: input.upstreamRegistry,
     baseOrigin: input.baseOrigin,
     mappings: input.mappings,
+    modelScopes: input.modelScopes,
   });
   const existingProvider = getObjectProperty(input.registry, KLEIS_PROVIDER_ID);
 
@@ -375,25 +342,15 @@ export const buildProxyModelsRegistry = (
     providerScopes,
     accountProviderScopes,
   });
-  const registry: ModelsDevRegistry = input.apiKeyScopes
-    ? {}
-    : cloneJsonValue(input.upstreamRegistry);
+  const registry = cloneJsonValue(input.upstreamRegistry);
   const baseOrigin = normalizeOrigin(input.baseOrigin);
-
-  if (input.apiKeyScopes) {
-    patchCanonicalProviders({
-      registry,
-      upstreamRegistry: input.upstreamRegistry,
-      baseOrigin,
-      mappings,
-      modelScopes,
-    });
-  }
 
   appendKleisProviderEntry({
     registry,
+    upstreamRegistry: input.upstreamRegistry,
     baseOrigin,
     mappings,
+    modelScopes,
   });
 
   return registry;
