@@ -212,8 +212,11 @@ const parseSseEventData = (chunk: string): string | null => {
 };
 
 const rewriteSseDataLines = (chunk: string, payload: string): string => {
-  const eventTrailerMatch = chunk.match(/(?:\r\n|\n){2}$/u);
-  const eventTrailer = eventTrailerMatch?.[0] ?? "";
+  const boundary = findSseEventBoundary(chunk);
+  const eventTrailer =
+    boundary && boundary.index + boundary.length === chunk.length
+      ? chunk.slice(boundary.index)
+      : "";
   const chunkBody = eventTrailer ? chunk.slice(0, -eventTrailer.length) : chunk;
   const rewrittenBody = chunkBody.replace(
     /((?:^|\r\n|\n))(?:data:.*(?:\r\n|\n)?)+$/u,
