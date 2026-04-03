@@ -731,6 +731,35 @@ describe("proxy contract: claude", () => {
     expect(transformedText).toContain('"name":"shell"');
   });
 
+  test("rewrites fragmented multiline SSE events at event boundaries", async () => {
+    const result = prepareClaudeUsageRequest();
+    const encoder = new TextEncoder();
+
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(encoder.encode("event: message\n"));
+          controller.enqueue(encoder.encode('data: {"type":"tool_use",\n'));
+          controller.enqueue(encoder.encode('data: "name":"mcp_shell"}\n\n'));
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }
+    );
+
+    const transformedResponse = await result.transformResponse(sourceResponse);
+    const transformedText = await transformedResponse.text();
+
+    expect(transformedText).toContain("event: message");
+    expect(transformedText).toContain(
+      'data: {"type":"tool_use","name":"shell"}'
+    );
+  });
+
   const claudeStreamUsageCases = [
     {
       name: "extracts usage from claude streaming message events",
