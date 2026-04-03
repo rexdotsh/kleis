@@ -789,6 +789,38 @@ describe("proxy contract: claude", () => {
     );
   });
 
+  test("rewrites multiple SSE events delivered in one chunk", async () => {
+    const result = prepareClaudeUsageRequest();
+    const encoder = new TextEncoder();
+
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(
+            encoder.encode(
+              'event: message\ndata: {"type":"tool_use","name":"mcp_shell"}\n\n' +
+                'event: message\ndata: {"type":"tool_use","name":"mcp_browser"}\n\n'
+            )
+          );
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }
+    );
+
+    const transformedResponse = await result.transformResponse(sourceResponse);
+    const transformedText = await transformedResponse.text();
+
+    expect(transformedText).toBe(
+      'event: message\ndata: {"type":"tool_use","name":"shell"}\n\n' +
+        'event: message\ndata: {"type":"tool_use","name":"browser"}\n\n'
+    );
+  });
+
   const claudeStreamUsageCases = [
     {
       name: "extracts usage from claude streaming message events",
@@ -862,6 +894,51 @@ describe("proxy contract: claude", () => {
       expect(capture.read()).toEqual(testCase.expected);
     });
   }
+
+  test("extracts usage from fragmented streaming events", async () => {
+    const capture = createUsageCapture();
+    const result = prepareClaudeUsageRequest(capture.onTokenUsage);
+    const encoder = new TextEncoder();
+
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(
+            encoder.encode('data: {"type":"message_start","message":{"usage":{')
+          );
+          controller.enqueue(
+            encoder.encode('"input_tokens":55,"cache_read_input_tokens":11,')
+          );
+          controller.enqueue(
+            encoder.encode('"cache_creation_input_tokens":5}}}\n\n')
+          );
+          controller.enqueue(
+            encoder.encode('data: {"type":"message_delta","usage":{')
+          );
+          controller.enqueue(
+            encoder.encode('"output_tokens":13,"cache_creation_input_tokens":7')
+          );
+          controller.enqueue(encoder.encode("}}\n\n"));
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }
+    );
+
+    const transformedResponse = await result.transformResponse(sourceResponse);
+    await transformedResponse.text();
+
+    expect(capture.read()).toEqual({
+      inputTokens: 55,
+      outputTokens: 13,
+      cacheReadTokens: 11,
+      cacheWriteTokens: 7,
+    });
+  });
 
   test("does not rewrite non-tool SSE name fields", async () => {
     const result = prepareClaudeUsageRequest();

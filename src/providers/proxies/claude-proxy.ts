@@ -179,10 +179,6 @@ const buildUpstreamUrl = (search: string): string => {
   return upstream.toString();
 };
 
-const runInBackground = (promise: Promise<unknown>): void => {
-  promise.catch(() => undefined);
-};
-
 const findSseEventBoundary = (buffer: string): number => {
   const lfBoundary = buffer.indexOf("\n\n");
   const crlfBoundary = buffer.indexOf("\r\n\r\n");
@@ -414,7 +410,9 @@ const maybeTransformClaudeStreamResponse = (
         }
       };
 
-      runInBackground(pump());
+      pump().catch((error: unknown) => {
+        controller.error(error);
+      });
     },
     cancel(reason): Promise<void> {
       return reader.cancel(reason);
