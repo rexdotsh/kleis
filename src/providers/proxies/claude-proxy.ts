@@ -179,19 +179,32 @@ const buildUpstreamUrl = (search: string): string => {
   return upstream.toString();
 };
 
-const findSseEventBoundary = (buffer: string): number => {
-  const lfBoundary = buffer.indexOf("\n\n");
-  const crlfBoundary = buffer.indexOf("\r\n\r\n");
+const findSseEventBoundary = (
+  buffer: string
+): { index: number; length: number } | null => {
+  for (let index = 0; index < buffer.length; index += 1) {
+    const firstLineEndingLength = buffer.startsWith("\r\n", index) ? 2 : 1;
+    const isLineEnding =
+      buffer[index] === "\n" || buffer.startsWith("\r\n", index);
 
-  if (lfBoundary === -1) {
-    return crlfBoundary;
+    if (!isLineEnding) {
+      continue;
+    }
+
+    const nextIndex = index + firstLineEndingLength;
+    const secondLineEndingLength = buffer.startsWith("\r\n", nextIndex) ? 2 : 1;
+    const hasBlankLine =
+      buffer[nextIndex] === "\n" || buffer.startsWith("\r\n", nextIndex);
+
+    if (hasBlankLine) {
+      return {
+        index,
+        length: firstLineEndingLength + secondLineEndingLength,
+      };
+    }
   }
 
-  if (crlfBoundary === -1) {
-    return lfBoundary;
-  }
-
-  return Math.min(lfBoundary, crlfBoundary);
+  return null;
 };
 
 const parseSseEventData = (chunk: string): string | null => {
@@ -212,26 +225,28 @@ const parseSseEventData = (chunk: string): string | null => {
   return data;
 };
 
-const getSseEventLineEnding = (chunk: string): string =>
-  chunk.includes("\r\n") ? "\r\n" : "\n";
+const rewriteSseDataLines = (chunk: string, payload: string): string => {
+  const eventTrailerMatch = chunk.match(/(?:\r\n|\n){2}$/u);
+  const eventTrailer = eventTrailerMatch?.[0] ?? "";
+  const chunkBody = eventTrailer ? chunk.slice(0, -eventTrailer.length) : chunk;
+  const dataBlockMatch = chunkBody.match(
+    /(?:^|\r\n|\n)(data:.*(?:\r\n|\n)?)+$/u
+  );
+  if (!dataBlockMatch || dataBlockMatch.index === undefined) {
+    return chunk;
+  }
 
-const splitSseEventChunk = (
-  chunk: string
-): {
-  lines: string[];
-  separator: string;
-  trailer: string;
-} => {
-  const separator = getSseEventLineEnding(chunk);
-  const trailer = separator + separator;
-  const hasTrailer = chunk.endsWith(trailer);
-  const chunkBody = hasTrailer ? chunk.slice(0, -trailer.length) : chunk;
+  const prefix = chunkBody.slice(0, dataBlockMatch.index);
+  const dataBlock = dataBlockMatch[0];
+  const separator = dataBlock.startsWith("\r\n")
+    ? "\r\n"
+    : dataBlock.startsWith("\n")
+      ? "\n"
+      : "";
+  const lineEndingMatch = dataBlock.match(/(\r\n|\n)$/u);
+  const lineEnding = lineEndingMatch?.[0] ?? "";
 
-  return {
-    lines: chunkBody.split(separator),
-    separator,
-    trailer: hasTrailer ? trailer : "",
-  };
+  return `${prefix}${separator}data: ${payload}${lineEnding}${eventTrailer}`;
 };
 
 const transformSseEventChunk = (
@@ -248,11 +263,7 @@ const transformSseEventChunk = (
     const jsonBody = JSON.parse(payload) as unknown;
     readStreamUsage(jsonBody);
     const transformed = transformClaudeResponsePayload(jsonBody, toolPrefix);
-    const { lines, separator, trailer } = splitSseEventChunk(chunk);
-    const rebuiltLines = lines.filter((line) => !line.startsWith("data:"));
-    rebuiltLines.push(`data: ${JSON.stringify(transformed)}`);
-
-    return rebuiltLines.join(separator) + trailer;
+    return rewriteSseDataLines(chunk, JSON.stringify(transformed));
   } catch {
     return chunk;
   }
@@ -384,25 +395,16 @@ const maybeTransformClaudeStreamResponse = (
 
             buffer += decoder.decode(value, { stream: true });
 
-            let chunkSeparatorIndex = findSseEventBoundary(buffer);
-            while (chunkSeparatorIndex !== -1) {
-              const separatorLength = buffer.startsWith(
-                "\r\n\r\n",
-                chunkSeparatorIndex
-              )
-                ? 4
-                : 2;
-              const chunk = buffer.slice(
-                0,
-                chunkSeparatorIndex + separatorLength
-              );
-              buffer = buffer.slice(chunkSeparatorIndex + separatorLength);
+            let boundary = findSseEventBoundary(buffer);
+            while (boundary) {
+              const chunk = buffer.slice(0, boundary.index + boundary.length);
+              buffer = buffer.slice(boundary.index + boundary.length);
               controller.enqueue(
                 encoder.encode(
                   transformSseEventChunk(chunk, toolPrefix, readStreamUsage)
                 )
               );
-              chunkSeparatorIndex = findSseEventBoundary(buffer);
+              boundary = findSseEventBoundary(buffer);
             }
           }
         } catch (error) {

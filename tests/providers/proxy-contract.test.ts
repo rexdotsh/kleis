@@ -789,6 +789,42 @@ describe("proxy contract: claude", () => {
     );
   });
 
+  test("rewrites SSE events with mixed newline boundary separators", async () => {
+    const result = prepareClaudeUsageRequest();
+    const encoder = new TextEncoder();
+
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(
+            encoder.encode(
+              'event: message\ndata: {"type":"tool_use","name":"mcp_shell"}\n\r\n'
+            )
+          );
+          controller.enqueue(
+            encoder.encode(
+              'event: message\r\ndata: {"type":"tool_use","name":"mcp_browser"}\r\n\n'
+            )
+          );
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }
+    );
+
+    const transformedResponse = await result.transformResponse(sourceResponse);
+    const transformedText = await transformedResponse.text();
+
+    expect(transformedText).toBe(
+      'event: message\ndata: {"type":"tool_use","name":"shell"}\n\r\n' +
+        'event: message\r\ndata: {"type":"tool_use","name":"browser"}\r\n\n'
+    );
+  });
+
   test("rewrites multiple SSE events delivered in one chunk", async () => {
     const result = prepareClaudeUsageRequest();
     const encoder = new TextEncoder();
