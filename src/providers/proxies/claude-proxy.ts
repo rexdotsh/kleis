@@ -182,29 +182,15 @@ const buildUpstreamUrl = (search: string): string => {
 const findSseEventBoundary = (
   buffer: string
 ): { index: number; length: number } | null => {
-  for (let index = 0; index < buffer.length; index += 1) {
-    const firstLineEndingLength = buffer.startsWith("\r\n", index) ? 2 : 1;
-    const isLineEnding =
-      buffer[index] === "\n" || buffer.startsWith("\r\n", index);
-
-    if (!isLineEnding) {
-      continue;
-    }
-
-    const nextIndex = index + firstLineEndingLength;
-    const secondLineEndingLength = buffer.startsWith("\r\n", nextIndex) ? 2 : 1;
-    const hasBlankLine =
-      buffer[nextIndex] === "\n" || buffer.startsWith("\r\n", nextIndex);
-
-    if (hasBlankLine) {
-      return {
-        index,
-        length: firstLineEndingLength + secondLineEndingLength,
-      };
-    }
+  const match = /\r\n\r\n|\n\n|\n\r\n|\r\n\n/u.exec(buffer);
+  if (!match || match.index === undefined) {
+    return null;
   }
 
-  return null;
+  return {
+    index: match.index,
+    length: match[0].length,
+  };
 };
 
 const parseSseEventData = (chunk: string): string | null => {
@@ -229,24 +215,16 @@ const rewriteSseDataLines = (chunk: string, payload: string): string => {
   const eventTrailerMatch = chunk.match(/(?:\r\n|\n){2}$/u);
   const eventTrailer = eventTrailerMatch?.[0] ?? "";
   const chunkBody = eventTrailer ? chunk.slice(0, -eventTrailer.length) : chunk;
-  const dataBlockMatch = chunkBody.match(
-    /(?:^|\r\n|\n)(data:.*(?:\r\n|\n)?)+$/u
+  const rewrittenBody = chunkBody.replace(
+    /((?:^|\r\n|\n))(?:data:.*(?:\r\n|\n)?)+$/u,
+    (_, separator: string) => `${separator}data: ${payload}`
   );
-  if (!dataBlockMatch || dataBlockMatch.index === undefined) {
+
+  if (rewrittenBody === chunkBody) {
     return chunk;
   }
 
-  const prefix = chunkBody.slice(0, dataBlockMatch.index);
-  const dataBlock = dataBlockMatch[0];
-  const separator = dataBlock.startsWith("\r\n")
-    ? "\r\n"
-    : dataBlock.startsWith("\n")
-      ? "\n"
-      : "";
-  const lineEndingMatch = dataBlock.match(/(\r\n|\n)$/u);
-  const lineEnding = lineEndingMatch?.[0] ?? "";
-
-  return `${prefix}${separator}data: ${payload}${lineEnding}${eventTrailer}`;
+  return `${rewrittenBody}${eventTrailer}`;
 };
 
 const transformSseEventChunk = (
