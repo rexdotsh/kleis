@@ -183,8 +183,24 @@ const runInBackground = (promise: Promise<unknown>): void => {
   promise.catch(() => undefined);
 };
 
+const findSseEventBoundary = (buffer: string): number => {
+  const lfBoundary = buffer.indexOf("\n\n");
+  const crlfBoundary = buffer.indexOf("\r\n\r\n");
+
+  if (lfBoundary === -1) {
+    return crlfBoundary;
+  }
+
+  if (crlfBoundary === -1) {
+    return lfBoundary;
+  }
+
+  return Math.min(lfBoundary, crlfBoundary);
+};
+
 const parseSseEventData = (chunk: string): string | null => {
   const dataLines = chunk
+    .replace(/\r\n/gu, "\n")
     .split("\n")
     .filter((line) => line.startsWith("data:"))
     .map((line) => line.slice(5).trimStart());
@@ -198,6 +214,28 @@ const parseSseEventData = (chunk: string): string | null => {
   }
 
   return data;
+};
+
+const getSseEventLineEnding = (chunk: string): string =>
+  chunk.includes("\r\n") ? "\r\n" : "\n";
+
+const splitSseEventChunk = (
+  chunk: string
+): {
+  lines: string[];
+  separator: string;
+  trailer: string;
+} => {
+  const separator = getSseEventLineEnding(chunk);
+  const trailer = separator + separator;
+  const hasTrailer = chunk.endsWith(trailer);
+  const chunkBody = hasTrailer ? chunk.slice(0, -trailer.length) : chunk;
+
+  return {
+    lines: chunkBody.split(separator),
+    separator,
+    trailer: hasTrailer ? trailer : "",
+  };
 };
 
 const transformSseEventChunk = (
@@ -214,12 +252,11 @@ const transformSseEventChunk = (
     const jsonBody = JSON.parse(payload) as unknown;
     readStreamUsage(jsonBody);
     const transformed = transformClaudeResponsePayload(jsonBody, toolPrefix);
+    const { lines, separator, trailer } = splitSseEventChunk(chunk);
+    const rebuiltLines = lines.filter((line) => !line.startsWith("data:"));
+    rebuiltLines.push(`data: ${JSON.stringify(transformed)}`);
 
-    return chunk.replace(
-      /(^|\n)data:\s*.*(?=\n|$)/gu,
-      (_match, prefix: string) =>
-        `${prefix}data: ${JSON.stringify(transformed)}`
-    );
+    return rebuiltLines.join(separator) + trailer;
   } catch {
     return chunk;
   }
@@ -351,16 +388,25 @@ const maybeTransformClaudeStreamResponse = (
 
             buffer += decoder.decode(value, { stream: true });
 
-            let chunkSeparatorIndex = buffer.indexOf("\n\n");
+            let chunkSeparatorIndex = findSseEventBoundary(buffer);
             while (chunkSeparatorIndex !== -1) {
-              const chunk = buffer.slice(0, chunkSeparatorIndex + 2);
-              buffer = buffer.slice(chunkSeparatorIndex + 2);
+              const separatorLength = buffer.startsWith(
+                "\r\n\r\n",
+                chunkSeparatorIndex
+              )
+                ? 4
+                : 2;
+              const chunk = buffer.slice(
+                0,
+                chunkSeparatorIndex + separatorLength
+              );
+              buffer = buffer.slice(chunkSeparatorIndex + separatorLength);
               controller.enqueue(
                 encoder.encode(
                   transformSseEventChunk(chunk, toolPrefix, readStreamUsage)
                 )
               );
-              chunkSeparatorIndex = buffer.indexOf("\n\n");
+              chunkSeparatorIndex = findSseEventBoundary(buffer);
             }
           }
         } catch (error) {

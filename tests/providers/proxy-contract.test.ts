@@ -754,9 +754,38 @@ describe("proxy contract: claude", () => {
     const transformedResponse = await result.transformResponse(sourceResponse);
     const transformedText = await transformedResponse.text();
 
-    expect(transformedText).toContain("event: message");
-    expect(transformedText).toContain(
-      'data: {"type":"tool_use","name":"shell"}'
+    expect(transformedText).toBe(
+      'event: message\ndata: {"type":"tool_use","name":"shell"}\n\n'
+    );
+  });
+
+  test("rewrites CRLF-delimited SSE events without buffering until EOF", async () => {
+    const result = prepareClaudeUsageRequest();
+    const encoder = new TextEncoder();
+
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(
+            encoder.encode(
+              'event: message\r\ndata: {"type":"tool_use","name":"mcp_shell"}\r\n\r\n'
+            )
+          );
+          controller.close();
+        },
+      }),
+      {
+        headers: {
+          "content-type": "text/event-stream",
+        },
+      }
+    );
+
+    const transformedResponse = await result.transformResponse(sourceResponse);
+    const transformedText = await transformedResponse.text();
+
+    expect(transformedText).toBe(
+      'event: message\r\ndata: {"type":"tool_use","name":"shell"}\r\n\r\n'
     );
   });
 
