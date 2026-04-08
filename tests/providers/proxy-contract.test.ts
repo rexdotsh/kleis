@@ -680,7 +680,7 @@ describe("proxy contract: claude", () => {
     expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_shell");
   });
 
-  test("falls back to Claude Code identity for branded prompts without shared tail", () => {
+  test("preserves branded prompts when OpenCode markers are absent", () => {
     const requestBody = {
       system: "OpenCode custom system prompt without shared markers",
     };
@@ -700,6 +700,10 @@ describe("proxy contract: claude", () => {
 
     expect(transformed.system).toEqual([
       { type: "text", text: CLAUDE_SYSTEM_IDENTITY },
+      {
+        type: "text",
+        text: "OpenCode custom system prompt without shared markers",
+      },
     ]);
   });
 
