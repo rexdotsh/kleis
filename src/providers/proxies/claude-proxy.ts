@@ -15,12 +15,25 @@ import {
 } from "../../usage/token-usage";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 
-// Anthropic's server blocks "OpenCode" in system prompts for OAuth sessions.
-// https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L198-L211
-const sanitizeClaudeSystemText = (text: string): string =>
-  text
-    .replace(/OpenCode/g, "Claude Code")
-    .replace(/(?<!\/)opencode/gi, "Claude");
+const CODE_REFERENCES_MARKER = "# Code References";
+const OPENCODE_IDENTITY_MARKER =
+  "You are OpenCode, the best coding agent on the planet.";
+
+// Anthropic OAuth sessions appear to reject the injected OpenCode identity
+// prelude. Remove only that section and preserve the rest of the prompt.
+const sanitizeClaudeSystemText = (text: string): string => {
+  const start = text.indexOf(OPENCODE_IDENTITY_MARKER);
+  if (start === -1) {
+    return text;
+  }
+
+  const end = text.indexOf(CODE_REFERENCES_MARKER, start);
+  if (end === -1) {
+    return text;
+  }
+
+  return `${text.slice(0, start)}${text.slice(end)}`;
+};
 
 // Request: prefix tool names so they match Claude Code's expected format.
 // Response: strip prefixes back so the client sees its original names.
@@ -46,23 +59,16 @@ const transformClaudeRequestPayload = (
   const transformed: JsonObject = { ...payload };
 
   if (typeof transformed.system === "string") {
-    transformed.system = [
-      {
-        type: "text",
-        text: systemIdentity,
-      },
-      {
-        type: "text",
-        text: sanitizeClaudeSystemText(transformed.system),
-      },
+    const sanitizedSystem = sanitizeClaudeSystemText(transformed.system);
+    const systemBlocks: Array<{ type: string; text: string }> = [
+      { type: "text", text: systemIdentity },
     ];
+    if (sanitizedSystem !== systemIdentity) {
+      systemBlocks.push({ type: "text", text: sanitizedSystem });
+    }
+    transformed.system = systemBlocks;
   } else if (Array.isArray(transformed.system)) {
-    const systemBlocks: unknown[] = [
-      {
-        type: "text",
-        text: systemIdentity,
-      },
-    ];
+    const systemBlocks: unknown[] = [{ type: "text", text: systemIdentity }];
     for (const block of transformed.system) {
       if (
         isObjectRecord(block) &&
