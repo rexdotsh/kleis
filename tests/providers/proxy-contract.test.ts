@@ -630,7 +630,11 @@ describe("proxy contract: claude", () => {
       "anthropic-beta": `custom-beta,${CLAUDE_REQUIRED_BETA_HEADERS[0]}`,
     });
     const requestBody = {
-      system: "OpenCode and opencode should be rewritten",
+      system:
+        "You are OpenCode, the best coding agent on the planet.\n\n" +
+        "OpenCode-specific instructions\n\n" +
+        "# Code References\n\n" +
+        "Use file_path:line_number references.",
       tools: [{ name: "shell", description: "run shell commands" }],
       tool_choice: { type: "tool", name: "shell" },
       messages: [
@@ -669,11 +673,34 @@ describe("proxy contract: claude", () => {
     expect(transformed.system).toHaveLength(2);
     expect(transformed.system[0]?.text).toBe(CLAUDE_SYSTEM_IDENTITY);
     expect(transformed.system[1]?.text).toBe(
-      "Claude Code and Claude should be rewritten"
+      "# Code References\n\nUse file_path:line_number references."
     );
     expect(transformed.tools[0]?.name).toBe("mcp_shell");
     expect(transformed.tool_choice.name).toBe("mcp_shell");
     expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_shell");
+  });
+
+  test("falls back to Claude Code identity for branded prompts without shared tail", () => {
+    const requestBody = {
+      system: "OpenCode custom system prompt without shared markers",
+    };
+
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(requestBody),
+      bodyJson: requestBody,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      system: Array<{ type: string; text: string }>;
+    };
+
+    expect(transformed.system).toEqual([
+      { type: "text", text: CLAUDE_SYSTEM_IDENTITY },
+    ]);
   });
 
   test("strips tool prefix in non-streaming JSON response payload", async () => {
