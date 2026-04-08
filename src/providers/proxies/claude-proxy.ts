@@ -16,41 +16,23 @@ import {
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 
 const CODE_REFERENCES_MARKER = "# Code References";
-const CLAUDE_CODE_IDENTITY_MARKER =
-  "You are Claude Code, Anthropic's official CLI for Claude.";
+const OPENCODE_IDENTITY_MARKER =
+  "You are OpenCode, the best coding agent on the planet.";
 
-const BRANDED_SYSTEM_MARKERS = [
-  "You are OpenCode, the best coding agent on the planet.",
-  "You are OpenCode",
-  "OpenCode",
-  "https://github.com/anomalyco/opencode",
-  "https://opencode.ai/docs",
-] as const;
-
-// Anthropic OAuth sessions appear to reject third-party harness identity blocks.
-// Remove the branded prelude when we can detect one, while preserving any shared
-// prompt tail after '# Code References'. If there is no shared tail to keep,
-// fall back to the Claude Code identity only.
+// Anthropic OAuth sessions appear to reject the injected OpenCode identity
+// prelude. Remove only that section and preserve the rest of the prompt.
 const sanitizeClaudeSystemText = (text: string): string => {
-  const trimmed = text.trim();
-  if (trimmed === CLAUDE_CODE_IDENTITY_MARKER) {
+  const start = text.indexOf(OPENCODE_IDENTITY_MARKER);
+  if (start === -1) {
     return text;
   }
 
-  const hasBrandedMarker = BRANDED_SYSTEM_MARKERS.some((marker) =>
-    text.includes(marker)
-  );
-  const codeReferencesIndex = text.indexOf(CODE_REFERENCES_MARKER);
-
-  if (hasBrandedMarker && codeReferencesIndex !== -1) {
-    return text.slice(codeReferencesIndex);
+  const end = text.indexOf(CODE_REFERENCES_MARKER, start);
+  if (end === -1) {
+    return text;
   }
 
-  if (hasBrandedMarker) {
-    return CLAUDE_CODE_IDENTITY_MARKER;
-  }
-
-  return text;
+  return `${text.slice(0, start)}${text.slice(end)}`;
 };
 
 // Request: prefix tool names so they match Claude Code's expected format.
@@ -77,28 +59,16 @@ const transformClaudeRequestPayload = (
   const transformed: JsonObject = { ...payload };
 
   if (typeof transformed.system === "string") {
-    const systemText: string = transformed.system;
-    const sanitizedSystem = sanitizeClaudeSystemText(systemText);
+    const sanitizedSystem = sanitizeClaudeSystemText(transformed.system);
     const systemBlocks: Array<{ type: string; text: string }> = [
-      {
-        type: "text",
-        text: systemIdentity,
-      },
+      { type: "text", text: systemIdentity },
     ];
     if (sanitizedSystem !== systemIdentity) {
-      systemBlocks.push({
-        type: "text",
-        text: sanitizedSystem,
-      });
+      systemBlocks.push({ type: "text", text: sanitizedSystem });
     }
     transformed.system = systemBlocks;
   } else if (Array.isArray(transformed.system)) {
-    const systemBlocks: unknown[] = [
-      {
-        type: "text",
-        text: systemIdentity,
-      },
-    ];
+    const systemBlocks: unknown[] = [{ type: "text", text: systemIdentity }];
     for (const block of transformed.system) {
       if (
         isObjectRecord(block) &&
