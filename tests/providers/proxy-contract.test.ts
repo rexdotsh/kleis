@@ -632,9 +632,18 @@ describe("proxy contract: claude", () => {
     const requestBody = {
       system:
         "You are OpenCode, the best coding agent on the planet.\n\n" +
-        "OpenCode-specific instructions\n\n" +
-        "# Code References\n\n" +
-        "Use file_path:line_number references.",
+        "If the user asks for help or wants to give feedback inform them of the following:\n" +
+        "- ctrl+p to list available actions\n" +
+        "- To give feedback, users should report the issue at\n" +
+        "  https://github.com/anomalyco/opencode\n\n" +
+        "<env>\n" +
+        "  Working directory: /tmp/project\n" +
+        "</env>\n\n" +
+        "<available_skills>\n" +
+        "  <skill>\n" +
+        "    <name>find-skills</name>\n" +
+        "  </skill>\n" +
+        "</available_skills>",
       tools: [{ name: "shell", description: "run shell commands" }],
       tool_choice: { type: "tool", name: "shell" },
       messages: [
@@ -672,9 +681,25 @@ describe("proxy contract: claude", () => {
     expect(result.upstreamUrl).toContain("beta=true");
     expect(transformed.system).toHaveLength(2);
     expect(transformed.system[0]?.text).toBe(CLAUDE_SYSTEM_IDENTITY);
-    expect(transformed.system[1]?.text).toBe(
-      "# Code References\n\nUse file_path:line_number references."
+    expect(transformed.system[1]?.text).toContain(
+      "You are OpenCode, the best coding agent on the planet."
     );
+    expect(transformed.system[1]?.text).toContain(
+      "If the user asks for help or wants to give feedback inform them of the following:"
+    );
+    expect(transformed.system[1]?.text).not.toContain(
+      "https://github.com/anomalyco/opencode"
+    );
+    expect(transformed.system[1]?.text).toContain("Environment");
+    expect(transformed.system[1]?.text).toContain(
+      "Working directory: /tmp/project"
+    );
+    expect(transformed.system[1]?.text).toContain("Available skills");
+    expect(transformed.system[1]?.text).toContain("find-skills");
+    expect(transformed.system[1]?.text).not.toContain("<env>");
+    expect(transformed.system[1]?.text).not.toContain("</env>");
+    expect(transformed.system[1]?.text).not.toContain("<available_skills>");
+    expect(transformed.system[1]?.text).not.toContain("<skill>");
     expect(transformed.tools[0]?.name).toBe("mcp_shell");
     expect(transformed.tool_choice.name).toBe("mcp_shell");
     expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_shell");

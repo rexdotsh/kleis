@@ -15,37 +15,25 @@ import {
 } from "../../usage/token-usage";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 
-const CODE_REFERENCES_MARKER = "# Code References";
 const OPENCODE_IDENTITY_MARKER =
   "You are OpenCode, the best coding agent on the planet.";
 
-const formatXmlTag = (name: string): string => {
-  const words = name.replaceAll(/[_-]+/g, " ");
-  return `${words[0]?.toUpperCase() ?? ""}${words.slice(1)}:`;
-};
-
-const flattenXmlTags = (text: string): string =>
-  text
-    .replace(/<\/([a-z][a-z0-9_-]*)>/gi, "")
-    .replace(
-      /<([a-z][a-z0-9_-]*)>/gi,
-      (_, name: string) => `${formatXmlTag(name)}\n`
-    );
-
-// Anthropic OAuth sessions appear to reject XML-like tags in the OpenCode
-// tail. Keep the tail in system[] but flatten those wrappers.
-const sanitizeClaudeSystemText = (text: string): string => {
-  const start = text.indexOf(OPENCODE_IDENTITY_MARKER);
-  if (start === -1) {
+// Anthropic OAuth sessions reject parts of the OpenCode system prompt. Keep
+// the prompt in system[] while flattening XML-like tags and stripping the
+// feedback URL that triggers the block.
+// https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/prompt/anthropic.txt
+// https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/system.ts#L32-L72
+const sanitizeOpenCodeSystem = (text: string): string => {
+  if (!text.includes(OPENCODE_IDENTITY_MARKER)) {
     return text;
   }
 
-  const end = text.indexOf(CODE_REFERENCES_MARKER, start);
-  if (end === -1) {
-    return text;
-  }
-
-  return `${text.slice(0, start)}${flattenXmlTags(text.slice(end))}`;
+  return text
+    .replace(/https:\/\/github\.com\/anomalyco\/opencode/gi, "")
+    .replace(/<env>/gi, "Environment\n")
+    .replace(/<directories>/gi, "Directories\n")
+    .replace(/<available_skills>/gi, "Available skills\n")
+    .replace(/<\/?[a-z][a-z0-9_-]*>/gi, "");
 };
 
 // Request: prefix tool names so they match Claude Code's expected format.
@@ -72,7 +60,7 @@ const transformClaudeRequestPayload = (
   const transformed: JsonObject = { ...payload };
 
   if (typeof transformed.system === "string") {
-    const sanitizedSystem = sanitizeClaudeSystemText(transformed.system);
+    const sanitizedSystem = sanitizeOpenCodeSystem(transformed.system);
     const systemBlocks: Array<{ type: string; text: string }> = [
       { type: "text", text: systemIdentity },
     ];
@@ -90,7 +78,7 @@ const transformClaudeRequestPayload = (
       ) {
         systemBlocks.push({
           ...block,
-          text: sanitizeClaudeSystemText(block.text),
+          text: sanitizeOpenCodeSystem(block.text),
         });
         continue;
       }
