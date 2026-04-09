@@ -19,8 +19,21 @@ const CODE_REFERENCES_MARKER = "# Code References";
 const OPENCODE_IDENTITY_MARKER =
   "You are OpenCode, the best coding agent on the planet.";
 
-// Anthropic OAuth sessions appear to reject the injected OpenCode identity
-// prelude. Remove only that section and preserve the rest of the prompt.
+const formatXmlTag = (name: string): string => {
+  const words = name.replaceAll(/[_-]+/g, " ");
+  return `${words[0]?.toUpperCase() ?? ""}${words.slice(1)}:`;
+};
+
+const flattenXmlTags = (text: string): string =>
+  text
+    .replace(/<\/([a-z][a-z0-9_-]*)>/gi, "")
+    .replace(
+      /<([a-z][a-z0-9_-]*)>/gi,
+      (_, name: string) => `${formatXmlTag(name)}\n`
+    );
+
+// Anthropic OAuth sessions appear to reject XML-like tags in the OpenCode
+// tail. Keep the tail in system[] but flatten those wrappers.
 const sanitizeClaudeSystemText = (text: string): string => {
   const start = text.indexOf(OPENCODE_IDENTITY_MARKER);
   if (start === -1) {
@@ -32,7 +45,7 @@ const sanitizeClaudeSystemText = (text: string): string => {
     return text;
   }
 
-  return `${text.slice(0, start)}${text.slice(end)}`;
+  return `${text.slice(0, start)}${flattenXmlTags(text.slice(end))}`;
 };
 
 // Request: prefix tool names so they match Claude Code's expected format.
