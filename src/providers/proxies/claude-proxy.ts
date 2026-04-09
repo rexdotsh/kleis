@@ -18,9 +18,10 @@ import { isObjectRecord, type JsonObject } from "../../utils/object";
 const OPENCODE_IDENTITY_MARKER =
   "You are OpenCode, the best coding agent on the planet.";
 
-// Anthropic OAuth sessions reject parts of the OpenCode system prompt. Keep
-// the prompt in system[] while flattening XML-like tags and stripping the
-// feedback URL that triggers the block.
+// Anthropic OAuth sessions reject the OpenCode feedback repo path inside the
+// prompt URL and the opening `<directories>` wrapper emitted by OpenCode's
+// Anthropic prompt assembly. Keep the rest of the system prompt untouched to
+// preserve prompt fidelity.
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/prompt/anthropic.txt
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/system.ts#L32-L72
 const sanitizeOpenCodeSystem = (text: string): string => {
@@ -28,12 +29,11 @@ const sanitizeOpenCodeSystem = (text: string): string => {
     return text;
   }
 
-  return text
-    .replace(/https:\/\/github\.com\/anomalyco\/opencode/gi, "")
-    .replace(/<env>/gi, "Environment\n")
-    .replace(/<directories>/gi, "Directories\n")
-    .replace(/<available_skills>/gi, "Available skills\n")
-    .replace(/<\/?[a-z][a-z0-9_-]*>/gi, "");
+  const sanitized = text
+    .replace(/anomalyco\/opencode/gi, "anomalyco/project")
+    .replace(/<directories>/gi, "Directories\n");
+
+  return sanitized;
 };
 
 // Request: prefix tool names so they match Claude Code's expected format.

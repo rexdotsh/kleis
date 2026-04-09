@@ -636,14 +636,12 @@ describe("proxy contract: claude", () => {
         "- ctrl+p to list available actions\n" +
         "- To give feedback, users should report the issue at\n" +
         "  https://github.com/anomalyco/opencode\n\n" +
+        "<directories>\n" +
+        "  src/\n" +
+        "</directories>\n\n" +
         "<env>\n" +
         "  Working directory: /tmp/project\n" +
-        "</env>\n\n" +
-        "<available_skills>\n" +
-        "  <skill>\n" +
-        "    <name>find-skills</name>\n" +
-        "  </skill>\n" +
-        "</available_skills>",
+        "</env>",
       tools: [{ name: "shell", description: "run shell commands" }],
       tool_choice: { type: "tool", name: "shell" },
       messages: [
@@ -690,16 +688,17 @@ describe("proxy contract: claude", () => {
     expect(transformed.system[1]?.text).not.toContain(
       "https://github.com/anomalyco/opencode"
     );
-    expect(transformed.system[1]?.text).toContain("Environment");
+    expect(transformed.system[1]?.text).toContain(
+      "https://github.com/anomalyco/project"
+    );
+    expect(transformed.system[1]?.text).toContain("Directories");
+    expect(transformed.system[1]?.text).toContain("src/");
     expect(transformed.system[1]?.text).toContain(
       "Working directory: /tmp/project"
     );
-    expect(transformed.system[1]?.text).toContain("Available skills");
-    expect(transformed.system[1]?.text).toContain("find-skills");
-    expect(transformed.system[1]?.text).not.toContain("<env>");
-    expect(transformed.system[1]?.text).not.toContain("</env>");
-    expect(transformed.system[1]?.text).not.toContain("<available_skills>");
-    expect(transformed.system[1]?.text).not.toContain("<skill>");
+    expect(transformed.system[1]?.text).toContain("<env>");
+    expect(transformed.system[1]?.text).toContain("</env>");
+    expect(transformed.system[1]?.text).not.toContain("<directories>");
     expect(transformed.tools[0]?.name).toBe("mcp_shell");
     expect(transformed.tool_choice.name).toBe("mcp_shell");
     expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_shell");
@@ -728,6 +727,136 @@ describe("proxy contract: claude", () => {
       {
         type: "text",
         text: "OpenCode custom system prompt without shared markers",
+      },
+    ]);
+  });
+
+  test("rewrites the feedback repo path in OpenCode system prompts", () => {
+    const requestBody = {
+      system:
+        "You are OpenCode, the best coding agent on the planet.\n\n" +
+        "Feedback lives at https://github.com/anomalyco/opencode",
+    };
+
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(requestBody),
+      bodyJson: requestBody,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      system: Array<{ type: string; text: string }>;
+    };
+
+    expect(transformed.system[1]?.text).toContain(
+      "You are OpenCode, the best coding agent on the planet."
+    );
+    expect(transformed.system[1]?.text).toContain(
+      "https://github.com/anomalyco/project"
+    );
+  });
+
+  test("normalizes only the opening directories tag in OpenCode system prompts", () => {
+    const requestBody = {
+      system:
+        "You are OpenCode, the best coding agent on the planet.\n\n" +
+        "<directories>\n" +
+        "  src/\n" +
+        "</directories>",
+    };
+
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(requestBody),
+      bodyJson: requestBody,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      system: Array<{ type: string; text: string }>;
+    };
+
+    expect(transformed.system[1]?.text).toContain("Directories");
+    expect(transformed.system[1]?.text).toContain("src/");
+    expect(transformed.system[1]?.text).not.toContain("<directories>");
+    expect(transformed.system[1]?.text).toContain("</directories>");
+  });
+
+  test("sanitizes OpenCode text inside array-form system blocks", () => {
+    const requestBody = {
+      system: [
+        {
+          type: "text",
+          text:
+            "You are OpenCode, the best coding agent on the planet.\n\n" +
+            "Feedback lives at https://github.com/anomalyco/opencode\n\n" +
+            "<directories>\n" +
+            "  src/\n" +
+            "</directories>",
+        },
+      ],
+    };
+
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(requestBody),
+      bodyJson: requestBody,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      system: Array<{ type: string; text: string }>;
+    };
+
+    expect(transformed.system).toHaveLength(2);
+    expect(transformed.system[1]?.text).toContain(
+      "https://github.com/anomalyco/project"
+    );
+    expect(transformed.system[1]?.text).toContain("Directories");
+    expect(transformed.system[1]?.text).toContain("src/");
+    expect(transformed.system[1]?.text).toContain("</directories>");
+  });
+
+  test("preserves non-OpenCode system prompts even with xml tags and urls", () => {
+    const requestBody = {
+      system:
+        "Custom system prompt\n\n" +
+        "<env>\n" +
+        "  Working directory: /tmp/project\n" +
+        "</env>\n\n" +
+        "Feedback lives at https://github.com/anomalyco/opencode",
+    };
+
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(requestBody),
+      bodyJson: requestBody,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      system: Array<{ type: string; text: string }>;
+    };
+
+    expect(transformed.system).toEqual([
+      { type: "text", text: CLAUDE_SYSTEM_IDENTITY },
+      {
+        type: "text",
+        text:
+          "Custom system prompt\n\n" +
+          "<env>\n" +
+          "  Working directory: /tmp/project\n" +
+          "</env>\n\n" +
+          "Feedback lives at https://github.com/anomalyco/opencode",
       },
     ]);
   });
