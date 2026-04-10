@@ -23,7 +23,10 @@ import { isObjectRecord, type JsonObject } from "../../utils/object";
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/system.ts#L32-L72
 const sanitizeClaudeSystemText = (text: string): string =>
   text
-    .replace(/anomalyco\/opencode/gi, "anomalyco/project")
+    .replace(
+      /^(\s*)https:\/\/github\.com\/anomalyco\/opencode$/gim,
+      "$1https://github.com/anomalyco/project"
+    )
     .replace(/<directories>\n\s*/gi, "Directories\n");
 
 // Request: prefix tool names so they match Claude Code's expected format.

@@ -708,7 +708,8 @@ describe("proxy contract: claude", () => {
     const requestBody = {
       system:
         "Custom system prompt\n\n" +
-        "Feedback lives at https://github.com/anomalyco/opencode\n\n" +
+        "Feedback lives at\n" +
+        "  https://github.com/anomalyco/opencode\n\n" +
         "<directories>\n" +
         "  src/\n" +
         "</directories>",
@@ -733,7 +734,8 @@ describe("proxy contract: claude", () => {
         type: "text",
         text:
           "Custom system prompt\n\n" +
-          "Feedback lives at https://github.com/anomalyco/project\n\n" +
+          "Feedback lives at\n" +
+          "  https://github.com/anomalyco/project\n\n" +
           "Directories\n" +
           "src/\n" +
           "</directories>",
@@ -745,7 +747,8 @@ describe("proxy contract: claude", () => {
     const requestBody = {
       system:
         "You are OpenCode, the best coding agent on the planet.\n\n" +
-        "Feedback lives at https://github.com/anomalyco/opencode",
+        "Feedback lives at\n" +
+        "  https://github.com/anomalyco/opencode",
     };
 
     const result = prepareClaudeProxyRequest({
@@ -804,7 +807,8 @@ describe("proxy contract: claude", () => {
           type: "text",
           text:
             "You are OpenCode, the best coding agent on the planet.\n\n" +
-            "Feedback lives at https://github.com/anomalyco/opencode\n\n" +
+            "Feedback lives at\n" +
+            "  https://github.com/anomalyco/opencode\n\n" +
             "<directories>\n" +
             "  src/\n" +
             "</directories>",
@@ -841,7 +845,8 @@ describe("proxy contract: claude", () => {
         "<env>\n" +
         "  Working directory: /tmp/project\n" +
         "</env>\n\n" +
-        "Feedback lives at https://github.com/anomalyco/opencode\n\n" +
+        "Feedback lives at\n" +
+        "  https://github.com/anomalyco/opencode\n\n" +
         "<directories>\n" +
         "  src/\n" +
         "</directories>",
@@ -869,7 +874,8 @@ describe("proxy contract: claude", () => {
           "<env>\n" +
           "  Working directory: /tmp/project\n" +
           "</env>\n\n" +
-          "Feedback lives at https://github.com/anomalyco/project\n\n" +
+          "Feedback lives at\n" +
+          "  https://github.com/anomalyco/project\n\n" +
           "Directories\n" +
           "src/\n" +
           "</directories>",
