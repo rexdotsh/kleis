@@ -704,9 +704,14 @@ describe("proxy contract: claude", () => {
     expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_shell");
   });
 
-  test("preserves branded prompts when OpenCode markers are absent", () => {
+  test("rewrites repo path and directories in non-OpenCode Claude system prompts", () => {
     const requestBody = {
-      system: "OpenCode custom system prompt without shared markers",
+      system:
+        "Custom system prompt\n\n" +
+        "Feedback lives at https://github.com/anomalyco/opencode\n\n" +
+        "<directories>\n" +
+        "  src/\n" +
+        "</directories>",
     };
 
     const result = prepareClaudeProxyRequest({
@@ -726,7 +731,12 @@ describe("proxy contract: claude", () => {
       { type: "text", text: CLAUDE_SYSTEM_IDENTITY },
       {
         type: "text",
-        text: "OpenCode custom system prompt without shared markers",
+        text:
+          "Custom system prompt\n\n" +
+          "Feedback lives at https://github.com/anomalyco/project\n\n" +
+          "Directories\n" +
+          "src/\n" +
+          "</directories>",
       },
     ]);
   });
@@ -824,14 +834,17 @@ describe("proxy contract: claude", () => {
     expect(transformed.system[1]?.text).toContain("</directories>");
   });
 
-  test("preserves non-OpenCode system prompts even with xml tags and urls", () => {
+  test("preserves unrelated xml tags while rewriting the known blocked patterns", () => {
     const requestBody = {
       system:
         "Custom system prompt\n\n" +
         "<env>\n" +
         "  Working directory: /tmp/project\n" +
         "</env>\n\n" +
-        "Feedback lives at https://github.com/anomalyco/opencode",
+        "Feedback lives at https://github.com/anomalyco/opencode\n\n" +
+        "<directories>\n" +
+        "  src/\n" +
+        "</directories>",
     };
 
     const result = prepareClaudeProxyRequest({
@@ -856,7 +869,10 @@ describe("proxy contract: claude", () => {
           "<env>\n" +
           "  Working directory: /tmp/project\n" +
           "</env>\n\n" +
-          "Feedback lives at https://github.com/anomalyco/opencode",
+          "Feedback lives at https://github.com/anomalyco/project\n\n" +
+          "Directories\n" +
+          "src/\n" +
+          "</directories>",
       },
     ]);
   });

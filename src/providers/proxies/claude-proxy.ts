@@ -15,26 +15,16 @@ import {
 } from "../../usage/token-usage";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 
-const OPENCODE_IDENTITY_MARKER =
-  "You are OpenCode, the best coding agent on the planet.";
-
-// Anthropic OAuth sessions reject the OpenCode feedback repo path inside the
+// Anthropic OAuth sessions reject the feedback repo path used in OpenCode's
 // prompt URL and the opening `<directories>` wrapper emitted by OpenCode's
-// Anthropic prompt assembly. Keep the rest of the system prompt untouched to
-// preserve prompt fidelity.
+// system prompt assembly. Apply the smallest known working rewrite to all
+// Claude system prompts so primary-agent and subagent requests behave the same.
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/prompt/anthropic.txt
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/system.ts#L32-L72
-const sanitizeOpenCodeSystem = (text: string): string => {
-  if (!text.includes(OPENCODE_IDENTITY_MARKER)) {
-    return text;
-  }
-
-  const sanitized = text
+const sanitizeClaudeSystemText = (text: string): string =>
+  text
     .replace(/anomalyco\/opencode/gi, "anomalyco/project")
-    .replace(/<directories>/gi, "Directories\n");
-
-  return sanitized;
-};
+    .replace(/<directories>\n\s*/gi, "Directories\n");
 
 // Request: prefix tool names so they match Claude Code's expected format.
 // Response: strip prefixes back so the client sees its original names.
@@ -60,7 +50,7 @@ const transformClaudeRequestPayload = (
   const transformed: JsonObject = { ...payload };
 
   if (typeof transformed.system === "string") {
-    const sanitizedSystem = sanitizeOpenCodeSystem(transformed.system);
+    const sanitizedSystem = sanitizeClaudeSystemText(transformed.system);
     const systemBlocks: Array<{ type: string; text: string }> = [
       { type: "text", text: systemIdentity },
     ];
@@ -78,7 +68,7 @@ const transformClaudeRequestPayload = (
       ) {
         systemBlocks.push({
           ...block,
-          text: sanitizeOpenCodeSystem(block.text),
+          text: sanitizeClaudeSystemText(block.text),
         });
         continue;
       }
