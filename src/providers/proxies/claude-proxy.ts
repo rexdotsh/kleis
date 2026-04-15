@@ -29,6 +29,27 @@ const sanitizeClaudeSystemText = (text: string): string =>
     )
     .replace(/<directories>\n\s*/gi, "Directories\n");
 
+const toClaudeToolName = (name: string, prefix: string): string => {
+  if (name.startsWith(prefix)) {
+    return name;
+  }
+
+  return `${prefix}${name[0]?.toUpperCase() ?? ""}${name.slice(1)}`;
+};
+
+const fromClaudeToolName = (name: string, prefix: string): string => {
+  if (!name.startsWith(prefix)) {
+    return name;
+  }
+
+  const rest = name.slice(prefix.length);
+  if (!rest) {
+    return rest;
+  }
+
+  return `${rest[0]?.toLowerCase() ?? ""}${rest.slice(1)}`;
+};
+
 // Request: prefix tool names so they match Claude Code's expected format.
 // Response: strip prefixes back so the client sees its original names.
 // https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L214-L239
@@ -36,10 +57,10 @@ const sanitizeClaudeSystemText = (text: string): string =>
 // pi-mono uses case-normalized Claude Code tool names instead of a prefix:
 // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L64-L93
 const prefixToolName = (name: string, prefix: string): string =>
-  name.startsWith(prefix) ? name : `${prefix}${name}`;
+  toClaudeToolName(name, prefix);
 
 const stripToolNamePrefix = (name: string, prefix: string): string =>
-  name.startsWith(prefix) ? name.slice(prefix.length) : name;
+  fromClaudeToolName(name, prefix);
 
 const transformClaudeRequestPayload = (
   payload: unknown,

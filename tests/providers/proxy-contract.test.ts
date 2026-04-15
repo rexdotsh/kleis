@@ -699,9 +699,9 @@ describe("proxy contract: claude", () => {
     expect(transformed.system[1]?.text).toContain("<env>");
     expect(transformed.system[1]?.text).toContain("</env>");
     expect(transformed.system[1]?.text).not.toContain("<directories>");
-    expect(transformed.tools[0]?.name).toBe("mcp_shell");
-    expect(transformed.tool_choice.name).toBe("mcp_shell");
-    expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_shell");
+    expect(transformed.tools[0]?.name).toBe("mcp_Shell");
+    expect(transformed.tool_choice.name).toBe("mcp_Shell");
+    expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_Shell");
   });
 
   test("rewrites repo path and directories in non-OpenCode Claude system prompts", () => {
