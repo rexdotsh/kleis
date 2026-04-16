@@ -26,6 +26,11 @@ type ApiKeyScopes = {
   accountProviderScopes: readonly Provider[] | null;
 };
 
+const shouldForceRefreshModelsRegistry = (requestUrl: URL): boolean => {
+  const refresh = requestUrl.searchParams.get("refresh")?.trim();
+  return refresh === "1" || refresh?.toLowerCase() === "true";
+};
+
 const resolveBaseOriginWithPath = (requestUrl: URL): string => {
   const scopedSuffixMatch = requestUrl.pathname.match(
     /\/api\/[^/]+\/api\.json$/u
@@ -54,8 +59,9 @@ const buildRegistryForRequest = async (
   apiKeyScopes?: ApiKeyScopes
 ) => {
   const requestUrl = resolveExternalRequestUrl(context.req.raw);
+  const forceRefresh = shouldForceRefreshModelsRegistry(requestUrl);
   const [upstreamRegistry, configuredProviders] = await Promise.all([
-    fetchModelsDevRegistry(),
+    fetchModelsDevRegistry({ forceRefresh }),
     listConfiguredProviders(db),
   ]);
 
