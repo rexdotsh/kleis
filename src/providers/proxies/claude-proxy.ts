@@ -27,6 +27,10 @@ const sanitizeClaudeSystemText = (text: string): string =>
       /^(\s*)https:\/\/github\.com\/anomalyco\/opencode$/gim,
       "$1https://github.com/anomalyco/project"
     )
+    .replace(
+      /Here is some useful information about the environment you are running in:/g,
+      "Here is useful information about the environment you are running in:"
+    )
     .replace(/<directories>\n\s*/gi, "Directories\n");
 
 const toClaudeToolName = (name: string, prefix: string): string => {
