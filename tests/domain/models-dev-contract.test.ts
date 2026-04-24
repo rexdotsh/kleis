@@ -117,7 +117,7 @@ describe("models registry contract", () => {
     );
   });
 
-  test("keeps kleis aggregate provider with prefixed ids", () => {
+  test("keeps kleis aggregate ids routable", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/",
@@ -129,7 +129,11 @@ describe("models registry contract", () => {
       models?: Record<string, { id?: string; provider?: { api?: string } }>;
     };
     expect(kleis.env).toEqual(["KLEIS_API_KEY"]);
-    expect(kleis.models?.["github-copilot/gpt-5"]?.id).toBe("gpt-5");
+    expect(kleis.models?.["gpt-5.3-codex"]?.id).toBe("gpt-5.3-codex");
+    expect(kleis.models?.["openai/gpt-5.3-codex"]).toBeUndefined();
+    expect(kleis.models?.["github-copilot/gpt-5"]?.id).toBe(
+      "github-copilot/gpt-5"
+    );
     expect(kleis.models?.["github-copilot/gpt-5"]?.provider?.api).toBe(
       "https://kleis.example/copilot/v1"
     );
@@ -213,7 +217,7 @@ describe("models registry contract", () => {
     const kleis = registry.kleis as {
       models?: Record<string, { id?: string }>;
     };
-    expect(kleis.models?.["openai/gpt-5.3-codex"]?.id).toBe("gpt-5.3-codex");
+    expect(kleis.models?.["gpt-5.3-codex"]?.id).toBe("gpt-5.3-codex");
     expect(kleis.models?.["anthropic/claude-sonnet-4"]).toBeUndefined();
     expect(kleis.models?.["github-copilot/gpt-5"]).toBeUndefined();
   });
@@ -286,7 +290,7 @@ describe("models registry contract", () => {
     };
     expect(Object.keys(kleis.models ?? {}).sort()).toEqual([
       "github-copilot/gpt-5-mini",
-      "openai/gpt-5.3-codex",
+      "gpt-5.3-codex",
     ]);
   });
 
@@ -321,7 +325,7 @@ describe("models registry contract", () => {
     const kleis = registry.kleis as {
       models?: Record<string, unknown>;
     };
-    expect(Object.keys(kleis.models ?? {})).toEqual(["openai/gpt-5.3-codex"]);
+    expect(Object.keys(kleis.models ?? {})).toEqual(["gpt-5.3-codex"]);
   });
 
   test("account-scoped mode only narrows the kleis aggregate provider", () => {

@@ -190,7 +190,7 @@ const cloneProviderModels = (input: {
         : modelId;
     const providerOverrides = getObjectProperty(model, "provider") ?? {};
 
-    model.id = modelId;
+    model.id = proxyModelId;
     if (input.sourceLabel) {
       model.name = `${baseName} (${input.sourceLabel})`;
     }
@@ -263,7 +263,13 @@ const mergeKleisProviderModels = (input: {
         sourceModels: getObjectProperty(sourceProvider, "models") ?? {},
         apiUrl: `${input.baseOrigin}${mapping.routeBasePath}`,
         npm: mapping.npm,
-        modelPrefix: mapping.canonicalProvider,
+        // Keep the aggregate registry key equal to model.id. Codex/OpenAI must
+        // stay unprefixed because @ai-sdk/openai detects GPT-5 reasoning from
+        // ids that start with "gpt-5"; other providers stay prefixed to avoid
+        // collisions with same-named OpenAI models in clients like opencode.
+        ...(mapping.internalProvider === "codex"
+          ? {}
+          : { modelPrefix: mapping.canonicalProvider }),
         sourceLabel: mapping.canonicalProvider,
         shouldIncludeModel: (modelId) =>
           isModelSupportedByProxyProvider(mapping.internalProvider, modelId) &&
