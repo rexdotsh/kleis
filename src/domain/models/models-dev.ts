@@ -190,7 +190,7 @@ const cloneProviderModels = (input: {
         : modelId;
     const providerOverrides = getObjectProperty(model, "provider") ?? {};
 
-    model.id = proxyModelId;
+    model.id = modelId;
     if (input.sourceLabel) {
       model.name = `${baseName} (${input.sourceLabel})`;
     }

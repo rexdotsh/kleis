@@ -129,9 +129,7 @@ describe("models registry contract", () => {
       models?: Record<string, { id?: string; provider?: { api?: string } }>;
     };
     expect(kleis.env).toEqual(["KLEIS_API_KEY"]);
-    expect(kleis.models?.["github-copilot/gpt-5"]?.id).toBe(
-      "github-copilot/gpt-5"
-    );
+    expect(kleis.models?.["github-copilot/gpt-5"]?.id).toBe("gpt-5");
     expect(kleis.models?.["github-copilot/gpt-5"]?.provider?.api).toBe(
       "https://kleis.example/copilot/v1"
     );
@@ -215,9 +213,7 @@ describe("models registry contract", () => {
     const kleis = registry.kleis as {
       models?: Record<string, { id?: string }>;
     };
-    expect(kleis.models?.["openai/gpt-5.3-codex"]?.id).toBe(
-      "openai/gpt-5.3-codex"
-    );
+    expect(kleis.models?.["openai/gpt-5.3-codex"]?.id).toBe("gpt-5.3-codex");
     expect(kleis.models?.["anthropic/claude-sonnet-4"]).toBeUndefined();
     expect(kleis.models?.["github-copilot/gpt-5"]).toBeUndefined();
   });
