@@ -9,6 +9,7 @@ import {
 import { getRoutableProviderAccount } from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../providers/proxies/codex-proxy";
+import { tryProxyCodexWebSocket } from "../../providers/proxies/codex-websocket";
 import { prepareCopilotProxyRequest } from "../../providers/proxies/copilot-proxy";
 import type { UsageRequestSource } from "../../usage/request-outcome";
 import {
@@ -233,6 +234,18 @@ const proxyRequest = async (
       upstreamUrl = codexProxy.upstreamUrl;
       requestBody = codexProxy.bodyText;
       responseTransformer = codexProxy.transformResponse;
+
+      const webSocketResponse = await tryProxyCodexWebSocket({
+        headers,
+        bodyJson: codexProxy.bodyJson,
+        accountKey: `${apiKeyId}:${account.id}`,
+        onTokenUsage: usageRecorder.onTokenUsage,
+        signal: context.req.raw.signal,
+      });
+      if (webSocketResponse) {
+        usageRecorder.recordFinal(200);
+        return webSocketResponse;
+      }
       break;
     }
 
