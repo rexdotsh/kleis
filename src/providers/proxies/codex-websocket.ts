@@ -7,6 +7,7 @@ import type { TokenUsage } from "../../usage/token-usage";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 
 const SESSION_SOCKET_TTL_MS = 5 * 60 * 1000;
+const CONNECT_TIMEOUT_MS = 15_000;
 
 type WebSocketEventType = "open" | "message" | "error" | "close";
 type WebSocketListener = (event: unknown) => void;
@@ -126,12 +127,20 @@ const connectWebSocket = (
   if (!WebSocketCtor) {
     return Promise.reject(new Error("WebSocket is not available"));
   }
+  if (signal?.aborted) {
+    return Promise.reject(new Error("Request was aborted"));
+  }
 
   return new Promise((resolve, reject) => {
     let socket: WebSocketLike;
     let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
 
     const cleanup = (): void => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
       socket.removeEventListener("open", onOpen);
       socket.removeEventListener("error", onError);
       socket.removeEventListener("close", onClose);
@@ -159,6 +168,10 @@ const connectWebSocket = (
       closeSocket(socket);
       fail(new Error("Request was aborted"));
     };
+    const onTimeout = (): void => {
+      closeSocket(socket);
+      fail(new Error("WebSocket connect timed out"));
+    };
 
     try {
       socket = new WebSocketCtor(resolveCodexWebSocketUrl(), {
@@ -173,6 +186,7 @@ const connectWebSocket = (
     socket.addEventListener("error", onError);
     socket.addEventListener("close", onClose);
     signal?.addEventListener("abort", onAbort);
+    timeout = setTimeout(onTimeout, CONNECT_TIMEOUT_MS);
   });
 };
 
@@ -196,12 +210,16 @@ const acquireSocket = async (
 
   const existing = socketCache.get(cacheKey);
   if (existing) {
+    if (existing.busy) {
+      throw new Error("Codex WebSocket session is busy");
+    }
+
     if (existing.idleTimer) {
       clearTimeout(existing.idleTimer);
       existing.idleTimer = null;
     }
 
-    if (!existing.busy && isSocketOpen(existing.socket)) {
+    if (isSocketOpen(existing.socket)) {
       existing.busy = true;
       return {
         socket: existing.socket,
@@ -218,17 +236,8 @@ const acquireSocket = async (
       };
     }
 
-    if (!existing.busy) {
-      closeSocket(existing.socket);
-      socketCache.delete(cacheKey);
-    }
-
-    const socket = await connectWebSocket(headers, signal);
-    return {
-      socket,
-      cached: null,
-      release: () => closeSocket(socket),
-    };
+    closeSocket(existing.socket);
+    socketCache.delete(cacheKey);
   }
 
   const socket = await connectWebSocket(headers, signal);
@@ -268,12 +277,10 @@ const withoutContinuationFields = (
   body: Record<string, unknown>
 ): Record<string, unknown> => {
   const {
-    background: _background,
     input: _input,
     previous_response_id: _previous,
-    stream: _stream,
     ...rest
-  } = body;
+  } = withoutTransportFields(body);
   return rest;
 };
 
@@ -287,15 +294,29 @@ const withoutTransportFields = (
 const sameJson = (left: unknown, right: unknown): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
 
+const hasOwn = (body: Record<string, unknown>, key: string): boolean =>
+  Object.hasOwn(body, key);
+
+const toHex = (bytes: Uint8Array): string =>
+  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+const deriveSessionId = async (
+  accountKey: string,
+  sessionId: string
+): Promise<string> => {
+  const data = new TextEncoder().encode(`${accountKey}:${sessionId}`);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return `kleis_${toHex(new Uint8Array(digest)).slice(0, 48)}`;
+};
+
 const buildRequestBody = (
-  body: Record<string, unknown>,
+  webSocketBody: Record<string, unknown>,
   cached: CachedSocket | null
 ): Record<string, unknown> => {
-  const webSocketBody = withoutTransportFields(body);
   if (
     !cached?.continuation ||
     !Array.isArray(webSocketBody.input) ||
-    webSocketBody.previous_response_id
+    hasOwn(webSocketBody, "previous_response_id")
   ) {
     return webSocketBody;
   }
@@ -336,14 +357,21 @@ const decodeMessageData = (data: unknown): string | null => {
   if (typeof data === "string") {
     return data;
   }
-  if (data instanceof ArrayBuffer) {
-    return new TextDecoder().decode(data);
-  }
-  if (ArrayBuffer.isView(data)) {
+  if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
     return new TextDecoder().decode(data);
   }
   return null;
 };
+
+const readPayloadStatus = (payload: Record<string, unknown>): number => {
+  const status = payload.status;
+  return typeof status === "number" && status >= 400 && status <= 599
+    ? status
+    : 502;
+};
+
+const isErrorPayload = (payload: Record<string, unknown>): boolean =>
+  payload.type === "error" || payload.type === "response.failed";
 
 const buildWebSocketHeaders = (
   headers: Headers,
@@ -363,21 +391,29 @@ export const tryProxyCodexWebSocket = async (
   input: CodexWebSocketInput
 ): Promise<Response | null> => {
   const body = input.bodyJson;
-  if (!body || readBooleanField(body, "stream") !== true) {
+  if (
+    !body ||
+    readBooleanField(body, "stream") !== true ||
+    readBooleanField(body, "background") === true
+  ) {
     return null;
   }
 
   const sessionId = readSessionId(body, input.headers);
-  const requestId = sessionId ?? crypto.randomUUID();
+  const requestId = sessionId
+    ? await deriveSessionId(input.accountKey, sessionId)
+    : crypto.randomUUID();
   const cacheKey = sessionId ? `${input.accountKey}:${sessionId}` : null;
   const headers = buildWebSocketHeaders(input.headers, requestId);
 
   let acquired: Awaited<ReturnType<typeof acquireSocket>> | null = null;
-  const fullBody = withoutTransportFields(body);
+  const fullBody = withoutTransportFields(
+    sessionId ? { ...body, prompt_cache_key: requestId } : body
+  );
   let requestBody: Record<string, unknown>;
   try {
     acquired = await acquireSocket(headers, cacheKey, input.signal);
-    requestBody = buildRequestBody(body, acquired.cached);
+    requestBody = buildRequestBody(fullBody, acquired.cached);
   } catch {
     acquired?.release(false);
     return null;
@@ -388,112 +424,197 @@ export const tryProxyCodexWebSocket = async (
   const responseItems: unknown[] = [];
   let responseId: string | null = null;
   let keepSocket = true;
-
   let settled = false;
-  let cleanupStream: (() => void) | null = null;
+  let terminal = false;
+  let failure: unknown = null;
+  let wake: (() => void) | null = null;
+  const queue: Record<string, unknown>[] = [];
+
+  const wakePull = (): void => {
+    if (!wake) {
+      return;
+    }
+    const resolve = wake;
+    wake = null;
+    resolve();
+  };
+
+  let firstPayloadResolve: ((payload: Record<string, unknown>) => void) | null =
+    null;
+  let firstPayloadReject: ((error: unknown) => void) | null = null;
+  const firstPayload = new Promise<Record<string, unknown>>(
+    (resolve, reject) => {
+      firstPayloadResolve = resolve;
+      firstPayloadReject = reject;
+    }
+  );
+
+  const cleanup = (): void => {
+    active.socket.removeEventListener("message", onMessage);
+    active.socket.removeEventListener("error", onError);
+    active.socket.removeEventListener("close", onClose);
+    input.signal?.removeEventListener("abort", onAbort);
+  };
+
+  const fail = (error: unknown): void => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    keepSocket = false;
+    failure = error;
+    cleanup();
+    active.release(false);
+    firstPayloadReject?.(error);
+    wakePull();
+  };
+
+  const finish = (): void => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    cleanup();
+    if (keepSocket && active.cached && responseId) {
+      active.cached.continuation = {
+        lastRequestBody: fullBody,
+        lastResponseId: responseId,
+        lastResponseItems: responseItems,
+      };
+    } else if (active.cached) {
+      active.cached.continuation = null;
+    }
+    active.release(keepSocket);
+    wakePull();
+  };
+
+  const onAbort = (): void => fail(new Error("Request was aborted"));
+
+  const onError = (): void => fail(new Error("WebSocket error"));
+
+  const onClose = (): void => {
+    if (terminal) {
+      wakePull();
+      return;
+    }
+    fail(new Error("WebSocket closed"));
+  };
+
+  const onMessage = (event: unknown): void => {
+    try {
+      const text = decodeMessageData(isObjectRecord(event) ? event.data : null);
+      if (!text) {
+        return;
+      }
+
+      const payload = JSON.parse(text) as unknown;
+      if (!isObjectRecord(payload)) {
+        return;
+      }
+
+      if (
+        payload.type === "response.completed" ||
+        payload.type === "response.done" ||
+        payload.type === "response.incomplete" ||
+        isErrorPayload(payload)
+      ) {
+        terminal = true;
+      }
+      queue.push(payload);
+      if (queue.length === 1) {
+        firstPayloadResolve?.(payload);
+      }
+      wakePull();
+    } catch (error) {
+      fail(error);
+    }
+  };
+
+  active.socket.addEventListener("message", onMessage);
+  active.socket.addEventListener("error", onError);
+  active.socket.addEventListener("close", onClose);
+  input.signal?.addEventListener("abort", onAbort);
+
+  try {
+    active.socket.send(
+      JSON.stringify({ ...requestBody, type: "response.create" })
+    );
+  } catch (error) {
+    fail(error);
+  }
+
+  let first: Record<string, unknown>;
+  try {
+    first = await firstPayload;
+  } catch {
+    return null;
+  }
+
+  if (isErrorPayload(first)) {
+    keepSocket = false;
+    finish();
+    return Response.json(first, { status: readPayloadStatus(first) });
+  }
+
+  const processPayload = (
+    payload: Record<string, unknown>,
+    controller: ReadableStreamDefaultController<Uint8Array>
+  ): void => {
+    const usage = readOpenAiResponsesUsageFromSseEvent(payload);
+    if (usage) {
+      input.onTokenUsage?.(usage);
+    }
+
+    if (isObjectRecord(payload.response)) {
+      responseId = readString(payload.response.id) ?? responseId;
+    }
+    if (payload.type === "response.output_item.done") {
+      responseItems.push(payload.item);
+    }
+
+    controller.enqueue(encodeSse(payload));
+    if (
+      payload.type === "response.completed" ||
+      payload.type === "response.done" ||
+      payload.type === "response.incomplete"
+    ) {
+      terminal = true;
+      finish();
+    } else if (isErrorPayload(payload)) {
+      keepSocket = false;
+      terminal = true;
+      finish();
+    }
+  };
 
   const stream = new ReadableStream<Uint8Array>({
-    start(controller): void {
-      const cleanup = (): void => {
-        active.socket.removeEventListener("message", onMessage);
-        active.socket.removeEventListener("error", onError);
-        active.socket.removeEventListener("close", onClose);
-      };
-      const finish = (): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        if (keepSocket && active.cached && responseId) {
-          active.cached.continuation = {
-            lastRequestBody: fullBody,
-            lastResponseId: responseId,
-            lastResponseItems: responseItems,
-          };
-        } else if (active.cached) {
-          active.cached.continuation = null;
-        }
-        active.release(keepSocket);
-        controller.close();
-      };
-      const fail = (error: unknown): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        keepSocket = false;
-        cleanup();
-        active.release(false);
-        controller.error(error);
-      };
-      const onMessage = (event: unknown): void => {
-        try {
-          const text = decodeMessageData(
-            isObjectRecord(event) ? event.data : null
-          );
-          if (!text) {
-            return;
-          }
-
-          const payload = JSON.parse(text) as unknown;
-          if (!isObjectRecord(payload)) {
-            return;
-          }
-
-          const usage = readOpenAiResponsesUsageFromSseEvent(payload);
-          if (usage) {
-            input.onTokenUsage?.(usage);
-          }
-
-          if (isObjectRecord(payload.response)) {
-            responseId = readString(payload.response.id) ?? responseId;
-          }
-          if (payload.type === "response.output_item.done") {
-            responseItems.push(payload.item);
-          }
-
-          controller.enqueue(encodeSse(payload));
-          if (
-            payload.type === "response.completed" ||
-            payload.type === "response.done" ||
-            payload.type === "response.incomplete"
-          ) {
-            finish();
-          } else if (
-            payload.type === "error" ||
-            payload.type === "response.failed"
-          ) {
-            keepSocket = false;
-            finish();
-          }
-        } catch (error) {
-          fail(error);
-        }
-      };
-      const onError = (): void => fail(new Error("WebSocket error"));
-      const onClose = (): void => fail(new Error("WebSocket closed"));
-
-      cleanupStream = cleanup;
-      active.socket.addEventListener("message", onMessage);
-      active.socket.addEventListener("error", onError);
-      active.socket.addEventListener("close", onClose);
-      try {
-        active.socket.send(
-          JSON.stringify({ ...requestBody, type: "response.create" })
-        );
-      } catch (error) {
-        fail(error);
+    async pull(controller): Promise<void> {
+      while (!queue.length && !settled) {
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
       }
+
+      if (queue.length) {
+        const payload = queue.shift();
+        if (payload) {
+          processPayload(payload, controller);
+        }
+        return;
+      }
+
+      if (failure) {
+        controller.error(failure);
+        return;
+      }
+
+      controller.close();
     },
     cancel(): void {
       if (settled) {
         return;
       }
-      settled = true;
-      cleanupStream?.();
-      keepSocket = false;
-      active.release(false);
+      fail(new Error("Response stream was cancelled"));
     },
   });
 

@@ -97,7 +97,8 @@ export const readOpenAiResponsesUsageFromSseEvent = (
 
   if (
     payload.type !== "response.completed" &&
-    payload.type !== "response.done"
+    payload.type !== "response.done" &&
+    payload.type !== "response.incomplete"
   ) {
     return null;
   }

@@ -243,7 +243,7 @@ const proxyRequest = async (
         signal: context.req.raw.signal,
       });
       if (webSocketResponse) {
-        usageRecorder.recordFinal(200);
+        usageRecorder.recordFinal(webSocketResponse.status);
         return webSocketResponse;
       }
       break;
