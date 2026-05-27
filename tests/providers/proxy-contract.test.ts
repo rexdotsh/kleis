@@ -1353,6 +1353,46 @@ describe("proxy contract: codex", () => {
     expect(sentBodies).toHaveLength(2);
   });
 
+  test("decodes binary websocket messages", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+    });
+    const encoder = new TextEncoder();
+
+    const responsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "Binary" }] },
+        ],
+      },
+      accountKey: "key-1:account-1",
+    });
+
+    await waitFor(() => sentBodies.length === 1);
+    for (const event of [
+      { type: "response.created", response: { id: "resp_1" } },
+      {
+        type: "response.completed",
+        response: { id: "resp_1", status: "completed" },
+      },
+    ]) {
+      sockets[0]?.dispatch("message", {
+        data: encoder.encode(JSON.stringify(event)).buffer,
+      });
+    }
+
+    const response = await responsePromise;
+    expect(response).not.toBeNull();
+    const text = await response?.text();
+    expect(text).toContain("response.completed");
+  });
+
   test("treats same-session websocket connect races as busy", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies, {

@@ -20,7 +20,7 @@ import {
   isTokenUsagePopulated,
   type TokenUsage,
 } from "../../usage/token-usage";
-import { isObjectRecord } from "../../utils/object";
+import { isObjectRecord, readBooleanField } from "../../utils/object";
 import {
   parseModelForProxyRoute,
   proxyRouteTable,
@@ -34,6 +34,76 @@ const proxyErrorResponse = (message: string, type = "proxy_error") => ({
     type,
   },
 });
+
+const CODEX_SSE_HEADER_TIMEOUT_MS = 10_000;
+
+const combineAbortSignals = (
+  signals: readonly (AbortSignal | undefined)[]
+): { signal?: AbortSignal; cleanup(): void } => {
+  const activeSignals = signals.filter(
+    (signal): signal is AbortSignal => signal !== undefined
+  );
+  if (activeSignals.length === 0) {
+    return { cleanup: () => undefined };
+  }
+  if (activeSignals.length === 1) {
+    const signal = activeSignals[0];
+    if (signal) {
+      return { signal, cleanup: () => undefined };
+    }
+    return { cleanup: () => undefined };
+  }
+
+  const controller = new AbortController();
+  const listeners: Array<{ signal: AbortSignal; listener(): void }> = [];
+  const abort = (signal: AbortSignal): void => {
+    if (!controller.signal.aborted) {
+      controller.abort(signal.reason);
+    }
+  };
+
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      abort(signal);
+      break;
+    }
+    const listener = (): void => abort(signal);
+    signal.addEventListener("abort", listener, { once: true });
+    listeners.push({ signal, listener });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup(): void {
+      for (const { signal, listener } of listeners) {
+        signal.removeEventListener("abort", listener);
+      }
+    },
+  };
+};
+
+const createCodexSseHeaderTimeout = (): {
+  signal: AbortSignal;
+  clear(): void;
+  error(): Error | undefined;
+} => {
+  const controller = new AbortController();
+  let error: Error | undefined;
+  const timeout = setTimeout(() => {
+    error = new Error(
+      `Codex SSE response headers timed out after ${CODEX_SSE_HEADER_TIMEOUT_MS}ms`
+    );
+    controller.abort(error);
+  }, CODEX_SSE_HEADER_TIMEOUT_MS);
+
+  return {
+    signal: controller.signal,
+    clear(): void {
+      clearTimeout(timeout);
+    },
+    error: () => error,
+  };
+};
 
 const removeProxyAuthHeaders = (headers: Headers): void => {
   headers.delete("authorization");
@@ -363,6 +433,7 @@ const proxyRequest = async (
   let upstreamUrl = "";
   let responseTransformer: ((response: Response) => Promise<Response>) | null =
     null;
+  let useCodexSseHeaderTimeout = false;
 
   switch (route.provider) {
     case "codex": {
@@ -404,6 +475,8 @@ const proxyRequest = async (
       upstreamUrl = codexProxy.upstreamUrl;
       requestBody = codexProxy.bodyText;
       responseTransformer = codexProxy.transformResponse;
+      useCodexSseHeaderTimeout =
+        readBooleanField(codexProxy.bodyJson, "stream") === true;
       logCodexRequestDiagnostic({
         body: codexProxy.bodyJson,
         headers: codexIncomingHeaders,
@@ -476,6 +549,12 @@ const proxyRequest = async (
 
   let upstreamResponse: Response;
   try {
+    const headerTimeout = useCodexSseHeaderTimeout
+      ? createCodexSseHeaderTimeout()
+      : null;
+    const combinedSignal = headerTimeout
+      ? combineAbortSignals([context.req.raw.signal, headerTimeout.signal])
+      : null;
     const upstreamRequestInit: BunFetchRequestInit = {
       method: context.req.method,
       headers,
@@ -483,7 +562,20 @@ const proxyRequest = async (
       // Provider streams can pause for minutes while a model is thinking.
       timeout: false,
     };
-    upstreamResponse = await fetch(upstreamUrl, upstreamRequestInit);
+    if (combinedSignal?.signal) {
+      upstreamRequestInit.signal = combinedSignal.signal;
+    }
+    try {
+      upstreamResponse = await fetch(upstreamUrl, upstreamRequestInit);
+    } catch (error) {
+      const timeoutError = headerTimeout?.error();
+      throw timeoutError && !context.req.raw.signal.aborted
+        ? timeoutError
+        : error;
+    } finally {
+      combinedSignal?.cleanup();
+      headerTimeout?.clear();
+    }
   } catch (error) {
     usageRecorder.recordImmediate(500);
     throw error;

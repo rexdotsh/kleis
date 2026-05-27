@@ -17,6 +17,7 @@ const RESPONSE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_SOCKET_AGE_MS = 55 * 60 * 1000;
 const CONNECTION_LIMIT_RETRIES = 5;
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
+const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 
 type WebSocketEventType = "open" | "message" | "error" | "close";
 type WebSocketListener = (event: unknown) => void;
@@ -154,6 +155,44 @@ const closeSocket = (socket: WebSocketLike): void => {
   }
 };
 
+const extractWebSocketError = (event: unknown): Error => {
+  if (isObjectRecord(event)) {
+    const message = readString(event.message);
+    if (message) {
+      return new Error(message);
+    }
+
+    const nestedError = event.error;
+    if (nestedError instanceof Error && nestedError.message) {
+      return nestedError;
+    }
+    if (isObjectRecord(nestedError)) {
+      const nestedMessage = readString(nestedError.message);
+      if (nestedMessage) {
+        return new Error(nestedMessage);
+      }
+    }
+  }
+
+  return new Error("WebSocket error");
+};
+
+const extractWebSocketCloseError = (event: unknown): Error => {
+  if (!isObjectRecord(event)) {
+    return new Error("WebSocket closed");
+  }
+
+  const code = typeof event.code === "number" ? event.code : null;
+  const reason = readString(event.reason);
+  const codeText = code === null ? "" : ` ${code}`;
+  const reasonText =
+    reason ??
+    (code === WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE ? "message too big" : null);
+  return new Error(
+    `WebSocket closed${codeText}${reasonText ? ` ${reasonText}` : ""}`.trim()
+  );
+};
+
 const clearSessionFallback = (key: string): void => {
   const timer = fallbackSocketKeys.get(key);
   if (timer) {
@@ -239,15 +278,19 @@ const connectWebSocket = (
       cleanup();
       resolve(socket);
     };
-    const onError = (): void => fail(new Error("WebSocket error"));
-    const onClose = (): void => fail(new Error("WebSocket closed"));
+    const onError = (event: unknown): void =>
+      fail(extractWebSocketError(event));
+    const onClose = (event: unknown): void =>
+      fail(extractWebSocketCloseError(event));
     const onAbort = (): void => {
       closeSocket(socket);
       fail(new Error("Request was aborted"));
     };
     const onTimeout = (): void => {
       closeSocket(socket);
-      fail(new Error("WebSocket connect timed out"));
+      fail(
+        new Error(`WebSocket connect timeout after ${CONNECT_TIMEOUT_MS}ms`)
+      );
     };
 
     try {
@@ -645,12 +688,21 @@ const buildRequestBody = (
 const encodeSse = (payload: unknown): Uint8Array =>
   new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`);
 
-const decodeMessageData = (data: unknown): string | null => {
+const decodeMessageData = async (data: unknown): Promise<string | null> => {
   if (typeof data === "string") {
     return data;
   }
-  if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-    return new TextDecoder().decode(data);
+  if (data instanceof ArrayBuffer) {
+    return new TextDecoder().decode(new Uint8Array(data));
+  }
+  if (ArrayBuffer.isView(data)) {
+    return new TextDecoder().decode(
+      new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+    );
+  }
+  if (isObjectRecord(data) && typeof data.arrayBuffer === "function") {
+    const arrayBuffer = (await data.arrayBuffer()) as ArrayBuffer;
+    return new TextDecoder().decode(new Uint8Array(arrayBuffer));
   }
   return null;
 };
@@ -1092,8 +1144,8 @@ export const tryProxyCodexWebSocket = async (
   const onAbort = (): void =>
     fail("request_aborted", new Error("Request was aborted"));
 
-  const onError = (): void =>
-    fail("socket_error", new Error("WebSocket error"));
+  const onError = (event: unknown): void =>
+    fail("socket_error", extractWebSocketError(event));
 
   const onClose = (event: unknown): void => {
     if (terminal) {
@@ -1117,67 +1169,75 @@ export const tryProxyCodexWebSocket = async (
       wakePull();
       return;
     }
-    fail("socket_closed_before_terminal", new Error("WebSocket closed"), event);
+    fail(
+      "socket_closed_before_terminal",
+      extractWebSocketCloseError(event),
+      event
+    );
+  };
+
+  const handleMessage = async (event: unknown): Promise<void> => {
+    const text = await decodeMessageData(
+      isObjectRecord(event) ? event.data : null
+    );
+    if (!text) {
+      return;
+    }
+
+    const payload = JSON.parse(text) as unknown;
+    if (!isObjectRecord(payload)) {
+      return;
+    }
+    messagesReceived++;
+    resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
+
+    if (!emittedPayload && isConnectionLimitPayload(payload)) {
+      retryConnectionLimit().catch((error: unknown) => {
+        fail("connection_limit_retry_failed", error);
+      });
+      return;
+    }
+
+    if (
+      payload.type === "response.completed" ||
+      payload.type === "response.done" ||
+      payload.type === "response.incomplete" ||
+      isErrorPayload(payload)
+    ) {
+      terminal = true;
+      finalEventType = payload.type;
+      finalResponseStatus = isObjectRecord(payload.response)
+        ? readString(payload.response.status)
+        : null;
+      logCodexWebSocketLifecycle({
+        diagnosticRequestId,
+        model: requestBody.model,
+        upstreamSessionId: input.upstreamSessionId ?? null,
+        stage: "upstream_terminal_received",
+        elapsedMs: Date.now() - startedAt,
+        cacheDecision: cacheDecision.reason,
+        messagesReceived,
+        queueLength: queue.length,
+        terminal,
+        settled,
+        failureSet: Boolean(failure),
+        sentInputItems: inputItems(requestBody),
+        hasPreviousResponseId:
+          typeof requestBody.previous_response_id === "string",
+      });
+    }
+    emittedPayload = true;
+    queue.push(payload);
+    if (queue.length === 1) {
+      firstPayloadResolve?.(payload);
+    }
+    wakePull();
   };
 
   const onMessage = (event: unknown): void => {
-    try {
-      const text = decodeMessageData(isObjectRecord(event) ? event.data : null);
-      if (!text) {
-        return;
-      }
-
-      const payload = JSON.parse(text) as unknown;
-      if (!isObjectRecord(payload)) {
-        return;
-      }
-      messagesReceived++;
-      resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
-
-      if (!emittedPayload && isConnectionLimitPayload(payload)) {
-        retryConnectionLimit().catch((error: unknown) => {
-          fail("connection_limit_retry_failed", error);
-        });
-        return;
-      }
-
-      if (
-        payload.type === "response.completed" ||
-        payload.type === "response.done" ||
-        payload.type === "response.incomplete" ||
-        isErrorPayload(payload)
-      ) {
-        terminal = true;
-        finalEventType = payload.type;
-        finalResponseStatus = isObjectRecord(payload.response)
-          ? readString(payload.response.status)
-          : null;
-        logCodexWebSocketLifecycle({
-          diagnosticRequestId,
-          model: requestBody.model,
-          upstreamSessionId: input.upstreamSessionId ?? null,
-          stage: "upstream_terminal_received",
-          elapsedMs: Date.now() - startedAt,
-          cacheDecision: cacheDecision.reason,
-          messagesReceived,
-          queueLength: queue.length,
-          terminal,
-          settled,
-          failureSet: Boolean(failure),
-          sentInputItems: inputItems(requestBody),
-          hasPreviousResponseId:
-            typeof requestBody.previous_response_id === "string",
-        });
-      }
-      emittedPayload = true;
-      queue.push(payload);
-      if (queue.length === 1) {
-        firstPayloadResolve?.(payload);
-      }
-      wakePull();
-    } catch (error) {
+    handleMessage(event).catch((error: unknown) => {
       fail("message_parse_failed", error);
-    }
+    });
   };
 
   attachSocketListeners();
