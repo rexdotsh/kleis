@@ -79,6 +79,12 @@ type CacheDecision = {
 const socketCache = new Map<string, CachedSocket>();
 const pendingSocketKeys = new Set<string>();
 const suppressContinuationStoreKeys = new Set<string>();
+let diagnosticRequestCounter = 0;
+
+const nextDiagnosticRequestId = (): string => {
+  diagnosticRequestCounter = (diagnosticRequestCounter + 1) % 1_000_000;
+  return `${Date.now().toString(36)}-${diagnosticRequestCounter.toString(36)}`;
+};
 
 const resolveCodexWebSocketUrl = (): string => {
   const url = new URL(CODEX_RESPONSE_ENDPOINT);
@@ -640,7 +646,62 @@ const logCodexWebSocketDiagnostic = (
   process.stderr.write(`${JSON.stringify(payload)}\n`);
 };
 
+const errorShape = (error: unknown): Record<string, unknown> => ({
+  name: error instanceof Error ? error.name : typeof error,
+  message: error instanceof Error ? error.message : String(error),
+});
+
+const closeEventShape = (event: unknown): Record<string, unknown> | null => {
+  if (!isObjectRecord(event)) {
+    return null;
+  }
+  return {
+    code: typeof event.code === "number" ? event.code : null,
+    wasClean: typeof event.wasClean === "boolean" ? event.wasClean : null,
+  };
+};
+
+const logCodexWebSocketLifecycle = (input: {
+  diagnosticRequestId: string;
+  model: unknown;
+  upstreamSessionId: string | null;
+  stage: string;
+  elapsedMs: number;
+  cacheDecision?: string;
+  error?: unknown;
+  closeEvent?: unknown;
+  messagesReceived?: number;
+  queueLength?: number;
+  terminal?: boolean;
+  settled?: boolean;
+  failureSet?: boolean;
+  sentInputItems?: number | null;
+  hasPreviousResponseId?: boolean;
+}): void => {
+  logCodexWebSocketDiagnostic({
+    event: "codex_compaction_ws_lifecycle",
+    diagnosticRequestId: input.diagnosticRequestId,
+    model: readString(input.model),
+    sessionHash: sessionHash(input.upstreamSessionId),
+    stage: input.stage,
+    elapsedMs: input.elapsedMs,
+    cacheDecision: input.cacheDecision,
+    ...(input.error ? { error: errorShape(input.error) } : {}),
+    ...(input.closeEvent
+      ? { closeEvent: closeEventShape(input.closeEvent) }
+      : {}),
+    messagesReceived: input.messagesReceived,
+    queueLength: input.queueLength,
+    terminal: input.terminal,
+    settled: input.settled,
+    failureSet: input.failureSet,
+    sentInputItems: input.sentInputItems,
+    hasPreviousResponseId: input.hasPreviousResponseId,
+  });
+};
+
 const logCodexWebSocketDecision = (input: {
+  diagnosticRequestId: string;
   model: unknown;
   upstreamSessionId: string | null;
   decision: CacheDecision;
@@ -649,6 +710,7 @@ const logCodexWebSocketDecision = (input: {
 }): void => {
   logCodexWebSocketDiagnostic({
     event: "codex_compaction_ws_decision",
+    diagnosticRequestId: input.diagnosticRequestId,
     model: readString(input.model),
     sessionHash: sessionHash(input.upstreamSessionId),
     cacheDecision: input.decision.reason,
@@ -668,8 +730,10 @@ const logCodexWebSocketDecision = (input: {
 };
 
 const logCodexWebSocketStore = (input: {
+  diagnosticRequestId: string;
   model: unknown;
   upstreamSessionId: string | null;
+  elapsedMs: number;
   keptSocket: boolean;
   responseIdPresent: boolean;
   responseItems: number;
@@ -680,8 +744,10 @@ const logCodexWebSocketStore = (input: {
 }): void => {
   logCodexWebSocketDiagnostic({
     event: "codex_compaction_ws_store",
+    diagnosticRequestId: input.diagnosticRequestId,
     model: readString(input.model),
     sessionHash: sessionHash(input.upstreamSessionId),
+    elapsedMs: input.elapsedMs,
     keptSocket: input.keptSocket,
     responseIdPresent: input.responseIdPresent,
     responseItems: input.responseItems,
@@ -708,6 +774,8 @@ const buildWebSocketHeaders = (
 export const tryProxyCodexWebSocket = async (
   input: CodexWebSocketInput
 ): Promise<Response | null> => {
+  const diagnosticRequestId = nextDiagnosticRequestId();
+  const startedAt = Date.now();
   const body = input.bodyJson;
   if (
     !body ||
@@ -737,8 +805,16 @@ export const tryProxyCodexWebSocket = async (
     const builtRequest = buildRequestBody(fullBody, acquired.cached);
     requestBody = builtRequest.body;
     cacheDecision = builtRequest.decision;
-  } catch {
+  } catch (error) {
     acquired?.release(false);
+    logCodexWebSocketLifecycle({
+      diagnosticRequestId,
+      model: body.model,
+      upstreamSessionId: input.upstreamSessionId ?? null,
+      stage: "acquire_failed",
+      elapsedMs: Date.now() - startedAt,
+      error,
+    });
     return null;
   }
 
@@ -752,6 +828,7 @@ export const tryProxyCodexWebSocket = async (
   let settled = false;
   let terminal = false;
   let failure: unknown = null;
+  let messagesReceived = 0;
   let wake: (() => void) | null = null;
   const queue: Record<string, unknown>[] = [];
 
@@ -781,7 +858,7 @@ export const tryProxyCodexWebSocket = async (
     input.signal?.removeEventListener("abort", onAbort);
   };
 
-  const fail = (error: unknown): void => {
+  const fail = (stage: string, error: unknown, closeEvent?: unknown): void => {
     if (settled) {
       return;
     }
@@ -790,6 +867,24 @@ export const tryProxyCodexWebSocket = async (
     failure = error;
     cleanup();
     active.release(false);
+    logCodexWebSocketLifecycle({
+      diagnosticRequestId,
+      model: requestBody.model,
+      upstreamSessionId: input.upstreamSessionId ?? null,
+      stage,
+      elapsedMs: Date.now() - startedAt,
+      cacheDecision: cacheDecision.reason,
+      error,
+      closeEvent,
+      messagesReceived,
+      queueLength: queue.length,
+      terminal,
+      settled,
+      failureSet: true,
+      sentInputItems: inputItems(requestBody),
+      hasPreviousResponseId:
+        typeof requestBody.previous_response_id === "string",
+    });
     firstPayloadReject?.(error);
     wakePull();
   };
@@ -826,8 +921,10 @@ export const tryProxyCodexWebSocket = async (
       active.cached.skipNextContinuationStore = false;
     }
     logCodexWebSocketStore({
+      diagnosticRequestId,
       model: requestBody.model,
       upstreamSessionId: input.upstreamSessionId ?? null,
+      elapsedMs: Date.now() - startedAt,
       keptSocket: keepSocket,
       responseIdPresent: Boolean(responseId),
       responseItems: responseItems.length,
@@ -840,16 +937,35 @@ export const tryProxyCodexWebSocket = async (
     wakePull();
   };
 
-  const onAbort = (): void => fail(new Error("Request was aborted"));
+  const onAbort = (): void =>
+    fail("request_aborted", new Error("Request was aborted"));
 
-  const onError = (): void => fail(new Error("WebSocket error"));
+  const onError = (): void =>
+    fail("socket_error", new Error("WebSocket error"));
 
-  const onClose = (): void => {
+  const onClose = (event: unknown): void => {
     if (terminal) {
+      logCodexWebSocketLifecycle({
+        diagnosticRequestId,
+        model: requestBody.model,
+        upstreamSessionId: input.upstreamSessionId ?? null,
+        stage: "socket_closed_after_terminal",
+        elapsedMs: Date.now() - startedAt,
+        cacheDecision: cacheDecision.reason,
+        closeEvent: event,
+        messagesReceived,
+        queueLength: queue.length,
+        terminal,
+        settled,
+        failureSet: Boolean(failure),
+        sentInputItems: inputItems(requestBody),
+        hasPreviousResponseId:
+          typeof requestBody.previous_response_id === "string",
+      });
       wakePull();
       return;
     }
-    fail(new Error("WebSocket closed"));
+    fail("socket_closed_before_terminal", new Error("WebSocket closed"), event);
   };
 
   const onMessage = (event: unknown): void => {
@@ -863,6 +979,7 @@ export const tryProxyCodexWebSocket = async (
       if (!isObjectRecord(payload)) {
         return;
       }
+      messagesReceived++;
 
       if (
         payload.type === "response.completed" ||
@@ -875,6 +992,22 @@ export const tryProxyCodexWebSocket = async (
         finalResponseStatus = isObjectRecord(payload.response)
           ? readString(payload.response.status)
           : null;
+        logCodexWebSocketLifecycle({
+          diagnosticRequestId,
+          model: requestBody.model,
+          upstreamSessionId: input.upstreamSessionId ?? null,
+          stage: "upstream_terminal_received",
+          elapsedMs: Date.now() - startedAt,
+          cacheDecision: cacheDecision.reason,
+          messagesReceived,
+          queueLength: queue.length,
+          terminal,
+          settled,
+          failureSet: Boolean(failure),
+          sentInputItems: inputItems(requestBody),
+          hasPreviousResponseId:
+            typeof requestBody.previous_response_id === "string",
+        });
       }
       queue.push(payload);
       if (queue.length === 1) {
@@ -882,7 +1015,7 @@ export const tryProxyCodexWebSocket = async (
       }
       wakePull();
     } catch (error) {
-      fail(error);
+      fail("message_parse_failed", error);
     }
   };
 
@@ -896,17 +1029,35 @@ export const tryProxyCodexWebSocket = async (
       JSON.stringify({ ...requestBody, type: "response.create" })
     );
   } catch (error) {
-    fail(error);
+    fail("send_failed", error);
   }
 
   let first: Record<string, unknown>;
   try {
     first = await firstPayload;
-  } catch {
+  } catch (error) {
+    logCodexWebSocketLifecycle({
+      diagnosticRequestId,
+      model: requestBody.model,
+      upstreamSessionId: input.upstreamSessionId ?? null,
+      stage: "first_payload_failed",
+      elapsedMs: Date.now() - startedAt,
+      cacheDecision: cacheDecision.reason,
+      error,
+      messagesReceived,
+      queueLength: queue.length,
+      terminal,
+      settled,
+      failureSet: Boolean(failure),
+      sentInputItems: inputItems(requestBody),
+      hasPreviousResponseId:
+        typeof requestBody.previous_response_id === "string",
+    });
     return null;
   }
 
   logCodexWebSocketDecision({
+    diagnosticRequestId,
     model: requestBody.model,
     upstreamSessionId: input.upstreamSessionId ?? null,
     decision: cacheDecision,
@@ -970,7 +1121,12 @@ export const tryProxyCodexWebSocket = async (
       if (queue.length) {
         const payload = queue.shift();
         if (payload) {
-          processPayload(payload, controller);
+          try {
+            processPayload(payload, controller);
+          } catch (error) {
+            fail("downstream_enqueue_failed", error);
+            controller.error(error);
+          }
         }
         return;
       }
@@ -984,9 +1140,25 @@ export const tryProxyCodexWebSocket = async (
     },
     cancel(): void {
       if (settled) {
+        logCodexWebSocketLifecycle({
+          diagnosticRequestId,
+          model: requestBody.model,
+          upstreamSessionId: input.upstreamSessionId ?? null,
+          stage: "downstream_cancel_after_settled",
+          elapsedMs: Date.now() - startedAt,
+          cacheDecision: cacheDecision.reason,
+          messagesReceived,
+          queueLength: queue.length,
+          terminal,
+          settled,
+          failureSet: Boolean(failure),
+          sentInputItems: inputItems(requestBody),
+          hasPreviousResponseId:
+            typeof requestBody.previous_response_id === "string",
+        });
         return;
       }
-      fail(new Error("Response stream was cancelled"));
+      fail("downstream_cancel", new Error("Response stream was cancelled"));
     },
   });
 
