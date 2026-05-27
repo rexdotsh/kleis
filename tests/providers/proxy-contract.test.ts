@@ -448,7 +448,7 @@ describe("proxy contract: codex", () => {
     const headers = new Headers({
       authorization: "Bearer codex-access",
       [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
-      "session-id": "session-1",
+      "x-session-affinity": "session-1",
     });
     const firstInput = [
       { role: "user", content: [{ type: "input_text", text: "Say hello" }] },

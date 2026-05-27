@@ -85,6 +85,7 @@ const readSessionId = (body: Record<string, unknown>, headers: Headers) =>
   readString(body.prompt_cache_key) ??
   readString(headers.get("session_id")) ??
   readString(headers.get("session-id")) ??
+  readString(headers.get("x-session-affinity")) ??
   readString(headers.get("x-client-request-id"));
 
 const isSocketOpen = (socket: WebSocketLike): boolean =>
