@@ -2,6 +2,11 @@ import {
   CODEX_RESPONSE_ENDPOINT,
   CODEX_WEBSOCKET_BETA_HEADER,
 } from "../constants";
+import {
+  applyCodexSessionHeaders,
+  deriveCodexSessionId,
+  readCodexSessionId,
+} from "./codex-proxy";
 import { readOpenAiResponsesUsageFromSseEvent } from "../../usage/token-usage";
 import type { TokenUsage } from "../../usage/token-usage";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
@@ -32,6 +37,8 @@ type CodexWebSocketInput = {
   headers: Headers;
   bodyJson: Record<string, unknown> | null;
   accountKey: string;
+  sessionId?: string | null;
+  upstreamSessionId?: string | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
   signal?: AbortSignal;
 };
@@ -83,13 +90,6 @@ const readString = (value: unknown): string | null => {
   const trimmed = value.trim();
   return trimmed || null;
 };
-
-const readSessionId = (body: Record<string, unknown>, headers: Headers) =>
-  readString(body.prompt_cache_key) ??
-  readString(headers.get("session_id")) ??
-  readString(headers.get("session-id")) ??
-  readString(headers.get("x-session-affinity")) ??
-  readString(headers.get("x-client-request-id"));
 
 const isSocketOpen = (socket: WebSocketLike): boolean =>
   socket.readyState === undefined || socket.readyState === 1;
@@ -434,18 +434,6 @@ const matchesLoweredResponseItems = (
   );
 };
 
-const toHex = (bytes: Uint8Array): string =>
-  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-
-const deriveSessionId = async (
-  accountKey: string,
-  sessionId: string
-): Promise<string> => {
-  const data = new TextEncoder().encode(`${accountKey}:${sessionId}`);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return `kleis_${toHex(new Uint8Array(digest)).slice(0, 48)}`;
-};
-
 const buildRequestBody = (
   webSocketBody: Record<string, unknown>,
   cached: CachedSocket | null
@@ -560,11 +548,8 @@ const buildWebSocketHeaders = (
   nextHeaders.delete("accept");
   nextHeaders.delete("content-type");
   nextHeaders.delete("openai-beta");
-  nextHeaders.delete("session-id");
-  nextHeaders.delete("x-session-affinity");
   nextHeaders.set("OpenAI-Beta", CODEX_WEBSOCKET_BETA_HEADER);
-  nextHeaders.set("session_id", requestId);
-  nextHeaders.set("x-client-request-id", requestId);
+  applyCodexSessionHeaders(nextHeaders, requestId);
   return nextHeaders;
 };
 
@@ -580,10 +565,12 @@ export const tryProxyCodexWebSocket = async (
     return null;
   }
 
-  const sessionId = readSessionId(body, input.headers);
-  const requestId = sessionId
-    ? await deriveSessionId(input.accountKey, sessionId)
-    : crypto.randomUUID();
+  const sessionId = input.sessionId ?? readCodexSessionId(body, input.headers);
+  const requestId = input.upstreamSessionId
+    ? input.upstreamSessionId
+    : sessionId
+      ? await deriveCodexSessionId(input.accountKey, sessionId)
+      : crypto.randomUUID();
   const cacheKey = sessionId ? `${input.accountKey}:${sessionId}` : null;
   const headers = buildWebSocketHeaders(input.headers, requestId);
 

@@ -326,6 +326,43 @@ describe("proxy contract: codex", () => {
     );
   });
 
+  test("uses derived session headers and prompt cache key for codex requests", () => {
+    const headers = new Headers({
+      session_id: "raw-session-underscore",
+      "session-id": "raw-session-header",
+      "x-session-affinity": "raw-session-affinity",
+    });
+    const bodyJson = {
+      model: "gpt-5-codex",
+      prompt_cache_key: "raw-prompt-cache-key",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      ],
+    };
+
+    const result = prepareCodexProxyRequest({
+      headers,
+      accessToken: "codex-access",
+      accountId: "acct-fallback",
+      metadata: null,
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+      sessionId: "kleis_derived_session",
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      prompt_cache_key?: string;
+    };
+    expect(transformed.prompt_cache_key).toBe("kleis_derived_session");
+    expect(headers.get("session_id")).toBeNull();
+    expect(headers.get("x-session-affinity")).toBeNull();
+    expect(headers.get("session-id")).toBe("kleis_derived_session");
+    expect(headers.get("x-client-request-id")).toBe("kleis_derived_session");
+  });
+
   test("removes unsupported token limit params", () => {
     const bodyJson = {
       model: "gpt-5-codex",
@@ -626,11 +663,11 @@ describe("proxy contract: codex", () => {
     );
     expect(lowerHeaderEntries["openai-beta"]).toBe(CODEX_WEBSOCKET_BETA_HEADER);
     expect(lowerHeaderEntries.authorization).toBe("Bearer codex-access");
-    expect(lowerHeaderEntries["session-id"]).toBeUndefined();
+    expect(lowerHeaderEntries.session_id).toBeUndefined();
     expect(lowerHeaderEntries["x-session-affinity"]).toBeUndefined();
-    expect(lowerHeaderEntries.session_id).toMatch(/^kleis_/);
+    expect(lowerHeaderEntries["session-id"]).toMatch(/^kleis_/);
     expect(lowerHeaderEntries["x-client-request-id"]).toBe(
-      lowerHeaderEntries.session_id
+      lowerHeaderEntries["session-id"]
     );
   });
 
