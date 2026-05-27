@@ -691,6 +691,76 @@ describe("proxy contract: codex", () => {
     ]);
   });
 
+  test("uses cached delta for normalized assistant message content", async () => {
+    const firstInput = [
+      { role: "user", content: [{ type: "input_text", text: "Say hello" }] },
+    ];
+    const firstAssistantItem = {
+      type: "message",
+      id: "msg_1",
+      role: "assistant",
+      status: "completed",
+      content: [
+        {
+          type: "output_text",
+          text: "Hello",
+          annotations: [{ type: "url_citation", url: "https://example.com" }],
+        },
+      ],
+    };
+    const sentBodies: unknown[] = [];
+    installCodexWebSocketMock(
+      [
+        { id: "resp_1", items: [firstAssistantItem] },
+        { id: "resp_2", items: [] },
+      ],
+      sentBodies
+    );
+
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "normalized-message-session",
+    });
+    const first = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await first?.text();
+
+    const second = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: [
+          ...firstInput,
+          {
+            role: "assistant",
+            content: [{ type: "output_text", text: "Hello" }],
+          },
+          { role: "user", content: [{ type: "input_text", text: "Finish" }] },
+        ],
+      },
+      accountKey: "key-1:account-1",
+    });
+    await second?.text();
+
+    const secondBody = sentBodies[1] as {
+      input?: unknown[];
+      previous_response_id?: string;
+    };
+    expect(secondBody.previous_response_id).toBe("resp_1");
+    expect(secondBody.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "Finish" }] },
+    ]);
+  });
+
   test("uses cached delta for lowered reasoning references and function calls", async () => {
     const firstInput = [
       { role: "user", content: [{ type: "input_text", text: "Call tool" }] },
@@ -765,6 +835,91 @@ describe("proxy contract: codex", () => {
     };
     expect(secondBody.previous_response_id).toBe("resp_1");
     expect(secondBody.input).toEqual([toolOutput]);
+  });
+
+  test("uses cached delta for encrypted reasoning without replayed id", async () => {
+    const firstInput = [
+      { role: "user", content: [{ type: "input_text", text: "Think" }] },
+    ];
+    const reasoningItem = {
+      type: "reasoning",
+      id: "rs_1",
+      summary: [{ type: "summary_text", text: "Checked files" }],
+      encrypted_content: "encrypted",
+    };
+    const functionCallItem = {
+      type: "function_call",
+      id: "fc_item_1",
+      call_id: "call_1",
+      name: "read_file",
+      arguments: '{"path":"README.md"}',
+    };
+    const sentBodies: unknown[] = [];
+    installCodexWebSocketMock(
+      [
+        { id: "resp_1", items: [reasoningItem, functionCallItem] },
+        { id: "resp_2", items: [] },
+      ],
+      sentBodies
+    );
+
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "reasoning-without-id-session",
+    });
+    const first = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await first?.text();
+
+    const second = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: [
+          ...firstInput,
+          {
+            type: "reasoning",
+            summary: [{ type: "summary_text", text: "Checked files" }],
+            encrypted_content: "encrypted",
+          },
+          {
+            type: "function_call",
+            call_id: "call_1",
+            name: "read_file",
+            arguments: '{"path":"README.md"}',
+          },
+          {
+            type: "function_call_output",
+            call_id: "call_1",
+            output: "done",
+          },
+        ],
+      },
+      accountKey: "key-1:account-1",
+    });
+    await second?.text();
+
+    const secondBody = sentBodies[1] as {
+      input?: unknown[];
+      previous_response_id?: string;
+    };
+    expect(secondBody.previous_response_id).toBe("resp_1");
+    expect(secondBody.input).toEqual([
+      {
+        type: "function_call_output",
+        call_id: "call_1",
+        output: "done",
+      },
+    ]);
   });
 
   test("does not store websocket continuation for incomplete responses", async () => {

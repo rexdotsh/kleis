@@ -410,17 +410,36 @@ const matchesOptionalField = (
 ): boolean =>
   inputItem[field] === undefined || inputItem[field] === responseItem[field];
 
+const outputTextContent = (content: unknown): unknown[] | null => {
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const normalized: Array<{ text: unknown; type: "output_text" }> = [];
+  for (const item of content) {
+    if (!isObjectRecord(item) || item.type !== "output_text") {
+      return null;
+    }
+    normalized.push({ type: "output_text", text: item.text });
+  }
+  return normalized;
+};
+
 const matchesMessageInput = (
   responseItem: Record<string, unknown>,
   inputItem: Record<string, unknown>
-): boolean =>
-  (responseItem.role === undefined || responseItem.role === "assistant") &&
-  inputItem.role === "assistant" &&
-  matchesOptionalField(inputItem, responseItem, "id") &&
-  matchesOptionalField(inputItem, responseItem, "status") &&
-  matchesOptionalField(inputItem, responseItem, "type") &&
-  Array.isArray(inputItem.content) &&
-  sameJson(inputItem.content, responseItem.content);
+): boolean => {
+  const responseContent = outputTextContent(responseItem.content);
+  const inputContent = outputTextContent(inputItem.content);
+  return (
+    (responseItem.role === undefined || responseItem.role === "assistant") &&
+    inputItem.role === "assistant" &&
+    matchesOptionalField(inputItem, responseItem, "id") &&
+    matchesOptionalField(inputItem, responseItem, "status") &&
+    matchesOptionalField(inputItem, responseItem, "type") &&
+    Boolean(responseContent) &&
+    sameJson(inputContent, responseContent)
+  );
+};
 
 const matchesFunctionCallInput = (
   responseItem: Record<string, unknown>,
@@ -445,7 +464,7 @@ const matchesReasoningInput = (
   }
   return (
     inputItem.type === "reasoning" &&
-    inputItem.id === responseItem.id &&
+    matchesOptionalField(inputItem, responseItem, "id") &&
     sameJson(inputItem.summary, responseItem.summary ?? []) &&
     sameOptionalJson(
       inputItem.encrypted_content,
