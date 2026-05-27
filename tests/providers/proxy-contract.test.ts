@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   CLAUDE_REQUIRED_BETA_HEADERS,
@@ -6,6 +6,7 @@ import {
   CODEX_ACCOUNT_ID_HEADER,
   CODEX_ORIGINATOR,
   CODEX_RESPONSE_ENDPOINT,
+  CODEX_WEBSOCKET_BETA_HEADER,
   COPILOT_INITIATOR_HEADER,
   COPILOT_VISION_HEADER,
 } from "../../src/providers/constants";
@@ -15,8 +16,19 @@ import type {
 } from "../../src/providers/metadata";
 import { prepareClaudeProxyRequest } from "../../src/providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../src/providers/proxies/codex-proxy";
+import {
+  closeCodexWebSocketSessions,
+  tryProxyCodexWebSocket,
+} from "../../src/providers/proxies/codex-websocket";
 import { prepareCopilotProxyRequest } from "../../src/providers/proxies/copilot-proxy";
 import type { TokenUsage } from "../../src/usage/token-usage";
+
+const originalWebSocket = globalThis.WebSocket;
+
+afterEach(() => {
+  closeCodexWebSocketSessions();
+  globalThis.WebSocket = originalWebSocket;
+});
 
 const createUsageCapture = () => {
   let capturedUsage: TokenUsage | null = null;
@@ -333,6 +345,184 @@ describe("proxy contract: codex", () => {
       cacheReadTokens: 9,
       cacheWriteTokens: 0,
     });
+  });
+
+  test("uses websocket cached delta transport for streaming requests", async () => {
+    const firstAssistantItem = {
+      type: "message",
+      id: "msg_1",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: "Hello" }],
+    };
+    const secondAssistantItem = {
+      type: "message",
+      id: "msg_2",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: "Done" }],
+    };
+    const responses = [
+      { id: "resp_1", item: firstAssistantItem },
+      { id: "resp_2", item: secondAssistantItem },
+    ];
+    const sentBodies: unknown[] = [];
+    const constructorHeaders: Record<string, string>[] = [];
+
+    class MockWebSocket {
+      static OPEN = 1;
+      readyState = MockWebSocket.OPEN;
+      private readonly listeners = new Map<
+        string,
+        Set<(event: unknown) => void>
+      >();
+
+      constructor(
+        _url: string,
+        protocols?: string | string[] | { headers?: Record<string, string> }
+      ) {
+        if (
+          protocols &&
+          typeof protocols === "object" &&
+          !Array.isArray(protocols) &&
+          protocols.headers
+        ) {
+          constructorHeaders.push(protocols.headers);
+        }
+        queueMicrotask(() => this.dispatch("open", {}));
+      }
+
+      addEventListener(type: string, listener: (event: unknown) => void): void {
+        const listeners = this.listeners.get(type) ?? new Set();
+        listeners.add(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      removeEventListener(
+        type: string,
+        listener: (event: unknown) => void
+      ): void {
+        this.listeners.get(type)?.delete(listener);
+      }
+
+      send(data: string): void {
+        sentBodies.push(JSON.parse(data) as unknown);
+        const response = responses.shift();
+        if (!response) {
+          throw new Error("Unexpected websocket request");
+        }
+
+        queueMicrotask(() => {
+          for (const event of [
+            { type: "response.created", response: { id: response.id } },
+            { type: "response.output_item.done", item: response.item },
+            {
+              type: "response.completed",
+              response: {
+                id: response.id,
+                usage: {
+                  input_tokens: 10,
+                  output_tokens: 2,
+                  input_tokens_details: { cached_tokens: 3 },
+                },
+              },
+            },
+          ]) {
+            this.dispatch("message", { data: JSON.stringify(event) });
+          }
+        });
+      }
+
+      close(): void {
+        this.readyState = 3;
+      }
+
+      private dispatch(type: string, event: unknown): void {
+        for (const listener of this.listeners.get(type) ?? []) {
+          listener(event);
+        }
+      }
+    }
+
+    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+    });
+    const firstInput = [
+      { role: "user", content: [{ type: "input_text", text: "Say hello" }] },
+    ];
+    const capture = createUsageCapture();
+
+    const first = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        store: false,
+        prompt_cache_key: "session-1",
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+      onTokenUsage: capture.onTokenUsage,
+    });
+    expect(first).not.toBeNull();
+    await first?.text();
+
+    const second = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        store: false,
+        prompt_cache_key: "session-1",
+        input: [
+          ...firstInput,
+          firstAssistantItem,
+          { role: "user", content: [{ type: "input_text", text: "Finish" }] },
+        ],
+      },
+      accountKey: "key-1:account-1",
+      onTokenUsage: capture.onTokenUsage,
+    });
+    expect(second).not.toBeNull();
+    await second?.text();
+
+    const firstBody = sentBodies[0] as {
+      input?: unknown[];
+      previous_response_id?: string;
+      stream?: boolean;
+      type?: string;
+    };
+    const secondBody = sentBodies[1] as {
+      input?: unknown[];
+      previous_response_id?: string;
+      stream?: boolean;
+      type?: string;
+    };
+    expect(firstBody.type).toBe("response.create");
+    expect(firstBody.stream).toBeUndefined();
+    expect(firstBody.previous_response_id).toBeUndefined();
+    expect(firstBody.input).toEqual(firstInput);
+    expect(secondBody.previous_response_id).toBe("resp_1");
+    expect(secondBody.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "Finish" }] },
+    ]);
+    expect(capture.read()).toEqual({
+      inputTokens: 7,
+      outputTokens: 2,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 0,
+    });
+
+    const lowerHeaderEntries = Object.fromEntries(
+      Object.entries(constructorHeaders[0] ?? {}).map(([key, value]) => [
+        key.toLowerCase(),
+        value,
+      ])
+    );
+    expect(lowerHeaderEntries["openai-beta"]).toBe(CODEX_WEBSOCKET_BETA_HEADER);
+    expect(lowerHeaderEntries.authorization).toBe("Bearer codex-access");
   });
 });
 

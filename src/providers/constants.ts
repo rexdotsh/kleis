@@ -3,6 +3,7 @@
 export const CODEX_ACCOUNT_ID_HEADER = "ChatGPT-Account-Id";
 export const CODEX_RESPONSE_ENDPOINT =
   "https://chatgpt.com/backend-api/codex/responses";
+export const CODEX_WEBSOCKET_BETA_HEADER = "responses_websockets=2026-02-06";
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/plugin/codex.ts#L619
 export const CODEX_ORIGINATOR = "opencode";
 

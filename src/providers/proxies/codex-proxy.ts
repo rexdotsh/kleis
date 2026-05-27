@@ -1,5 +1,9 @@
 import type { CodexAccountMetadata } from "../metadata";
-import { isObjectRecord, readBooleanField } from "../../utils/object";
+import {
+  type JsonObject,
+  isObjectRecord,
+  readBooleanField,
+} from "../../utils/object";
 import {
   readOpenAiResponsesUsageFromResponse,
   readOpenAiResponsesUsageFromSseEvent,
@@ -17,9 +21,11 @@ import {
 const trimString = (value: unknown): string =>
   typeof value === "string" ? value.trim() : "";
 
-const transformCodexBody = (bodyJson: unknown, bodyText: string): string => {
+export const transformCodexBodyJson = (
+  bodyJson: unknown
+): JsonObject | null => {
   if (!isObjectRecord(bodyJson)) {
-    return bodyText;
+    return null;
   }
 
   // Codex's chatgpt.com backend endpoint behaves differently from generic OpenAI Responses:
@@ -42,10 +48,10 @@ const transformCodexBody = (bodyJson: unknown, bodyText: string): string => {
   const instructions =
     trimString(nextBody.instructions) || CODEX_DEFAULT_INSTRUCTIONS;
 
-  return JSON.stringify({
+  return {
     ...nextBody,
     instructions,
-  });
+  };
 };
 
 const transformCodexResponse = (
@@ -74,6 +80,7 @@ type CodexProxyPreparationInput = {
 type CodexProxyPreparationResult = {
   upstreamUrl: string;
   bodyText: string;
+  bodyJson: JsonObject | null;
   transformResponse(response: Response): Promise<Response>;
 };
 
@@ -82,6 +89,7 @@ export const prepareCodexProxyRequest = (
 ): CodexProxyPreparationResult => {
   const isStreamingRequest =
     readBooleanField(input.bodyJson, "stream") === true;
+  const bodyJson = transformCodexBodyJson(input.bodyJson);
 
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   if (!input.headers.get("originator")) {
@@ -95,7 +103,8 @@ export const prepareCodexProxyRequest = (
 
   return {
     upstreamUrl: CODEX_RESPONSE_ENDPOINT,
-    bodyText: transformCodexBody(input.bodyJson, input.bodyText),
+    bodyJson,
+    bodyText: bodyJson ? JSON.stringify(bodyJson) : input.bodyText,
     transformResponse: (response: Response): Promise<Response> =>
       transformCodexResponse(response, input.onTokenUsage, isStreamingRequest),
   };
