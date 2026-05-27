@@ -373,6 +373,25 @@ const readPayloadStatus = (payload: Record<string, unknown>): number => {
 const isErrorPayload = (payload: Record<string, unknown>): boolean =>
   payload.type === "error" || payload.type === "response.failed";
 
+const logCodexWebSocketUse = (input: {
+  model: unknown;
+  hasSession: boolean;
+  cachedDelta: boolean;
+  inputItems: unknown;
+}): void => {
+  process.stderr.write(
+    `${JSON.stringify({
+      event: "codex_websocket_proxy",
+      model: readString(input.model) ?? null,
+      hasSession: input.hasSession,
+      cachedDelta: input.cachedDelta,
+      inputItems: Array.isArray(input.inputItems)
+        ? input.inputItems.length
+        : null,
+    })}\n`
+  );
+};
+
 const buildWebSocketHeaders = (
   headers: Headers,
   requestId: string
@@ -536,6 +555,12 @@ export const tryProxyCodexWebSocket = async (
   input.signal?.addEventListener("abort", onAbort);
 
   try {
+    logCodexWebSocketUse({
+      model: requestBody.model,
+      hasSession: Boolean(sessionId),
+      cachedDelta: typeof requestBody.previous_response_id === "string",
+      inputItems: requestBody.input,
+    });
     active.socket.send(
       JSON.stringify({ ...requestBody, type: "response.create" })
     );
