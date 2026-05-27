@@ -36,7 +36,6 @@ export const readCodexSessionId = (
     trimString(headers.get("session_id")) ||
     trimString(headers.get("session-id")) ||
     trimString(headers.get("x-session-affinity")) ||
-    trimString(headers.get("x-client-request-id")) ||
     null
   );
 };
@@ -54,11 +53,16 @@ export const applyCodexSessionHeaders = (
   headers: Headers,
   sessionId: string
 ): void => {
+  clearCodexSessionHeaders(headers);
+  headers.set("session-id", sessionId);
+  headers.set("x-client-request-id", sessionId);
+};
+
+export const clearCodexSessionHeaders = (headers: Headers): void => {
   headers.delete("session_id");
   headers.delete("session-id");
   headers.delete("x-session-affinity");
-  headers.set("session-id", sessionId);
-  headers.set("x-client-request-id", sessionId);
+  headers.delete("x-client-request-id");
 };
 
 export const transformCodexBodyJson = (
@@ -143,6 +147,7 @@ export const prepareCodexProxyRequest = (
   if (accountId) {
     input.headers.set(CODEX_ACCOUNT_ID_HEADER, accountId);
   }
+  clearCodexSessionHeaders(input.headers);
   if (input.sessionId) {
     applyCodexSessionHeaders(input.headers, input.sessionId);
   }

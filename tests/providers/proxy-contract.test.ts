@@ -331,6 +331,7 @@ describe("proxy contract: codex", () => {
       session_id: "raw-session-underscore",
       "session-id": "raw-session-header",
       "x-session-affinity": "raw-session-affinity",
+      "x-client-request-id": "raw-request-id",
     });
     const bodyJson = {
       model: "gpt-5-codex",
@@ -361,6 +362,37 @@ describe("proxy contract: codex", () => {
     expect(headers.get("x-session-affinity")).toBeNull();
     expect(headers.get("session-id")).toBe("kleis_derived_session");
     expect(headers.get("x-client-request-id")).toBe("kleis_derived_session");
+  });
+
+  test("does not use x-client-request-id as codex session affinity", () => {
+    const headers = new Headers({
+      "x-client-request-id": "raw-request-id",
+    });
+    const bodyJson = {
+      model: "gpt-5-codex",
+      input: [
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      ],
+    };
+
+    const result = prepareCodexProxyRequest({
+      headers,
+      accessToken: "codex-access",
+      accountId: "acct-fallback",
+      metadata: null,
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      prompt_cache_key?: string;
+    };
+    expect(transformed.prompt_cache_key).toBeUndefined();
+    expect(headers.get("session-id")).toBeNull();
+    expect(headers.get("x-client-request-id")).toBeNull();
   });
 
   test("removes unsupported token limit params", () => {
