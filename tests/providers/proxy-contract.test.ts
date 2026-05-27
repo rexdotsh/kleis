@@ -73,6 +73,169 @@ const createSseResponse = (
   );
 };
 
+type MockCodexWebSocketResponse = {
+  id: string;
+  items?: readonly unknown[];
+  terminalType?: "response.completed" | "response.done" | "response.incomplete";
+};
+
+const installCodexWebSocketMock = (
+  responses: MockCodexWebSocketResponse[],
+  sentBodies: unknown[],
+  constructorHeaders: Record<string, string>[] = []
+): void => {
+  class MockWebSocket {
+    static OPEN = 1;
+    readyState = MockWebSocket.OPEN;
+    private readonly listeners = new Map<
+      string,
+      Set<(event: unknown) => void>
+    >();
+
+    constructor(
+      _url: string,
+      protocols?: string | string[] | { headers?: Record<string, string> }
+    ) {
+      if (
+        protocols &&
+        typeof protocols === "object" &&
+        !Array.isArray(protocols) &&
+        protocols.headers
+      ) {
+        constructorHeaders.push(protocols.headers);
+      }
+      queueMicrotask(() => this.dispatch("open", {}));
+    }
+
+    addEventListener(type: string, listener: (event: unknown) => void): void {
+      const listeners = this.listeners.get(type) ?? new Set();
+      listeners.add(listener);
+      this.listeners.set(type, listeners);
+    }
+
+    removeEventListener(
+      type: string,
+      listener: (event: unknown) => void
+    ): void {
+      this.listeners.get(type)?.delete(listener);
+    }
+
+    send(data: string): void {
+      sentBodies.push(JSON.parse(data) as unknown);
+      const response = responses.shift();
+      if (!response) {
+        throw new Error("Unexpected websocket request");
+      }
+
+      queueMicrotask(() => {
+        for (const event of [
+          { type: "response.created", response: { id: response.id } },
+          ...(response.items ?? []).map((item) => ({
+            type: "response.output_item.done",
+            item,
+          })),
+          {
+            type: response.terminalType ?? "response.completed",
+            response: {
+              id: response.id,
+              usage: {
+                input_tokens: 10,
+                output_tokens: 2,
+                input_tokens_details: { cached_tokens: 3 },
+              },
+              status:
+                response.terminalType === "response.incomplete"
+                  ? "incomplete"
+                  : "completed",
+            },
+          },
+        ]) {
+          this.dispatch("message", { data: JSON.stringify(event) });
+        }
+      });
+    }
+
+    close(): void {
+      this.readyState = 3;
+    }
+
+    private dispatch(type: string, event: unknown): void {
+      for (const listener of this.listeners.get(type) ?? []) {
+        listener(event);
+      }
+    }
+  }
+
+  globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+};
+
+type ManualCodexWebSocket = {
+  dispatch(type: string, event: unknown): void;
+};
+
+const installManualCodexWebSocketMock = (
+  sentBodies: unknown[],
+  options: { autoOpen?: boolean } = {}
+): ManualCodexWebSocket[] => {
+  const sockets: ManualCodexWebSocket[] = [];
+
+  class MockWebSocket {
+    static OPEN = 1;
+    readyState = MockWebSocket.OPEN;
+    private readonly listeners = new Map<
+      string,
+      Set<(event: unknown) => void>
+    >();
+
+    constructor() {
+      sockets.push(this);
+      if (options.autoOpen ?? true) {
+        queueMicrotask(() => this.dispatch("open", {}));
+      }
+    }
+
+    addEventListener(type: string, listener: (event: unknown) => void): void {
+      const listeners = this.listeners.get(type) ?? new Set();
+      listeners.add(listener);
+      this.listeners.set(type, listeners);
+    }
+
+    removeEventListener(
+      type: string,
+      listener: (event: unknown) => void
+    ): void {
+      this.listeners.get(type)?.delete(listener);
+    }
+
+    send(data: string): void {
+      sentBodies.push(JSON.parse(data) as unknown);
+    }
+
+    close(): void {
+      this.readyState = 3;
+    }
+
+    dispatch(type: string, event: unknown): void {
+      for (const listener of this.listeners.get(type) ?? []) {
+        listener(event);
+      }
+    }
+  }
+
+  globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+  return sockets;
+};
+
+const waitFor = async (predicate: () => boolean): Promise<void> => {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if (predicate()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("Timed out waiting for websocket mock");
+};
+
 describe("proxy contract: codex", () => {
   const codexUsageBody = { model: "gpt-5-codex", input: [] };
   const codexStreamingUsageBody = {
@@ -378,86 +541,7 @@ describe("proxy contract: codex", () => {
     ];
     const sentBodies: unknown[] = [];
     const constructorHeaders: Record<string, string>[] = [];
-
-    class MockWebSocket {
-      static OPEN = 1;
-      readyState = MockWebSocket.OPEN;
-      private readonly listeners = new Map<
-        string,
-        Set<(event: unknown) => void>
-      >();
-
-      constructor(
-        _url: string,
-        protocols?: string | string[] | { headers?: Record<string, string> }
-      ) {
-        if (
-          protocols &&
-          typeof protocols === "object" &&
-          !Array.isArray(protocols) &&
-          protocols.headers
-        ) {
-          constructorHeaders.push(protocols.headers);
-        }
-        queueMicrotask(() => this.dispatch("open", {}));
-      }
-
-      addEventListener(type: string, listener: (event: unknown) => void): void {
-        const listeners = this.listeners.get(type) ?? new Set();
-        listeners.add(listener);
-        this.listeners.set(type, listeners);
-      }
-
-      removeEventListener(
-        type: string,
-        listener: (event: unknown) => void
-      ): void {
-        this.listeners.get(type)?.delete(listener);
-      }
-
-      send(data: string): void {
-        sentBodies.push(JSON.parse(data) as unknown);
-        const response = responses.shift();
-        if (!response) {
-          throw new Error("Unexpected websocket request");
-        }
-
-        queueMicrotask(() => {
-          for (const event of [
-            { type: "response.created", response: { id: response.id } },
-            ...response.items.map((item) => ({
-              type: "response.output_item.done",
-              item,
-            })),
-            {
-              type: "response.completed",
-              response: {
-                id: response.id,
-                usage: {
-                  input_tokens: 10,
-                  output_tokens: 2,
-                  input_tokens_details: { cached_tokens: 3 },
-                },
-              },
-            },
-          ]) {
-            this.dispatch("message", { data: JSON.stringify(event) });
-          }
-        });
-      }
-
-      close(): void {
-        this.readyState = 3;
-      }
-
-      private dispatch(type: string, event: unknown): void {
-        for (const listener of this.listeners.get(type) ?? []) {
-          listener(event);
-        }
-      }
-    }
-
-    globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    installCodexWebSocketMock(responses, sentBodies, constructorHeaders);
     const headers = new Headers({
       authorization: "Bearer codex-access",
       [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
@@ -541,6 +625,490 @@ describe("proxy contract: codex", () => {
     );
     expect(lowerHeaderEntries["openai-beta"]).toBe(CODEX_WEBSOCKET_BETA_HEADER);
     expect(lowerHeaderEntries.authorization).toBe("Bearer codex-access");
+  });
+
+  test("uses cached delta for raw response item replay", async () => {
+    const firstInput = [
+      { role: "user", content: [{ type: "input_text", text: "Say hello" }] },
+    ];
+    const firstAssistantItem = {
+      type: "message",
+      id: "msg_1",
+      role: "assistant",
+      status: "completed",
+      content: [{ type: "output_text", text: "Hello" }],
+    };
+    const sentBodies: unknown[] = [];
+    installCodexWebSocketMock(
+      [
+        { id: "resp_1", items: [firstAssistantItem] },
+        { id: "resp_2", items: [] },
+      ],
+      sentBodies
+    );
+
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "raw-session",
+    });
+    const first = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        store: false,
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await first?.text();
+
+    const secondInput = [
+      ...firstInput,
+      firstAssistantItem,
+      { role: "user", content: [{ type: "input_text", text: "Finish" }] },
+    ];
+    const second = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        store: false,
+        input: secondInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await second?.text();
+
+    const secondBody = sentBodies[1] as {
+      input?: unknown[];
+      previous_response_id?: string;
+    };
+    expect(secondBody.previous_response_id).toBe("resp_1");
+    expect(secondBody.input).toEqual([
+      { role: "user", content: [{ type: "input_text", text: "Finish" }] },
+    ]);
+  });
+
+  test("uses cached delta for lowered reasoning references and function calls", async () => {
+    const firstInput = [
+      { role: "user", content: [{ type: "input_text", text: "Call tool" }] },
+    ];
+    const reasoningItem = {
+      type: "reasoning",
+      id: "rs_1",
+      summary: [],
+      encrypted_content: "encrypted",
+    };
+    const functionCallItem = {
+      type: "function_call",
+      id: "fc_item_1",
+      call_id: "call_1",
+      name: "read_file",
+      arguments: '{"path":"README.md"}',
+    };
+    const toolOutput = {
+      type: "function_call_output",
+      call_id: "call_1",
+      output: "done",
+    };
+    const sentBodies: unknown[] = [];
+    installCodexWebSocketMock(
+      [
+        { id: "resp_1", items: [reasoningItem, functionCallItem] },
+        { id: "resp_2", items: [] },
+      ],
+      sentBodies
+    );
+
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "tool-session",
+    });
+    const first = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await first?.text();
+
+    const second = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: [
+          ...firstInput,
+          { type: "item_reference", id: "rs_1" },
+          {
+            type: "function_call",
+            call_id: "call_1",
+            name: "read_file",
+            arguments: '{"path":"README.md"}',
+          },
+          toolOutput,
+        ],
+      },
+      accountKey: "key-1:account-1",
+    });
+    await second?.text();
+
+    const secondBody = sentBodies[1] as {
+      input?: unknown[];
+      previous_response_id?: string;
+    };
+    expect(secondBody.previous_response_id).toBe("resp_1");
+    expect(secondBody.input).toEqual([toolOutput]);
+  });
+
+  test("does not store websocket continuation for incomplete responses", async () => {
+    const firstInput = [
+      { role: "user", content: [{ type: "input_text", text: "Start" }] },
+    ];
+    const firstAssistantItem = {
+      type: "message",
+      id: "msg_1",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Partial" }],
+    };
+    const secondInput = [
+      ...firstInput,
+      firstAssistantItem,
+      { role: "user", content: [{ type: "input_text", text: "Continue" }] },
+    ];
+    const sentBodies: unknown[] = [];
+    installCodexWebSocketMock(
+      [
+        {
+          id: "resp_1",
+          items: [firstAssistantItem],
+          terminalType: "response.incomplete",
+        },
+        { id: "resp_2", items: [] },
+      ],
+      sentBodies
+    );
+
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "incomplete-session",
+    });
+    const first = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await first?.text();
+
+    const second = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: secondInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await second?.text();
+
+    const secondBody = sentBodies[1] as {
+      input?: unknown[];
+      previous_response_id?: string;
+    };
+    expect(secondBody.previous_response_id).toBeUndefined();
+    expect(secondBody.input).toEqual(secondInput);
+  });
+
+  test("falls back for unmatched hosted tool response items", async () => {
+    const firstInput = [
+      { role: "user", content: [{ type: "input_text", text: "Search" }] },
+    ];
+    const hostedToolItem = {
+      type: "web_search_call",
+      id: "ws_1",
+      status: "completed",
+      action: { query: "example" },
+    };
+    const secondInput = [
+      ...firstInput,
+      {
+        type: "function_call",
+        call_id: "ws_1",
+        name: "web_search",
+        arguments: "{}",
+      },
+      {
+        type: "function_call_output",
+        call_id: "ws_1",
+        output: "{}",
+      },
+      { role: "user", content: [{ type: "input_text", text: "Continue" }] },
+    ];
+    const sentBodies: unknown[] = [];
+    installCodexWebSocketMock(
+      [
+        { id: "resp_1", items: [hostedToolItem] },
+        { id: "resp_2", items: [] },
+      ],
+      sentBodies
+    );
+
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "hosted-session",
+    });
+    const first = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await first?.text();
+
+    const second = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: secondInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await second?.text();
+
+    const secondBody = sentBodies[1] as {
+      input?: unknown[];
+      previous_response_id?: string;
+    };
+    expect(secondBody.previous_response_id).toBeUndefined();
+    expect(secondBody.input).toEqual(secondInput);
+  });
+
+  test("invalidates websocket continuation after same-session busy fallback", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "busy-session",
+    });
+    const firstInput = [
+      { role: "user", content: [{ type: "input_text", text: "Start" }] },
+    ];
+    const assistantItem = {
+      type: "message",
+      id: "msg_1",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Started" }],
+    };
+    const thirdInput = [
+      ...firstInput,
+      assistantItem,
+      { role: "user", content: [{ type: "input_text", text: "Continue" }] },
+    ];
+
+    const firstPromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sentBodies.length === 1);
+
+    const busyFallback = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    expect(busyFallback).toBeNull();
+
+    expect(sockets[0]).toBeDefined();
+    const socket = sockets[0];
+    if (!socket) {
+      throw new Error("Missing websocket mock");
+    }
+    socket.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_1", status: "completed" },
+      }),
+    });
+    socket.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.output_item.done",
+        item: assistantItem,
+      }),
+    });
+    socket.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_1", status: "completed" },
+      }),
+    });
+    const first = await firstPromise;
+    await first?.text();
+
+    const thirdPromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: thirdInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sentBodies.length === 2);
+    socket.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_3", status: "completed" },
+      }),
+    });
+    socket.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_3", status: "completed" },
+      }),
+    });
+    const third = await thirdPromise;
+    await third?.text();
+
+    const thirdBody = sentBodies[1] as {
+      input?: unknown[];
+      previous_response_id?: string;
+    };
+    expect(thirdBody.previous_response_id).toBeUndefined();
+    expect(thirdBody.input).toEqual(thirdInput);
+  });
+
+  test("treats same-session websocket connect races as busy", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies, {
+      autoOpen: false,
+    });
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "connecting-session",
+    });
+    const firstInput = [
+      { role: "user", content: [{ type: "input_text", text: "Start" }] },
+    ];
+    const assistantItem = {
+      type: "message",
+      id: "msg_1",
+      role: "assistant",
+      content: [{ type: "output_text", text: "Started" }],
+    };
+    const thirdInput = [
+      ...firstInput,
+      assistantItem,
+      { role: "user", content: [{ type: "input_text", text: "Continue" }] },
+    ];
+
+    const firstPromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sockets.length === 1);
+
+    const connectingFallback = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    expect(connectingFallback).toBeNull();
+    expect(sockets).toHaveLength(1);
+
+    const socket = sockets[0];
+    if (!socket) {
+      throw new Error("Missing websocket mock");
+    }
+    socket.dispatch("open", {});
+    await waitFor(() => sentBodies.length === 1);
+    socket.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_1", status: "completed" },
+      }),
+    });
+    socket.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.output_item.done",
+        item: assistantItem,
+      }),
+    });
+    socket.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_1", status: "completed" },
+      }),
+    });
+    const first = await firstPromise;
+    await first?.text();
+
+    const thirdPromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: thirdInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sentBodies.length === 2);
+    socket.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_3", status: "completed" },
+      }),
+    });
+    socket.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_3", status: "completed" },
+      }),
+    });
+    const third = await thirdPromise;
+    await third?.text();
+
+    const thirdBody = sentBodies[1] as {
+      input?: unknown[];
+      previous_response_id?: string;
+    };
+    expect(thirdBody.previous_response_id).toBeUndefined();
+    expect(thirdBody.input).toEqual(thirdInput);
   });
 });
 

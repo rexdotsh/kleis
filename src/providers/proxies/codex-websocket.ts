@@ -47,6 +47,7 @@ type CachedSocket = {
   busy: boolean;
   idleTimer: ReturnType<typeof setTimeout> | null;
   continuation: ContinuationState | null;
+  skipNextContinuationStore: boolean;
 };
 
 type CacheDecision = {
@@ -68,9 +69,28 @@ type CacheDecision = {
   firstMismatchIndex: number | null;
   currentNonInputKeys: string[];
   cachedNonInputKeys: string[];
+  mismatchShapes: MismatchShapes | null;
+};
+
+type SafeItemShape = {
+  type: string | null;
+  role: string | null;
+  hasId: boolean;
+  hasCallId: boolean;
+  contentTypes: string[];
+  summaryCount: number | null;
+  hasEncryptedContent: boolean;
+};
+
+type MismatchShapes = {
+  expected: SafeItemShape;
+  actual: SafeItemShape;
+  responseItemTypes: string[];
 };
 
 const socketCache = new Map<string, CachedSocket>();
+const pendingSocketKeys = new Set<string>();
+const suppressContinuationStoreKeys = new Set<string>();
 
 const emptyCacheDecision = (
   reason: CacheDecision["reason"],
@@ -96,6 +116,7 @@ const emptyCacheDecision = (
       ? withoutContinuationFields(cached.continuation.lastRequestBody)
       : {}
   ).sort(),
+  mismatchShapes: null,
 });
 
 const firstJsonMismatchIndex = (
@@ -273,6 +294,8 @@ const acquireSocket = async (
   const existing = socketCache.get(cacheKey);
   if (existing) {
     if (existing.busy) {
+      existing.continuation = null;
+      existing.skipNextContinuationStore = true;
       throw new Error("Codex WebSocket session is busy");
     }
 
@@ -302,12 +325,27 @@ const acquireSocket = async (
     socketCache.delete(cacheKey);
   }
 
-  const socket = await connectWebSocket(headers, signal);
+  if (pendingSocketKeys.has(cacheKey)) {
+    suppressContinuationStoreKeys.add(cacheKey);
+    throw new Error("Codex WebSocket session is connecting");
+  }
+
+  pendingSocketKeys.add(cacheKey);
+  let socket: WebSocketLike;
+  try {
+    socket = await connectWebSocket(headers, signal);
+  } catch (error) {
+    suppressContinuationStoreKeys.delete(cacheKey);
+    throw error;
+  } finally {
+    pendingSocketKeys.delete(cacheKey);
+  }
   const cached: CachedSocket = {
     socket,
     busy: true,
     idleTimer: null,
     continuation: null,
+    skipNextContinuationStore: suppressContinuationStoreKeys.delete(cacheKey),
   };
   socketCache.set(cacheKey, cached);
   return {
@@ -365,11 +403,22 @@ const sameOptionalJson = (left: unknown, right: unknown): boolean =>
   (left === null && right === undefined) ||
   sameJson(left, right);
 
+const matchesOptionalField = (
+  inputItem: Record<string, unknown>,
+  responseItem: Record<string, unknown>,
+  field: string
+): boolean =>
+  inputItem[field] === undefined || inputItem[field] === responseItem[field];
+
 const matchesMessageInput = (
   responseItem: Record<string, unknown>,
   inputItem: Record<string, unknown>
 ): boolean =>
+  (responseItem.role === undefined || responseItem.role === "assistant") &&
   inputItem.role === "assistant" &&
+  matchesOptionalField(inputItem, responseItem, "id") &&
+  matchesOptionalField(inputItem, responseItem, "status") &&
+  matchesOptionalField(inputItem, responseItem, "type") &&
   Array.isArray(inputItem.content) &&
   sameJson(inputItem.content, responseItem.content);
 
@@ -378,6 +427,8 @@ const matchesFunctionCallInput = (
   inputItem: Record<string, unknown>
 ): boolean =>
   inputItem.type === "function_call" &&
+  matchesOptionalField(inputItem, responseItem, "id") &&
+  matchesOptionalField(inputItem, responseItem, "status") &&
   inputItem.call_id === responseItem.call_id &&
   inputItem.name === responseItem.name &&
   inputItem.arguments === responseItem.arguments;
@@ -564,10 +615,19 @@ const buildRequestBody = (
     }
 
     const firstMismatchIndex = firstJsonMismatchIndex(prefix, baseline);
+    const firstMismatchShapes =
+      firstMismatchIndex === null
+        ? null
+        : mismatchShapes(
+            baseline[firstMismatchIndex],
+            prefix[firstMismatchIndex],
+            continuation.lastResponseItems
+          );
     const decision = {
       ...emptyCacheDecision("prefix_mismatch", webSocketBody, cached),
       baselineItems: baseline.length,
       firstMismatchIndex,
+      mismatchShapes: firstMismatchShapes,
     };
     cached.continuation = null;
     return {
@@ -614,6 +674,13 @@ const readPayloadStatus = (payload: Record<string, unknown>): number => {
 const isErrorPayload = (payload: Record<string, unknown>): boolean =>
   payload.type === "error" || payload.type === "response.failed";
 
+const isCacheableFinalEvent = (
+  eventType: unknown,
+  responseStatus: string | null
+): boolean =>
+  (eventType === "response.completed" || eventType === "response.done") &&
+  (!responseStatus || responseStatus === "completed");
+
 const safeHeaderNames = (headers: Headers): string[] => {
   const sensitive = new Set([
     "authorization",
@@ -627,6 +694,88 @@ const safeHeaderNames = (headers: Headers): string[] => {
     .filter((header) => !sensitive.has(header))
     .sort();
 };
+
+const safeString = (value: unknown): string | null =>
+  typeof value === "string" ? value : null;
+
+const SAFE_ITEM_LABELS = new Set([
+  "assistant",
+  "computer_use_call",
+  "file_search_call",
+  "function_call",
+  "function_call_output",
+  "image_generation_call",
+  "input_image",
+  "input_text",
+  "item_reference",
+  "local_shell_call",
+  "mcp_call",
+  "message",
+  "output_text",
+  "reasoning",
+  "summary_text",
+  "system",
+  "user",
+  "web_search_call",
+  "web_search_preview_call",
+]);
+
+const safeItemLabel = (value: unknown): string | null => {
+  const label = safeString(value);
+  if (!label) {
+    return null;
+  }
+  return SAFE_ITEM_LABELS.has(label) ? label : "other";
+};
+
+const safeItemShape = (item: unknown): SafeItemShape => {
+  if (!isObjectRecord(item)) {
+    return {
+      type: null,
+      role: null,
+      hasId: false,
+      hasCallId: false,
+      contentTypes: [],
+      summaryCount: null,
+      hasEncryptedContent: false,
+    };
+  }
+
+  const contentTypes = Array.isArray(item.content)
+    ? item.content
+        .map((content) =>
+          isObjectRecord(content) ? safeItemLabel(content.type) : null
+        )
+        .filter((type) => type !== null)
+    : [];
+
+  return {
+    type: safeItemLabel(item.type),
+    role: safeItemLabel(item.role),
+    hasId: typeof item.id === "string",
+    hasCallId: typeof item.call_id === "string",
+    contentTypes,
+    summaryCount: Array.isArray(item.summary) ? item.summary.length : null,
+    hasEncryptedContent: typeof item.encrypted_content === "string",
+  };
+};
+
+const safeItemType = (item: unknown): string => {
+  if (!isObjectRecord(item)) {
+    return typeof item;
+  }
+  return safeItemLabel(item.type) ?? safeItemLabel(item.role) ?? "object";
+};
+
+const mismatchShapes = (
+  expected: unknown,
+  actual: unknown,
+  responseItems: readonly unknown[]
+): MismatchShapes => ({
+  expected: safeItemShape(expected),
+  actual: safeItemShape(actual),
+  responseItemTypes: responseItems.map(safeItemType),
+});
 
 const readSessionSource = (
   body: Record<string, unknown>,
@@ -649,7 +798,11 @@ const readSessionSource = (
 };
 
 const logCodexWebSocketEvent = (payload: Record<string, unknown>): void => {
-  process.stderr.write(`${JSON.stringify(payload)}\n`);
+  try {
+    process.stderr.write(`${JSON.stringify(payload)}\n`);
+  } catch {
+    // Diagnostics must never interfere with proxy cleanup.
+  }
 };
 
 const logCodexWebSocketUse = (input: {
@@ -673,6 +826,7 @@ const logCodexWebSocketUse = (input: {
     baselineItems: input.cacheDecision.baselineItems,
     deltaItems: input.cacheDecision.deltaItems,
     firstMismatchIndex: input.cacheDecision.firstMismatchIndex,
+    mismatchShapes: input.cacheDecision.mismatchShapes,
     inputItems: Array.isArray(input.inputItems)
       ? input.inputItems.length
       : null,
@@ -774,6 +928,7 @@ export const tryProxyCodexWebSocket = async (
   const responseItems: unknown[] = [];
   let responseId: string | null = null;
   let finalEventType: unknown = null;
+  let finalResponseStatus: string | null = null;
   let keepSocket = true;
   let settled = false;
   let terminal = false;
@@ -826,14 +981,22 @@ export const tryProxyCodexWebSocket = async (
     }
     settled = true;
     cleanup();
-    if (keepSocket && active.cached && responseId) {
-      active.cached.continuation = {
-        lastRequestBody: fullBody,
-        lastResponseId: responseId,
-        lastResponseItems: responseItems,
-      };
-    } else if (active.cached) {
-      active.cached.continuation = null;
+    if (active.cached) {
+      if (
+        keepSocket &&
+        responseId &&
+        isCacheableFinalEvent(finalEventType, finalResponseStatus) &&
+        !active.cached.skipNextContinuationStore
+      ) {
+        active.cached.continuation = {
+          lastRequestBody: fullBody,
+          lastResponseId: responseId,
+          lastResponseItems: responseItems,
+        };
+      } else {
+        active.cached.continuation = null;
+      }
+      active.cached.skipNextContinuationStore = false;
     }
     logCodexWebSocketStore({
       model: requestBody.model,
@@ -881,6 +1044,9 @@ export const tryProxyCodexWebSocket = async (
       ) {
         terminal = true;
         finalEventType = payload.type;
+        finalResponseStatus = isObjectRecord(payload.response)
+          ? readString(payload.response.status)
+          : null;
       }
       queue.push(payload);
       if (queue.length === 1) {
@@ -952,11 +1118,17 @@ export const tryProxyCodexWebSocket = async (
     ) {
       terminal = true;
       finalEventType = payload.type;
+      finalResponseStatus = isObjectRecord(payload.response)
+        ? readString(payload.response.status)
+        : null;
       finish();
     } else if (isErrorPayload(payload)) {
       keepSocket = false;
       terminal = true;
       finalEventType = payload.type;
+      finalResponseStatus = isObjectRecord(payload.response)
+        ? readString(payload.response.status)
+        : null;
       finish();
     }
   };
