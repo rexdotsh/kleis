@@ -448,6 +448,7 @@ describe("proxy contract: codex", () => {
     const headers = new Headers({
       authorization: "Bearer codex-access",
       [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "session-id": "session-1",
     });
     const firstInput = [
       { role: "user", content: [{ type: "input_text", text: "Say hello" }] },
@@ -460,7 +461,6 @@ describe("proxy contract: codex", () => {
         model: "gpt-5-codex",
         stream: true,
         store: false,
-        prompt_cache_key: "session-1",
         input: firstInput,
       },
       accountKey: "key-1:account-1",
@@ -475,7 +475,6 @@ describe("proxy contract: codex", () => {
         model: "gpt-5-codex",
         stream: true,
         store: false,
-        prompt_cache_key: "session-1",
         input: [
           ...firstInput,
           firstAssistantItem,
