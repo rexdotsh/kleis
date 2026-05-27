@@ -462,9 +462,14 @@ const matchesReasoningInput = (
   if (inputItem.type === "item_reference") {
     return inputItem.id === responseItem.id;
   }
+  const hasInputId = inputItem.id !== undefined;
+  const hasMatchingEncryptedContent =
+    typeof inputItem.encrypted_content === "string" &&
+    inputItem.encrypted_content === responseItem.encrypted_content;
   return (
     inputItem.type === "reasoning" &&
     matchesOptionalField(inputItem, responseItem, "id") &&
+    (hasInputId || hasMatchingEncryptedContent) &&
     sameJson(inputItem.summary, responseItem.summary ?? []) &&
     sameOptionalJson(
       inputItem.encrypted_content,
@@ -900,6 +905,8 @@ const buildWebSocketHeaders = (
   nextHeaders.delete("accept");
   nextHeaders.delete("content-type");
   nextHeaders.delete("openai-beta");
+  nextHeaders.delete("session-id");
+  nextHeaders.delete("x-session-affinity");
   nextHeaders.set("OpenAI-Beta", CODEX_WEBSOCKET_BETA_HEADER);
   nextHeaders.set("session_id", requestId);
   nextHeaders.set("x-client-request-id", requestId);

@@ -545,6 +545,7 @@ describe("proxy contract: codex", () => {
     const headers = new Headers({
       authorization: "Bearer codex-access",
       [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "session-id": "raw-session-id",
       "x-session-affinity": "session-1",
     });
     const firstInput = [
@@ -625,6 +626,12 @@ describe("proxy contract: codex", () => {
     );
     expect(lowerHeaderEntries["openai-beta"]).toBe(CODEX_WEBSOCKET_BETA_HEADER);
     expect(lowerHeaderEntries.authorization).toBe("Bearer codex-access");
+    expect(lowerHeaderEntries["session-id"]).toBeUndefined();
+    expect(lowerHeaderEntries["x-session-affinity"]).toBeUndefined();
+    expect(lowerHeaderEntries.session_id).toMatch(/^kleis_/);
+    expect(lowerHeaderEntries["x-client-request-id"]).toBe(
+      lowerHeaderEntries.session_id
+    );
   });
 
   test("uses cached delta for raw response item replay", async () => {
@@ -920,6 +927,67 @@ describe("proxy contract: codex", () => {
         output: "done",
       },
     ]);
+  });
+
+  test("falls back for id-less reasoning without encrypted content", async () => {
+    const firstInput = [
+      { role: "user", content: [{ type: "input_text", text: "Think" }] },
+    ];
+    const reasoningItem = {
+      type: "reasoning",
+      id: "rs_1",
+      summary: [{ type: "summary_text", text: "Checked files" }],
+    };
+    const secondInput = [
+      ...firstInput,
+      {
+        type: "reasoning",
+        summary: [{ type: "summary_text", text: "Checked files" }],
+      },
+      { role: "user", content: [{ type: "input_text", text: "Continue" }] },
+    ];
+    const sentBodies: unknown[] = [];
+    installCodexWebSocketMock(
+      [
+        { id: "resp_1", items: [reasoningItem] },
+        { id: "resp_2", items: [] },
+      ],
+      sentBodies
+    );
+
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "unsafe-reasoning-session",
+    });
+    const first = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: firstInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await first?.text();
+
+    const second = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: secondInput,
+      },
+      accountKey: "key-1:account-1",
+    });
+    await second?.text();
+
+    const secondBody = sentBodies[1] as {
+      input?: unknown[];
+      previous_response_id?: string;
+    };
+    expect(secondBody.previous_response_id).toBeUndefined();
+    expect(secondBody.input).toEqual(secondInput);
   });
 
   test("does not store websocket continuation for incomplete responses", async () => {
