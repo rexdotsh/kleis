@@ -355,6 +355,16 @@ describe("proxy contract: codex", () => {
       status: "completed",
       content: [{ type: "output_text", text: "Hello" }],
     };
+    const firstReasoningItem = {
+      type: "reasoning",
+      id: "rs_1",
+      summary: [],
+      encrypted_content: "encrypted",
+    };
+    const firstAssistantInput = {
+      role: "assistant",
+      content: [{ type: "output_text", text: "Hello" }],
+    };
     const secondAssistantItem = {
       type: "message",
       id: "msg_2",
@@ -363,8 +373,8 @@ describe("proxy contract: codex", () => {
       content: [{ type: "output_text", text: "Done" }],
     };
     const responses = [
-      { id: "resp_1", item: firstAssistantItem },
-      { id: "resp_2", item: secondAssistantItem },
+      { id: "resp_1", items: [firstReasoningItem, firstAssistantItem] },
+      { id: "resp_2", items: [secondAssistantItem] },
     ];
     const sentBodies: unknown[] = [];
     const constructorHeaders: Record<string, string>[] = [];
@@ -415,7 +425,10 @@ describe("proxy contract: codex", () => {
         queueMicrotask(() => {
           for (const event of [
             { type: "response.created", response: { id: response.id } },
-            { type: "response.output_item.done", item: response.item },
+            ...response.items.map((item) => ({
+              type: "response.output_item.done",
+              item,
+            })),
             {
               type: "response.completed",
               response: {
@@ -477,7 +490,13 @@ describe("proxy contract: codex", () => {
         store: false,
         input: [
           ...firstInput,
-          firstAssistantItem,
+          {
+            type: "reasoning",
+            id: "rs_1",
+            summary: [],
+            encrypted_content: "encrypted",
+          },
+          firstAssistantInput,
           { role: "user", content: [{ type: "input_text", text: "Finish" }] },
         ],
       },

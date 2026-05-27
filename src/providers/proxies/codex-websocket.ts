@@ -359,6 +359,84 @@ const sameJson = (left: unknown, right: unknown): boolean =>
 const hasOwn = (body: Record<string, unknown>, key: string): boolean =>
   Object.hasOwn(body, key);
 
+const sameOptionalJson = (left: unknown, right: unknown): boolean =>
+  (left === undefined && right === undefined) ||
+  (left === undefined && right === null) ||
+  (left === null && right === undefined) ||
+  sameJson(left, right);
+
+const matchesMessageInput = (
+  responseItem: Record<string, unknown>,
+  inputItem: Record<string, unknown>
+): boolean =>
+  inputItem.role === "assistant" &&
+  Array.isArray(inputItem.content) &&
+  sameJson(inputItem.content, responseItem.content);
+
+const matchesFunctionCallInput = (
+  responseItem: Record<string, unknown>,
+  inputItem: Record<string, unknown>
+): boolean =>
+  inputItem.type === "function_call" &&
+  inputItem.call_id === responseItem.call_id &&
+  inputItem.name === responseItem.name &&
+  inputItem.arguments === responseItem.arguments;
+
+const matchesReasoningInput = (
+  responseItem: Record<string, unknown>,
+  inputItem: Record<string, unknown>
+): boolean => {
+  if (typeof responseItem.id !== "string") {
+    return false;
+  }
+  if (inputItem.type === "item_reference") {
+    return inputItem.id === responseItem.id;
+  }
+  return (
+    inputItem.type === "reasoning" &&
+    inputItem.id === responseItem.id &&
+    sameJson(inputItem.summary, responseItem.summary ?? []) &&
+    sameOptionalJson(
+      inputItem.encrypted_content,
+      responseItem.encrypted_content
+    )
+  );
+};
+
+const matchesLoweredResponseItem = (
+  responseItem: unknown,
+  inputItem: unknown
+): boolean => {
+  if (sameJson(responseItem, inputItem)) {
+    return true;
+  }
+  if (!(isObjectRecord(responseItem) && isObjectRecord(inputItem))) {
+    return false;
+  }
+  if (responseItem.type === "message") {
+    return matchesMessageInput(responseItem, inputItem);
+  }
+  if (responseItem.type === "function_call") {
+    return matchesFunctionCallInput(responseItem, inputItem);
+  }
+  if (responseItem.type === "reasoning") {
+    return matchesReasoningInput(responseItem, inputItem);
+  }
+  return false;
+};
+
+const matchesLoweredResponseItems = (
+  responseItems: readonly unknown[],
+  inputItems: readonly unknown[]
+): boolean => {
+  if (responseItems.length !== inputItems.length) {
+    return false;
+  }
+  return responseItems.every((responseItem, index) =>
+    matchesLoweredResponseItem(responseItem, inputItems[index])
+  );
+};
+
 const toHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
@@ -458,6 +536,33 @@ const buildRequestBody = (
 
   const prefix = webSocketBody.input.slice(0, baseline.length);
   if (!sameJson(prefix, baseline)) {
+    const cachedInput = continuation.lastRequestBody.input;
+    const responsePrefix = webSocketBody.input.slice(
+      cachedInput.length,
+      baseline.length
+    );
+    if (
+      sameJson(webSocketBody.input.slice(0, cachedInput.length), cachedInput) &&
+      matchesLoweredResponseItems(
+        continuation.lastResponseItems,
+        responsePrefix
+      )
+    ) {
+      const delta = webSocketBody.input.slice(baseline.length);
+      return {
+        body: {
+          ...webSocketBody,
+          previous_response_id: continuation.lastResponseId,
+          input: delta,
+        },
+        decision: {
+          ...emptyCacheDecision("delta", webSocketBody, cached),
+          baselineItems: baseline.length,
+          deltaItems: delta.length,
+        },
+      };
+    }
+
     const firstMismatchIndex = firstJsonMismatchIndex(prefix, baseline);
     const decision = {
       ...emptyCacheDecision("prefix_mismatch", webSocketBody, cached),
