@@ -1295,6 +1295,64 @@ describe("proxy contract: codex", () => {
     expect(thirdBody.input).toEqual(thirdInput);
   });
 
+  test("retries websocket connection limit errors before streaming output", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "retry-session",
+    });
+
+    const responsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "Retry" }] },
+        ],
+      },
+      accountKey: "key-1:account-1",
+    });
+
+    await waitFor(() => sentBodies.length === 1);
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "error",
+        error: { code: "websocket_connection_limit_reached" },
+      }),
+    });
+
+    await waitFor(() => sentBodies.length === 2 && sockets.length === 2);
+    sockets[1]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_1" },
+      }),
+    });
+    sockets[1]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: {
+          id: "resp_1",
+          usage: {
+            input_tokens: 10,
+            output_tokens: 2,
+            input_tokens_details: { cached_tokens: 3 },
+          },
+          status: "completed",
+        },
+      }),
+    });
+
+    const response = await responsePromise;
+    expect(response).not.toBeNull();
+    const text = await response?.text();
+    expect(text).toContain("response.completed");
+    expect(sentBodies).toHaveLength(2);
+  });
+
   test("treats same-session websocket connect races as busy", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies, {
