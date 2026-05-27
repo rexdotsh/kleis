@@ -8,7 +8,11 @@ import {
 } from "../../db/repositories/request-usage";
 import { getRoutableProviderAccount } from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
-import { prepareCodexProxyRequest } from "../../providers/proxies/codex-proxy";
+import {
+  deriveCodexSessionId,
+  prepareCodexProxyRequest,
+  readCodexSessionId,
+} from "../../providers/proxies/codex-proxy";
 import { tryProxyCodexWebSocket } from "../../providers/proxies/codex-websocket";
 import { prepareCopilotProxyRequest } from "../../providers/proxies/copilot-proxy";
 import type { UsageRequestSource } from "../../usage/request-outcome";
@@ -221,6 +225,13 @@ const proxyRequest = async (
 
   switch (route.provider) {
     case "codex": {
+      const codexSessionId = readCodexSessionId(requestBodyJson, headers);
+      const codexUpstreamSessionId = codexSessionId
+        ? await deriveCodexSessionId(
+            `${apiKeyId}:${account.id}`,
+            codexSessionId
+          )
+        : null;
       const codexProxy = prepareCodexProxyRequest({
         headers,
         accessToken: account.accessToken,
@@ -229,6 +240,7 @@ const proxyRequest = async (
           account.metadata?.provider === "codex" ? account.metadata : null,
         bodyText: requestBody,
         bodyJson: requestBodyJson,
+        sessionId: codexUpstreamSessionId,
         onTokenUsage: usageRecorder.onTokenUsage,
       });
       upstreamUrl = codexProxy.upstreamUrl;
@@ -239,6 +251,8 @@ const proxyRequest = async (
         headers,
         bodyJson: codexProxy.bodyJson,
         accountKey: `${apiKeyId}:${account.id}`,
+        sessionId: codexSessionId,
+        upstreamSessionId: codexUpstreamSessionId,
         onTokenUsage: usageRecorder.onTokenUsage,
         signal: context.req.raw.signal,
       });

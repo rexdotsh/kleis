@@ -21,8 +21,53 @@ import {
 const trimString = (value: unknown): string =>
   typeof value === "string" ? value.trim() : "";
 
+const toHex = (bytes: Uint8Array): string =>
+  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+export const readCodexSessionId = (
+  body: unknown,
+  headers: Headers
+): string | null => {
+  const bodySessionId = isObjectRecord(body)
+    ? trimString(body.prompt_cache_key)
+    : "";
+  return (
+    bodySessionId ||
+    trimString(headers.get("session_id")) ||
+    trimString(headers.get("session-id")) ||
+    trimString(headers.get("x-session-affinity")) ||
+    null
+  );
+};
+
+export const deriveCodexSessionId = async (
+  accountKey: string,
+  sessionId: string
+): Promise<string> => {
+  const data = new TextEncoder().encode(`${accountKey}:${sessionId}`);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return `kleis_${toHex(new Uint8Array(digest)).slice(0, 48)}`;
+};
+
+export const applyCodexSessionHeaders = (
+  headers: Headers,
+  sessionId: string
+): void => {
+  clearCodexSessionHeaders(headers);
+  headers.set("session-id", sessionId);
+  headers.set("x-client-request-id", sessionId);
+};
+
+export const clearCodexSessionHeaders = (headers: Headers): void => {
+  headers.delete("session_id");
+  headers.delete("session-id");
+  headers.delete("x-session-affinity");
+  headers.delete("x-client-request-id");
+};
+
 export const transformCodexBodyJson = (
-  bodyJson: unknown
+  bodyJson: unknown,
+  sessionId?: string | null
 ): JsonObject | null => {
   if (!isObjectRecord(bodyJson)) {
     return null;
@@ -51,6 +96,7 @@ export const transformCodexBodyJson = (
   return {
     ...nextBody,
     instructions,
+    ...(sessionId ? { prompt_cache_key: sessionId } : {}),
   };
 };
 
@@ -74,6 +120,7 @@ type CodexProxyPreparationInput = {
   metadata: CodexAccountMetadata | null;
   bodyText: string;
   bodyJson: unknown;
+  sessionId?: string | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
 };
 
@@ -89,7 +136,7 @@ export const prepareCodexProxyRequest = (
 ): CodexProxyPreparationResult => {
   const isStreamingRequest =
     readBooleanField(input.bodyJson, "stream") === true;
-  const bodyJson = transformCodexBodyJson(input.bodyJson);
+  const bodyJson = transformCodexBodyJson(input.bodyJson, input.sessionId);
 
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   if (!input.headers.get("originator")) {
@@ -99,6 +146,10 @@ export const prepareCodexProxyRequest = (
   const accountId = input.metadata?.chatgptAccountId ?? input.accountId;
   if (accountId) {
     input.headers.set(CODEX_ACCOUNT_ID_HEADER, accountId);
+  }
+  clearCodexSessionHeaders(input.headers);
+  if (input.sessionId) {
+    applyCodexSessionHeaders(input.headers, input.sessionId);
   }
 
   return {
