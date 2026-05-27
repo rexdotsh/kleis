@@ -50,87 +50,9 @@ type CachedSocket = {
   skipNextContinuationStore: boolean;
 };
 
-type CacheDecision = {
-  reason:
-    | "delta"
-    | "no_cached_socket"
-    | "no_continuation"
-    | "explicit_previous_response_id"
-    | "input_not_array"
-    | "cached_input_not_array"
-    | "non_input_mismatch"
-    | "input_shorter_than_baseline"
-    | "prefix_mismatch";
-  currentInputItems: number | null;
-  cachedInputItems: number | null;
-  cachedResponseItems: number | null;
-  baselineItems: number | null;
-  deltaItems: number | null;
-  firstMismatchIndex: number | null;
-  currentNonInputKeys: string[];
-  cachedNonInputKeys: string[];
-  mismatchShapes: MismatchShapes | null;
-};
-
-type SafeItemShape = {
-  type: string | null;
-  role: string | null;
-  hasId: boolean;
-  hasCallId: boolean;
-  contentTypes: string[];
-  summaryCount: number | null;
-  hasEncryptedContent: boolean;
-};
-
-type MismatchShapes = {
-  expected: SafeItemShape;
-  actual: SafeItemShape;
-  responseItemTypes: string[];
-};
-
 const socketCache = new Map<string, CachedSocket>();
 const pendingSocketKeys = new Set<string>();
 const suppressContinuationStoreKeys = new Set<string>();
-
-const emptyCacheDecision = (
-  reason: CacheDecision["reason"],
-  webSocketBody: Record<string, unknown>,
-  cached: CachedSocket | null
-): CacheDecision => ({
-  reason,
-  currentInputItems: Array.isArray(webSocketBody.input)
-    ? webSocketBody.input.length
-    : null,
-  cachedInputItems: Array.isArray(cached?.continuation?.lastRequestBody.input)
-    ? cached.continuation.lastRequestBody.input.length
-    : null,
-  cachedResponseItems: cached?.continuation?.lastResponseItems.length ?? null,
-  baselineItems: null,
-  deltaItems: null,
-  firstMismatchIndex: null,
-  currentNonInputKeys: Object.keys(
-    withoutContinuationFields(webSocketBody)
-  ).sort(),
-  cachedNonInputKeys: Object.keys(
-    cached?.continuation
-      ? withoutContinuationFields(cached.continuation.lastRequestBody)
-      : {}
-  ).sort(),
-  mismatchShapes: null,
-});
-
-const firstJsonMismatchIndex = (
-  left: readonly unknown[],
-  right: readonly unknown[]
-): number | null => {
-  const length = Math.min(left.length, right.length);
-  for (let index = 0; index < length; index++) {
-    if (!sameJson(left[index], right[index])) {
-      return index;
-    }
-  }
-  return left.length === right.length ? null : length;
-};
 
 const resolveCodexWebSocketUrl = (): string => {
   const url = new URL(CODEX_RESPONSE_ENDPOINT);
@@ -527,49 +449,25 @@ const deriveSessionId = async (
 const buildRequestBody = (
   webSocketBody: Record<string, unknown>,
   cached: CachedSocket | null
-): { body: Record<string, unknown>; decision: CacheDecision } => {
+): Record<string, unknown> => {
   if (!cached) {
-    return {
-      body: webSocketBody,
-      decision: emptyCacheDecision("no_cached_socket", webSocketBody, cached),
-    };
+    return webSocketBody;
   }
   if (!cached.continuation) {
-    return {
-      body: webSocketBody,
-      decision: emptyCacheDecision("no_continuation", webSocketBody, cached),
-    };
+    return webSocketBody;
   }
   if (hasOwn(webSocketBody, "previous_response_id")) {
-    return {
-      body: webSocketBody,
-      decision: emptyCacheDecision(
-        "explicit_previous_response_id",
-        webSocketBody,
-        cached
-      ),
-    };
+    return webSocketBody;
   }
   if (!Array.isArray(webSocketBody.input)) {
     cached.continuation = null;
-    return {
-      body: webSocketBody,
-      decision: emptyCacheDecision("input_not_array", webSocketBody, cached),
-    };
+    return webSocketBody;
   }
 
   const { continuation } = cached;
   if (!Array.isArray(continuation.lastRequestBody.input)) {
-    const decision = emptyCacheDecision(
-      "cached_input_not_array",
-      webSocketBody,
-      cached
-    );
     cached.continuation = null;
-    return {
-      body: webSocketBody,
-      decision,
-    };
+    return webSocketBody;
   }
   if (
     !sameJson(
@@ -577,16 +475,8 @@ const buildRequestBody = (
       withoutContinuationFields(continuation.lastRequestBody)
     )
   ) {
-    const decision = emptyCacheDecision(
-      "non_input_mismatch",
-      webSocketBody,
-      cached
-    );
     cached.continuation = null;
-    return {
-      body: webSocketBody,
-      decision,
-    };
+    return webSocketBody;
   }
 
   const baseline = [
@@ -594,19 +484,8 @@ const buildRequestBody = (
     ...continuation.lastResponseItems,
   ];
   if (webSocketBody.input.length < baseline.length) {
-    const decision = {
-      ...emptyCacheDecision(
-        "input_shorter_than_baseline",
-        webSocketBody,
-        cached
-      ),
-      baselineItems: baseline.length,
-    };
     cached.continuation = null;
-    return {
-      body: webSocketBody,
-      decision,
-    };
+    return webSocketBody;
   }
 
   const prefix = webSocketBody.input.slice(0, baseline.length);
@@ -625,53 +504,21 @@ const buildRequestBody = (
     ) {
       const delta = webSocketBody.input.slice(baseline.length);
       return {
-        body: {
-          ...webSocketBody,
-          previous_response_id: continuation.lastResponseId,
-          input: delta,
-        },
-        decision: {
-          ...emptyCacheDecision("delta", webSocketBody, cached),
-          baselineItems: baseline.length,
-          deltaItems: delta.length,
-        },
+        ...webSocketBody,
+        previous_response_id: continuation.lastResponseId,
+        input: delta,
       };
     }
 
-    const firstMismatchIndex = firstJsonMismatchIndex(prefix, baseline);
-    const firstMismatchShapes =
-      firstMismatchIndex === null
-        ? null
-        : mismatchShapes(
-            baseline[firstMismatchIndex],
-            prefix[firstMismatchIndex],
-            continuation.lastResponseItems
-          );
-    const decision = {
-      ...emptyCacheDecision("prefix_mismatch", webSocketBody, cached),
-      baselineItems: baseline.length,
-      firstMismatchIndex,
-      mismatchShapes: firstMismatchShapes,
-    };
     cached.continuation = null;
-    return {
-      body: webSocketBody,
-      decision,
-    };
+    return webSocketBody;
   }
 
   const delta = webSocketBody.input.slice(baseline.length);
   return {
-    body: {
-      ...webSocketBody,
-      previous_response_id: continuation.lastResponseId,
-      input: delta,
-    },
-    decision: {
-      ...emptyCacheDecision("delta", webSocketBody, cached),
-      baselineItems: baseline.length,
-      deltaItems: delta.length,
-    },
+    ...webSocketBody,
+    previous_response_id: continuation.lastResponseId,
+    input: delta,
   };
 };
 
@@ -705,198 +552,6 @@ const isCacheableFinalEvent = (
   (eventType === "response.completed" || eventType === "response.done") &&
   (!responseStatus || responseStatus === "completed");
 
-const safeHeaderNames = (headers: Headers): string[] => {
-  const sensitive = new Set([
-    "authorization",
-    "cookie",
-    "proxy-authorization",
-    "set-cookie",
-    "x-api-key",
-  ]);
-  return Array.from(headers.keys())
-    .map((header) => header.toLowerCase())
-    .filter((header) => !sensitive.has(header))
-    .sort();
-};
-
-const safeString = (value: unknown): string | null =>
-  typeof value === "string" ? value : null;
-
-const SAFE_ITEM_LABELS = new Set([
-  "assistant",
-  "computer_use_call",
-  "file_search_call",
-  "function_call",
-  "function_call_output",
-  "image_generation_call",
-  "input_image",
-  "input_text",
-  "item_reference",
-  "local_shell_call",
-  "mcp_call",
-  "message",
-  "output_text",
-  "reasoning",
-  "summary_text",
-  "system",
-  "user",
-  "web_search_call",
-  "web_search_preview_call",
-]);
-
-const safeItemLabel = (value: unknown): string | null => {
-  const label = safeString(value);
-  if (!label) {
-    return null;
-  }
-  return SAFE_ITEM_LABELS.has(label) ? label : "other";
-};
-
-const safeItemShape = (item: unknown): SafeItemShape => {
-  if (!isObjectRecord(item)) {
-    return {
-      type: null,
-      role: null,
-      hasId: false,
-      hasCallId: false,
-      contentTypes: [],
-      summaryCount: null,
-      hasEncryptedContent: false,
-    };
-  }
-
-  const contentTypes = Array.isArray(item.content)
-    ? item.content
-        .map((content) =>
-          isObjectRecord(content) ? safeItemLabel(content.type) : null
-        )
-        .filter((type) => type !== null)
-    : [];
-
-  return {
-    type: safeItemLabel(item.type),
-    role: safeItemLabel(item.role),
-    hasId: typeof item.id === "string",
-    hasCallId: typeof item.call_id === "string",
-    contentTypes,
-    summaryCount: Array.isArray(item.summary) ? item.summary.length : null,
-    hasEncryptedContent: typeof item.encrypted_content === "string",
-  };
-};
-
-const safeItemType = (item: unknown): string => {
-  if (!isObjectRecord(item)) {
-    return typeof item;
-  }
-  return safeItemLabel(item.type) ?? safeItemLabel(item.role) ?? "object";
-};
-
-const mismatchShapes = (
-  expected: unknown,
-  actual: unknown,
-  responseItems: readonly unknown[]
-): MismatchShapes => ({
-  expected: safeItemShape(expected),
-  actual: safeItemShape(actual),
-  responseItemTypes: responseItems.map(safeItemType),
-});
-
-const readSessionSource = (
-  body: Record<string, unknown>,
-  headers: Headers
-): string => {
-  if (readString(body.prompt_cache_key)) {
-    return "prompt_cache_key";
-  }
-  for (const header of [
-    "session_id",
-    "session-id",
-    "x-session-affinity",
-    "x-client-request-id",
-  ]) {
-    if (readString(headers.get(header))) {
-      return header;
-    }
-  }
-  return "none";
-};
-
-const logCodexWebSocketEvent = (payload: Record<string, unknown>): void => {
-  try {
-    process.stderr.write(`${JSON.stringify(payload)}\n`);
-  } catch {
-    // Diagnostics must never interfere with proxy cleanup.
-  }
-};
-
-const logCodexWebSocketUse = (input: {
-  model: unknown;
-  sessionSource: string;
-  cacheDecision: CacheDecision;
-  inputItems: unknown;
-  requestBody: Record<string, unknown>;
-  incomingHeaders: Headers;
-  firstEventType?: unknown;
-}): void => {
-  logCodexWebSocketEvent({
-    event: "codex_websocket_proxy",
-    model: readString(input.model) ?? null,
-    sessionSource: input.sessionSource,
-    cachedDelta: input.cacheDecision.reason === "delta",
-    cacheDecision: input.cacheDecision.reason,
-    currentInputItems: input.cacheDecision.currentInputItems,
-    cachedInputItems: input.cacheDecision.cachedInputItems,
-    cachedResponseItems: input.cacheDecision.cachedResponseItems,
-    baselineItems: input.cacheDecision.baselineItems,
-    deltaItems: input.cacheDecision.deltaItems,
-    firstMismatchIndex: input.cacheDecision.firstMismatchIndex,
-    mismatchShapes: input.cacheDecision.mismatchShapes,
-    inputItems: Array.isArray(input.inputItems)
-      ? input.inputItems.length
-      : null,
-    hasPreviousResponseId:
-      typeof input.requestBody.previous_response_id === "string",
-    hasPromptCacheKey: typeof input.requestBody.prompt_cache_key === "string",
-    currentNonInputKeys: input.cacheDecision.currentNonInputKeys,
-    cachedNonInputKeys: input.cacheDecision.cachedNonInputKeys,
-    incomingHeaderNames: safeHeaderNames(input.incomingHeaders),
-    incomingSessionHeaders: {
-      session_id: Boolean(readString(input.incomingHeaders.get("session_id"))),
-      sessionId: Boolean(readString(input.incomingHeaders.get("session-id"))),
-      xSessionAffinity: Boolean(
-        readString(input.incomingHeaders.get("x-session-affinity"))
-      ),
-      xClientRequestId: Boolean(
-        readString(input.incomingHeaders.get("x-client-request-id"))
-      ),
-    },
-    firstEventType: readString(input.firstEventType) ?? null,
-  });
-};
-
-const logCodexWebSocketStore = (input: {
-  model: unknown;
-  sessionSource: string;
-  keptSocket: boolean;
-  responseIdPresent: boolean;
-  responseItems: number;
-  terminal: boolean;
-  cached: boolean;
-  finalEventType: unknown;
-}): void => {
-  logCodexWebSocketEvent({
-    event: "codex_websocket_cache_store",
-    model: readString(input.model) ?? null,
-    sessionSource: input.sessionSource,
-    keptSocket: input.keptSocket,
-    responseIdPresent: input.responseIdPresent,
-    responseItems: input.responseItems,
-    terminal: input.terminal,
-    cached: input.cached,
-    finalEventType: readString(input.finalEventType) ?? null,
-  });
-};
-
 const buildWebSocketHeaders = (
   headers: Headers,
   requestId: string
@@ -926,7 +581,6 @@ export const tryProxyCodexWebSocket = async (
   }
 
   const sessionId = readSessionId(body, input.headers);
-  const sessionSource = readSessionSource(body, input.headers);
   const requestId = sessionId
     ? await deriveSessionId(input.accountKey, sessionId)
     : crypto.randomUUID();
@@ -938,12 +592,9 @@ export const tryProxyCodexWebSocket = async (
     sessionId ? { ...body, prompt_cache_key: requestId } : body
   );
   let requestBody: Record<string, unknown>;
-  let cacheDecision: CacheDecision;
   try {
     acquired = await acquireSocket(headers, cacheKey, input.signal);
-    const builtRequest = buildRequestBody(fullBody, acquired.cached);
-    requestBody = builtRequest.body;
-    cacheDecision = builtRequest.decision;
+    requestBody = buildRequestBody(fullBody, acquired.cached);
   } catch {
     acquired?.release(false);
     return null;
@@ -1024,16 +675,6 @@ export const tryProxyCodexWebSocket = async (
       }
       active.cached.skipNextContinuationStore = false;
     }
-    logCodexWebSocketStore({
-      model: requestBody.model,
-      sessionSource,
-      keptSocket: keepSocket,
-      responseIdPresent: Boolean(responseId),
-      responseItems: responseItems.length,
-      terminal,
-      cached: Boolean(active.cached),
-      finalEventType,
-    });
     active.release(keepSocket);
     wakePull();
   };
@@ -1103,16 +744,6 @@ export const tryProxyCodexWebSocket = async (
   } catch {
     return null;
   }
-
-  logCodexWebSocketUse({
-    model: requestBody.model,
-    sessionSource,
-    cacheDecision,
-    inputItems: requestBody.input,
-    requestBody,
-    incomingHeaders: input.headers,
-    firstEventType: first.type,
-  });
 
   if (isErrorPayload(first)) {
     keepSocket = false;
