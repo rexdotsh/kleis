@@ -49,7 +49,67 @@ type CachedSocket = {
   continuation: ContinuationState | null;
 };
 
+type CacheDecision = {
+  reason:
+    | "delta"
+    | "no_cached_socket"
+    | "no_continuation"
+    | "explicit_previous_response_id"
+    | "input_not_array"
+    | "cached_input_not_array"
+    | "non_input_mismatch"
+    | "input_shorter_than_baseline"
+    | "prefix_mismatch";
+  currentInputItems: number | null;
+  cachedInputItems: number | null;
+  cachedResponseItems: number | null;
+  baselineItems: number | null;
+  deltaItems: number | null;
+  firstMismatchIndex: number | null;
+  currentNonInputKeys: string[];
+  cachedNonInputKeys: string[];
+};
+
 const socketCache = new Map<string, CachedSocket>();
+
+const emptyCacheDecision = (
+  reason: CacheDecision["reason"],
+  webSocketBody: Record<string, unknown>,
+  cached: CachedSocket | null
+): CacheDecision => ({
+  reason,
+  currentInputItems: Array.isArray(webSocketBody.input)
+    ? webSocketBody.input.length
+    : null,
+  cachedInputItems: Array.isArray(cached?.continuation?.lastRequestBody.input)
+    ? cached.continuation.lastRequestBody.input.length
+    : null,
+  cachedResponseItems: cached?.continuation?.lastResponseItems.length ?? null,
+  baselineItems: null,
+  deltaItems: null,
+  firstMismatchIndex: null,
+  currentNonInputKeys: Object.keys(
+    withoutContinuationFields(webSocketBody)
+  ).sort(),
+  cachedNonInputKeys: Object.keys(
+    cached?.continuation
+      ? withoutContinuationFields(cached.continuation.lastRequestBody)
+      : {}
+  ).sort(),
+});
+
+const firstJsonMismatchIndex = (
+  left: readonly unknown[],
+  right: readonly unknown[]
+): number | null => {
+  const length = Math.min(left.length, right.length);
+  for (let index = 0; index < length; index++) {
+    if (!sameJson(left[index], right[index])) {
+      return index;
+    }
+  }
+  return left.length === right.length ? null : length;
+};
 
 const resolveCodexWebSocketUrl = (): string => {
   const url = new URL(CODEX_RESPONSE_ENDPOINT);
@@ -314,41 +374,115 @@ const deriveSessionId = async (
 const buildRequestBody = (
   webSocketBody: Record<string, unknown>,
   cached: CachedSocket | null
-): Record<string, unknown> => {
-  if (
-    !cached?.continuation ||
-    !Array.isArray(webSocketBody.input) ||
-    hasOwn(webSocketBody, "previous_response_id")
-  ) {
-    return webSocketBody;
+): { body: Record<string, unknown>; decision: CacheDecision } => {
+  if (!cached) {
+    return {
+      body: webSocketBody,
+      decision: emptyCacheDecision("no_cached_socket", webSocketBody, cached),
+    };
+  }
+  if (!cached.continuation) {
+    return {
+      body: webSocketBody,
+      decision: emptyCacheDecision("no_continuation", webSocketBody, cached),
+    };
+  }
+  if (hasOwn(webSocketBody, "previous_response_id")) {
+    return {
+      body: webSocketBody,
+      decision: emptyCacheDecision(
+        "explicit_previous_response_id",
+        webSocketBody,
+        cached
+      ),
+    };
+  }
+  if (!Array.isArray(webSocketBody.input)) {
+    cached.continuation = null;
+    return {
+      body: webSocketBody,
+      decision: emptyCacheDecision("input_not_array", webSocketBody, cached),
+    };
   }
 
   const { continuation } = cached;
+  if (!Array.isArray(continuation.lastRequestBody.input)) {
+    const decision = emptyCacheDecision(
+      "cached_input_not_array",
+      webSocketBody,
+      cached
+    );
+    cached.continuation = null;
+    return {
+      body: webSocketBody,
+      decision,
+    };
+  }
   if (
     !sameJson(
       withoutContinuationFields(webSocketBody),
       withoutContinuationFields(continuation.lastRequestBody)
-    ) ||
-    !Array.isArray(continuation.lastRequestBody.input)
+    )
   ) {
+    const decision = emptyCacheDecision(
+      "non_input_mismatch",
+      webSocketBody,
+      cached
+    );
     cached.continuation = null;
-    return webSocketBody;
+    return {
+      body: webSocketBody,
+      decision,
+    };
   }
 
   const baseline = [
     ...continuation.lastRequestBody.input,
     ...continuation.lastResponseItems,
   ];
-  const prefix = webSocketBody.input.slice(0, baseline.length);
-  if (!sameJson(prefix, baseline)) {
+  if (webSocketBody.input.length < baseline.length) {
+    const decision = {
+      ...emptyCacheDecision(
+        "input_shorter_than_baseline",
+        webSocketBody,
+        cached
+      ),
+      baselineItems: baseline.length,
+    };
     cached.continuation = null;
-    return webSocketBody;
+    return {
+      body: webSocketBody,
+      decision,
+    };
   }
 
+  const prefix = webSocketBody.input.slice(0, baseline.length);
+  if (!sameJson(prefix, baseline)) {
+    const firstMismatchIndex = firstJsonMismatchIndex(prefix, baseline);
+    const decision = {
+      ...emptyCacheDecision("prefix_mismatch", webSocketBody, cached),
+      baselineItems: baseline.length,
+      firstMismatchIndex,
+    };
+    cached.continuation = null;
+    return {
+      body: webSocketBody,
+      decision,
+    };
+  }
+
+  const delta = webSocketBody.input.slice(baseline.length);
   return {
-    ...webSocketBody,
-    previous_response_id: continuation.lastResponseId,
-    input: webSocketBody.input.slice(baseline.length),
+    body: {
+      ...webSocketBody,
+      previous_response_id: continuation.lastResponseId,
+      input: delta,
+    },
+    decision: {
+      ...emptyCacheDecision("delta", webSocketBody, cached),
+      baselineItems: baseline.length,
+      deltaItems: delta.length,
+    },
   };
 };
 
@@ -374,6 +508,111 @@ const readPayloadStatus = (payload: Record<string, unknown>): number => {
 
 const isErrorPayload = (payload: Record<string, unknown>): boolean =>
   payload.type === "error" || payload.type === "response.failed";
+
+const safeHeaderNames = (headers: Headers): string[] => {
+  const sensitive = new Set([
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "set-cookie",
+    "x-api-key",
+  ]);
+  return Array.from(headers.keys())
+    .map((header) => header.toLowerCase())
+    .filter((header) => !sensitive.has(header))
+    .sort();
+};
+
+const readSessionSource = (
+  body: Record<string, unknown>,
+  headers: Headers
+): string => {
+  if (readString(body.prompt_cache_key)) {
+    return "prompt_cache_key";
+  }
+  for (const header of [
+    "session_id",
+    "session-id",
+    "x-session-affinity",
+    "x-client-request-id",
+  ]) {
+    if (readString(headers.get(header))) {
+      return header;
+    }
+  }
+  return "none";
+};
+
+const logCodexWebSocketEvent = (payload: Record<string, unknown>): void => {
+  process.stderr.write(`${JSON.stringify(payload)}\n`);
+};
+
+const logCodexWebSocketUse = (input: {
+  model: unknown;
+  sessionSource: string;
+  cacheDecision: CacheDecision;
+  inputItems: unknown;
+  requestBody: Record<string, unknown>;
+  incomingHeaders: Headers;
+  firstEventType?: unknown;
+}): void => {
+  logCodexWebSocketEvent({
+    event: "codex_websocket_proxy",
+    model: readString(input.model) ?? null,
+    sessionSource: input.sessionSource,
+    cachedDelta: input.cacheDecision.reason === "delta",
+    cacheDecision: input.cacheDecision.reason,
+    currentInputItems: input.cacheDecision.currentInputItems,
+    cachedInputItems: input.cacheDecision.cachedInputItems,
+    cachedResponseItems: input.cacheDecision.cachedResponseItems,
+    baselineItems: input.cacheDecision.baselineItems,
+    deltaItems: input.cacheDecision.deltaItems,
+    firstMismatchIndex: input.cacheDecision.firstMismatchIndex,
+    inputItems: Array.isArray(input.inputItems)
+      ? input.inputItems.length
+      : null,
+    hasPreviousResponseId:
+      typeof input.requestBody.previous_response_id === "string",
+    hasPromptCacheKey: typeof input.requestBody.prompt_cache_key === "string",
+    currentNonInputKeys: input.cacheDecision.currentNonInputKeys,
+    cachedNonInputKeys: input.cacheDecision.cachedNonInputKeys,
+    incomingHeaderNames: safeHeaderNames(input.incomingHeaders),
+    incomingSessionHeaders: {
+      session_id: Boolean(readString(input.incomingHeaders.get("session_id"))),
+      sessionId: Boolean(readString(input.incomingHeaders.get("session-id"))),
+      xSessionAffinity: Boolean(
+        readString(input.incomingHeaders.get("x-session-affinity"))
+      ),
+      xClientRequestId: Boolean(
+        readString(input.incomingHeaders.get("x-client-request-id"))
+      ),
+    },
+    firstEventType: readString(input.firstEventType) ?? null,
+  });
+};
+
+const logCodexWebSocketStore = (input: {
+  model: unknown;
+  sessionSource: string;
+  keptSocket: boolean;
+  responseIdPresent: boolean;
+  responseItems: number;
+  terminal: boolean;
+  cached: boolean;
+  finalEventType: unknown;
+}): void => {
+  logCodexWebSocketEvent({
+    event: "codex_websocket_cache_store",
+    model: readString(input.model) ?? null,
+    sessionSource: input.sessionSource,
+    keptSocket: input.keptSocket,
+    responseIdPresent: input.responseIdPresent,
+    responseItems: input.responseItems,
+    terminal: input.terminal,
+    cached: input.cached,
+    finalEventType: readString(input.finalEventType) ?? null,
+  });
+};
 
 const buildWebSocketHeaders = (
   headers: Headers,
@@ -402,6 +641,7 @@ export const tryProxyCodexWebSocket = async (
   }
 
   const sessionId = readSessionId(body, input.headers);
+  const sessionSource = readSessionSource(body, input.headers);
   const requestId = sessionId
     ? await deriveSessionId(input.accountKey, sessionId)
     : crypto.randomUUID();
@@ -413,9 +653,12 @@ export const tryProxyCodexWebSocket = async (
     sessionId ? { ...body, prompt_cache_key: requestId } : body
   );
   let requestBody: Record<string, unknown>;
+  let cacheDecision: CacheDecision;
   try {
     acquired = await acquireSocket(headers, cacheKey, input.signal);
-    requestBody = buildRequestBody(fullBody, acquired.cached);
+    const builtRequest = buildRequestBody(fullBody, acquired.cached);
+    requestBody = builtRequest.body;
+    cacheDecision = builtRequest.decision;
   } catch {
     acquired?.release(false);
     return null;
@@ -425,6 +668,7 @@ export const tryProxyCodexWebSocket = async (
 
   const responseItems: unknown[] = [];
   let responseId: string | null = null;
+  let finalEventType: unknown = null;
   let keepSocket = true;
   let settled = false;
   let terminal = false;
@@ -486,6 +730,16 @@ export const tryProxyCodexWebSocket = async (
     } else if (active.cached) {
       active.cached.continuation = null;
     }
+    logCodexWebSocketStore({
+      model: requestBody.model,
+      sessionSource,
+      keptSocket: keepSocket,
+      responseIdPresent: Boolean(responseId),
+      responseItems: responseItems.length,
+      terminal,
+      cached: Boolean(active.cached),
+      finalEventType,
+    });
     active.release(keepSocket);
     wakePull();
   };
@@ -521,6 +775,7 @@ export const tryProxyCodexWebSocket = async (
         isErrorPayload(payload)
       ) {
         terminal = true;
+        finalEventType = payload.type;
       }
       queue.push(payload);
       if (queue.length === 1) {
@@ -552,6 +807,16 @@ export const tryProxyCodexWebSocket = async (
     return null;
   }
 
+  logCodexWebSocketUse({
+    model: requestBody.model,
+    sessionSource,
+    cacheDecision,
+    inputItems: requestBody.input,
+    requestBody,
+    incomingHeaders: input.headers,
+    firstEventType: first.type,
+  });
+
   if (isErrorPayload(first)) {
     keepSocket = false;
     finish();
@@ -581,10 +846,12 @@ export const tryProxyCodexWebSocket = async (
       payload.type === "response.incomplete"
     ) {
       terminal = true;
+      finalEventType = payload.type;
       finish();
     } else if (isErrorPayload(payload)) {
       keepSocket = false;
       terminal = true;
+      finalEventType = payload.type;
       finish();
     }
   };
