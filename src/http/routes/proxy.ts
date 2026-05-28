@@ -83,147 +83,6 @@ const runInBackground = (promise: Promise<unknown>): void => {
   promise.catch(() => undefined);
 };
 
-const readString = (value: unknown): string | null => {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed || null;
-};
-
-const arrayLength = (value: unknown): number | null =>
-  Array.isArray(value) ? value.length : null;
-
-const countByStringField = (
-  values: readonly unknown[],
-  field: string
-): Record<string, number> => {
-  const counts: Record<string, number> = {};
-  for (const value of values) {
-    const key = isObjectRecord(value) ? readString(value[field]) : null;
-    counts[key ?? "missing"] = (counts[key ?? "missing"] ?? 0) + 1;
-  }
-  return counts;
-};
-
-const readContentTypes = (value: unknown): string[] | null => {
-  if (!isObjectRecord(value) || !Array.isArray(value.content)) {
-    return null;
-  }
-  return value.content.map((item) => {
-    if (!isObjectRecord(item)) {
-      return typeof item;
-    }
-    return readString(item.type) ?? "missing";
-  });
-};
-
-const summarizeInputShape = (input: unknown) => {
-  if (!Array.isArray(input)) {
-    return {
-      inputItems: null,
-      inputTypes: {},
-      inputRoles: {},
-      lastItem: null,
-    };
-  }
-
-  const last = input.at(-1);
-  return {
-    inputItems: input.length,
-    inputTypes: countByStringField(input, "type"),
-    inputRoles: countByStringField(input, "role"),
-    lastItem: isObjectRecord(last)
-      ? {
-          type: readString(last.type),
-          role: readString(last.role),
-          keys: Object.keys(last).sort(),
-          contentTypes: readContentTypes(last),
-        }
-      : null,
-  };
-};
-
-const readCodexSessionSource = (body: unknown, headers: Headers): string => {
-  if (isObjectRecord(body) && readString(body.prompt_cache_key)) {
-    return "prompt_cache_key";
-  }
-  for (const header of ["session_id", "session-id", "x-session-affinity"]) {
-    if (readString(headers.get(header))) {
-      return header;
-    }
-  }
-  return "none";
-};
-
-const logCodexCompactionDiagnostic = (
-  payload: Record<string, unknown>
-): void => {
-  process.stderr.write(`${JSON.stringify(payload)}\n`);
-};
-
-const logCodexRequestDiagnostic = (input: {
-  body: unknown;
-  headers: Headers;
-  sessionHash: string | null;
-  sessionSource: string;
-}): void => {
-  const body = isObjectRecord(input.body) ? input.body : null;
-  const inputShape = summarizeInputShape(body?.input);
-  logCodexCompactionDiagnostic({
-    event: "codex_compaction_request",
-    model: readString(body?.model),
-    sessionHash: input.sessionHash,
-    sessionSource: input.sessionSource,
-    stream: body ? body.stream === true : null,
-    background: body ? body.background === true : null,
-    store: body ? body.store === true : null,
-    hasPreviousResponseId: typeof body?.previous_response_id === "string",
-    hasPromptCacheKey: typeof body?.prompt_cache_key === "string",
-    topLevelKeys: body ? Object.keys(body).sort() : [],
-    includeItems: arrayLength(body?.include),
-    tools: arrayLength(body?.tools),
-    hasInstructions: typeof body?.instructions === "string",
-    reasoningKeys: isObjectRecord(body?.reasoning)
-      ? Object.keys(body.reasoning).sort()
-      : null,
-    textKeys: isObjectRecord(body?.text) ? Object.keys(body.text).sort() : null,
-    incomingSessionHeaders: {
-      session_id: Boolean(readString(input.headers.get("session_id"))),
-      sessionId: Boolean(readString(input.headers.get("session-id"))),
-      xSessionAffinity: Boolean(
-        readString(input.headers.get("x-session-affinity"))
-      ),
-      xClientRequestId: Boolean(
-        readString(input.headers.get("x-client-request-id"))
-      ),
-    },
-    ...inputShape,
-  });
-};
-
-const logCodexUsageDiagnostic = (input: {
-  model: string;
-  sessionHash: string | null;
-  sessionSource: string;
-  usage: TokenUsage;
-}): void => {
-  logCodexCompactionDiagnostic({
-    event: "codex_compaction_usage",
-    model: input.model,
-    sessionHash: input.sessionHash,
-    sessionSource: input.sessionSource,
-    inputTokens: input.usage.inputTokens,
-    cacheReadTokens: input.usage.cacheReadTokens,
-    cacheWriteTokens: input.usage.cacheWriteTokens,
-    totalInputTokens:
-      input.usage.inputTokens +
-      input.usage.cacheReadTokens +
-      input.usage.cacheWriteTokens,
-    outputTokens: input.usage.outputTokens,
-  });
-};
-
 type BunFetchRequestInit = RequestInit & {
   timeout?: number | false;
 };
@@ -399,22 +258,8 @@ const proxyRequest = async (
             codexSessionId
           )
         : null;
-      const codexSessionSource = readCodexSessionSource(
-        requestBodyJson,
-        headers
-      );
-      const codexSessionHash = codexUpstreamSessionId
-        ? codexUpstreamSessionId.replace(/^kleis_/, "").slice(0, 16)
-        : null;
-      const codexIncomingHeaders = new Headers(headers);
       const onCodexTokenUsage = (tokenUsage: TokenUsage): void => {
         usageRecorder.onTokenUsage(tokenUsage);
-        logCodexUsageDiagnostic({
-          model: usageModel,
-          sessionHash: codexSessionHash,
-          sessionSource: codexSessionSource,
-          usage: tokenUsage,
-        });
       };
       const codexProxy = prepareCodexProxyRequest({
         headers,
@@ -432,12 +277,6 @@ const proxyRequest = async (
       responseTransformer = codexProxy.transformResponse;
       useCodexSseHeaderTimeout =
         readBooleanField(codexProxy.bodyJson, "stream") === true;
-      logCodexRequestDiagnostic({
-        body: codexProxy.bodyJson,
-        headers: codexIncomingHeaders,
-        sessionHash: codexSessionHash,
-        sessionSource: codexSessionSource,
-      });
 
       const webSocketResponse = await tryProxyCodexWebSocket({
         headers,
