@@ -6,6 +6,7 @@ import {
   CODEX_ACCOUNT_ID_HEADER,
   CODEX_ORIGINATOR,
   CODEX_RESPONSE_ENDPOINT,
+  CODEX_USER_AGENT,
   CODEX_WEBSOCKET_BETA_HEADER,
   COPILOT_INITIATOR_HEADER,
   COPILOT_VISION_HEADER,
@@ -291,9 +292,11 @@ describe("proxy contract: codex", () => {
 
     expect(headers.get("authorization")).toBe("Bearer codex-access");
     expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBe("acct-meta");
+    expect(headers.get("content-type")).toBe("application/json");
     expect(headers.get("originator")).toBe(CODEX_ORIGINATOR);
+    expect(headers.get("User-Agent")).toBe(CODEX_USER_AGENT);
     expect(result.upstreamUrl).toBe(CODEX_RESPONSE_ENDPOINT);
-    expect(result.bodyText).toBe(bodyText);
+    expect(JSON.parse(result.bodyText)).toEqual({ ...bodyJson, store: false });
   });
 
   test("uses account id when metadata is absent", () => {
@@ -401,6 +404,7 @@ describe("proxy contract: codex", () => {
       instructions: "Keep responses concise",
       max_output_tokens: 4096,
       max_completion_tokens: 4096,
+      store: true,
       input: [
         {
           role: "user",
@@ -421,9 +425,11 @@ describe("proxy contract: codex", () => {
     const transformed = JSON.parse(result.bodyText) as {
       max_output_tokens?: number;
       max_completion_tokens?: number;
+      store?: boolean;
     };
     expect(transformed.max_output_tokens).toBeUndefined();
     expect(transformed.max_completion_tokens).toBeUndefined();
+    expect(transformed.store).toBe(false);
   });
 
   test("extracts normalized usage from non-streaming responses", async () => {
@@ -614,6 +620,7 @@ describe("proxy contract: codex", () => {
     const headers = new Headers({
       authorization: "Bearer codex-access",
       [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "content-length": "123",
       "session-id": "raw-session-id",
       "x-session-affinity": "session-1",
     });
@@ -695,6 +702,7 @@ describe("proxy contract: codex", () => {
     );
     expect(lowerHeaderEntries["openai-beta"]).toBe(CODEX_WEBSOCKET_BETA_HEADER);
     expect(lowerHeaderEntries.authorization).toBe("Bearer codex-access");
+    expect(lowerHeaderEntries["content-length"]).toBeUndefined();
     expect(lowerHeaderEntries.session_id).toBeUndefined();
     expect(lowerHeaderEntries["x-session-affinity"]).toBeUndefined();
     expect(lowerHeaderEntries["session-id"]).toMatch(/^kleis_/);
@@ -1391,6 +1399,7 @@ describe("proxy contract: codex", () => {
     expect(response).not.toBeNull();
     const text = await response?.text();
     expect(text).toContain("response.completed");
+    expect(text).toContain("data: [DONE]");
   });
 
   test("preserves websocket message order for async binary messages", async () => {
@@ -1428,6 +1437,7 @@ describe("proxy contract: codex", () => {
         response: { id: "resp_1", status: "completed" },
       }),
     });
+    sockets[0]?.dispatch("close", { code: 1000 });
 
     let response: Response | null | undefined;
     responsePromise.then((value) => {

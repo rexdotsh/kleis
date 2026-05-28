@@ -200,8 +200,17 @@ const readCodexDeviceTokenErrorCode = async (
   }
 };
 
-const waitForCodexDevicePoll = async (intervalMs: number): Promise<void> => {
-  await sleep(intervalMs + CODEX_POLLING_SAFETY_MARGIN_MS);
+const waitForCodexDevicePoll = async (input: {
+  intervalMs: number;
+  expiresAt: number;
+}): Promise<void> => {
+  const remainingMs = input.expiresAt - Date.now();
+  if (remainingMs <= 0) {
+    return;
+  }
+  await sleep(
+    Math.min(input.intervalMs + CODEX_POLLING_SAFETY_MARGIN_MS, remainingMs)
+  );
 };
 
 const exchangeAuthorizationCodeForTokens = async (input: {
@@ -298,15 +307,14 @@ const pollDeviceAuthorizationCode = async (input: {
     const errorCode = await readCodexDeviceTokenErrorCode(response);
     if (errorCode === "slow_down") {
       intervalMs += CODEX_SLOW_DOWN_INCREMENT_MS;
-      await waitForCodexDevicePoll(intervalMs);
-      continue;
     }
     if (
+      errorCode === "slow_down" ||
       errorCode === "deviceauth_authorization_pending" ||
       response.status === 403 ||
       response.status === 404
     ) {
-      await waitForCodexDevicePoll(intervalMs);
+      await waitForCodexDevicePoll({ intervalMs, expiresAt: input.expiresAt });
       continue;
     }
 

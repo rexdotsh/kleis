@@ -64,25 +64,6 @@ type CachedSocket = {
   skipNextContinuationStore: boolean;
 };
 
-type CacheDecision = {
-  reason:
-    | "delta"
-    | "normalized_delta"
-    | "no_cached_socket"
-    | "no_continuation"
-    | "explicit_previous_response_id"
-    | "input_not_array"
-    | "cached_input_not_array"
-    | "non_input_mismatch"
-    | "input_shorter_than_baseline"
-    | "prefix_mismatch";
-  currentInputItems: number | null;
-  cachedInputItems: number | null;
-  cachedResponseItems: number | null;
-  baselineItems: number | null;
-  deltaItems: number | null;
-};
-
 const socketCache = new Map<string, CachedSocket>();
 const fallbackSocketKeys = new Map<string, ReturnType<typeof setTimeout>>();
 const streamFailureCounts = new Map<string, number>();
@@ -118,24 +99,6 @@ const readString = (value: unknown): string | null => {
   const trimmed = value.trim();
   return trimmed || null;
 };
-
-const inputItems = (body: Record<string, unknown>): number | null =>
-  Array.isArray(body.input) ? body.input.length : null;
-
-const emptyCacheDecision = (
-  reason: CacheDecision["reason"],
-  webSocketBody: Record<string, unknown>,
-  cached: CachedSocket | null
-): CacheDecision => ({
-  reason,
-  currentInputItems: inputItems(webSocketBody),
-  cachedInputItems: cached?.continuation
-    ? inputItems(cached.continuation.lastRequestBody)
-    : null,
-  cachedResponseItems: cached?.continuation?.lastResponseItems.length ?? null,
-  baselineItems: null,
-  deltaItems: null,
-});
 
 const isSocketOpen = (socket: WebSocketLike): boolean =>
   socket.readyState === undefined || socket.readyState === 1;
@@ -577,48 +540,25 @@ const matchesLoweredResponseItems = (
 const buildRequestBody = (
   webSocketBody: Record<string, unknown>,
   cached: CachedSocket | null
-): { body: Record<string, unknown>; decision: CacheDecision } => {
+): Record<string, unknown> => {
   if (!cached) {
-    return {
-      body: webSocketBody,
-      decision: emptyCacheDecision("no_cached_socket", webSocketBody, cached),
-    };
+    return webSocketBody;
   }
   if (!cached.continuation) {
-    return {
-      body: webSocketBody,
-      decision: emptyCacheDecision("no_continuation", webSocketBody, cached),
-    };
+    return webSocketBody;
   }
   if (hasOwn(webSocketBody, "previous_response_id")) {
-    return {
-      body: webSocketBody,
-      decision: emptyCacheDecision(
-        "explicit_previous_response_id",
-        webSocketBody,
-        cached
-      ),
-    };
+    return webSocketBody;
   }
   if (!Array.isArray(webSocketBody.input)) {
-    const decision = emptyCacheDecision(
-      "input_not_array",
-      webSocketBody,
-      cached
-    );
     cached.continuation = null;
-    return { body: webSocketBody, decision };
+    return webSocketBody;
   }
 
   const { continuation } = cached;
   if (!Array.isArray(continuation.lastRequestBody.input)) {
-    const decision = emptyCacheDecision(
-      "cached_input_not_array",
-      webSocketBody,
-      cached
-    );
     cached.continuation = null;
-    return { body: webSocketBody, decision };
+    return webSocketBody;
   }
   if (
     !sameJson(
@@ -626,13 +566,8 @@ const buildRequestBody = (
       withoutContinuationFields(continuation.lastRequestBody)
     )
   ) {
-    const decision = emptyCacheDecision(
-      "non_input_mismatch",
-      webSocketBody,
-      cached
-    );
     cached.continuation = null;
-    return { body: webSocketBody, decision };
+    return webSocketBody;
   }
 
   const baseline = [
@@ -640,16 +575,8 @@ const buildRequestBody = (
     ...continuation.lastResponseItems,
   ];
   if (webSocketBody.input.length < baseline.length) {
-    const decision = {
-      ...emptyCacheDecision(
-        "input_shorter_than_baseline",
-        webSocketBody,
-        cached
-      ),
-      baselineItems: baseline.length,
-    };
     cached.continuation = null;
-    return { body: webSocketBody, decision };
+    return webSocketBody;
   }
 
   const prefix = webSocketBody.input.slice(0, baseline.length);
@@ -668,44 +595,29 @@ const buildRequestBody = (
     ) {
       const delta = webSocketBody.input.slice(baseline.length);
       return {
-        body: {
-          ...webSocketBody,
-          previous_response_id: continuation.lastResponseId,
-          input: delta,
-        },
-        decision: {
-          ...emptyCacheDecision("normalized_delta", webSocketBody, cached),
-          baselineItems: baseline.length,
-          deltaItems: delta.length,
-        },
+        ...webSocketBody,
+        previous_response_id: continuation.lastResponseId,
+        input: delta,
       };
     }
 
-    const decision = {
-      ...emptyCacheDecision("prefix_mismatch", webSocketBody, cached),
-      baselineItems: baseline.length,
-    };
     cached.continuation = null;
-    return { body: webSocketBody, decision };
+    return webSocketBody;
   }
 
   const delta = webSocketBody.input.slice(baseline.length);
   return {
-    body: {
-      ...webSocketBody,
-      previous_response_id: continuation.lastResponseId,
-      input: delta,
-    },
-    decision: {
-      ...emptyCacheDecision("delta", webSocketBody, cached),
-      baselineItems: baseline.length,
-      deltaItems: delta.length,
-    },
+    ...webSocketBody,
+    previous_response_id: continuation.lastResponseId,
+    input: delta,
   };
 };
 
 const encodeSse = (payload: unknown): Uint8Array =>
   new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`);
+
+const encodeDoneSse = (): Uint8Array =>
+  new TextEncoder().encode("data: [DONE]\n\n");
 
 const decodeMessageData = async (data: unknown): Promise<string | null> => {
   if (typeof data === "string") {
@@ -768,8 +680,13 @@ const buildWebSocketHeaders = (
 ): Headers => {
   const nextHeaders = new Headers(headers);
   nextHeaders.delete("accept");
+  nextHeaders.delete("connection");
+  nextHeaders.delete("content-length");
   nextHeaders.delete("content-type");
+  nextHeaders.delete("host");
   nextHeaders.delete("openai-beta");
+  nextHeaders.delete("transfer-encoding");
+  nextHeaders.delete("upgrade");
   nextHeaders.set("OpenAI-Beta", CODEX_WEBSOCKET_BETA_HEADER);
   applyCodexSessionHeaders(nextHeaders, requestId);
   return nextHeaders;
@@ -807,8 +724,7 @@ export const tryProxyCodexWebSocket = async (
   let requestBody: Record<string, unknown>;
   try {
     acquired = await acquireSocket(headers, cacheKey, input.signal);
-    const builtRequest = buildRequestBody(fullBody, acquired.cached);
-    requestBody = builtRequest.body;
+    requestBody = buildRequestBody(fullBody, acquired.cached);
   } catch (error) {
     acquired?.release(false);
     if (!input.signal?.aborted && !isSessionConcurrencyError(error)) {
@@ -887,6 +803,13 @@ export const tryProxyCodexWebSocket = async (
   };
 
   const sendRequest = (): void => {
+    if (settled) {
+      return;
+    }
+    if (input.signal?.aborted) {
+      fail("request_aborted", new Error("Request was aborted"));
+      return;
+    }
     try {
       active.socket.send(
         JSON.stringify({ ...requestBody, type: "response.create" })
@@ -988,11 +911,20 @@ export const tryProxyCodexWebSocket = async (
     fail("socket_error", extractWebSocketError(event));
 
   const onClose = (event: unknown): void => {
-    if (terminal) {
-      wakePull();
-      return;
-    }
-    fail("socket_closed_before_terminal", extractWebSocketCloseError(event));
+    messageChain = messageChain
+      .then(() => {
+        if (terminal) {
+          wakePull();
+          return;
+        }
+        fail(
+          "socket_closed_before_terminal",
+          extractWebSocketCloseError(event)
+        );
+      })
+      .catch((error: unknown) => {
+        fail("message_parse_failed", error);
+      });
   };
 
   const handleMessage = async (event: unknown): Promise<void> => {
@@ -1090,6 +1022,7 @@ export const tryProxyCodexWebSocket = async (
       finalResponseStatus = isObjectRecord(payload.response)
         ? readString(payload.response.status)
         : null;
+      controller.enqueue(encodeDoneSse());
       finish();
     }
   };

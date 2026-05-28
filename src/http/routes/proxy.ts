@@ -258,9 +258,6 @@ const proxyRequest = async (
             codexSessionId
           )
         : null;
-      const onCodexTokenUsage = (tokenUsage: TokenUsage): void => {
-        usageRecorder.onTokenUsage(tokenUsage);
-      };
       const codexProxy = prepareCodexProxyRequest({
         headers,
         accessToken: account.accessToken,
@@ -270,7 +267,7 @@ const proxyRequest = async (
         bodyText: requestBody,
         bodyJson: requestBodyJson,
         sessionId: codexUpstreamSessionId,
-        onTokenUsage: onCodexTokenUsage,
+        onTokenUsage: usageRecorder.onTokenUsage,
       });
       upstreamUrl = codexProxy.upstreamUrl;
       requestBody = codexProxy.bodyText;
@@ -284,7 +281,7 @@ const proxyRequest = async (
         accountKey: `${apiKeyId}:${account.id}`,
         sessionId: codexSessionId,
         upstreamSessionId: codexUpstreamSessionId,
-        onTokenUsage: onCodexTokenUsage,
+        onTokenUsage: usageRecorder.onTokenUsage,
         signal: context.req.raw.signal,
       });
       if (webSocketResponse) {

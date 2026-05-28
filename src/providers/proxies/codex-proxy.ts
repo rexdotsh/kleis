@@ -16,6 +16,7 @@ import {
   CODEX_ACCOUNT_ID_HEADER,
   CODEX_ORIGINATOR,
   CODEX_RESPONSE_ENDPOINT,
+  CODEX_USER_AGENT,
 } from "../constants";
 
 const trimString = (value: unknown): string =>
@@ -78,7 +79,8 @@ export const transformCodexBodyJson = (
   //   https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/llm.ts#L65-L112
   // - Codex-native clients include `instructions` explicitly in the request body.
   //   https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/openai-codex-responses.ts#L286-L291
-  // - Codex-native clients also omit `max_output_tokens` / `max_completion_tokens`.
+  // - Codex-native clients also omit `max_output_tokens` / `max_completion_tokens`
+  //   and force `store: false`.
   //   https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/openai-codex-responses.ts#L286-L315
   const {
     max_output_tokens: _maxOutputTokens,
@@ -96,6 +98,7 @@ export const transformCodexBodyJson = (
   return {
     ...nextBody,
     instructions,
+    store: false,
     ...(sessionId ? { prompt_cache_key: sessionId } : {}),
   };
 };
@@ -139,6 +142,11 @@ export const prepareCodexProxyRequest = (
   const bodyJson = transformCodexBodyJson(input.bodyJson, input.sessionId);
 
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
+  input.headers.set("content-type", "application/json");
+  input.headers.set("User-Agent", CODEX_USER_AGENT);
+  if (isStreamingRequest) {
+    input.headers.set("accept", "text/event-stream");
+  }
   if (!input.headers.get("originator")) {
     input.headers.set("originator", CODEX_ORIGINATOR);
   }
