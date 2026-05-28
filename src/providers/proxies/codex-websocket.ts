@@ -210,6 +210,7 @@ const markSessionFallback = (key: string | null): void => {
   clearSessionFallback(key);
   const timer = setTimeout(() => {
     fallbackSocketKeys.delete(key);
+    streamFailureCounts.delete(key);
   }, SESSION_SOCKET_TTL_MS);
   fallbackSocketKeys.set(key, timer);
 };
@@ -741,6 +742,12 @@ const readPayloadStatus = (payload: Record<string, unknown>): number => {
 const isErrorPayload = (payload: Record<string, unknown>): boolean =>
   payload.type === "error" || payload.type === "response.failed";
 
+const isTerminalPayload = (payload: Record<string, unknown>): boolean =>
+  payload.type === "response.completed" ||
+  payload.type === "response.done" ||
+  payload.type === "response.incomplete" ||
+  isErrorPayload(payload);
+
 const isConnectionLimitPayload = (payload: Record<string, unknown>): boolean =>
   payload.type === "error" &&
   isObjectRecord(payload.error) &&
@@ -951,7 +958,7 @@ export const tryProxyCodexWebSocket = async (
   } catch (error) {
     acquired?.release(false);
     let streamFailures: number | undefined;
-    if (!isSessionConcurrencyError(error)) {
+    if (!input.signal?.aborted && !isSessionConcurrencyError(error)) {
       streamFailures = recordSessionStreamFailure(cacheKey);
     }
     const fallbackActive = cacheKey
@@ -983,7 +990,9 @@ export const tryProxyCodexWebSocket = async (
   let messagesReceived = 0;
   let emittedPayload = false;
   let connectionLimitAttempts = 0;
+  let retryingConnectionLimit = false;
   let responseIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  let messageChain = Promise.resolve();
   let wake: (() => void) | null = null;
   const queue: Record<string, unknown>[] = [];
 
@@ -1040,7 +1049,6 @@ export const tryProxyCodexWebSocket = async (
 
   const sendRequest = (): void => {
     try {
-      resetResponseIdleTimer("idle_timeout_sending_websocket_request");
       active.socket.send(
         JSON.stringify({ ...requestBody, type: "response.create" })
       );
@@ -1051,7 +1059,7 @@ export const tryProxyCodexWebSocket = async (
   };
 
   const retryConnectionLimit = async (): Promise<void> => {
-    if (settled) {
+    if (settled || retryingConnectionLimit) {
       return;
     }
     if (connectionLimitAttempts >= CONNECTION_LIMIT_RETRIES) {
@@ -1063,6 +1071,7 @@ export const tryProxyCodexWebSocket = async (
     }
 
     connectionLimitAttempts++;
+    retryingConnectionLimit = true;
     clearResponseIdleTimer();
     active.socket.removeEventListener("message", onMessage);
     active.socket.removeEventListener("error", onError);
@@ -1097,6 +1106,8 @@ export const tryProxyCodexWebSocket = async (
       sendRequest();
     } catch (error) {
       fail("connection_limit_retry_failed", error);
+    } finally {
+      retryingConnectionLimit = false;
     }
   };
 
@@ -1146,7 +1157,7 @@ export const tryProxyCodexWebSocket = async (
     settled = true;
     cleanup();
     const skippedStore = active.cached?.skipNextContinuationStore ?? false;
-    const storedContinuation = Boolean(
+    const canStoreContinuation = Boolean(
       active.cached &&
         keepSocket &&
         responseId &&
@@ -1154,12 +1165,7 @@ export const tryProxyCodexWebSocket = async (
         !active.cached.skipNextContinuationStore
     );
     if (active.cached) {
-      if (
-        keepSocket &&
-        responseId &&
-        isCacheableFinalEvent(finalEventType, finalResponseStatus) &&
-        !active.cached.skipNextContinuationStore
-      ) {
+      if (canStoreContinuation && responseId) {
         active.cached.continuation = {
           lastRequestBody: fullBody,
           lastResponseId: responseId,
@@ -1181,7 +1187,7 @@ export const tryProxyCodexWebSocket = async (
       keptSocket: keepSocket,
       responseIdPresent: Boolean(responseId),
       responseItems: responseItems.length,
-      storedContinuation,
+      storedContinuation: canStoreContinuation,
       finalEventType,
       finalResponseStatus,
       skippedStore,
@@ -1226,10 +1232,13 @@ export const tryProxyCodexWebSocket = async (
   };
 
   const handleMessage = async (event: unknown): Promise<void> => {
+    if (settled) {
+      return;
+    }
     const text = await decodeMessageData(
       isObjectRecord(event) ? event.data : null
     );
-    if (!text) {
+    if (settled || !text) {
       return;
     }
 
@@ -1247,12 +1256,8 @@ export const tryProxyCodexWebSocket = async (
       return;
     }
 
-    if (
-      payload.type === "response.completed" ||
-      payload.type === "response.done" ||
-      payload.type === "response.incomplete" ||
-      isErrorPayload(payload)
-    ) {
+    if (isTerminalPayload(payload)) {
+      clearResponseIdleTimer();
       terminal = true;
       finalEventType = payload.type;
       finalResponseStatus = isObjectRecord(payload.response)
@@ -1284,9 +1289,11 @@ export const tryProxyCodexWebSocket = async (
   };
 
   const onMessage = (event: unknown): void => {
-    handleMessage(event).catch((error: unknown) => {
-      fail("message_parse_failed", error);
-    });
+    messageChain = messageChain
+      .then(() => handleMessage(event))
+      .catch((error: unknown) => {
+        fail("message_parse_failed", error);
+      });
   };
 
   attachSocketListeners();
@@ -1354,22 +1361,13 @@ export const tryProxyCodexWebSocket = async (
     }
 
     controller.enqueue(encodeSse(payload));
-    if (
-      payload.type === "response.completed" ||
-      payload.type === "response.done" ||
-      payload.type === "response.incomplete"
-    ) {
+    if (isTerminalPayload(payload)) {
       if (payload.type === "response.incomplete") {
         keepSocket = false;
       }
-      terminal = true;
-      finalEventType = payload.type;
-      finalResponseStatus = isObjectRecord(payload.response)
-        ? readString(payload.response.status)
-        : null;
-      finish();
-    } else if (isErrorPayload(payload)) {
-      keepSocket = false;
+      if (isErrorPayload(payload)) {
+        keepSocket = false;
+      }
       terminal = true;
       finalEventType = payload.type;
       finalResponseStatus = isObjectRecord(payload.response)

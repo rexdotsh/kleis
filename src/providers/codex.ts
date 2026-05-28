@@ -295,18 +295,17 @@ const pollDeviceAuthorizationCode = async (input: {
       };
     }
 
-    if (response.status === 403 || response.status === 404) {
-      await waitForCodexDevicePoll(intervalMs);
-      continue;
-    }
-
     const errorCode = await readCodexDeviceTokenErrorCode(response);
-    if (errorCode === "deviceauth_authorization_pending") {
-      await waitForCodexDevicePoll(intervalMs);
-      continue;
-    }
     if (errorCode === "slow_down") {
       intervalMs += CODEX_SLOW_DOWN_INCREMENT_MS;
+      await waitForCodexDevicePoll(intervalMs);
+      continue;
+    }
+    if (
+      errorCode === "deviceauth_authorization_pending" ||
+      response.status === 403 ||
+      response.status === 404
+    ) {
       await waitForCodexDevicePoll(intervalMs);
       continue;
     }

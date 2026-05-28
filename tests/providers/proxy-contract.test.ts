@@ -1393,6 +1393,68 @@ describe("proxy contract: codex", () => {
     expect(text).toContain("response.completed");
   });
 
+  test("preserves websocket message order for async binary messages", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+    });
+    const encoder = new TextEncoder();
+    let resolveBuffer: ((buffer: ArrayBuffer) => void) | null = null;
+    const delayedBuffer = new Promise<ArrayBuffer>((resolve) => {
+      resolveBuffer = resolve;
+    });
+
+    const responsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "Order" }] },
+        ],
+      },
+      accountKey: "key-1:account-1",
+    });
+
+    await waitFor(() => sentBodies.length === 1);
+    sockets[0]?.dispatch("message", {
+      data: { arrayBuffer: () => delayedBuffer },
+    });
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_1", status: "completed" },
+      }),
+    });
+
+    let response: Response | null | undefined;
+    responsePromise.then((value) => {
+      response = value;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(response).toBeUndefined();
+
+    const createdBytes = encoder.encode(
+      JSON.stringify({ type: "response.created", response: { id: "resp_1" } })
+    );
+    resolveBuffer?.(
+      createdBytes.buffer.slice(
+        createdBytes.byteOffset,
+        createdBytes.byteOffset + createdBytes.byteLength
+      )
+    );
+    await waitFor(() => response !== undefined);
+    if (!response) {
+      throw new Error("Expected websocket response");
+    }
+    const text = await response.text();
+    expect(text.indexOf("response.created")).toBeLessThan(
+      text.indexOf("response.completed")
+    );
+  });
+
   test("keeps retrying websocket setup failures before session fallback", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies, {

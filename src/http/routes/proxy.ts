@@ -37,51 +37,6 @@ const proxyErrorResponse = (message: string, type = "proxy_error") => ({
 
 const CODEX_SSE_HEADER_TIMEOUT_MS = 10_000;
 
-const combineAbortSignals = (
-  signals: readonly (AbortSignal | undefined)[]
-): { signal?: AbortSignal; cleanup(): void } => {
-  const activeSignals = signals.filter(
-    (signal): signal is AbortSignal => signal !== undefined
-  );
-  if (activeSignals.length === 0) {
-    return { cleanup: () => undefined };
-  }
-  if (activeSignals.length === 1) {
-    const signal = activeSignals[0];
-    if (signal) {
-      return { signal, cleanup: () => undefined };
-    }
-    return { cleanup: () => undefined };
-  }
-
-  const controller = new AbortController();
-  const listeners: Array<{ signal: AbortSignal; listener(): void }> = [];
-  const abort = (signal: AbortSignal): void => {
-    if (!controller.signal.aborted) {
-      controller.abort(signal.reason);
-    }
-  };
-
-  for (const signal of activeSignals) {
-    if (signal.aborted) {
-      abort(signal);
-      break;
-    }
-    const listener = (): void => abort(signal);
-    signal.addEventListener("abort", listener, { once: true });
-    listeners.push({ signal, listener });
-  }
-
-  return {
-    signal: controller.signal,
-    cleanup(): void {
-      for (const { signal, listener } of listeners) {
-        signal.removeEventListener("abort", listener);
-      }
-    },
-  };
-};
-
 const createCodexSseHeaderTimeout = (): {
   signal: AbortSignal;
   clear(): void;
@@ -552,9 +507,6 @@ const proxyRequest = async (
     const headerTimeout = useCodexSseHeaderTimeout
       ? createCodexSseHeaderTimeout()
       : null;
-    const combinedSignal = headerTimeout
-      ? combineAbortSignals([context.req.raw.signal, headerTimeout.signal])
-      : null;
     const upstreamRequestInit: BunFetchRequestInit = {
       method: context.req.method,
       headers,
@@ -562,8 +514,11 @@ const proxyRequest = async (
       // Provider streams can pause for minutes while a model is thinking.
       timeout: false,
     };
-    if (combinedSignal?.signal) {
-      upstreamRequestInit.signal = combinedSignal.signal;
+    if (headerTimeout) {
+      upstreamRequestInit.signal = AbortSignal.any([
+        context.req.raw.signal,
+        headerTimeout.signal,
+      ]);
     }
     try {
       upstreamResponse = await fetch(upstreamUrl, upstreamRequestInit);
@@ -573,7 +528,6 @@ const proxyRequest = async (
         ? timeoutError
         : error;
     } finally {
-      combinedSignal?.cleanup();
       headerTimeout?.clear();
     }
   } catch (error) {
