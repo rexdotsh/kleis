@@ -16,6 +16,14 @@ const upstreamRegistry = {
           npm: "@ai-sdk/openai",
         },
       },
+      "gpt-5.3-codex-spark": {
+        id: "gpt-5.3-codex-spark",
+        name: "GPT-5.3 Codex Spark",
+        provider: {
+          api: "https://api.openai.com/v1",
+          npm: "@ai-sdk/openai",
+        },
+      },
       "gpt-5": {
         id: "gpt-5",
         name: "GPT-5",
@@ -130,6 +138,9 @@ describe("models registry contract", () => {
     };
     expect(kleis.env).toEqual(["KLEIS_API_KEY"]);
     expect(kleis.models?.["gpt-5.3-codex"]?.id).toBe("gpt-5.3-codex");
+    expect(kleis.models?.["gpt-5.3-codex-spark"]?.id).toBe(
+      "gpt-5.3-codex-spark"
+    );
     expect(kleis.models?.["openai/gpt-5.3-codex"]).toBeUndefined();
     expect(kleis.models?.["github-copilot/gpt-5"]?.id).toBe(
       "github-copilot/gpt-5"
@@ -212,7 +223,7 @@ describe("models registry contract", () => {
       models?: Record<string, { id?: string }>;
     };
     expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(Object.keys(openai.models ?? {})).toHaveLength(3);
+    expect(Object.keys(openai.models ?? {})).toHaveLength(4);
 
     const kleis = registry.kleis as {
       models?: Record<string, { id?: string }>;
@@ -234,7 +245,7 @@ describe("models registry contract", () => {
       models?: Record<string, unknown>;
     };
     expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(Object.keys(openai.models ?? {})).toHaveLength(3);
+    expect(Object.keys(openai.models ?? {})).toHaveLength(4);
 
     expect(registry.anthropic).toBeDefined();
     expect(registry["github-copilot"]).toBeDefined();
@@ -273,6 +284,7 @@ describe("models registry contract", () => {
     expect(openai.env).toEqual(["OPENAI_API_KEY"]);
     expect(Object.keys(openai.models ?? {})).toEqual([
       "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
       "gpt-5",
       "text-embedding-3-large",
     ]);
@@ -325,7 +337,10 @@ describe("models registry contract", () => {
     const kleis = registry.kleis as {
       models?: Record<string, unknown>;
     };
-    expect(Object.keys(kleis.models ?? {})).toEqual(["gpt-5.3-codex"]);
+    expect(Object.keys(kleis.models ?? {})).toEqual([
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+    ]);
   });
 
   test("account-scoped mode only narrows the kleis aggregate provider", () => {
