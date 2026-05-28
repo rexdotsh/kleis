@@ -1393,6 +1393,44 @@ describe("proxy contract: codex", () => {
     expect(text).toContain("response.completed");
   });
 
+  test("keeps retrying websocket setup failures before session fallback", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies, {
+      autoOpen: false,
+    });
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "retry-budget-session",
+    });
+    const bodyJson = {
+      model: "gpt-5-codex",
+      stream: true,
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "Retry" }] },
+      ],
+    };
+
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const responsePromise = tryProxyCodexWebSocket({
+        headers,
+        bodyJson,
+        accountKey: "key-1:account-1",
+      });
+      await waitFor(() => sockets.length === attempt + 1);
+      sockets[attempt]?.dispatch("close", { code: 1006 });
+      expect(await responsePromise).toBeNull();
+    }
+
+    const fallback = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    expect(fallback).toBeNull();
+    expect(sockets).toHaveLength(6);
+  });
+
   test("treats same-session websocket connect races as busy", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies, {

@@ -16,6 +16,7 @@ const CONNECT_TIMEOUT_MS = 15_000;
 const RESPONSE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_SOCKET_AGE_MS = 55 * 60 * 1000;
 const CONNECTION_LIMIT_RETRIES = 5;
+const STREAM_FAILURE_RETRIES = 5;
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 
@@ -84,6 +85,7 @@ type CacheDecision = {
 
 const socketCache = new Map<string, CachedSocket>();
 const fallbackSocketKeys = new Map<string, ReturnType<typeof setTimeout>>();
+const streamFailureCounts = new Map<string, number>();
 const pendingSocketKeys = new Set<string>();
 const suppressContinuationStoreKeys = new Set<string>();
 let diagnosticRequestCounter = 0;
@@ -212,6 +214,26 @@ const markSessionFallback = (key: string | null): void => {
   fallbackSocketKeys.set(key, timer);
 };
 
+const clearSessionStreamFailures = (key: string | null): void => {
+  if (!key) {
+    return;
+  }
+  streamFailureCounts.delete(key);
+};
+
+const recordSessionStreamFailure = (key: string | null): number => {
+  if (!key) {
+    return 0;
+  }
+
+  const failures = (streamFailureCounts.get(key) ?? 0) + 1;
+  streamFailureCounts.set(key, failures);
+  if (failures > STREAM_FAILURE_RETRIES) {
+    markSessionFallback(key);
+  }
+  return failures;
+};
+
 const scheduleExpiry = (key: string, cached: CachedSocket): void => {
   if (cached.idleTimer) {
     clearTimeout(cached.idleTimer);
@@ -225,6 +247,7 @@ const scheduleExpiry = (key: string, cached: CachedSocket): void => {
     closeSocket(cached.socket);
     socketCache.delete(key);
     clearSessionFallback(key);
+    clearSessionStreamFailures(key);
   }, SESSION_SOCKET_TTL_MS);
 };
 
@@ -414,6 +437,7 @@ export const closeCodexWebSocketSessions = (): void => {
     clearTimeout(timer);
   }
   fallbackSocketKeys.clear();
+  streamFailureCounts.clear();
 };
 
 const withoutContinuationFields = (
@@ -727,6 +751,9 @@ const isSessionConcurrencyError = (error: unknown): boolean =>
   (error.message === "Codex WebSocket session is busy" ||
     error.message === "Codex WebSocket session is connecting");
 
+const isUserCancelledStage = (stage: string): boolean =>
+  stage === "request_aborted" || stage === "downstream_cancel";
+
 const isCacheableFinalEvent = (
   eventType: unknown,
   responseStatus: string | null
@@ -775,6 +802,8 @@ const logCodexWebSocketLifecycle = (input: {
   sentInputItems?: number | null;
   hasPreviousResponseId?: boolean;
   retryAttempt?: number;
+  streamFailures?: number;
+  fallbackActive?: boolean;
 }): void => {
   logCodexWebSocketDiagnostic({
     event: "codex_compaction_ws_lifecycle",
@@ -796,6 +825,8 @@ const logCodexWebSocketLifecycle = (input: {
     sentInputItems: input.sentInputItems,
     hasPreviousResponseId: input.hasPreviousResponseId,
     retryAttempt: input.retryAttempt,
+    streamFailures: input.streamFailures,
+    fallbackActive: input.fallbackActive,
   });
 };
 
@@ -900,6 +931,8 @@ export const tryProxyCodexWebSocket = async (
       upstreamSessionId: input.upstreamSessionId ?? null,
       stage: "session_fallback_active",
       elapsedMs: Date.now() - startedAt,
+      streamFailures: streamFailureCounts.get(cacheKey) ?? 0,
+      fallbackActive: true,
     });
     return null;
   }
@@ -917,9 +950,13 @@ export const tryProxyCodexWebSocket = async (
     cacheDecision = builtRequest.decision;
   } catch (error) {
     acquired?.release(false);
+    let streamFailures: number | undefined;
     if (!isSessionConcurrencyError(error)) {
-      markSessionFallback(cacheKey);
+      streamFailures = recordSessionStreamFailure(cacheKey);
     }
+    const fallbackActive = cacheKey
+      ? fallbackSocketKeys.has(cacheKey)
+      : undefined;
     logCodexWebSocketLifecycle({
       diagnosticRequestId,
       model: body.model,
@@ -927,6 +964,8 @@ export const tryProxyCodexWebSocket = async (
       stage: "acquire_failed",
       elapsedMs: Date.now() - startedAt,
       error,
+      ...(streamFailures === undefined ? {} : { streamFailures }),
+      ...(fallbackActive === undefined ? {} : { fallbackActive }),
     });
     return null;
   }
@@ -1057,7 +1096,6 @@ export const tryProxyCodexWebSocket = async (
       attachSocketListeners();
       sendRequest();
     } catch (error) {
-      markSessionFallback(cacheKey);
       fail("connection_limit_retry_failed", error);
     }
   };
@@ -1071,6 +1109,12 @@ export const tryProxyCodexWebSocket = async (
     failure = error;
     cleanup();
     active.release(false);
+    const streamFailures = isUserCancelledStage(stage)
+      ? undefined
+      : recordSessionStreamFailure(cacheKey);
+    const fallbackActive = cacheKey
+      ? fallbackSocketKeys.has(cacheKey)
+      : undefined;
     logCodexWebSocketLifecycle({
       diagnosticRequestId,
       model: requestBody.model,
@@ -1088,6 +1132,8 @@ export const tryProxyCodexWebSocket = async (
       sentInputItems: inputItems(requestBody),
       hasPreviousResponseId:
         typeof requestBody.previous_response_id === "string",
+      ...(streamFailures === undefined ? {} : { streamFailures }),
+      ...(fallbackActive === undefined ? {} : { fallbackActive }),
     });
     firstPayloadReject?.(error);
     wakePull();
@@ -1123,6 +1169,9 @@ export const tryProxyCodexWebSocket = async (
         active.cached.continuation = null;
       }
       active.cached.skipNextContinuationStore = false;
+    }
+    if (isCacheableFinalEvent(finalEventType, finalResponseStatus)) {
+      clearSessionStreamFailures(cacheKey);
     }
     logCodexWebSocketStore({
       diagnosticRequestId,
@@ -1249,7 +1298,6 @@ export const tryProxyCodexWebSocket = async (
   try {
     first = await firstPayload;
   } catch (error) {
-    markSessionFallback(cacheKey);
     logCodexWebSocketLifecycle({
       diagnosticRequestId,
       model: requestBody.model,
@@ -1266,6 +1314,10 @@ export const tryProxyCodexWebSocket = async (
       sentInputItems: inputItems(requestBody),
       hasPreviousResponseId:
         typeof requestBody.previous_response_id === "string",
+      ...(cacheKey && streamFailureCounts.has(cacheKey)
+        ? { streamFailures: streamFailureCounts.get(cacheKey) ?? 0 }
+        : {}),
+      ...(cacheKey ? { fallbackActive: fallbackSocketKeys.has(cacheKey) } : {}),
     });
     return null;
   }
