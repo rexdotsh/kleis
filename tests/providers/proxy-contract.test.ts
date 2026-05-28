@@ -6,6 +6,7 @@ import {
   CODEX_ACCOUNT_ID_HEADER,
   CODEX_ORIGINATOR,
   CODEX_RESPONSE_ENDPOINT,
+  CODEX_USER_AGENT,
   CODEX_WEBSOCKET_BETA_HEADER,
   COPILOT_INITIATOR_HEADER,
   COPILOT_VISION_HEADER,
@@ -291,9 +292,11 @@ describe("proxy contract: codex", () => {
 
     expect(headers.get("authorization")).toBe("Bearer codex-access");
     expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBe("acct-meta");
+    expect(headers.get("content-type")).toBe("application/json");
     expect(headers.get("originator")).toBe(CODEX_ORIGINATOR);
+    expect(headers.get("User-Agent")).toBe(CODEX_USER_AGENT);
     expect(result.upstreamUrl).toBe(CODEX_RESPONSE_ENDPOINT);
-    expect(result.bodyText).toBe(bodyText);
+    expect(JSON.parse(result.bodyText)).toEqual({ ...bodyJson, store: false });
   });
 
   test("uses account id when metadata is absent", () => {
@@ -401,6 +404,7 @@ describe("proxy contract: codex", () => {
       instructions: "Keep responses concise",
       max_output_tokens: 4096,
       max_completion_tokens: 4096,
+      store: true,
       input: [
         {
           role: "user",
@@ -421,9 +425,11 @@ describe("proxy contract: codex", () => {
     const transformed = JSON.parse(result.bodyText) as {
       max_output_tokens?: number;
       max_completion_tokens?: number;
+      store?: boolean;
     };
     expect(transformed.max_output_tokens).toBeUndefined();
     expect(transformed.max_completion_tokens).toBeUndefined();
+    expect(transformed.store).toBe(false);
   });
 
   test("extracts normalized usage from non-streaming responses", async () => {
@@ -614,6 +620,7 @@ describe("proxy contract: codex", () => {
     const headers = new Headers({
       authorization: "Bearer codex-access",
       [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "content-length": "123",
       "session-id": "raw-session-id",
       "x-session-affinity": "session-1",
     });
@@ -695,6 +702,7 @@ describe("proxy contract: codex", () => {
     );
     expect(lowerHeaderEntries["openai-beta"]).toBe(CODEX_WEBSOCKET_BETA_HEADER);
     expect(lowerHeaderEntries.authorization).toBe("Bearer codex-access");
+    expect(lowerHeaderEntries["content-length"]).toBeUndefined();
     expect(lowerHeaderEntries.session_id).toBeUndefined();
     expect(lowerHeaderEntries["x-session-affinity"]).toBeUndefined();
     expect(lowerHeaderEntries["session-id"]).toMatch(/^kleis_/);
@@ -1293,6 +1301,206 @@ describe("proxy contract: codex", () => {
     };
     expect(thirdBody.previous_response_id).toBeUndefined();
     expect(thirdBody.input).toEqual(thirdInput);
+  });
+
+  test("retries websocket connection limit errors before streaming output", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "retry-session",
+    });
+
+    const responsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "Retry" }] },
+        ],
+      },
+      accountKey: "key-1:account-1",
+    });
+
+    await waitFor(() => sentBodies.length === 1);
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "error",
+        error: { code: "websocket_connection_limit_reached" },
+      }),
+    });
+
+    await waitFor(() => sentBodies.length === 2 && sockets.length === 2);
+    sockets[1]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_1" },
+      }),
+    });
+    sockets[1]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: {
+          id: "resp_1",
+          usage: {
+            input_tokens: 10,
+            output_tokens: 2,
+            input_tokens_details: { cached_tokens: 3 },
+          },
+          status: "completed",
+        },
+      }),
+    });
+
+    const response = await responsePromise;
+    expect(response).not.toBeNull();
+    const text = await response?.text();
+    expect(text).toContain("response.completed");
+    expect(sentBodies).toHaveLength(2);
+  });
+
+  test("decodes binary websocket messages", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+    });
+    const encoder = new TextEncoder();
+
+    const responsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "Binary" }] },
+        ],
+      },
+      accountKey: "key-1:account-1",
+    });
+
+    await waitFor(() => sentBodies.length === 1);
+    for (const event of [
+      { type: "response.created", response: { id: "resp_1" } },
+      {
+        type: "response.completed",
+        response: { id: "resp_1", status: "completed" },
+      },
+    ]) {
+      sockets[0]?.dispatch("message", {
+        data: encoder.encode(JSON.stringify(event)).buffer,
+      });
+    }
+
+    const response = await responsePromise;
+    expect(response).not.toBeNull();
+    const text = await response?.text();
+    expect(text).toContain("response.completed");
+    expect(text).toContain("data: [DONE]");
+  });
+
+  test("preserves websocket message order for async binary messages", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+    });
+    const encoder = new TextEncoder();
+    let resolveBuffer: ((buffer: ArrayBuffer) => void) | null = null;
+    const delayedBuffer = new Promise<ArrayBuffer>((resolve) => {
+      resolveBuffer = resolve;
+    });
+
+    const responsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "Order" }] },
+        ],
+      },
+      accountKey: "key-1:account-1",
+    });
+
+    await waitFor(() => sentBodies.length === 1);
+    sockets[0]?.dispatch("message", {
+      data: { arrayBuffer: () => delayedBuffer },
+    });
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_1", status: "completed" },
+      }),
+    });
+    sockets[0]?.dispatch("close", { code: 1000 });
+
+    let response: Response | null | undefined;
+    responsePromise.then((value) => {
+      response = value;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(response).toBeUndefined();
+
+    const createdBytes = encoder.encode(
+      JSON.stringify({ type: "response.created", response: { id: "resp_1" } })
+    );
+    resolveBuffer?.(
+      createdBytes.buffer.slice(
+        createdBytes.byteOffset,
+        createdBytes.byteOffset + createdBytes.byteLength
+      )
+    );
+    await waitFor(() => response !== undefined);
+    if (!response) {
+      throw new Error("Expected websocket response");
+    }
+    const text = await response.text();
+    expect(text.indexOf("response.created")).toBeLessThan(
+      text.indexOf("response.completed")
+    );
+  });
+
+  test("keeps retrying websocket setup failures before session fallback", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies, {
+      autoOpen: false,
+    });
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "retry-budget-session",
+    });
+    const bodyJson = {
+      model: "gpt-5-codex",
+      stream: true,
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "Retry" }] },
+      ],
+    };
+
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const responsePromise = tryProxyCodexWebSocket({
+        headers,
+        bodyJson,
+        accountKey: "key-1:account-1",
+      });
+      await waitFor(() => sockets.length === attempt + 1);
+      sockets[attempt]?.dispatch("close", { code: 1006 });
+      expect(await responsePromise).toBeNull();
+    }
+
+    const fallback = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    expect(fallback).toBeNull();
+    expect(sockets).toHaveLength(6);
   });
 
   test("treats same-session websocket connect races as busy", async () => {

@@ -35,6 +35,7 @@ const CODEX_DEVICE_USER_CODE_URL = `${CODEX_ISSUER}/api/accounts/deviceauth/user
 const CODEX_DEVICE_TOKEN_URL = `${CODEX_ISSUER}/api/accounts/deviceauth/token`;
 const CODEX_OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
 const CODEX_POLLING_SAFETY_MARGIN_MS = 3000;
+const CODEX_SLOW_DOWN_INCREMENT_MS = 5000;
 
 const codexStartOptionsSchema = z.object({
   mode: z.enum(["browser", "headless"]).optional(),
@@ -82,6 +83,10 @@ type CodexDeviceAuthorizationResponse = {
 type CodexDeviceTokenResponse = {
   authorization_code?: string;
   code_verifier?: string;
+};
+
+type CodexDeviceTokenErrorResponse = {
+  error?: string | { code?: string };
 };
 
 const resolveCodexOAuthMode = (
@@ -172,6 +177,42 @@ const parseTokenResponse = async (
   return body;
 };
 
+const readCodexDeviceTokenErrorCode = async (
+  response: Response
+): Promise<string | null> => {
+  const text = await response
+    .clone()
+    .text()
+    .catch(() => "");
+  if (!text) {
+    return null;
+  }
+
+  try {
+    const body = JSON.parse(text) as CodexDeviceTokenErrorResponse;
+    const error = body.error;
+    if (typeof error === "string") {
+      return error;
+    }
+    return typeof error?.code === "string" ? error.code : null;
+  } catch {
+    return null;
+  }
+};
+
+const waitForCodexDevicePoll = async (input: {
+  intervalMs: number;
+  expiresAt: number;
+}): Promise<void> => {
+  const remainingMs = input.expiresAt - Date.now();
+  if (remainingMs <= 0) {
+    return;
+  }
+  await sleep(
+    Math.min(input.intervalMs + CODEX_POLLING_SAFETY_MARGIN_MS, remainingMs)
+  );
+};
+
 const exchangeAuthorizationCodeForTokens = async (input: {
   code: string;
   redirectUri: string;
@@ -238,6 +279,7 @@ const pollDeviceAuthorizationCode = async (input: {
   intervalMs: number;
   expiresAt: number;
 }): Promise<{ authorizationCode: string; codeVerifier: string }> => {
+  let intervalMs = input.intervalMs;
   while (Date.now() < input.expiresAt) {
     const response = await fetch(CODEX_DEVICE_TOKEN_URL, {
       method: "POST",
@@ -262,8 +304,17 @@ const pollDeviceAuthorizationCode = async (input: {
       };
     }
 
-    if (response.status === 403 || response.status === 404) {
-      await sleep(input.intervalMs + CODEX_POLLING_SAFETY_MARGIN_MS);
+    const errorCode = await readCodexDeviceTokenErrorCode(response);
+    if (errorCode === "slow_down") {
+      intervalMs += CODEX_SLOW_DOWN_INCREMENT_MS;
+    }
+    if (
+      errorCode === "slow_down" ||
+      errorCode === "deviceauth_authorization_pending" ||
+      response.status === 403 ||
+      response.status === 404
+    ) {
+      await waitForCodexDevicePoll({ intervalMs, expiresAt: input.expiresAt });
       continue;
     }
 
