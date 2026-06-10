@@ -43,6 +43,17 @@ const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
   "gpt-5.5",
 ]);
 
+const CODEX_MODEL_LIMIT_OVERRIDES: Record<string, JsonObject> = {
+  // gpt-5.5 temporarily has a restricted context window for Codex plans.
+  // Match OpenCode's Codex OAuth metadata so clients reserve the same budget:
+  // https://github.com/anomalyco/opencode/blob/537666149b5682f6f0d39d2d9f4059b3d339cc07/packages/opencode/src/plugin/openai/codex.ts#L384-L388
+  "gpt-5.5": {
+    context: 400_000,
+    input: 272_000,
+    output: 128_000,
+  },
+};
+
 const modelScopeRouteByCanonicalProvider = new Map<string, ModelScopeRoute>(
   proxyProviderMappings.map((mapping) => [
     mapping.canonicalProvider,
@@ -168,6 +179,7 @@ const cloneProviderModels = (input: {
   modelPrefix?: string;
   sourceLabel?: string;
   shouldIncludeModel?: (modelId: string) => boolean;
+  transformModel?: (modelId: string, model: JsonObject) => void;
 }): JsonObject => {
   const models: JsonObject = {};
   for (const [modelId, modelValue] of Object.entries(input.sourceModels)) {
@@ -190,6 +202,7 @@ const cloneProviderModels = (input: {
         ? model.name
         : modelId;
     const providerOverrides = getObjectProperty(model, "provider") ?? {};
+    input.transformModel?.(modelId, model);
 
     model.id = proxyModelId;
     if (input.sourceLabel) {
@@ -279,6 +292,16 @@ const mergeKleisProviderModels = (input: {
             route,
             modelScopes: input.modelScopes,
           }),
+        transformModel: (modelId, model) => {
+          if (mapping.internalProvider !== "codex") {
+            return;
+          }
+
+          const limitOverride = CODEX_MODEL_LIMIT_OVERRIDES[modelId];
+          if (limitOverride) {
+            model.limit = limitOverride;
+          }
+        },
       })
     );
   }

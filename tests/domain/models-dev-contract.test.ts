@@ -24,6 +24,19 @@ const upstreamRegistry = {
           npm: "@ai-sdk/openai",
         },
       },
+      "gpt-5.5": {
+        id: "gpt-5.5",
+        name: "GPT-5.5",
+        limit: {
+          context: 1_000_000,
+          input: 800_000,
+          output: 64_000,
+        },
+        provider: {
+          api: "https://api.openai.com/v1",
+          npm: "@ai-sdk/openai",
+        },
+      },
       "gpt-5": {
         id: "gpt-5",
         name: "GPT-5",
@@ -141,6 +154,7 @@ describe("models registry contract", () => {
     expect(kleis.models?.["gpt-5.3-codex-spark"]?.id).toBe(
       "gpt-5.3-codex-spark"
     );
+    expect(kleis.models?.["gpt-5.5"]?.id).toBe("gpt-5.5");
     expect(kleis.models?.["openai/gpt-5.3-codex"]).toBeUndefined();
     expect(kleis.models?.["github-copilot/gpt-5"]?.id).toBe(
       "github-copilot/gpt-5"
@@ -149,6 +163,23 @@ describe("models registry contract", () => {
       "https://kleis.example/copilot/v1"
     );
     expect(kleis.models?.["openai/text-embedding-3-large"]).toBeUndefined();
+  });
+
+  test("overrides Codex gpt-5.5 limits to match OpenCode OAuth", () => {
+    const registry = buildProxyModelsRegistry({
+      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
+      baseOrigin: "https://kleis.example/",
+      configuredProviders: ["codex"],
+    });
+
+    const kleis = registry.kleis as {
+      models?: Record<string, { limit?: unknown }>;
+    };
+    expect(kleis.models?.["gpt-5.5"]?.limit).toEqual({
+      context: 400_000,
+      input: 272_000,
+      output: 128_000,
+    });
   });
 
   test("appends to existing kleis provider without replacing entries", () => {
@@ -223,7 +254,7 @@ describe("models registry contract", () => {
       models?: Record<string, { id?: string }>;
     };
     expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(Object.keys(openai.models ?? {})).toHaveLength(4);
+    expect(Object.keys(openai.models ?? {})).toHaveLength(5);
 
     const kleis = registry.kleis as {
       models?: Record<string, { id?: string }>;
@@ -245,7 +276,7 @@ describe("models registry contract", () => {
       models?: Record<string, unknown>;
     };
     expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(Object.keys(openai.models ?? {})).toHaveLength(4);
+    expect(Object.keys(openai.models ?? {})).toHaveLength(5);
 
     expect(registry.anthropic).toBeDefined();
     expect(registry["github-copilot"]).toBeDefined();
@@ -285,6 +316,7 @@ describe("models registry contract", () => {
     expect(Object.keys(openai.models ?? {})).toEqual([
       "gpt-5.3-codex",
       "gpt-5.3-codex-spark",
+      "gpt-5.5",
       "gpt-5",
       "text-embedding-3-large",
     ]);
@@ -340,6 +372,7 @@ describe("models registry contract", () => {
     expect(Object.keys(kleis.models ?? {})).toEqual([
       "gpt-5.3-codex",
       "gpt-5.3-codex-spark",
+      "gpt-5.5",
     ]);
   });
 
