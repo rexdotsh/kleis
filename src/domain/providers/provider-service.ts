@@ -8,6 +8,7 @@ import {
   listProviderAccountsByProvider,
   recordProviderAccountRefreshFailure,
   releaseProviderAccountRefreshLock,
+  setPrimaryProviderAccount,
   tryAcquireProviderAccountRefreshLock,
   updateProviderAccountTokens,
   upsertProviderAccount,
@@ -348,47 +349,36 @@ const refreshAccountIfNeeded = (
   return refreshProviderAccount(database, account.id, now);
 };
 
-export const getRoutableProviderAccountCandidates = async (
+export const rotateProviderPrimaryAccount = async (
   database: Database,
   provider: Provider,
-  now: number,
-  input?: {
-    allowedAccountIds?: readonly string[] | null;
-  }
-): Promise<ProviderAccountRecord[]> => {
-  const allowedAccountIds = Array.from(
-    new Set(
-      input?.allowedAccountIds
-        ?.map((accountId) => accountId.trim())
-        .filter((accountId) => accountId.length > 0) ?? []
-    )
+  currentAccountId: string,
+  now: number
+): Promise<ProviderAccountRecord | null> => {
+  const accounts = await listProviderAccountsByProvider(database, provider);
+  const currentIndex = accounts.findIndex(
+    (account) => account.id === currentAccountId
   );
-  const accounts = allowedAccountIds.length
-    ? (await findProviderAccountsByIds(database, allowedAccountIds)).filter(
-        (candidate) => candidate.provider === provider
-      )
-    : await listProviderAccountsByProvider(database, provider);
+  const candidates =
+    currentIndex === -1
+      ? accounts
+      : [
+          ...accounts.slice(currentIndex + 1),
+          ...accounts.slice(0, currentIndex),
+        ];
 
-  const candidates: ProviderAccountRecord[] = [];
-  let refreshError: unknown = null;
-  for (const account of accounts) {
-    let refreshed: ProviderAccountRecord | null;
-    try {
-      refreshed = await refreshAccountIfNeeded(database, account, now);
-    } catch (error) {
-      refreshError ??= error;
-      continue;
-    }
+  for (const account of candidates) {
+    const refreshed = await refreshAccountIfNeeded(
+      database,
+      account,
+      now
+    ).catch(() => null);
     if (refreshed) {
-      candidates.push(refreshed);
+      return setPrimaryProviderAccount(database, refreshed.id, Date.now());
     }
   }
 
-  if (!candidates.length && refreshError) {
-    throw refreshError;
-  }
-
-  return candidates;
+  return null;
 };
 
 export const getRoutableProviderAccount = async (

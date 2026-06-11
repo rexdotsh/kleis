@@ -80,10 +80,7 @@ export const listProviderAccountsByProvider = async (
     .select()
     .from(providerAccounts)
     .where(eq(providerAccounts.provider, provider))
-    .orderBy(
-      desc(providerAccounts.isPrimary),
-      desc(providerAccounts.createdAt)
-    );
+    .orderBy(desc(providerAccounts.createdAt));
 
   return rows.map(toRecord);
 };

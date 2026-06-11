@@ -7,11 +7,6 @@ import {
   parseModelForProxyRoute,
   resolveProxyRoute,
 } from "../../src/http/proxy-routing";
-import {
-  isRateLimitFailoverEnabled,
-  shouldPersistRateLimitFailover,
-  shouldRetryRateLimitWithNextAccount,
-} from "../../src/http/rate-limit-failover";
 
 describe("bearer parsing", () => {
   test("accepts case-insensitive bearer scheme", () => {
@@ -88,65 +83,5 @@ describe("request idle timeouts", () => {
     expect(resolveRequestIdleTimeout("/admin")).toBeNull();
     expect(resolveRequestIdleTimeout("/api.json")).toBeNull();
     expect(resolveRequestIdleTimeout("/openai/v2/responses")).toBeNull();
-  });
-});
-
-describe("rate limit failover", () => {
-  test("is disabled unless explicitly enabled", () => {
-    const original = process.env.KLEIS_RATE_LIMIT_FAILOVER;
-    try {
-      process.env.KLEIS_RATE_LIMIT_FAILOVER = "";
-      expect(isRateLimitFailoverEnabled()).toBe(false);
-
-      process.env.KLEIS_RATE_LIMIT_FAILOVER = "0";
-      expect(isRateLimitFailoverEnabled()).toBe(false);
-
-      process.env.KLEIS_RATE_LIMIT_FAILOVER = "1";
-      expect(isRateLimitFailoverEnabled()).toBe(true);
-    } finally {
-      if (original === undefined) {
-        process.env.KLEIS_RATE_LIMIT_FAILOVER = "";
-      } else {
-        process.env.KLEIS_RATE_LIMIT_FAILOVER = original;
-      }
-    }
-  });
-
-  test("retries only the first eligible 429 with a next account", () => {
-    expect(
-      shouldRetryRateLimitWithNextAccount({
-        failoverEnabled: true,
-        failoverAttempted: false,
-        canFailover: true,
-        statusCode: 429,
-        hasNextAccount: true,
-      })
-    ).toBe(true);
-
-    expect(
-      shouldRetryRateLimitWithNextAccount({
-        failoverEnabled: true,
-        failoverAttempted: true,
-        canFailover: true,
-        statusCode: 429,
-        hasNextAccount: true,
-      })
-    ).toBe(false);
-
-    expect(
-      shouldRetryRateLimitWithNextAccount({
-        failoverEnabled: true,
-        failoverAttempted: false,
-        canFailover: true,
-        statusCode: 529,
-        hasNextAccount: true,
-      })
-    ).toBe(false);
-  });
-
-  test("persists primary rotation only for unscoped requests", () => {
-    expect(shouldPersistRateLimitFailover(null)).toBe(true);
-    expect(shouldPersistRateLimitFailover([])).toBe(true);
-    expect(shouldPersistRateLimitFailover(["account-a"])).toBe(false);
   });
 });

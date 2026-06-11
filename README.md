@@ -45,7 +45,7 @@ ADMIN_TOKEN=replace-with-a-long-random-token
 CRON_SECRET=replace-with-a-long-random-token
 TURSO_CONNECTION_URL=libsql://<your-db>.<region>.turso.io
 TURSO_AUTH_TOKEN=<your-turso-token>
-# Optional: rotate to the next provider account and retry once when upstream returns 429.
+# Optional: rotate to the next provider account when upstream returns 429.
 KLEIS_RATE_LIMIT_FAILOVER=1
 ```
 
