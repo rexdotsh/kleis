@@ -40,9 +40,6 @@ const proxyErrorResponse = (message: string, type = "proxy_error") => ({
 
 const CODEX_SSE_HEADER_TIMEOUT_MS = 10_000;
 
-const isRateLimitFailoverEnabled = (): boolean =>
-  process.env.KLEIS_RATE_LIMIT_FAILOVER === "1";
-
 const createCodexSseHeaderTimeout = (): {
   signal: AbortSignal;
   clear(): void;
@@ -378,7 +375,7 @@ const proxyRequest = async (
   }
 
   if (
-    isRateLimitFailoverEnabled() &&
+    process.env.KLEIS_RATE_LIMIT_FAILOVER === "1" &&
     upstreamResponse.status === 429 &&
     !accountScopeIds?.length
   ) {

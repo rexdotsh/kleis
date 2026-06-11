@@ -5,7 +5,7 @@ import {
   findProviderAccountsByIds,
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
-  listProviderAccountsByProvider,
+  listProviderAccounts,
   recordProviderAccountRefreshFailure,
   releaseProviderAccountRefreshLock,
   setPrimaryProviderAccount,
@@ -337,42 +337,34 @@ const getPrimaryProviderAccount = async (
   return refreshProviderAccount(database, account.id, now);
 };
 
-const refreshAccountIfNeeded = (
-  database: Database,
-  account: ProviderAccountRecord,
-  now: number
-): Promise<ProviderAccountRecord | null> => {
-  if (account.expiresAt > now) {
-    return Promise.resolve(account);
-  }
-
-  return refreshProviderAccount(database, account.id, now);
-};
-
 export const rotateProviderPrimaryAccount = async (
   database: Database,
   provider: Provider,
   currentAccountId: string,
   now: number
 ): Promise<ProviderAccountRecord | null> => {
-  const accounts = await listProviderAccountsByProvider(database, provider);
+  const accounts = (await listProviderAccounts(database))
+    .filter((account) => account.provider === provider)
+    .sort((left, right) => right.createdAt - left.createdAt);
   const currentIndex = accounts.findIndex(
     (account) => account.id === currentAccountId
   );
-  const candidates =
-    currentIndex === -1
-      ? accounts
-      : [
-          ...accounts.slice(currentIndex + 1),
-          ...accounts.slice(0, currentIndex),
-        ];
+  if (currentIndex === -1 || !accounts[currentIndex]?.isPrimary) {
+    return null;
+  }
+
+  const candidates = [
+    ...accounts.slice(currentIndex + 1),
+    ...accounts.slice(0, currentIndex),
+  ];
 
   for (const account of candidates) {
-    const refreshed = await refreshAccountIfNeeded(
-      database,
-      account,
-      now
-    ).catch(() => null);
+    const refreshed =
+      account.expiresAt > now
+        ? account
+        : await refreshProviderAccount(database, account.id, now).catch(
+            () => null
+          );
     if (refreshed) {
       return setPrimaryProviderAccount(database, refreshed.id, Date.now());
     }
