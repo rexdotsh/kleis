@@ -5,6 +5,7 @@ import {
   findProviderAccountsByIds,
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
+  listProviderAccountsByProvider,
   recordProviderAccountRefreshFailure,
   releaseProviderAccountRefreshLock,
   tryAcquireProviderAccountRefreshLock,
@@ -333,6 +334,61 @@ const getPrimaryProviderAccount = async (
   }
 
   return refreshProviderAccount(database, account.id, now);
+};
+
+const refreshAccountIfNeeded = (
+  database: Database,
+  account: ProviderAccountRecord,
+  now: number
+): Promise<ProviderAccountRecord | null> => {
+  if (account.expiresAt > now) {
+    return Promise.resolve(account);
+  }
+
+  return refreshProviderAccount(database, account.id, now);
+};
+
+export const getRoutableProviderAccountCandidates = async (
+  database: Database,
+  provider: Provider,
+  now: number,
+  input?: {
+    allowedAccountIds?: readonly string[] | null;
+  }
+): Promise<ProviderAccountRecord[]> => {
+  const allowedAccountIds = Array.from(
+    new Set(
+      input?.allowedAccountIds
+        ?.map((accountId) => accountId.trim())
+        .filter((accountId) => accountId.length > 0) ?? []
+    )
+  );
+  const accounts = allowedAccountIds.length
+    ? (await findProviderAccountsByIds(database, allowedAccountIds)).filter(
+        (candidate) => candidate.provider === provider
+      )
+    : await listProviderAccountsByProvider(database, provider);
+
+  const candidates: ProviderAccountRecord[] = [];
+  let refreshError: unknown = null;
+  for (const account of accounts) {
+    let refreshed: ProviderAccountRecord | null;
+    try {
+      refreshed = await refreshAccountIfNeeded(database, account, now);
+    } catch (error) {
+      refreshError ??= error;
+      continue;
+    }
+    if (refreshed) {
+      candidates.push(refreshed);
+    }
+  }
+
+  if (!candidates.length && refreshError) {
+    throw refreshError;
+  }
+
+  return candidates;
 };
 
 export const getRoutableProviderAccount = async (

@@ -72,6 +72,22 @@ export const listConfiguredProviders = async (
   return rows.map((row) => row.provider);
 };
 
+export const listProviderAccountsByProvider = async (
+  database: Database,
+  provider: Provider
+): Promise<ProviderAccountRecord[]> => {
+  const rows = await database
+    .select()
+    .from(providerAccounts)
+    .where(eq(providerAccounts.provider, provider))
+    .orderBy(
+      desc(providerAccounts.isPrimary),
+      desc(providerAccounts.createdAt)
+    );
+
+  return rows.map(toRecord);
+};
+
 export const findProviderAccountById = async (
   database: Database,
   id: string

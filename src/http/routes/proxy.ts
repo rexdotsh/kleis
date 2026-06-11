@@ -6,7 +6,14 @@ import {
   recordRequestUsage,
   recordTokenUsage,
 } from "../../db/repositories/request-usage";
-import { getRoutableProviderAccount } from "../../domain/providers/provider-service";
+import {
+  setPrimaryProviderAccount,
+  type ProviderAccountRecord,
+} from "../../db/repositories/provider-accounts";
+import {
+  getRoutableProviderAccount,
+  getRoutableProviderAccountCandidates,
+} from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import {
   deriveCodexSessionId,
@@ -27,6 +34,11 @@ import {
   readModelFromBody,
   type ProxyRoute,
 } from "../proxy-routing";
+import {
+  isRateLimitFailoverEnabled,
+  shouldPersistRateLimitFailover,
+  shouldRetryRateLimitWithNextAccount,
+} from "../rate-limit-failover";
 
 const proxyErrorResponse = (message: string, type = "proxy_error") => ({
   error: {
@@ -169,6 +181,184 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
   };
 };
 
+type ProxyAttemptInput = {
+  context: Context;
+  route: ProxyRoute;
+  requestUrl: URL;
+  requestBody: string;
+  requestBodyJson: unknown | null;
+  apiKeyId: string;
+  account: ProviderAccountRecord;
+  usageRecorder: ReturnType<typeof createUsageRecorder>;
+};
+
+type ProxyAttemptResult = {
+  upstreamResponse: Response;
+  responseTransformer: ((response: Response) => Promise<Response>) | null;
+  canFailover: boolean;
+};
+
+const cancelResponseBody = (response: Response): void => {
+  response.body?.cancel().catch(() => undefined);
+};
+
+const fetchUpstreamForAccount = async (
+  input: ProxyAttemptInput
+): Promise<ProxyAttemptResult> => {
+  const headers = new Headers(input.context.req.raw.headers);
+  removeProxyAuthHeaders(headers);
+
+  let upstreamUrl = "";
+  let requestBody = input.requestBody;
+  let responseTransformer: ((response: Response) => Promise<Response>) | null =
+    null;
+  let useCodexSseHeaderTimeout = false;
+
+  switch (input.route.provider) {
+    case "codex": {
+      const codexSessionId = readCodexSessionId(input.requestBodyJson, headers);
+      const codexUpstreamSessionId = codexSessionId
+        ? await deriveCodexSessionId(
+            `${input.apiKeyId}:${input.account.id}`,
+            codexSessionId
+          )
+        : null;
+      const codexProxy = prepareCodexProxyRequest({
+        headers,
+        accessToken: input.account.accessToken,
+        accountId: input.account.accountId,
+        metadata:
+          input.account.metadata?.provider === "codex"
+            ? input.account.metadata
+            : null,
+        bodyText: requestBody,
+        bodyJson: input.requestBodyJson,
+        sessionId: codexUpstreamSessionId,
+        onTokenUsage: input.usageRecorder.onTokenUsage,
+      });
+      upstreamUrl = codexProxy.upstreamUrl;
+      requestBody = codexProxy.bodyText;
+      responseTransformer = codexProxy.transformResponse;
+      useCodexSseHeaderTimeout =
+        readBooleanField(codexProxy.bodyJson, "stream") === true;
+
+      const webSocketResponse = await tryProxyCodexWebSocket({
+        headers,
+        bodyJson: codexProxy.bodyJson,
+        accountKey: `${input.apiKeyId}:${input.account.id}`,
+        sessionId: codexSessionId,
+        upstreamSessionId: codexUpstreamSessionId,
+        onTokenUsage: input.usageRecorder.onTokenUsage,
+        signal: input.context.req.raw.signal,
+      });
+      if (webSocketResponse) {
+        return {
+          upstreamResponse: webSocketResponse,
+          responseTransformer: null,
+          canFailover: false,
+        };
+      }
+      break;
+    }
+
+    case "copilot": {
+      const copilotProxy = prepareCopilotProxyRequest({
+        endpoint: input.route.endpoint,
+        requestUrl: input.requestUrl,
+        headers,
+        bodyText: requestBody,
+        bodyJson: input.requestBodyJson,
+        githubAccessToken: input.account.refreshToken,
+        metadata:
+          input.account.metadata?.provider === "copilot"
+            ? input.account.metadata
+            : null,
+        onTokenUsage: input.usageRecorder.onTokenUsage,
+      });
+      upstreamUrl = copilotProxy.upstreamUrl;
+      requestBody = copilotProxy.bodyText;
+      responseTransformer = copilotProxy.transformResponse;
+      break;
+    }
+
+    case "claude": {
+      const claudeProxy = prepareClaudeProxyRequest({
+        requestUrl: input.requestUrl,
+        headers,
+        bodyText: requestBody,
+        bodyJson: input.requestBodyJson,
+        accessToken: input.account.accessToken,
+        metadata:
+          input.account.metadata?.provider === "claude"
+            ? input.account.metadata
+            : null,
+        onTokenUsage: input.usageRecorder.onTokenUsage,
+      });
+      upstreamUrl = claudeProxy.upstreamUrl;
+      requestBody = claudeProxy.bodyText;
+      responseTransformer = claudeProxy.transformResponse;
+      break;
+    }
+
+    default: {
+      throw new Error(
+        `Proxy route provider is not supported: ${input.route.provider}`
+      );
+    }
+  }
+
+  const headerTimeout = useCodexSseHeaderTimeout
+    ? createCodexSseHeaderTimeout()
+    : null;
+  const upstreamRequestInit: BunFetchRequestInit = {
+    method: input.context.req.method,
+    headers,
+    body: requestBody,
+    // Provider streams can pause for minutes while a model is thinking.
+    timeout: false,
+  };
+  if (headerTimeout) {
+    upstreamRequestInit.signal = AbortSignal.any([
+      input.context.req.raw.signal,
+      headerTimeout.signal,
+    ]);
+  }
+
+  try {
+    const upstreamResponse = await fetch(upstreamUrl, upstreamRequestInit);
+    return {
+      upstreamResponse,
+      responseTransformer,
+      canFailover: true,
+    };
+  } catch (error) {
+    const timeoutError = headerTimeout?.error();
+    throw timeoutError && !input.context.req.raw.signal.aborted
+      ? timeoutError
+      : error;
+  } finally {
+    headerTimeout?.clear();
+  }
+};
+
+const resolveRoutableProviderAccounts = async (
+  route: ProxyRoute,
+  now: number,
+  accountScopeIds: readonly string[] | null | undefined,
+  failoverEnabled: boolean
+): Promise<ProviderAccountRecord[]> => {
+  if (failoverEnabled) {
+    return getRoutableProviderAccountCandidates(db, route.provider, now, {
+      allowedAccountIds: accountScopeIds ?? null,
+    });
+  }
+
+  const account = await getRoutableProviderAccount(db, route.provider, now, {
+    allowedAccountIds: accountScopeIds ?? null,
+  });
+  return account ? [account] : [];
+};
+
 const proxyRequest = async (
   context: Context,
   route: ProxyRoute
@@ -209,11 +399,15 @@ const proxyRequest = async (
   }
 
   const now = Date.now();
-  let account: Awaited<ReturnType<typeof getRoutableProviderAccount>>;
+  const failoverEnabled = isRateLimitFailoverEnabled();
+  let accounts: ProviderAccountRecord[];
   try {
-    account = await getRoutableProviderAccount(db, route.provider, now, {
-      allowedAccountIds: accountScopeIds,
-    });
+    accounts = await resolveRoutableProviderAccounts(
+      route,
+      now,
+      accountScopeIds,
+      failoverEnabled
+    );
   } catch {
     usageRecorder.recordImmediate(502);
     return context.json(
@@ -225,6 +419,7 @@ const proxyRequest = async (
     );
   }
 
+  const account = accounts[0] ?? null;
   if (!account) {
     const isAccountScoped = Boolean(accountScopeIds?.length);
     usageRecorder.recordImmediate(isAccountScoped ? 403 : 400);
@@ -239,154 +434,107 @@ const proxyRequest = async (
     );
   }
 
-  providerAccountId = account.id;
-
-  const headers = new Headers(context.req.raw.headers);
-  removeProxyAuthHeaders(headers);
-
-  let upstreamUrl = "";
-  let responseTransformer: ((response: Response) => Promise<Response>) | null =
-    null;
-  let useCodexSseHeaderTimeout = false;
-
-  switch (route.provider) {
-    case "codex": {
-      const codexSessionId = readCodexSessionId(requestBodyJson, headers);
-      const codexUpstreamSessionId = codexSessionId
-        ? await deriveCodexSessionId(
-            `${apiKeyId}:${account.id}`,
-            codexSessionId
-          )
-        : null;
-      const codexProxy = prepareCodexProxyRequest({
-        headers,
-        accessToken: account.accessToken,
-        accountId: account.accountId,
-        metadata:
-          account.metadata?.provider === "codex" ? account.metadata : null,
-        bodyText: requestBody,
-        bodyJson: requestBodyJson,
-        sessionId: codexUpstreamSessionId,
-        onTokenUsage: usageRecorder.onTokenUsage,
-      });
-      upstreamUrl = codexProxy.upstreamUrl;
-      requestBody = codexProxy.bodyText;
-      responseTransformer = codexProxy.transformResponse;
-      useCodexSseHeaderTimeout =
-        readBooleanField(codexProxy.bodyJson, "stream") === true;
-
-      const webSocketResponse = await tryProxyCodexWebSocket({
-        headers,
-        bodyJson: codexProxy.bodyJson,
-        accountKey: `${apiKeyId}:${account.id}`,
-        sessionId: codexSessionId,
-        upstreamSessionId: codexUpstreamSessionId,
-        onTokenUsage: usageRecorder.onTokenUsage,
-        signal: context.req.raw.signal,
-      });
-      if (webSocketResponse) {
-        usageRecorder.recordFinal(webSocketResponse.status);
-        return webSocketResponse;
-      }
-      break;
-    }
-
-    case "copilot": {
-      const copilotProxy = prepareCopilotProxyRequest({
-        endpoint: route.endpoint,
-        requestUrl,
-        headers,
-        bodyText: requestBody,
-        bodyJson: requestBodyJson,
-        githubAccessToken: account.refreshToken,
-        metadata:
-          account.metadata?.provider === "copilot" ? account.metadata : null,
-        onTokenUsage: usageRecorder.onTokenUsage,
-      });
-      upstreamUrl = copilotProxy.upstreamUrl;
-      requestBody = copilotProxy.bodyText;
-      responseTransformer = copilotProxy.transformResponse;
-      break;
-    }
-
-    case "claude": {
-      const claudeProxy = prepareClaudeProxyRequest({
-        requestUrl,
-        headers,
-        bodyText: requestBody,
-        bodyJson: requestBodyJson,
-        accessToken: account.accessToken,
-        metadata:
-          account.metadata?.provider === "claude" ? account.metadata : null,
-        onTokenUsage: usageRecorder.onTokenUsage,
-      });
-      upstreamUrl = claudeProxy.upstreamUrl;
-      requestBody = claudeProxy.bodyText;
-      responseTransformer = claudeProxy.transformResponse;
-      break;
-    }
-
-    default: {
+  let attemptIndex = 0;
+  let failoverAttempted = false;
+  while (true) {
+    const attemptAccount = accounts[attemptIndex];
+    if (!attemptAccount) {
       usageRecorder.recordImmediate(500);
       return context.json(
         proxyErrorResponse(
-          `Proxy route provider is not supported: ${route.provider}`,
-          "provider_not_supported"
+          `No ${route.provider} account is available for proxy retry`,
+          "account_missing"
         ),
         500
       );
     }
-  }
 
-  let upstreamResponse: Response;
-  try {
-    const headerTimeout = useCodexSseHeaderTimeout
-      ? createCodexSseHeaderTimeout()
-      : null;
-    const upstreamRequestInit: BunFetchRequestInit = {
-      method: context.req.method,
-      headers,
-      body: requestBody,
-      // Provider streams can pause for minutes while a model is thinking.
-      timeout: false,
-    };
-    if (headerTimeout) {
-      upstreamRequestInit.signal = AbortSignal.any([
-        context.req.raw.signal,
-        headerTimeout.signal,
-      ]);
-    }
-    try {
-      upstreamResponse = await fetch(upstreamUrl, upstreamRequestInit);
-    } catch (error) {
-      const timeoutError = headerTimeout?.error();
-      throw timeoutError && !context.req.raw.signal.aborted
-        ? timeoutError
-        : error;
-    } finally {
-      headerTimeout?.clear();
-    }
-  } catch (error) {
-    usageRecorder.recordImmediate(500);
-    throw error;
-  }
+    providerAccountId = attemptAccount.id;
 
-  let responseToClient = upstreamResponse;
-  if (responseTransformer) {
+    let attempt: ProxyAttemptResult;
     try {
-      responseToClient = await responseTransformer(upstreamResponse);
-      // Bun auto-decompresses but keeps Content-Encoding; Anthropic is the main
-      // upstream that returns it, causing ZlibError on clients reading plaintext.
-      responseToClient.headers.delete("content-encoding");
+      attempt = await fetchUpstreamForAccount({
+        context,
+        route,
+        requestUrl,
+        requestBody,
+        requestBodyJson,
+        apiKeyId,
+        account: attemptAccount,
+        usageRecorder,
+      });
     } catch (error) {
       usageRecorder.recordImmediate(500);
       throw error;
     }
+
+    const nextAccount = accounts[attemptIndex + 1] ?? null;
+    if (
+      shouldRetryRateLimitWithNextAccount({
+        failoverEnabled,
+        failoverAttempted,
+        canFailover: attempt.canFailover,
+        statusCode: attempt.upstreamResponse.status,
+        hasNextAccount: Boolean(nextAccount),
+      }) &&
+      nextAccount
+    ) {
+      if (shouldPersistRateLimitFailover(accountScopeIds)) {
+        let updatedNextAccount: ProviderAccountRecord | null;
+        try {
+          updatedNextAccount = await setPrimaryProviderAccount(
+            db,
+            nextAccount.id,
+            Date.now()
+          );
+        } catch (error) {
+          usageRecorder.recordImmediate(500);
+          throw error;
+        }
+        if (!updatedNextAccount) {
+          let responseToClient = attempt.upstreamResponse;
+          if (attempt.responseTransformer) {
+            try {
+              responseToClient = await attempt.responseTransformer(
+                attempt.upstreamResponse
+              );
+              responseToClient.headers.delete("content-encoding");
+            } catch (error) {
+              usageRecorder.recordImmediate(500);
+              throw error;
+            }
+          }
+          usageRecorder.recordFinal(attempt.upstreamResponse.status);
+          return responseToClient;
+        }
+        accounts[attemptIndex + 1] = updatedNextAccount;
+      }
+
+      usageRecorder.recordFinal(attempt.upstreamResponse.status);
+      cancelResponseBody(attempt.upstreamResponse);
+      attemptIndex += 1;
+      failoverAttempted = true;
+      continue;
+    }
+
+    let responseToClient = attempt.upstreamResponse;
+    if (attempt.responseTransformer) {
+      try {
+        responseToClient = await attempt.responseTransformer(
+          attempt.upstreamResponse
+        );
+        // Bun auto-decompresses but keeps Content-Encoding; Anthropic is the main
+        // upstream that returns it, causing ZlibError on clients reading plaintext.
+        responseToClient.headers.delete("content-encoding");
+      } catch (error) {
+        usageRecorder.recordImmediate(500);
+        throw error;
+      }
+    }
+
+    usageRecorder.recordFinal(attempt.upstreamResponse.status);
+    return responseToClient;
   }
-
-  usageRecorder.recordFinal(upstreamResponse.status);
-
-  return responseToClient;
 };
 
 const routes = new Hono();
