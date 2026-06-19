@@ -3,6 +3,9 @@
   "files": {
     "includes": ["**/*", "!bun.lock", "!vercel.json", "!dist"]
   },
+  "javascript": {
+    "globals": ["Bun"]
+  },
   "linter": {
     "rules": {
       "suspicious": {

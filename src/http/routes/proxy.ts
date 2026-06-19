@@ -20,6 +20,7 @@ import {
   isTokenUsagePopulated,
   type TokenUsage,
 } from "../../usage/token-usage";
+import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 import {
   parseModelForProxyRoute,
@@ -367,6 +368,13 @@ const proxyRequest = async (
       headerTimeout?.clear();
     }
   } catch (error) {
+    logWarn("proxy_upstream_request_failed", {
+      provider: route.provider,
+      endpoint: route.endpoint,
+      elapsedMs: Date.now() - startedAt,
+      aborted: context.req.raw.signal.aborted,
+      ...errorLogFields(error),
+    });
     usageRecorder.recordImmediate(500);
     throw error;
   }
@@ -379,6 +387,13 @@ const proxyRequest = async (
       // upstream that returns it, causing ZlibError on clients reading plaintext.
       responseToClient.headers.delete("content-encoding");
     } catch (error) {
+      logWarn("proxy_response_transform_failed", {
+        provider: route.provider,
+        endpoint: route.endpoint,
+        status: upstreamResponse.status,
+        elapsedMs: Date.now() - startedAt,
+        ...errorLogFields(error),
+      });
       usageRecorder.recordImmediate(500);
       throw error;
     }

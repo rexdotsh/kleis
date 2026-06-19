@@ -9,6 +9,7 @@ import {
 } from "./codex-proxy";
 import { readOpenAiResponsesUsageFromSseEvent } from "../../usage/token-usage";
 import type { TokenUsage } from "../../usage/token-usage";
+import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 
 const SESSION_SOCKET_TTL_MS = 5 * 60 * 1000;
@@ -734,6 +735,7 @@ export const tryProxyCodexWebSocket = async (
   }
 
   const active = acquired;
+  const startedAt = Date.now();
 
   const responseItems: unknown[] = [];
   let responseId: string | null = null;
@@ -750,6 +752,20 @@ export const tryProxyCodexWebSocket = async (
   let messageChain = Promise.resolve();
   let wake: (() => void) | null = null;
   const queue: Record<string, unknown>[] = [];
+
+  const logStreamAnomaly = (event: string, fields = {}): void => {
+    logWarn(event, {
+      provider: "codex",
+      transport: "websocket",
+      elapsedMs: Date.now() - startedAt,
+      hasSession: Boolean(sessionId),
+      emittedPayload,
+      terminal,
+      queueLength: queue.length,
+      connectionLimitAttempts,
+      ...fields,
+    });
+  };
 
   const wakePull = (): void => {
     if (!wake) {
@@ -865,8 +881,18 @@ export const tryProxyCodexWebSocket = async (
     failure = error;
     cleanup();
     active.release(false);
-    if (!isUserCancelledStage(stage)) {
-      recordSessionStreamFailure(cacheKey);
+    if (isUserCancelledStage(stage)) {
+      logStreamAnomaly("codex_websocket_stream_cancelled", {
+        stage,
+        ...errorLogFields(error),
+      });
+    } else {
+      const failureCount = recordSessionStreamFailure(cacheKey);
+      logStreamAnomaly("codex_websocket_stream_failed", {
+        stage,
+        failureCount,
+        ...errorLogFields(error),
+      });
     }
     firstPayloadReject?.(error);
     wakePull();
@@ -989,6 +1015,10 @@ export const tryProxyCodexWebSocket = async (
 
   if (isErrorPayload(first)) {
     keepSocket = false;
+    logStreamAnomaly("codex_websocket_error_payload", {
+      payloadType: String(first.type),
+      responseStatus: finalResponseStatus,
+    });
     finish();
     return Response.json(first, { status: readPayloadStatus(first) });
   }
@@ -1011,17 +1041,24 @@ export const tryProxyCodexWebSocket = async (
 
     controller.enqueue(encodeSse(payload));
     if (isTerminalPayload(payload)) {
-      if (payload.type === "response.incomplete") {
-        keepSocket = false;
-      }
-      if (isErrorPayload(payload)) {
-        keepSocket = false;
-      }
       terminal = true;
       finalEventType = payload.type;
       finalResponseStatus = isObjectRecord(payload.response)
         ? readString(payload.response.status)
         : null;
+      if (payload.type === "response.incomplete") {
+        keepSocket = false;
+        logStreamAnomaly("codex_websocket_response_incomplete", {
+          responseStatus: finalResponseStatus,
+        });
+      }
+      if (isErrorPayload(payload)) {
+        keepSocket = false;
+        logStreamAnomaly("codex_websocket_error_payload", {
+          payloadType: String(payload.type),
+          responseStatus: finalResponseStatus,
+        });
+      }
       controller.enqueue(encodeDoneSse());
       finish();
     }

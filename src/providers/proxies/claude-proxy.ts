@@ -13,7 +13,9 @@ import {
   readAnthropicUsageObject,
   type TokenUsage,
 } from "../../usage/token-usage";
+import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
+import { createSseKeepAlive } from "./sse-keepalive";
 
 // Anthropic OAuth sessions reject the feedback repo path used in OpenCode's
 // prompt URL and the opening `<directories>` wrapper emitted by OpenCode's
@@ -258,7 +260,8 @@ const rewriteSseDataLines = (chunk: string, payload: string): string => {
 const transformSseEventChunk = (
   chunk: string,
   toolPrefix: string,
-  readStreamUsage: (payload: unknown) => void
+  readStreamUsage: (payload: unknown) => void,
+  readStreamAnomaly: (payload: unknown) => void
 ): string => {
   const payload = parseSseEventData(chunk);
   if (!payload) {
@@ -268,6 +271,7 @@ const transformSseEventChunk = (
   try {
     const jsonBody = JSON.parse(payload) as unknown;
     readStreamUsage(jsonBody);
+    readStreamAnomaly(jsonBody);
     const transformed = transformClaudeResponsePayload(jsonBody, toolPrefix);
     return rewriteSseDataLines(chunk, JSON.stringify(transformed));
   } catch {
@@ -292,7 +296,30 @@ const maybeTransformClaudeStreamResponse = (
   const reader = response.body.getReader();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  const startedAt = Date.now();
   let buffer = "";
+  let bytes = 0;
+  let chunks = 0;
+  let lastChunkAt = startedAt;
+  let closed = false;
+  let clearKeepAlive: (() => void) | null = null;
+
+  const logStreamAnomaly = (
+    event: string,
+    fields: Record<string, string | number | boolean> = {},
+    error?: unknown
+  ): void => {
+    logWarn(event, {
+      provider: "claude",
+      transport: "sse_transform",
+      elapsedMs: Date.now() - startedAt,
+      idleMs: Date.now() - lastChunkAt,
+      bytes,
+      chunks,
+      ...fields,
+      ...(error === undefined ? {} : errorLogFields(error)),
+    });
+  };
 
   const streamUsage: TokenUsage = {
     inputTokens: 0,
@@ -374,23 +401,61 @@ const maybeTransformClaudeStreamResponse = (
     }
   };
 
+  const readStreamAnomaly = (payload: unknown): void => {
+    if (!isObjectRecord(payload)) {
+      return;
+    }
+
+    if (payload.type === "error") {
+      logStreamAnomaly("claude_sse_error_event");
+      return;
+    }
+
+    if (payload.type !== "message_delta") {
+      return;
+    }
+    const delta = isObjectRecord(payload.delta) ? payload.delta : null;
+    const stopReason = delta?.stop_reason;
+    if (stopReason === "max_tokens") {
+      logStreamAnomaly("claude_sse_max_tokens_stop");
+    }
+  };
+
   const stream = new ReadableStream<Uint8Array>({
     start(controller): void {
+      const keepAlive = createSseKeepAlive(controller, {
+        provider: "claude",
+        transport: "sse_transform",
+        getElapsedMs: () => Date.now() - startedAt,
+      });
+      clearKeepAlive = keepAlive.clear;
+
       const pump = async (): Promise<void> => {
         try {
           while (true) {
             const { done, value } = await reader.read();
             if (done) {
+              if (closed) {
+                clearKeepAlive?.();
+                return;
+              }
               buffer += decoder.decode();
               if (buffer) {
                 controller.enqueue(
                   encoder.encode(
-                    transformSseEventChunk(buffer, toolPrefix, readStreamUsage)
+                    transformSseEventChunk(
+                      buffer,
+                      toolPrefix,
+                      readStreamUsage,
+                      readStreamAnomaly
+                    )
                   )
                 );
                 buffer = "";
               }
               onTokenUsage?.(streamUsage);
+              closed = true;
+              clearKeepAlive?.();
               controller.close();
               return;
             }
@@ -399,30 +464,62 @@ const maybeTransformClaudeStreamResponse = (
               continue;
             }
 
+            bytes += value.byteLength;
+            chunks++;
+            lastChunkAt = Date.now();
             buffer += decoder.decode(value, { stream: true });
 
             let boundary = findSseEventBoundary(buffer);
             while (boundary) {
               const chunk = buffer.slice(0, boundary.index + boundary.length);
               buffer = buffer.slice(boundary.index + boundary.length);
-              controller.enqueue(
-                encoder.encode(
-                  transformSseEventChunk(chunk, toolPrefix, readStreamUsage)
-                )
-              );
+              try {
+                controller.enqueue(
+                  encoder.encode(
+                    transformSseEventChunk(
+                      chunk,
+                      toolPrefix,
+                      readStreamUsage,
+                      readStreamAnomaly
+                    )
+                  )
+                );
+              } catch (error) {
+                logStreamAnomaly("claude_sse_enqueue_failed", {}, error);
+                throw error;
+              }
               boundary = findSseEventBoundary(buffer);
             }
           }
         } catch (error) {
+          if (closed) {
+            clearKeepAlive?.();
+            return;
+          }
+          closed = true;
+          clearKeepAlive?.();
+          logStreamAnomaly("claude_sse_stream_failed", {}, error);
           controller.error(error);
         }
       };
 
       pump().catch((error: unknown) => {
+        if (closed) {
+          clearKeepAlive?.();
+          return;
+        }
+        closed = true;
+        clearKeepAlive?.();
+        logStreamAnomaly("claude_sse_stream_failed", {}, error);
         controller.error(error);
       });
     },
     cancel(reason): Promise<void> {
+      if (!closed) {
+        logStreamAnomaly("claude_sse_downstream_cancelled", {}, reason);
+      }
+      closed = true;
+      clearKeepAlive?.();
       return reader.cancel(reason);
     },
   });
