@@ -649,6 +649,39 @@ const readPayloadStatus = (payload: Record<string, unknown>): number => {
 const isErrorPayload = (payload: Record<string, unknown>): boolean =>
   payload.type === "error" || payload.type === "response.failed";
 
+const truncateLogValue = (value: string): string => {
+  const trimmed = value.trim();
+  return trimmed.length > 500 ? `${trimmed.slice(0, 500)}...` : trimmed;
+};
+
+const readErrorField = (
+  payload: Record<string, unknown>,
+  key: string
+): string | number | boolean | null | undefined => {
+  const error = isObjectRecord(payload.error) ? payload.error : null;
+  const response = isObjectRecord(payload.response) ? payload.response : null;
+  const responseError = isObjectRecord(response?.error) ? response.error : null;
+  const value = error?.[key] ?? responseError?.[key] ?? payload[key];
+  if (typeof value === "string") {
+    return truncateLogValue(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  return null;
+};
+
+const readErrorPayloadLogFields = (
+  payload: Record<string, unknown>
+): Record<string, string | number | boolean | null> => ({
+  payloadType: String(payload.type),
+  errorType: readErrorField(payload, "type") ?? null,
+  errorCode: readErrorField(payload, "code") ?? null,
+  errorMessage: readErrorField(payload, "message") ?? null,
+  errorParam: readErrorField(payload, "param") ?? null,
+  errorStatus: readErrorField(payload, "status") ?? null,
+});
+
 const isTerminalPayload = (payload: Record<string, unknown>): boolean =>
   payload.type === "response.completed" ||
   payload.type === "response.done" ||
@@ -1016,8 +1049,8 @@ export const tryProxyCodexWebSocket = async (
   if (isErrorPayload(first)) {
     keepSocket = false;
     logStreamAnomaly("codex_websocket_error_payload", {
-      payloadType: String(first.type),
       responseStatus: finalResponseStatus,
+      ...readErrorPayloadLogFields(first),
     });
     finish();
     return Response.json(first, { status: readPayloadStatus(first) });
@@ -1055,8 +1088,8 @@ export const tryProxyCodexWebSocket = async (
       if (isErrorPayload(payload)) {
         keepSocket = false;
         logStreamAnomaly("codex_websocket_error_payload", {
-          payloadType: String(payload.type),
           responseStatus: finalResponseStatus,
+          ...readErrorPayloadLogFields(payload),
         });
       }
       controller.enqueue(encodeDoneSse());
