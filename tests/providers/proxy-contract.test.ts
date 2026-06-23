@@ -1361,6 +1361,79 @@ describe("proxy contract: codex", () => {
     expect(sentBodies).toHaveLength(2);
   });
 
+  test("preserves websocket rate limit status_code errors", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+    });
+
+    const responsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "Limit" }] },
+        ],
+      },
+      accountKey: "key-1:account-1",
+    });
+
+    await waitFor(() => sentBodies.length === 1);
+    const event = {
+      type: "error",
+      status_code: 429,
+      error: {
+        type: "usage_limit_reached",
+        message: "The usage limit has been reached",
+      },
+    };
+    sockets[0]?.dispatch("message", { data: JSON.stringify(event) });
+
+    const response = await responsePromise;
+    expect(response).not.toBeNull();
+    expect(response?.status).toBe(429);
+    expect(await response?.json()).toEqual(event);
+  });
+
+  test("maps websocket usage limit errors without status to 429", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+    });
+
+    const responsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5-codex",
+        stream: true,
+        input: [
+          { role: "user", content: [{ type: "input_text", text: "Limit" }] },
+        ],
+      },
+      accountKey: "key-1:account-1",
+    });
+
+    await waitFor(() => sentBodies.length === 1);
+    const event = {
+      type: "error",
+      error: {
+        type: "usage_limit_reached",
+        message: "The usage limit has been reached",
+      },
+    };
+    sockets[0]?.dispatch("message", { data: JSON.stringify(event) });
+
+    const response = await responsePromise;
+    expect(response).not.toBeNull();
+    expect(response?.status).toBe(429);
+    expect(await response?.json()).toEqual(event);
+  });
+
   test("decodes binary websocket messages", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies);

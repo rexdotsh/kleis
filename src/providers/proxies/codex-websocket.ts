@@ -40,6 +40,10 @@ type WebSocketConstructor = new (
   protocols?: string | string[] | { headers?: Record<string, string> }
 ) => WebSocketLike;
 
+type WebSocketCloseError = Error & {
+  webSocketCloseCode?: number;
+};
+
 type CodexWebSocketInput = {
   headers: Headers;
   bodyJson: Record<string, unknown> | null;
@@ -148,9 +152,22 @@ const extractWebSocketCloseError = (event: unknown): Error => {
   const reasonText =
     reason ??
     (code === WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE ? "message too big" : null);
-  return new Error(
+  const error = new Error(
     `WebSocket closed${codeText}${reasonText ? ` ${reasonText}` : ""}`.trim()
-  );
+  ) as WebSocketCloseError;
+  if (code !== null) {
+    error.webSocketCloseCode = code;
+  }
+  return error;
+};
+
+const readWebSocketCloseCode = (error: unknown): number | null => {
+  if (!(error instanceof Error)) {
+    return null;
+  }
+
+  const closeCode = (error as WebSocketCloseError).webSocketCloseCode;
+  return typeof closeCode === "number" ? closeCode : null;
 };
 
 const clearSessionFallback = (key: string): void => {
@@ -640,10 +657,24 @@ const decodeMessageData = async (data: unknown): Promise<string | null> => {
 };
 
 const readPayloadStatus = (payload: Record<string, unknown>): number => {
-  const status = payload.status;
-  return typeof status === "number" && status >= 400 && status <= 599
-    ? status
-    : 502;
+  const status = payload.status ?? payload.status_code;
+  if (typeof status === "number" && status >= 400 && status <= 599) {
+    return status;
+  }
+
+  const error = isObjectRecord(payload.error) ? payload.error : null;
+  const response = isObjectRecord(payload.response) ? payload.response : null;
+  const responseError = isObjectRecord(response?.error) ? response.error : null;
+  const errorType = error?.type ?? responseError?.type;
+  const errorCode = error?.code ?? responseError?.code;
+  if (
+    errorType === "usage_limit_reached" ||
+    errorCode === "rate_limit_exceeded"
+  ) {
+    return 429;
+  }
+
+  return 502;
 };
 
 const isErrorPayload = (payload: Record<string, unknown>): boolean =>
@@ -920,10 +951,19 @@ export const tryProxyCodexWebSocket = async (
         ...errorLogFields(error),
       });
     } else {
+      const webSocketCloseCode = readWebSocketCloseCode(error);
+      const immediateFallback =
+        stage === "socket_closed_before_terminal" &&
+        webSocketCloseCode !== null;
+      if (immediateFallback) {
+        markSessionFallback(cacheKey);
+      }
       const failureCount = recordSessionStreamFailure(cacheKey);
       logStreamAnomaly("codex_websocket_stream_failed", {
         stage,
         failureCount,
+        immediateFallback,
+        webSocketCloseCode,
         ...errorLogFields(error),
       });
     }
