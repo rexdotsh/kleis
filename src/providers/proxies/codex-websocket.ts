@@ -713,6 +713,21 @@ const readErrorPayloadLogFields = (
   errorStatus: readErrorField(payload, "status") ?? null,
 });
 
+const isExpectedUsageLimitPayload = (
+  payload: Record<string, unknown>
+): boolean => {
+  const errorType = readErrorField(payload, "type");
+  const errorCode = readErrorField(payload, "code");
+  return (
+    errorType === "usage_limit_reached" ||
+    errorType === "usage_not_included" ||
+    errorType === "rate_limit_exceeded" ||
+    errorCode === "usage_limit_reached" ||
+    errorCode === "usage_not_included" ||
+    errorCode === "rate_limit_exceeded"
+  );
+};
+
 const isTerminalPayload = (payload: Record<string, unknown>): boolean =>
   payload.type === "response.completed" ||
   payload.type === "response.done" ||
@@ -1088,10 +1103,12 @@ export const tryProxyCodexWebSocket = async (
 
   if (isErrorPayload(first)) {
     keepSocket = false;
-    logStreamAnomaly("codex_websocket_error_payload", {
-      responseStatus: finalResponseStatus,
-      ...readErrorPayloadLogFields(first),
-    });
+    if (!isExpectedUsageLimitPayload(first)) {
+      logStreamAnomaly("codex_websocket_error_payload", {
+        responseStatus: finalResponseStatus,
+        ...readErrorPayloadLogFields(first),
+      });
+    }
     finish();
     return Response.json(first, { status: readPayloadStatus(first) });
   }
@@ -1127,10 +1144,12 @@ export const tryProxyCodexWebSocket = async (
       }
       if (isErrorPayload(payload)) {
         keepSocket = false;
-        logStreamAnomaly("codex_websocket_error_payload", {
-          responseStatus: finalResponseStatus,
-          ...readErrorPayloadLogFields(payload),
-        });
+        if (!isExpectedUsageLimitPayload(payload)) {
+          logStreamAnomaly("codex_websocket_error_payload", {
+            responseStatus: finalResponseStatus,
+            ...readErrorPayloadLogFields(payload),
+          });
+        }
       }
       controller.enqueue(encodeDoneSse());
       finish();
