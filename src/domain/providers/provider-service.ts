@@ -5,8 +5,10 @@ import {
   findProviderAccountsByIds,
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
+  listProviderAccounts,
   recordProviderAccountRefreshFailure,
   releaseProviderAccountRefreshLock,
+  setPrimaryProviderAccount,
   tryAcquireProviderAccountRefreshLock,
   updateProviderAccountTokens,
   upsertProviderAccount,
@@ -333,6 +335,42 @@ const getPrimaryProviderAccount = async (
   }
 
   return refreshProviderAccount(database, account.id, now);
+};
+
+export const rotateProviderPrimaryAccount = async (
+  database: Database,
+  provider: Provider,
+  currentAccountId: string,
+  now: number
+): Promise<ProviderAccountRecord | null> => {
+  const accounts = (await listProviderAccounts(database))
+    .filter((account) => account.provider === provider)
+    .sort((left, right) => right.createdAt - left.createdAt);
+  const currentIndex = accounts.findIndex(
+    (account) => account.id === currentAccountId
+  );
+  if (currentIndex === -1 || !accounts[currentIndex]?.isPrimary) {
+    return null;
+  }
+
+  const candidates = [
+    ...accounts.slice(currentIndex + 1),
+    ...accounts.slice(0, currentIndex),
+  ];
+
+  for (const account of candidates) {
+    const refreshed =
+      account.expiresAt > now
+        ? account
+        : await refreshProviderAccount(database, account.id, now).catch(
+            () => null
+          );
+    if (refreshed) {
+      return setPrimaryProviderAccount(database, refreshed.id, Date.now());
+    }
+  }
+
+  return null;
 };
 
 export const getRoutableProviderAccount = async (

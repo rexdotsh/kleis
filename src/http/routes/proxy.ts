@@ -6,7 +6,10 @@ import {
   recordRequestUsage,
   recordTokenUsage,
 } from "../../db/repositories/request-usage";
-import { getRoutableProviderAccount } from "../../domain/providers/provider-service";
+import {
+  getRoutableProviderAccount,
+  rotateProviderPrimaryAccount,
+} from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import {
   deriveCodexSessionId,
@@ -377,6 +380,16 @@ const proxyRequest = async (
     });
     usageRecorder.recordImmediate(500);
     throw error;
+  }
+
+  if (
+    process.env.KLEIS_RATE_LIMIT_FAILOVER === "1" &&
+    upstreamResponse.status === 429 &&
+    !accountScopeIds?.length
+  ) {
+    runInBackground(
+      rotateProviderPrimaryAccount(db, route.provider, account.id, Date.now())
+    );
   }
 
   let responseToClient = upstreamResponse;
