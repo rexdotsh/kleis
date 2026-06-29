@@ -2287,6 +2287,38 @@ describe("proxy contract: claude", () => {
     expect(transformedText).toContain('"name":"shell"');
   });
 
+  test("logs claude streaming error event details", async () => {
+    const result = prepareClaudeUsageRequest();
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+
+    try {
+      const transformedResponse = await result.transformResponse(
+        createSseResponse([
+          {
+            type: "error",
+            error: {
+              type: "overloaded_error",
+              message: "Anthropic is overloaded",
+            },
+          },
+        ])
+      );
+      await transformedResponse.text();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(warnings).toHaveLength(1);
+    const warning = JSON.parse(warnings[0] ?? "{}") as Record<string, unknown>;
+    expect(warning.event).toBe("claude_sse_error_event");
+    expect(warning.errorType).toBe("overloaded_error");
+    expect(warning.errorMessage).toBe("Anthropic is overloaded");
+  });
+
   test("rewrites fragmented multiline SSE events at event boundaries", async () => {
     const result = prepareClaudeUsageRequest();
     const encoder = new TextEncoder();

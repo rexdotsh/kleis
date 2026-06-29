@@ -238,6 +238,37 @@ const parseSseEventData = (chunk: string): string | null => {
   return data;
 };
 
+const truncateLogValue = (value: string): string => {
+  const trimmed = value.trim();
+  return trimmed.length > 500 ? `${trimmed.slice(0, 500)}...` : trimmed;
+};
+
+const readClaudeErrorField = (
+  payload: Record<string, unknown>,
+  key: string
+): string | number | boolean | null => {
+  const error = isObjectRecord(payload.error) ? payload.error : null;
+  const value = error?.[key] ?? payload[key];
+  if (typeof value === "string") {
+    return truncateLogValue(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  return null;
+};
+
+const readClaudeErrorLogFields = (
+  payload: Record<string, unknown>
+): Record<string, string | number | boolean | null> => ({
+  payloadType: String(payload.type),
+  errorType: readClaudeErrorField(payload, "type"),
+  errorCode: readClaudeErrorField(payload, "code"),
+  errorMessage: readClaudeErrorField(payload, "message"),
+  errorParam: readClaudeErrorField(payload, "param"),
+  errorStatus: readClaudeErrorField(payload, "status"),
+});
+
 const rewriteSseDataLines = (chunk: string, payload: string): string => {
   const boundary = findSseEventBoundary(chunk);
   const eventTrailer =
@@ -306,7 +337,7 @@ const maybeTransformClaudeStreamResponse = (
 
   const logStreamAnomaly = (
     event: string,
-    fields: Record<string, string | number | boolean> = {},
+    fields: Record<string, string | number | boolean | null> = {},
     error?: unknown
   ): void => {
     logWarn(event, {
@@ -407,7 +438,10 @@ const maybeTransformClaudeStreamResponse = (
     }
 
     if (payload.type === "error") {
-      logStreamAnomaly("claude_sse_error_event");
+      logStreamAnomaly(
+        "claude_sse_error_event",
+        readClaudeErrorLogFields(payload)
+      );
       return;
     }
 
