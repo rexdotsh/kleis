@@ -29,19 +29,16 @@ const KLEIS_PROVIDER_NAME = "Kleis";
 const PROXY_API_KEY_ENV = "KLEIS_API_KEY";
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const MODELS_DEV_CACHE_TTL_MS = 5 * 60 * 1000;
-// https://github.com/anomalyco/opencode/blob/97300085437899af8af6c2bbf6ebc6bdab110174/packages/opencode/src/plugin/codex.ts#L361
+// Match OpenCode's ChatGPT OAuth model gate.
+// https://github.com/anomalyco/opencode/blob/9976269ab1accfc9f9dc98a4a688c516934de422/packages/opencode/src/plugin/openai/codex.ts
 const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
-  "gpt-5.1-codex",
-  "gpt-5.1-codex-max",
-  "gpt-5.1-codex-mini",
-  "gpt-5.2",
-  "gpt-5.2-codex",
-  "gpt-5.3-codex",
   "gpt-5.3-codex-spark",
   "gpt-5.4",
   "gpt-5.4-mini",
   "gpt-5.5",
 ]);
+const CODEX_DISALLOWED_OPENAI_MODEL_IDS = new Set(["gpt-5.5-pro"]);
+const CODEX_DYNAMIC_GPT_VERSION_THRESHOLD = 5.4;
 
 const CODEX_MODEL_LIMIT_OVERRIDES: Record<string, JsonObject> = {
   // gpt-5.5 temporarily has a restricted context window for Codex plans.
@@ -166,9 +163,15 @@ const isModelSupportedByProxyProvider = (
   }
 
   const normalizedModelId = modelId.toLowerCase();
+  if (CODEX_DISALLOWED_OPENAI_MODEL_IDS.has(normalizedModelId)) {
+    return false;
+  }
+
+  const gptVersion = normalizedModelId.match(/^gpt-(\d+\.\d+)/u)?.[1];
   return (
-    normalizedModelId.includes("codex") ||
-    CODEX_ALLOWED_OPENAI_MODEL_IDS.has(normalizedModelId)
+    CODEX_ALLOWED_OPENAI_MODEL_IDS.has(normalizedModelId) ||
+    (gptVersion !== undefined &&
+      Number.parseFloat(gptVersion) > CODEX_DYNAMIC_GPT_VERSION_THRESHOLD)
   );
 };
 
