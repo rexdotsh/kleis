@@ -37,6 +37,30 @@ const upstreamRegistry = {
           npm: "@ai-sdk/openai",
         },
       },
+      "gpt-5.5-pro": {
+        id: "gpt-5.5-pro",
+        name: "GPT-5.5 Pro",
+        provider: {
+          api: "https://api.openai.com/v1",
+          npm: "@ai-sdk/openai",
+        },
+      },
+      "gpt-5.6": {
+        id: "gpt-5.6",
+        name: "GPT-5.6",
+        provider: {
+          api: "https://api.openai.com/v1",
+          npm: "@ai-sdk/openai",
+        },
+      },
+      "gpt-5.6-luna": {
+        id: "gpt-5.6-luna",
+        name: "GPT-5.6 Luna",
+        provider: {
+          api: "https://api.openai.com/v1",
+          npm: "@ai-sdk/openai",
+        },
+      },
       "gpt-5": {
         id: "gpt-5",
         name: "GPT-5",
@@ -150,11 +174,13 @@ describe("models registry contract", () => {
       models?: Record<string, { id?: string; provider?: { api?: string } }>;
     };
     expect(kleis.env).toEqual(["KLEIS_API_KEY"]);
-    expect(kleis.models?.["gpt-5.3-codex"]?.id).toBe("gpt-5.3-codex");
     expect(kleis.models?.["gpt-5.3-codex-spark"]?.id).toBe(
       "gpt-5.3-codex-spark"
     );
     expect(kleis.models?.["gpt-5.5"]?.id).toBe("gpt-5.5");
+    expect(kleis.models?.["gpt-5.5-pro"]).toBeUndefined();
+    expect(kleis.models?.["gpt-5.6"]?.id).toBe("gpt-5.6");
+    expect(kleis.models?.["gpt-5.6-luna"]?.id).toBe("gpt-5.6-luna");
     expect(kleis.models?.["openai/gpt-5.3-codex"]).toBeUndefined();
     expect(kleis.models?.["github-copilot/gpt-5"]?.id).toBe(
       "github-copilot/gpt-5"
@@ -254,12 +280,15 @@ describe("models registry contract", () => {
       models?: Record<string, { id?: string }>;
     };
     expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(Object.keys(openai.models ?? {})).toHaveLength(5);
+    expect(Object.keys(openai.models ?? {})).toHaveLength(8);
 
     const kleis = registry.kleis as {
       models?: Record<string, { id?: string }>;
     };
-    expect(kleis.models?.["gpt-5.3-codex"]?.id).toBe("gpt-5.3-codex");
+    expect(kleis.models?.["gpt-5.3-codex"]).toBeUndefined();
+    expect(kleis.models?.["gpt-5.3-codex-spark"]?.id).toBe(
+      "gpt-5.3-codex-spark"
+    );
     expect(kleis.models?.["anthropic/claude-sonnet-4"]).toBeUndefined();
     expect(kleis.models?.["github-copilot/gpt-5"]).toBeUndefined();
   });
@@ -276,7 +305,7 @@ describe("models registry contract", () => {
       models?: Record<string, unknown>;
     };
     expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(Object.keys(openai.models ?? {})).toHaveLength(5);
+    expect(Object.keys(openai.models ?? {})).toHaveLength(8);
 
     expect(registry.anthropic).toBeDefined();
     expect(registry["github-copilot"]).toBeDefined();
@@ -296,7 +325,7 @@ describe("models registry contract", () => {
       configuredProviders: ["codex", "claude", "copilot"],
       apiKeyScopes: {
         providerScopes: ["codex", "copilot"],
-        modelScopes: ["openai/gpt-5.3-codex", "gpt-5-mini"],
+        modelScopes: ["openai/gpt-5.6", "gpt-5-mini"],
         accountProviderScopes: null,
       },
     });
@@ -317,6 +346,9 @@ describe("models registry contract", () => {
       "gpt-5.3-codex",
       "gpt-5.3-codex-spark",
       "gpt-5.5",
+      "gpt-5.5-pro",
+      "gpt-5.6",
+      "gpt-5.6-luna",
       "gpt-5",
       "text-embedding-3-large",
     ]);
@@ -334,7 +366,7 @@ describe("models registry contract", () => {
     };
     expect(Object.keys(kleis.models ?? {}).sort()).toEqual([
       "github-copilot/gpt-5-mini",
-      "gpt-5.3-codex",
+      "gpt-5.6",
     ]);
   });
 
@@ -370,9 +402,10 @@ describe("models registry contract", () => {
       models?: Record<string, unknown>;
     };
     expect(Object.keys(kleis.models ?? {})).toEqual([
-      "gpt-5.3-codex",
       "gpt-5.3-codex-spark",
       "gpt-5.5",
+      "gpt-5.6",
+      "gpt-5.6-luna",
     ]);
   });
 
