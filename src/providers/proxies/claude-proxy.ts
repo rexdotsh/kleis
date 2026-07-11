@@ -457,87 +457,79 @@ const maybeTransformClaudeStreamResponse = (
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller): void {
-      const keepAlive = createSseKeepAlive(controller, {
+      clearKeepAlive = createSseKeepAlive(controller, {
         provider: "claude",
         transport: "sse_transform",
         getElapsedMs: () => Date.now() - startedAt,
-      });
-      clearKeepAlive = keepAlive.clear;
-
-      const pump = async (): Promise<void> => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              if (closed) {
-                clearKeepAlive?.();
-                return;
-              }
-              buffer += decoder.decode();
-              if (buffer) {
-                controller.enqueue(
-                  encoder.encode(
-                    transformSseEventChunk(
-                      buffer,
-                      toolPrefix,
-                      readStreamUsage,
-                      readStreamAnomaly
-                    )
-                  )
-                );
-                buffer = "";
-              }
-              onTokenUsage?.(streamUsage);
-              closed = true;
+      }).clear;
+    },
+    async pull(controller): Promise<void> {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            if (closed) {
               clearKeepAlive?.();
-              controller.close();
               return;
             }
-
-            if (!value) {
-              continue;
-            }
-
-            bytes += value.byteLength;
-            chunks++;
-            lastChunkAt = Date.now();
-            buffer += decoder.decode(value, { stream: true });
-
-            let boundary = findSseEventBoundary(buffer);
-            while (boundary) {
-              const chunk = buffer.slice(0, boundary.index + boundary.length);
-              buffer = buffer.slice(boundary.index + boundary.length);
-              try {
-                controller.enqueue(
-                  encoder.encode(
-                    transformSseEventChunk(
-                      chunk,
-                      toolPrefix,
-                      readStreamUsage,
-                      readStreamAnomaly
-                    )
+            buffer += decoder.decode();
+            if (buffer) {
+              controller.enqueue(
+                encoder.encode(
+                  transformSseEventChunk(
+                    buffer,
+                    toolPrefix,
+                    readStreamUsage,
+                    readStreamAnomaly
                   )
-                );
-              } catch (error) {
-                logStreamAnomaly("claude_sse_enqueue_failed", {}, error);
-                throw error;
-              }
-              boundary = findSseEventBoundary(buffer);
+                )
+              );
+              buffer = "";
             }
-          }
-        } catch (error) {
-          if (closed) {
+            onTokenUsage?.(streamUsage);
+            closed = true;
             clearKeepAlive?.();
+            controller.close();
             return;
           }
-          closed = true;
-          clearKeepAlive?.();
-          logStreamAnomaly("claude_sse_stream_failed", {}, error);
-          controller.error(error);
-        }
-      };
 
-      pump().catch((error: unknown) => {
+          if (!value) {
+            continue;
+          }
+
+          bytes += value.byteLength;
+          chunks++;
+          lastChunkAt = Date.now();
+          buffer += decoder.decode(value, { stream: true });
+
+          let enqueued = false;
+          let boundary = findSseEventBoundary(buffer);
+          while (boundary) {
+            const chunk = buffer.slice(0, boundary.index + boundary.length);
+            buffer = buffer.slice(boundary.index + boundary.length);
+            try {
+              controller.enqueue(
+                encoder.encode(
+                  transformSseEventChunk(
+                    chunk,
+                    toolPrefix,
+                    readStreamUsage,
+                    readStreamAnomaly
+                  )
+                )
+              );
+              enqueued = true;
+            } catch (error) {
+              logStreamAnomaly("claude_sse_enqueue_failed", {}, error);
+              throw error;
+            }
+            boundary = findSseEventBoundary(buffer);
+          }
+          if (enqueued) {
+            return;
+          }
+        }
+      } catch (error) {
         if (closed) {
           clearKeepAlive?.();
           return;
@@ -546,7 +538,7 @@ const maybeTransformClaudeStreamResponse = (
         clearKeepAlive?.();
         logStreamAnomaly("claude_sse_stream_failed", {}, error);
         controller.error(error);
-      });
+      }
     },
     cancel(reason): Promise<void> {
       if (!closed) {

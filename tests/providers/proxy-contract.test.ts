@@ -22,6 +22,7 @@ import {
   tryProxyCodexWebSocket,
 } from "../../src/providers/proxies/codex-websocket";
 import { prepareCopilotProxyRequest } from "../../src/providers/proxies/copilot-proxy";
+import { createOpenAiSseUsagePassthrough } from "../../src/providers/proxies/openai-sse-passthrough";
 import type { TokenUsage } from "../../src/usage/token-usage";
 
 const originalWebSocket = globalThis.WebSocket;
@@ -583,6 +584,36 @@ describe("proxy contract: codex", () => {
       cacheReadTokens: 9,
       cacheWriteTokens: 0,
     });
+  });
+
+  test("applies downstream backpressure to OpenAI SSE reads", async () => {
+    const encoder = new TextEncoder();
+    let pulls = 0;
+    const source = new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller): void {
+            pulls++;
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ type: "response.output_text.delta", delta: pulls })}\n\n`
+              )
+            );
+          },
+        },
+        { highWaterMark: 0 }
+      ),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+
+    const transformed = createOpenAiSseUsagePassthrough({
+      response: source,
+      extractUsage: () => null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(pulls).toBe(1);
+    await transformed.body?.cancel();
   });
 
   test("uses websocket cached delta transport for streaming requests", async () => {
@@ -2293,6 +2324,34 @@ describe("proxy contract: claude", () => {
     expect(transformedResponse.headers.get("content-length")).toBeNull();
     const transformedText = await transformedResponse.text();
     expect(transformedText).toContain('"name":"shell"');
+  });
+
+  test("applies downstream backpressure to Claude SSE reads", async () => {
+    const result = prepareClaudeUsageRequest();
+    const encoder = new TextEncoder();
+    let pulls = 0;
+    const source = new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller): void {
+            pulls++;
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ type: "content_block_delta", index: pulls })}\n\n`
+              )
+            );
+          },
+        },
+        { highWaterMark: 0 }
+      ),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+
+    const transformed = await result.transformResponse(source);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(pulls).toBe(1);
+    await transformed.body?.cancel();
   });
 
   test("logs claude streaming error event details", async () => {
