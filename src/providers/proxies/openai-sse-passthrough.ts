@@ -9,6 +9,7 @@ type OpenAiSsePassthroughInput = {
   response: Response;
   extractUsage: SseUsageExtractor;
   onTokenUsage?: ((usage: TokenUsage) => void) | null | undefined;
+  keepAliveIntervalMs?: number;
 };
 
 const readSseTerminalAnomaly = (payload: unknown): string | null => {
@@ -104,6 +105,12 @@ export const createOpenAiSseUsagePassthrough = (
   const reader = input.response.body.getReader();
   const decoder = new TextDecoder();
   const startedAt = Date.now();
+  const contentType = (
+    input.response.headers.get("content-type") ?? ""
+  ).toLowerCase();
+  // Codex omits the content-type header on SSE streams; anything explicitly
+  // non-SSE (e.g. JSON error bodies) must not receive keepalive comments.
+  const isSseBody = !contentType || contentType.includes("text/event-stream");
   const usageState = {
     eventDataLines: [] as string[],
     latestUsage: null as TokenUsage | null,
@@ -137,6 +144,9 @@ export const createOpenAiSseUsagePassthrough = (
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller): void {
+      if (!isSseBody) {
+        return;
+      }
       clearKeepAlive = createSseKeepAlive(controller, {
         provider: "openai",
         transport: "sse",
@@ -144,6 +154,9 @@ export const createOpenAiSseUsagePassthrough = (
         onKeepAlive: () => {
           lastWriteAt = Date.now();
         },
+        ...(input.keepAliveIntervalMs
+          ? { intervalMs: input.keepAliveIntervalMs }
+          : {}),
       }).clear;
     },
     async pull(controller): Promise<void> {

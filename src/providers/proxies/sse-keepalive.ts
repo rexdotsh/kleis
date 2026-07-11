@@ -20,6 +20,7 @@ type SseKeepAliveInput = {
   transport: string;
   getElapsedMs: () => number;
   onKeepAlive?: () => void;
+  intervalMs?: number;
 };
 
 export const createSseKeepAlive = (
@@ -45,7 +46,7 @@ export const createSseKeepAlive = (
         ...errorLogFields(error),
       });
     }
-  }, SSE_KEEPALIVE_INTERVAL_MS);
+  }, input.intervalMs ?? SSE_KEEPALIVE_INTERVAL_MS);
 
   return {
     clear(): void {

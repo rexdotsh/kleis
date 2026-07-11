@@ -654,6 +654,43 @@ describe("proxy contract: codex", () => {
     });
   });
 
+  test("does not inject keepalives into non-SSE bodies", async () => {
+    const encoder = new TextEncoder();
+    const createSlowResponse = (
+      payload: string,
+      contentType: string | null
+    ): Response =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller): Promise<void> {
+            controller.enqueue(encoder.encode(payload.slice(0, 4)));
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            controller.enqueue(encoder.encode(payload.slice(4)));
+            controller.close();
+          },
+        }),
+        contentType ? { headers: { "content-type": contentType } } : {}
+      );
+
+    const jsonBody = JSON.stringify({ error: { message: "slow error" } });
+    const jsonResponse = createOpenAiSseUsagePassthrough({
+      response: createSlowResponse(jsonBody, "application/json"),
+      extractUsage: () => null,
+      keepAliveIntervalMs: 5,
+    });
+    expect(await jsonResponse.text()).toBe(jsonBody);
+
+    const sseBody = 'data: {"type":"response.completed"}\n\n';
+    const sseResponse = createOpenAiSseUsagePassthrough({
+      response: createSlowResponse(sseBody, null),
+      extractUsage: () => null,
+      keepAliveIntervalMs: 5,
+    });
+    const sseText = await sseResponse.text();
+    expect(sseText).toContain("response.completed");
+    expect(sseText).toContain(": kleis-keepalive");
+  });
+
   test("routes compaction turns over HTTP instead of WebSocket", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies);
