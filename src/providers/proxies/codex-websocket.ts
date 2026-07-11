@@ -23,7 +23,7 @@ const RESPONSE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_SOCKET_AGE_MS = 55 * 60 * 1000;
 const CONNECTION_LIMIT_RETRIES = 5;
 const STREAM_FAILURE_RETRIES = 5;
-const MAX_FALLBACK_SESSIONS = 1000;
+const MAX_TRACKED_FAILURE_SESSIONS = 1000;
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const textEncoder = new TextEncoder();
@@ -86,7 +86,7 @@ type CachedSocket = {
 };
 
 const socketCache = new Map<string, CachedSocket>();
-const fallbackSocketKeys = new Set<string>();
+const fallbackSocketKeys = new Map<string, ReturnType<typeof setTimeout>>();
 const streamFailureCounts = new Map<string, number>();
 const pendingSocketKeys = new Set<string>();
 const suppressContinuationStoreKeys = new Set<string>();
@@ -222,6 +222,10 @@ const readWebSocketCloseCode = (error: unknown): number | null => {
 };
 
 const clearSessionFallback = (key: string): void => {
+  const timer = fallbackSocketKeys.get(key);
+  if (timer) {
+    clearTimeout(timer);
+  }
   fallbackSocketKeys.delete(key);
 };
 
@@ -230,14 +234,11 @@ const markSessionFallback = (key: string | null): void => {
     return;
   }
   clearSessionFallback(key);
-  if (fallbackSocketKeys.size >= MAX_FALLBACK_SESSIONS) {
-    const oldestKey = fallbackSocketKeys.values().next().value;
-    if (typeof oldestKey === "string") {
-      fallbackSocketKeys.delete(oldestKey);
-      streamFailureCounts.delete(oldestKey);
-    }
-  }
-  fallbackSocketKeys.add(key);
+  const timer = setTimeout(() => {
+    fallbackSocketKeys.delete(key);
+    streamFailureCounts.delete(key);
+  }, SESSION_SOCKET_TTL_MS);
+  fallbackSocketKeys.set(key, timer);
 };
 
 const clearSessionStreamFailures = (key: string | null): void => {
@@ -252,6 +253,15 @@ const recordSessionStreamFailure = (key: string | null): number => {
     return 0;
   }
 
+  if (
+    !streamFailureCounts.has(key) &&
+    streamFailureCounts.size >= MAX_TRACKED_FAILURE_SESSIONS
+  ) {
+    const oldestKey = streamFailureCounts.keys().next().value;
+    if (typeof oldestKey === "string") {
+      streamFailureCounts.delete(oldestKey);
+    }
+  }
   const failures = (streamFailureCounts.get(key) ?? 0) + 1;
   streamFailureCounts.set(key, failures);
   if (failures > STREAM_FAILURE_RETRIES) {
@@ -469,6 +479,9 @@ export const closeCodexWebSocketSessions = (): void => {
     closeSocket(cached.socket);
   }
   socketCache.clear();
+  for (const timer of fallbackSocketKeys.values()) {
+    clearTimeout(timer);
+  }
   fallbackSocketKeys.clear();
   streamFailureCounts.clear();
 };
