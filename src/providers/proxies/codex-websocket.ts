@@ -1,5 +1,3 @@
-import { HttpsProxyAgent } from "https-proxy-agent";
-import { getProxyForUrl } from "proxy-from-env";
 import WebSocket from "ws";
 
 import {
@@ -45,7 +43,7 @@ type WebSocketLike = {
 
 type WebSocketConstructor = new (
   url: string,
-  options?: { headers?: Record<string, string>; agent?: unknown }
+  options?: { headers?: Record<string, string> }
 ) => WebSocketLike;
 
 let webSocketConstructorOverride: WebSocketConstructor | null = null;
@@ -352,13 +350,8 @@ const connectWebSocket = (
     };
 
     try {
-      const webSocketUrl = resolveCodexWebSocketUrl();
-      const proxyUrl = getProxyForUrl(
-        webSocketUrl.replace(/^wss:/u, "https:").replace(/^ws:/u, "http:")
-      );
-      socket = new WebSocketCtor(webSocketUrl, {
+      socket = new WebSocketCtor(resolveCodexWebSocketUrl(), {
         headers: headersToRecord(headers),
-        ...(proxyUrl ? { agent: new HttpsProxyAgent(proxyUrl) } : {}),
       });
     } catch (error) {
       reject(error instanceof Error ? error : new Error(String(error)));

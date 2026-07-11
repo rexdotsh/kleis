@@ -82,14 +82,12 @@ type MockCodexWebSocketResponse = {
 
 type MockWebSocketOptions = {
   headers?: Record<string, string>;
-  agent?: unknown;
 };
 
 const installCodexWebSocketMock = (
   responses: MockCodexWebSocketResponse[],
   sentBodies: unknown[],
-  constructorHeaders: Record<string, string>[] = [],
-  constructorOptions: MockWebSocketOptions[] = []
+  constructorHeaders: Record<string, string>[] = []
 ): void => {
   class MockWebSocket {
     static OPEN = 1;
@@ -100,9 +98,6 @@ const installCodexWebSocketMock = (
     >();
 
     constructor(_url: string, options?: MockWebSocketOptions) {
-      if (options) {
-        constructorOptions.push(options);
-      }
       if (options?.headers) {
         constructorHeaders.push(options.headers);
       }
@@ -718,59 +713,6 @@ describe("proxy contract: codex", () => {
     expect(response).toBeNull();
     expect(sockets).toHaveLength(0);
     expect(sentBodies).toHaveLength(0);
-  });
-
-  test("uses standard proxy environment for websocket connections", async () => {
-    const sentBodies: unknown[] = [];
-    const constructorOptions: MockWebSocketOptions[] = [];
-    installCodexWebSocketMock(
-      [{ id: "resp_proxy" }],
-      sentBodies,
-      [],
-      constructorOptions
-    );
-    const originalHttpsProxy = process.env.HTTPS_PROXY;
-    const originalHttpsProxyLower = process.env.https_proxy;
-    const originalNoProxy = process.env.NO_PROXY;
-    const originalNoProxyLower = process.env.no_proxy;
-    const restoreEnvironment = (
-      key: string,
-      value: string | undefined
-    ): void => {
-      if (value === undefined) {
-        Reflect.deleteProperty(process.env, key);
-        return;
-      }
-      process.env[key] = value;
-    };
-    process.env.HTTPS_PROXY = "http://127.0.0.1:3128";
-    process.env.https_proxy = "http://127.0.0.1:3128";
-    process.env.NO_PROXY = "";
-    process.env.no_proxy = "";
-
-    try {
-      const response = await tryProxyCodexWebSocket({
-        headers: new Headers({
-          authorization: "Bearer codex-access",
-          [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
-          "x-session-affinity": "proxy-session",
-        }),
-        bodyJson: {
-          model: "gpt-5.5",
-          stream: true,
-          input: [{ role: "user", content: "hello" }],
-        },
-        accountKey: "key-1:account-1",
-      });
-      await response?.text();
-    } finally {
-      restoreEnvironment("HTTPS_PROXY", originalHttpsProxy);
-      restoreEnvironment("https_proxy", originalHttpsProxyLower);
-      restoreEnvironment("NO_PROXY", originalNoProxy);
-      restoreEnvironment("no_proxy", originalNoProxyLower);
-    }
-
-    expect(constructorOptions[0]?.agent).toBeDefined();
   });
 
   test("terminates websocket when the downstream request aborts", async () => {
