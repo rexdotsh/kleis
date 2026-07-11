@@ -641,6 +641,9 @@ describe("proxy contract: codex", () => {
       onTokenUsage: capture.onTokenUsage,
     });
     expect(first).not.toBeNull();
+    expect(first?.headers.get("cache-control")).toBe("no-cache, no-transform");
+    expect(first?.headers.get("x-accel-buffering")).toBe("no");
+    expect(first?.headers.get("content-length")).toBeNull();
     await first?.text();
 
     const second = await tryProxyCodexWebSocket({
@@ -2283,6 +2286,11 @@ describe("proxy contract: claude", () => {
     );
     const transformedResponse = await result.transformResponse(sourceResponse);
 
+    expect(transformedResponse.headers.get("cache-control")).toBe(
+      "no-cache, no-transform"
+    );
+    expect(transformedResponse.headers.get("x-accel-buffering")).toBe("no");
+    expect(transformedResponse.headers.get("content-length")).toBeNull();
     const transformedText = await transformedResponse.text();
     expect(transformedText).toContain('"name":"shell"');
   });

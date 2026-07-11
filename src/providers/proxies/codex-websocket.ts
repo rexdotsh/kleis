@@ -11,6 +11,7 @@ import { readOpenAiResponsesUsageFromSseEvent } from "../../usage/token-usage";
 import type { TokenUsage } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
+import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
 const SESSION_SOCKET_TTL_MS = 5 * 60 * 1000;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -91,9 +92,7 @@ const headersToRecord = (headers: Headers): Record<string, string> => {
 
 const createSseResponse = (body: ReadableStream<Uint8Array>): Response =>
   new Response(body, {
-    headers: {
-      "content-type": "text/event-stream",
-    },
+    headers: createSseResponseHeaders(),
   });
 
 const readString = (value: unknown): string | null => {
@@ -828,6 +827,7 @@ export const tryProxyCodexWebSocket = async (
   let connectionLimitAttempts = 0;
   let retryingConnectionLimit = false;
   let responseIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  let clearStreamKeepAlive: (() => void) | null = null;
   let messageChain = Promise.resolve();
   let wake: (() => void) | null = null;
   const queue: Record<string, unknown>[] = [];
@@ -958,6 +958,7 @@ export const tryProxyCodexWebSocket = async (
     settled = true;
     keepSocket = false;
     failure = error;
+    clearStreamKeepAlive?.();
     cleanup();
     active.release(false);
     if (isUserCancelledStage(stage)) {
@@ -991,6 +992,7 @@ export const tryProxyCodexWebSocket = async (
       return;
     }
     settled = true;
+    clearStreamKeepAlive?.();
     cleanup();
     const canStoreContinuation = Boolean(
       active.cached &&
@@ -1157,6 +1159,13 @@ export const tryProxyCodexWebSocket = async (
   };
 
   const stream = new ReadableStream<Uint8Array>({
+    start(controller): void {
+      clearStreamKeepAlive = createSseKeepAlive(controller, {
+        provider: "codex",
+        transport: "websocket_sse",
+        getElapsedMs: () => Date.now() - startedAt,
+      }).clear;
+    },
     async pull(controller): Promise<void> {
       while (!queue.length && !settled) {
         await new Promise<void>((resolve) => {
@@ -1185,6 +1194,7 @@ export const tryProxyCodexWebSocket = async (
       controller.close();
     },
     cancel(): void {
+      clearStreamKeepAlive?.();
       if (settled) {
         return;
       }

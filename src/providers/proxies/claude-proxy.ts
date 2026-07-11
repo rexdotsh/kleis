@@ -15,7 +15,7 @@ import {
 } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
-import { createSseKeepAlive } from "./sse-keepalive";
+import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
 // Anthropic OAuth sessions reject the feedback repo path used in OpenCode's
 // prompt URL and the opening `<directories>` wrapper emitted by OpenCode's
@@ -561,7 +561,7 @@ const maybeTransformClaudeStreamResponse = (
   return new Response(stream, {
     status: response.status,
     statusText: response.statusText,
-    headers: response.headers,
+    headers: createSseResponseHeaders(response.headers),
   });
 };
 

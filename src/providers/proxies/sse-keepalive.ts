@@ -3,6 +3,16 @@ import { errorLogFields, logWarn } from "../../utils/log";
 const SSE_KEEPALIVE_INTERVAL_MS = 25_000;
 const SSE_KEEPALIVE_BYTES = new TextEncoder().encode(": kleis-keepalive\n\n");
 
+export const createSseResponseHeaders = (source?: HeadersInit): Headers => {
+  const headers = new Headers(source);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  headers.set("cache-control", "no-cache, no-transform");
+  headers.set("content-type", "text/event-stream");
+  headers.set("x-accel-buffering", "no");
+  return headers;
+};
+
 type SseKeepAliveInput = {
   provider: string;
   transport: string;

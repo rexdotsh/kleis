@@ -1,7 +1,7 @@
 import type { TokenUsage } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord } from "../../utils/object";
-import { createSseKeepAlive } from "./sse-keepalive";
+import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
 type SseUsageExtractor = (payload: unknown) => TokenUsage | null;
 
@@ -227,6 +227,6 @@ export const createOpenAiSseUsagePassthrough = (
   return new Response(stream, {
     status: input.response.status,
     statusText: input.response.statusText,
-    headers: input.response.headers,
+    headers: createSseResponseHeaders(input.response.headers),
   });
 };
