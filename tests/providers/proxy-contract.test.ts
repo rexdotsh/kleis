@@ -629,6 +629,31 @@ describe("proxy contract: codex", () => {
     await transformed.body?.cancel();
   });
 
+  test("preserves explicit JSON content type for streaming errors", async () => {
+    const body = JSON.stringify({
+      error: { message: "bad request", type: "invalid_request_error" },
+    });
+    const response = createOpenAiSseUsagePassthrough({
+      response: new Response(body, {
+        status: 400,
+        headers: {
+          "content-encoding": "gzip",
+          "content-length": String(body.length),
+          "content-type": "application/json",
+        },
+      }),
+      extractUsage: () => null,
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("content-type")).toBe("application/json");
+    expect(response.headers.has("content-length")).toBe(false);
+    expect(response.headers.has("content-encoding")).toBe(false);
+    expect(await response.json()).toEqual({
+      error: { message: "bad request", type: "invalid_request_error" },
+    });
+  });
+
   test("routes compaction turns over HTTP instead of WebSocket", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies);
@@ -671,6 +696,16 @@ describe("proxy contract: codex", () => {
     const originalHttpsProxyLower = process.env.https_proxy;
     const originalNoProxy = process.env.NO_PROXY;
     const originalNoProxyLower = process.env.no_proxy;
+    const restoreEnvironment = (
+      key: string,
+      value: string | undefined
+    ): void => {
+      if (value === undefined) {
+        Reflect.deleteProperty(process.env, key);
+        return;
+      }
+      process.env[key] = value;
+    };
     process.env.HTTPS_PROXY = "http://127.0.0.1:3128";
     process.env.https_proxy = "http://127.0.0.1:3128";
     process.env.NO_PROXY = "";
@@ -692,10 +727,10 @@ describe("proxy contract: codex", () => {
       });
       await response?.text();
     } finally {
-      process.env.HTTPS_PROXY = originalHttpsProxy;
-      process.env.https_proxy = originalHttpsProxyLower;
-      process.env.NO_PROXY = originalNoProxy;
-      process.env.no_proxy = originalNoProxyLower;
+      restoreEnvironment("HTTPS_PROXY", originalHttpsProxy);
+      restoreEnvironment("https_proxy", originalHttpsProxyLower);
+      restoreEnvironment("NO_PROXY", originalNoProxy);
+      restoreEnvironment("no_proxy", originalNoProxyLower);
     }
 
     expect(constructorOptions[0]?.agent).toBeDefined();

@@ -8,7 +8,9 @@ export const createSseResponseHeaders = (source?: HeadersInit): Headers => {
   headers.delete("content-encoding");
   headers.delete("content-length");
   headers.set("cache-control", "no-cache, no-transform");
-  headers.set("content-type", "text/event-stream");
+  if (!headers.has("content-type")) {
+    headers.set("content-type", "text/event-stream");
+  }
   headers.set("x-accel-buffering", "no");
   return headers;
 };
