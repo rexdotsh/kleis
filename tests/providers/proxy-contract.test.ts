@@ -1721,6 +1721,68 @@ describe("proxy contract: codex", () => {
     expect(sockets).toHaveLength(6);
   });
 
+  test("isolates close-before-terminal fallback to one session", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "failed-session",
+    });
+    const bodyJson = {
+      model: "gpt-5.5",
+      stream: true,
+      input: [{ role: "user", content: "hello" }],
+    };
+
+    const failedResponsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sentBodies.length === 1);
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_failed" },
+      }),
+    });
+    const failedResponse = await failedResponsePromise;
+    const failedText = failedResponse?.text();
+    sockets[0]?.dispatch("close", { code: 1006, reason: "Connection ended" });
+    const streamFailed = await failedText?.then(
+      () => false,
+      () => true
+    );
+    expect(streamFailed).toBe(true);
+
+    const sameSession = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    expect(sameSession).toBeNull();
+    expect(sockets).toHaveLength(1);
+
+    headers.set("x-session-affinity", "healthy-session");
+    const healthyResponsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sentBodies.length === 2);
+    sockets[1]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_healthy", status: "completed" },
+      }),
+    });
+    const healthyResponse = await healthyResponsePromise;
+
+    expect(await healthyResponse?.text()).toContain("response.completed");
+    expect(sockets).toHaveLength(2);
+  });
+
   test("treats same-session websocket connect races as busy", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies, {

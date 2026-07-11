@@ -23,6 +23,7 @@ const RESPONSE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_SOCKET_AGE_MS = 55 * 60 * 1000;
 const CONNECTION_LIMIT_RETRIES = 5;
 const STREAM_FAILURE_RETRIES = 5;
+const MAX_FALLBACK_SESSIONS = 1000;
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const textEncoder = new TextEncoder();
@@ -85,7 +86,7 @@ type CachedSocket = {
 };
 
 const socketCache = new Map<string, CachedSocket>();
-const fallbackSocketKeys = new Map<string, ReturnType<typeof setTimeout>>();
+const fallbackSocketKeys = new Set<string>();
 const streamFailureCounts = new Map<string, number>();
 const pendingSocketKeys = new Set<string>();
 const suppressContinuationStoreKeys = new Set<string>();
@@ -221,11 +222,7 @@ const readWebSocketCloseCode = (error: unknown): number | null => {
 };
 
 const clearSessionFallback = (key: string): void => {
-  const timer = fallbackSocketKeys.get(key);
-  if (timer) {
-    clearTimeout(timer);
-    fallbackSocketKeys.delete(key);
-  }
+  fallbackSocketKeys.delete(key);
 };
 
 const markSessionFallback = (key: string | null): void => {
@@ -233,11 +230,14 @@ const markSessionFallback = (key: string | null): void => {
     return;
   }
   clearSessionFallback(key);
-  const timer = setTimeout(() => {
-    fallbackSocketKeys.delete(key);
-    streamFailureCounts.delete(key);
-  }, SESSION_SOCKET_TTL_MS);
-  fallbackSocketKeys.set(key, timer);
+  if (fallbackSocketKeys.size >= MAX_FALLBACK_SESSIONS) {
+    const oldestKey = fallbackSocketKeys.values().next().value;
+    if (typeof oldestKey === "string") {
+      fallbackSocketKeys.delete(oldestKey);
+      streamFailureCounts.delete(oldestKey);
+    }
+  }
+  fallbackSocketKeys.add(key);
 };
 
 const clearSessionStreamFailures = (key: string | null): void => {
@@ -272,7 +272,6 @@ const scheduleExpiry = (key: string, cached: CachedSocket): void => {
 
     closeSocket(cached.socket);
     socketCache.delete(key);
-    clearSessionFallback(key);
     clearSessionStreamFailures(key);
   }, SESSION_SOCKET_TTL_MS);
 };
@@ -470,9 +469,6 @@ export const closeCodexWebSocketSessions = (): void => {
     closeSocket(cached.socket);
   }
   socketCache.clear();
-  for (const timer of fallbackSocketKeys.values()) {
-    clearTimeout(timer);
-  }
   fallbackSocketKeys.clear();
   streamFailureCounts.clear();
 };
