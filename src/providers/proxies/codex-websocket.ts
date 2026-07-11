@@ -1,3 +1,5 @@
+import WebSocket from "ws";
+
 import {
   CODEX_RESPONSE_ENDPOINT,
   CODEX_WEBSOCKET_BETA_HEADER,
@@ -41,6 +43,14 @@ type WebSocketConstructor = new (
   url: string,
   protocols?: string | string[] | { headers?: Record<string, string> }
 ) => WebSocketLike;
+
+let webSocketConstructorOverride: WebSocketConstructor | null = null;
+
+export const setCodexWebSocketConstructorForTests = (
+  webSocketConstructor: WebSocketConstructor | null
+): void => {
+  webSocketConstructorOverride = webSocketConstructor;
+};
 
 type WebSocketCloseError = Error & {
   webSocketCloseCode?: number;
@@ -253,10 +263,10 @@ const scheduleExpiry = (key: string, cached: CachedSocket): void => {
 };
 
 const getWebSocketConstructor = (): WebSocketConstructor | null => {
-  const websocket = globalThis.WebSocket;
-  return typeof websocket === "function"
-    ? (websocket as unknown as WebSocketConstructor)
-    : null;
+  if (webSocketConstructorOverride) {
+    return webSocketConstructorOverride;
+  }
+  return WebSocket as unknown as WebSocketConstructor;
 };
 
 const connectWebSocket = (

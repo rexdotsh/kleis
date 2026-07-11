@@ -19,17 +19,16 @@ import { prepareClaudeProxyRequest } from "../../src/providers/proxies/claude-pr
 import { prepareCodexProxyRequest } from "../../src/providers/proxies/codex-proxy";
 import {
   closeCodexWebSocketSessions,
+  setCodexWebSocketConstructorForTests,
   tryProxyCodexWebSocket,
 } from "../../src/providers/proxies/codex-websocket";
 import { prepareCopilotProxyRequest } from "../../src/providers/proxies/copilot-proxy";
 import { createOpenAiSseUsagePassthrough } from "../../src/providers/proxies/openai-sse-passthrough";
 import type { TokenUsage } from "../../src/usage/token-usage";
 
-const originalWebSocket = globalThis.WebSocket;
-
 afterEach(() => {
   closeCodexWebSocketSessions();
-  globalThis.WebSocket = originalWebSocket;
+  setCodexWebSocketConstructorForTests(null);
 });
 
 const createUsageCapture = () => {
@@ -168,7 +167,7 @@ const installCodexWebSocketMock = (
     }
   }
 
-  globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+  setCodexWebSocketConstructorForTests(MockWebSocket);
 };
 
 type ManualCodexWebSocket = {
@@ -224,7 +223,7 @@ const installManualCodexWebSocketMock = (
     }
   }
 
-  globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+  setCodexWebSocketConstructorForTests(MockWebSocket);
   return sockets;
 };
 
