@@ -21,6 +21,8 @@ const CONNECTION_LIMIT_RETRIES = 5;
 const STREAM_FAILURE_RETRIES = 5;
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
+const DEFAULT_MAX_WEBSOCKET_REQUEST_BYTES = 8 * 1024 * 1024;
+const textEncoder = new TextEncoder();
 
 type WebSocketEventType = "open" | "message" | "error" | "close";
 type WebSocketListener = (event: unknown) => void;
@@ -53,6 +55,7 @@ type CodexWebSocketInput = {
   upstreamSessionId?: string | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
   signal?: AbortSignal;
+  maxRequestBytes?: number;
 };
 
 type ContinuationState = {
@@ -102,6 +105,39 @@ const readString = (value: unknown): string | null => {
 
   const trimmed = value.trim();
   return trimmed || null;
+};
+
+const resolveMaxRequestBytes = (): number => {
+  const configured = Number(process.env.CODEX_WEBSOCKET_MAX_REQUEST_BYTES);
+  if (Number.isFinite(configured) && configured >= 0) {
+    return configured === 0 ? Number.POSITIVE_INFINITY : configured;
+  }
+  return DEFAULT_MAX_WEBSOCKET_REQUEST_BYTES;
+};
+
+const isCompactionRequest = (
+  body: Record<string, unknown>,
+  headers: Headers
+): boolean => {
+  const clientMetadata = isObjectRecord(body.client_metadata)
+    ? body.client_metadata
+    : null;
+  const rawMetadata =
+    readString(clientMetadata?.["x-codex-turn-metadata"]) ??
+    readString(headers.get("x-codex-turn-metadata"));
+  if (!rawMetadata) {
+    return false;
+  }
+
+  try {
+    const metadata = JSON.parse(rawMetadata) as unknown;
+    return (
+      isObjectRecord(metadata) &&
+      readString(metadata.request_kind)?.toLowerCase() === "compaction"
+    );
+  } catch {
+    return false;
+  }
 };
 
 const isSocketOpen = (socket: WebSocketLike): boolean =>
@@ -631,10 +667,9 @@ const buildRequestBody = (
 };
 
 const encodeSse = (payload: unknown): Uint8Array =>
-  new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`);
+  textEncoder.encode(`data: ${JSON.stringify(payload)}\n\n`);
 
-const encodeDoneSse = (): Uint8Array =>
-  new TextEncoder().encode("data: [DONE]\n\n");
+const encodeDoneSse = (): Uint8Array => textEncoder.encode("data: [DONE]\n\n");
 
 const decodeMessageData = async (data: unknown): Promise<string | null> => {
   if (typeof data === "string") {
@@ -792,6 +827,11 @@ export const tryProxyCodexWebSocket = async (
   const cacheKey = sessionId ? `${input.accountKey}:${sessionId}` : null;
   const headers = buildWebSocketHeaders(input.headers, requestId);
 
+  if (isCompactionRequest(body, input.headers)) {
+    markSessionFallback(cacheKey);
+    return null;
+  }
+
   if (cacheKey && fallbackSocketKeys.has(cacheKey)) {
     return null;
   }
@@ -801,9 +841,20 @@ export const tryProxyCodexWebSocket = async (
     sessionId ? { ...body, prompt_cache_key: requestId } : body
   );
   let requestBody: Record<string, unknown>;
+  let requestPayloadText: string;
   try {
     acquired = await acquireSocket(headers, cacheKey, input.signal);
     requestBody = buildRequestBody(fullBody, acquired.cached);
+    requestPayloadText = JSON.stringify({
+      ...requestBody,
+      type: "response.create",
+    });
+    const maxRequestBytes = input.maxRequestBytes ?? resolveMaxRequestBytes();
+    if (textEncoder.encode(requestPayloadText).byteLength > maxRequestBytes) {
+      acquired.release(false);
+      markSessionFallback(cacheKey);
+      return null;
+    }
   } catch (error) {
     acquired?.release(false);
     if (!input.signal?.aborted && !isSessionConcurrencyError(error)) {
@@ -906,9 +957,7 @@ export const tryProxyCodexWebSocket = async (
       return;
     }
     try {
-      active.socket.send(
-        JSON.stringify({ ...requestBody, type: "response.create" })
-      );
+      active.socket.send(requestPayloadText);
       resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
     } catch (error) {
       fail("send_failed", error);

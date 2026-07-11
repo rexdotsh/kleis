@@ -616,6 +616,60 @@ describe("proxy contract: codex", () => {
     await transformed.body?.cancel();
   });
 
+  test("routes compaction turns over HTTP instead of WebSocket", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "compaction-session",
+    });
+
+    const response = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5.5",
+        stream: true,
+        client_metadata: {
+          "x-codex-turn-metadata": JSON.stringify({
+            request_kind: "compaction",
+          }),
+        },
+        input: [{ role: "user", content: "compact" }],
+      },
+      accountKey: "key-1:account-1",
+    });
+
+    expect(response).toBeNull();
+    expect(sockets).toHaveLength(0);
+    expect(sentBodies).toHaveLength(0);
+  });
+
+  test("routes oversized response.create frames over HTTP", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "oversized-session",
+    });
+
+    const response = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5.5",
+        stream: true,
+        input: [{ role: "user", content: "x".repeat(256) }],
+      },
+      accountKey: "key-1:account-1",
+      maxRequestBytes: 128,
+    });
+
+    expect(response).toBeNull();
+    expect(sockets).toHaveLength(1);
+    expect(sentBodies).toHaveLength(0);
+  });
+
   test("uses websocket cached delta transport for streaming requests", async () => {
     const firstAssistantItem = {
       type: "message",
