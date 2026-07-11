@@ -1,3 +1,5 @@
+import WebSocket from "ws";
+
 import {
   CODEX_RESPONSE_ENDPOINT,
   CODEX_WEBSOCKET_BETA_HEADER,
@@ -11,6 +13,7 @@ import { readOpenAiResponsesUsageFromSseEvent } from "../../usage/token-usage";
 import type { TokenUsage } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
+import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
 const SESSION_SOCKET_TTL_MS = 5 * 60 * 1000;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -18,8 +21,10 @@ const RESPONSE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_SOCKET_AGE_MS = 55 * 60 * 1000;
 const CONNECTION_LIMIT_RETRIES = 5;
 const STREAM_FAILURE_RETRIES = 5;
+const MAX_TRACKED_FAILURE_SESSIONS = 1000;
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
+const textEncoder = new TextEncoder();
 
 type WebSocketEventType = "open" | "message" | "error" | "close";
 type WebSocketListener = (event: unknown) => void;
@@ -27,7 +32,8 @@ type WebSocketListener = (event: unknown) => void;
 type WebSocketLike = {
   readonly readyState?: number;
   close(code?: number, reason?: string): void;
-  send(data: string): void;
+  terminate?: () => void;
+  send(data: string, callback?: (error?: Error) => void): void;
   addEventListener(type: WebSocketEventType, listener: WebSocketListener): void;
   removeEventListener(
     type: WebSocketEventType,
@@ -37,8 +43,16 @@ type WebSocketLike = {
 
 type WebSocketConstructor = new (
   url: string,
-  protocols?: string | string[] | { headers?: Record<string, string> }
+  options?: { headers?: Record<string, string> }
 ) => WebSocketLike;
+
+let webSocketConstructorOverride: WebSocketConstructor | null = null;
+
+export const setCodexWebSocketConstructorForTests = (
+  webSocketConstructor: WebSocketConstructor | null
+): void => {
+  webSocketConstructorOverride = webSocketConstructor;
+};
 
 type WebSocketCloseError = Error & {
   webSocketCloseCode?: number;
@@ -91,9 +105,7 @@ const headersToRecord = (headers: Headers): Record<string, string> => {
 
 const createSseResponse = (body: ReadableStream<Uint8Array>): Response =>
   new Response(body, {
-    headers: {
-      "content-type": "text/event-stream",
-    },
+    headers: createSseResponseHeaders(),
   });
 
 const readString = (value: unknown): string | null => {
@@ -103,6 +115,31 @@ const readString = (value: unknown): string | null => {
 
   const trimmed = value.trim();
   return trimmed || null;
+};
+
+const isCompactionRequest = (
+  body: Record<string, unknown>,
+  headers: Headers
+): boolean => {
+  const clientMetadata = isObjectRecord(body.client_metadata)
+    ? body.client_metadata
+    : null;
+  const rawMetadata =
+    readString(clientMetadata?.["x-codex-turn-metadata"]) ??
+    readString(headers.get("x-codex-turn-metadata"));
+  if (!rawMetadata) {
+    return false;
+  }
+
+  try {
+    const metadata = JSON.parse(rawMetadata) as unknown;
+    return (
+      isObjectRecord(metadata) &&
+      readString(metadata.request_kind)?.toLowerCase() === "compaction"
+    );
+  } catch {
+    return false;
+  }
 };
 
 const isSocketOpen = (socket: WebSocketLike): boolean =>
@@ -116,6 +153,18 @@ const closeSocket = (socket: WebSocketLike): void => {
     socket.close(1000, "done");
   } catch {
     // Ignore close failures from already-closed sockets.
+  }
+};
+
+const terminateSocket = (socket: WebSocketLike): void => {
+  try {
+    if (socket.terminate) {
+      socket.terminate();
+      return;
+    }
+    socket.close(1001, "invalid");
+  } catch {
+    // Ignore termination failures from already-closed sockets.
   }
 };
 
@@ -174,8 +223,8 @@ const clearSessionFallback = (key: string): void => {
   const timer = fallbackSocketKeys.get(key);
   if (timer) {
     clearTimeout(timer);
-    fallbackSocketKeys.delete(key);
   }
+  fallbackSocketKeys.delete(key);
 };
 
 const markSessionFallback = (key: string | null): void => {
@@ -202,6 +251,15 @@ const recordSessionStreamFailure = (key: string | null): number => {
     return 0;
   }
 
+  if (
+    !streamFailureCounts.has(key) &&
+    streamFailureCounts.size >= MAX_TRACKED_FAILURE_SESSIONS
+  ) {
+    const oldestKey = streamFailureCounts.keys().next().value;
+    if (typeof oldestKey === "string") {
+      streamFailureCounts.delete(oldestKey);
+    }
+  }
   const failures = (streamFailureCounts.get(key) ?? 0) + 1;
   streamFailureCounts.set(key, failures);
   if (failures > STREAM_FAILURE_RETRIES) {
@@ -222,16 +280,15 @@ const scheduleExpiry = (key: string, cached: CachedSocket): void => {
 
     closeSocket(cached.socket);
     socketCache.delete(key);
-    clearSessionFallback(key);
     clearSessionStreamFailures(key);
   }, SESSION_SOCKET_TTL_MS);
 };
 
 const getWebSocketConstructor = (): WebSocketConstructor | null => {
-  const websocket = globalThis.WebSocket;
-  return typeof websocket === "function"
-    ? (websocket as unknown as WebSocketConstructor)
-    : null;
+  if (webSocketConstructorOverride) {
+    return webSocketConstructorOverride;
+  }
+  return WebSocket as unknown as WebSocketConstructor;
 };
 
 const connectWebSocket = (
@@ -282,14 +339,14 @@ const connectWebSocket = (
     const onClose = (event: unknown): void =>
       fail(extractWebSocketCloseError(event));
     const onAbort = (): void => {
-      closeSocket(socket);
       fail(new Error("Request was aborted"));
+      terminateSocket(socket);
     };
     const onTimeout = (): void => {
-      closeSocket(socket);
       fail(
         new Error(`WebSocket connect timeout after ${CONNECT_TIMEOUT_MS}ms`)
       );
+      terminateSocket(socket);
     };
 
     try {
@@ -323,7 +380,13 @@ const acquireSocket = async (
     const acquired = {
       socket,
       cached: null,
-      release: (): void => closeSocket(acquired.socket),
+      release(keep: boolean): void {
+        if (keep) {
+          closeSocket(acquired.socket);
+          return;
+        }
+        terminateSocket(acquired.socket);
+      },
     };
     return acquired;
   }
@@ -348,7 +411,7 @@ const acquireSocket = async (
         cached: existing,
         release(keep: boolean): void {
           if (!(keep && isSocketOpen(existing.socket))) {
-            closeSocket(existing.socket);
+            terminateSocket(existing.socket);
             socketCache.delete(cacheKey);
             return;
           }
@@ -391,7 +454,7 @@ const acquireSocket = async (
     cached,
     release(keep: boolean): void {
       if (!(keep && isSocketOpen(cached.socket))) {
-        closeSocket(cached.socket);
+        terminateSocket(cached.socket);
         socketCache.delete(cacheKey);
         return;
       }
@@ -632,10 +695,9 @@ const buildRequestBody = (
 };
 
 const encodeSse = (payload: unknown): Uint8Array =>
-  new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`);
+  textEncoder.encode(`data: ${JSON.stringify(payload)}\n\n`);
 
-const encodeDoneSse = (): Uint8Array =>
-  new TextEncoder().encode("data: [DONE]\n\n");
+const encodeDoneSse = (): Uint8Array => textEncoder.encode("data: [DONE]\n\n");
 
 const decodeMessageData = async (data: unknown): Promise<string | null> => {
   if (typeof data === "string") {
@@ -793,6 +855,11 @@ export const tryProxyCodexWebSocket = async (
   const cacheKey = sessionId ? `${input.accountKey}:${sessionId}` : null;
   const headers = buildWebSocketHeaders(input.headers, requestId);
 
+  if (isCompactionRequest(body, input.headers)) {
+    markSessionFallback(cacheKey);
+    return null;
+  }
+
   if (cacheKey && fallbackSocketKeys.has(cacheKey)) {
     return null;
   }
@@ -802,9 +869,16 @@ export const tryProxyCodexWebSocket = async (
     sessionId ? { ...body, prompt_cache_key: requestId } : body
   );
   let requestBody: Record<string, unknown>;
+  let requestPayloadText: string;
+  let requestBytes: number;
   try {
     acquired = await acquireSocket(headers, cacheKey, input.signal);
     requestBody = buildRequestBody(fullBody, acquired.cached);
+    requestPayloadText = JSON.stringify({
+      ...requestBody,
+      type: "response.create",
+    });
+    requestBytes = textEncoder.encode(requestPayloadText).byteLength;
   } catch (error) {
     acquired?.release(false);
     if (!input.signal?.aborted && !isSessionConcurrencyError(error)) {
@@ -828,6 +902,11 @@ export const tryProxyCodexWebSocket = async (
   let connectionLimitAttempts = 0;
   let retryingConnectionLimit = false;
   let responseIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  let clearStreamKeepAlive: (() => void) | null = null;
+  let payloadCount = 0;
+  let lastUpstreamEventAt = startedAt;
+  let lastDownstreamWriteAt = startedAt;
+  let socketEpoch = 0;
   let messageChain = Promise.resolve();
   let wake: (() => void) | null = null;
   const queue: Record<string, unknown>[] = [];
@@ -842,6 +921,10 @@ export const tryProxyCodexWebSocket = async (
       terminal,
       queueLength: queue.length,
       connectionLimitAttempts,
+      requestBytes,
+      payloadCount,
+      upstreamIdleMs: Date.now() - lastUpstreamEventAt,
+      downstreamIdleMs: Date.now() - lastDownstreamWriteAt,
       ...fields,
     });
   };
@@ -906,10 +989,20 @@ export const tryProxyCodexWebSocket = async (
       return;
     }
     try {
-      active.socket.send(
-        JSON.stringify({ ...requestBody, type: "response.create" })
-      );
-      resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
+      resetResponseIdleTimer("idle_timeout_sending_websocket_request");
+      const sendingSocket = active.socket;
+      sendingSocket.send(requestPayloadText, (error?: Error) => {
+        // Terminated sockets flush pending send callbacks with an error;
+        // ignore callbacks from sockets replaced by a connection retry.
+        if (settled || sendingSocket !== active.socket) {
+          return;
+        }
+        if (error) {
+          fail("send_failed", error);
+          return;
+        }
+        resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
+      });
     } catch (error) {
       fail("send_failed", error);
     }
@@ -929,14 +1022,23 @@ export const tryProxyCodexWebSocket = async (
 
     connectionLimitAttempts++;
     retryingConnectionLimit = true;
+    // Invalidate events already dispatched (or still queued) from the socket
+    // being replaced; they must not fail the retried stream.
+    socketEpoch++;
     clearResponseIdleTimer();
     active.socket.removeEventListener("message", onMessage);
     active.socket.removeEventListener("error", onError);
     active.socket.removeEventListener("close", onClose);
-    closeSocket(active.socket);
+    terminateSocket(active.socket);
 
     try {
       const nextSocket = await connectWebSocket(headers, input.signal);
+      if (settled) {
+        // A downstream cancel or abort raced the retry; do not leak the
+        // freshly opened socket.
+        terminateSocket(nextSocket);
+        return;
+      }
       active.socket = nextSocket;
       if (active.cached) {
         active.cached.socket = nextSocket;
@@ -958,14 +1060,10 @@ export const tryProxyCodexWebSocket = async (
     settled = true;
     keepSocket = false;
     failure = error;
+    clearStreamKeepAlive?.();
     cleanup();
     active.release(false);
-    if (isUserCancelledStage(stage)) {
-      logStreamAnomaly("codex_websocket_stream_cancelled", {
-        stage,
-        ...errorLogFields(error),
-      });
-    } else {
+    if (!isUserCancelledStage(stage)) {
       const webSocketCloseCode = readWebSocketCloseCode(error);
       const immediateFallback =
         stage === "socket_closed_before_terminal" &&
@@ -991,6 +1089,7 @@ export const tryProxyCodexWebSocket = async (
       return;
     }
     settled = true;
+    clearStreamKeepAlive?.();
     cleanup();
     const canStoreContinuation = Boolean(
       active.cached &&
@@ -1021,13 +1120,30 @@ export const tryProxyCodexWebSocket = async (
   const onAbort = (): void =>
     fail("request_aborted", new Error("Request was aborted"));
 
-  const onError = (event: unknown): void =>
-    fail("socket_error", extractWebSocketError(event));
-
-  const onClose = (event: unknown): void => {
+  const onError = (event: unknown): void => {
+    const eventEpoch = socketEpoch;
+    // Serialize behind in-flight message handling so an error event cannot
+    // clobber a terminal payload that is still being processed.
     messageChain = messageChain
       .then(() => {
-        if (terminal) {
+        if (terminal || eventEpoch !== socketEpoch) {
+          wakePull();
+          return;
+        }
+        fail("socket_error", extractWebSocketError(event));
+      })
+      .catch((error: unknown) => {
+        fail("message_parse_failed", error);
+      });
+  };
+
+  const onClose = (event: unknown): void => {
+    const eventEpoch = socketEpoch;
+    messageChain = messageChain
+      .then(() => {
+        if (terminal || eventEpoch !== socketEpoch) {
+          // A close from a socket replaced by a connection-limit retry must
+          // not fail the stream or mark session fallback.
           wakePull();
           return;
         }
@@ -1057,6 +1173,8 @@ export const tryProxyCodexWebSocket = async (
       return;
     }
     resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
+    payloadCount++;
+    lastUpstreamEventAt = Date.now();
 
     if (!emittedPayload && isConnectionLimitPayload(payload)) {
       retryConnectionLimit().catch((error: unknown) => {
@@ -1130,6 +1248,7 @@ export const tryProxyCodexWebSocket = async (
     }
 
     controller.enqueue(encodeSse(payload));
+    lastDownstreamWriteAt = Date.now();
     if (isTerminalPayload(payload)) {
       terminal = true;
       finalEventType = payload.type;
@@ -1152,11 +1271,22 @@ export const tryProxyCodexWebSocket = async (
         }
       }
       controller.enqueue(encodeDoneSse());
+      lastDownstreamWriteAt = Date.now();
       finish();
     }
   };
 
   const stream = new ReadableStream<Uint8Array>({
+    start(controller): void {
+      clearStreamKeepAlive = createSseKeepAlive(controller, {
+        provider: "codex",
+        transport: "websocket_sse",
+        getElapsedMs: () => Date.now() - startedAt,
+        onKeepAlive: () => {
+          lastDownstreamWriteAt = Date.now();
+        },
+      }).clear;
+    },
     async pull(controller): Promise<void> {
       while (!queue.length && !settled) {
         await new Promise<void>((resolve) => {
@@ -1185,6 +1315,7 @@ export const tryProxyCodexWebSocket = async (
       controller.close();
     },
     cancel(): void {
+      clearStreamKeepAlive?.();
       if (settled) {
         return;
       }

@@ -1,7 +1,7 @@
 import type { TokenUsage } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord } from "../../utils/object";
-import { createSseKeepAlive } from "./sse-keepalive";
+import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
 type SseUsageExtractor = (payload: unknown) => TokenUsage | null;
 
@@ -9,6 +9,7 @@ type OpenAiSsePassthroughInput = {
   response: Response;
   extractUsage: SseUsageExtractor;
   onTokenUsage?: ((usage: TokenUsage) => void) | null | undefined;
+  keepAliveIntervalMs?: number;
 };
 
 const readSseTerminalAnomaly = (payload: unknown): string | null => {
@@ -104,6 +105,12 @@ export const createOpenAiSseUsagePassthrough = (
   const reader = input.response.body.getReader();
   const decoder = new TextDecoder();
   const startedAt = Date.now();
+  const contentType = (
+    input.response.headers.get("content-type") ?? ""
+  ).toLowerCase();
+  // Codex omits the content-type header on SSE streams; anything explicitly
+  // non-SSE (e.g. JSON error bodies) must not receive keepalive comments.
+  const isSseBody = !contentType || contentType.includes("text/event-stream");
   const usageState = {
     eventDataLines: [] as string[],
     latestUsage: null as TokenUsage | null,
@@ -113,6 +120,7 @@ export const createOpenAiSseUsagePassthrough = (
   let bytes = 0;
   let chunks = 0;
   let lastChunkAt = startedAt;
+  let lastWriteAt = startedAt;
   let closed = false;
   let clearKeepAlive: (() => void) | null = null;
 
@@ -126,6 +134,7 @@ export const createOpenAiSseUsagePassthrough = (
       transport: "sse",
       elapsedMs: Date.now() - startedAt,
       idleMs: Date.now() - lastChunkAt,
+      downstreamIdleMs: Date.now() - lastWriteAt,
       bytes,
       chunks,
       ...fields,
@@ -135,75 +144,71 @@ export const createOpenAiSseUsagePassthrough = (
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller): void {
-      const keepAlive = createSseKeepAlive(controller, {
+      if (!isSseBody) {
+        return;
+      }
+      clearKeepAlive = createSseKeepAlive(controller, {
         provider: "openai",
         transport: "sse",
         getElapsedMs: () => Date.now() - startedAt,
-      });
-      clearKeepAlive = keepAlive.clear;
+        onKeepAlive: () => {
+          lastWriteAt = Date.now();
+        },
+        ...(input.keepAliveIntervalMs
+          ? { intervalMs: input.keepAliveIntervalMs }
+          : {}),
+      }).clear;
+    },
+    async pull(controller): Promise<void> {
+      try {
+        let result = await reader.read();
+        while (!(result.done || result.value)) {
+          result = await reader.read();
+        }
 
-      const pump = async (): Promise<void> => {
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) {
-              if (closed) {
-                clearKeepAlive?.();
-                return;
-              }
-              pendingText += decoder.decode();
-              pendingText = readLatestUsageFromSse(
-                `${pendingText}\n\n`,
-                usageState,
-                input.extractUsage
-              );
-              if (usageState.latestUsage) {
-                input.onTokenUsage?.(usageState.latestUsage);
-              }
-              if (usageState.terminalAnomaly) {
-                logStreamAnomaly("openai_sse_terminal_anomaly", {
-                  terminalAnomaly: usageState.terminalAnomaly,
-                });
-              }
-              closed = true;
-              clearKeepAlive?.();
-              controller.close();
-              return;
-            }
-
-            if (!value) {
-              continue;
-            }
-
-            bytes += value.byteLength;
-            chunks++;
-            lastChunkAt = Date.now();
-            pendingText += decoder.decode(value, { stream: true });
-            pendingText = readLatestUsageFromSse(
-              pendingText,
-              usageState,
-              input.extractUsage
-            );
-            try {
-              controller.enqueue(value);
-            } catch (error) {
-              logStreamAnomaly("openai_sse_enqueue_failed", {}, error);
-              throw error;
-            }
-          }
-        } catch (error) {
+        if (result.done) {
           if (closed) {
             clearKeepAlive?.();
             return;
           }
+          pendingText += decoder.decode();
+          pendingText = readLatestUsageFromSse(
+            `${pendingText}\n\n`,
+            usageState,
+            input.extractUsage
+          );
+          if (usageState.latestUsage) {
+            input.onTokenUsage?.(usageState.latestUsage);
+          }
+          if (usageState.terminalAnomaly) {
+            logStreamAnomaly("openai_sse_terminal_anomaly", {
+              terminalAnomaly: usageState.terminalAnomaly,
+            });
+          }
           closed = true;
           clearKeepAlive?.();
-          logStreamAnomaly("openai_sse_stream_failed", {}, error);
-          controller.error(error);
+          controller.close();
+          return;
         }
-      };
 
-      pump().catch((error: unknown) => {
+        const value = result.value;
+        bytes += value.byteLength;
+        chunks++;
+        lastChunkAt = Date.now();
+        pendingText += decoder.decode(value, { stream: true });
+        pendingText = readLatestUsageFromSse(
+          pendingText,
+          usageState,
+          input.extractUsage
+        );
+        try {
+          controller.enqueue(value);
+          lastWriteAt = Date.now();
+        } catch (error) {
+          logStreamAnomaly("openai_sse_enqueue_failed", {}, error);
+          throw error;
+        }
+      } catch (error) {
         if (closed) {
           clearKeepAlive?.();
           return;
@@ -212,12 +217,9 @@ export const createOpenAiSseUsagePassthrough = (
         clearKeepAlive?.();
         logStreamAnomaly("openai_sse_stream_failed", {}, error);
         controller.error(error);
-      });
+      }
     },
     cancel(reason): Promise<void> {
-      if (!closed) {
-        logStreamAnomaly("openai_sse_downstream_cancelled", {}, reason);
-      }
       closed = true;
       clearKeepAlive?.();
       return reader.cancel(reason);
@@ -227,6 +229,6 @@ export const createOpenAiSseUsagePassthrough = (
   return new Response(stream, {
     status: input.response.status,
     statusText: input.response.statusText,
-    headers: input.response.headers,
+    headers: createSseResponseHeaders(input.response.headers),
   });
 };

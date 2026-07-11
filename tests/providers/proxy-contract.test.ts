@@ -19,16 +19,16 @@ import { prepareClaudeProxyRequest } from "../../src/providers/proxies/claude-pr
 import { prepareCodexProxyRequest } from "../../src/providers/proxies/codex-proxy";
 import {
   closeCodexWebSocketSessions,
+  setCodexWebSocketConstructorForTests,
   tryProxyCodexWebSocket,
 } from "../../src/providers/proxies/codex-websocket";
 import { prepareCopilotProxyRequest } from "../../src/providers/proxies/copilot-proxy";
+import { createOpenAiSseUsagePassthrough } from "../../src/providers/proxies/openai-sse-passthrough";
 import type { TokenUsage } from "../../src/usage/token-usage";
-
-const originalWebSocket = globalThis.WebSocket;
 
 afterEach(() => {
   closeCodexWebSocketSessions();
-  globalThis.WebSocket = originalWebSocket;
+  setCodexWebSocketConstructorForTests(null);
 });
 
 const createUsageCapture = () => {
@@ -80,6 +80,10 @@ type MockCodexWebSocketResponse = {
   terminalType?: "response.completed" | "response.done" | "response.incomplete";
 };
 
+type MockWebSocketOptions = {
+  headers?: Record<string, string>;
+};
+
 const installCodexWebSocketMock = (
   responses: MockCodexWebSocketResponse[],
   sentBodies: unknown[],
@@ -93,17 +97,9 @@ const installCodexWebSocketMock = (
       Set<(event: unknown) => void>
     >();
 
-    constructor(
-      _url: string,
-      protocols?: string | string[] | { headers?: Record<string, string> }
-    ) {
-      if (
-        protocols &&
-        typeof protocols === "object" &&
-        !Array.isArray(protocols) &&
-        protocols.headers
-      ) {
-        constructorHeaders.push(protocols.headers);
+    constructor(_url: string, options?: MockWebSocketOptions) {
+      if (options?.headers) {
+        constructorHeaders.push(options.headers);
       }
       queueMicrotask(() => this.dispatch("open", {}));
     }
@@ -121,7 +117,7 @@ const installCodexWebSocketMock = (
       this.listeners.get(type)?.delete(listener);
     }
 
-    send(data: string): void {
+    send(data: string, callback?: (error?: Error) => void): void {
       sentBodies.push(JSON.parse(data) as unknown);
       const response = responses.shift();
       if (!response) {
@@ -129,6 +125,7 @@ const installCodexWebSocketMock = (
       }
 
       queueMicrotask(() => {
+        callback?.();
         for (const event of [
           { type: "response.created", response: { id: response.id } },
           ...(response.items ?? []).map((item) => ({
@@ -160,6 +157,10 @@ const installCodexWebSocketMock = (
       this.readyState = 3;
     }
 
+    terminate(): void {
+      this.readyState = 3;
+    }
+
     private dispatch(type: string, event: unknown): void {
       for (const listener of this.listeners.get(type) ?? []) {
         listener(event);
@@ -167,11 +168,12 @@ const installCodexWebSocketMock = (
     }
   }
 
-  globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+  setCodexWebSocketConstructorForTests(MockWebSocket);
 };
 
 type ManualCodexWebSocket = {
   dispatch(type: string, event: unknown): void;
+  readonly terminated: boolean;
 };
 
 const installManualCodexWebSocketMock = (
@@ -183,6 +185,7 @@ const installManualCodexWebSocketMock = (
   class MockWebSocket {
     static OPEN = 1;
     readyState = MockWebSocket.OPEN;
+    terminated = false;
     private readonly listeners = new Map<
       string,
       Set<(event: unknown) => void>
@@ -208,11 +211,17 @@ const installManualCodexWebSocketMock = (
       this.listeners.get(type)?.delete(listener);
     }
 
-    send(data: string): void {
+    send(data: string, callback?: (error?: Error) => void): void {
       sentBodies.push(JSON.parse(data) as unknown);
+      callback?.();
     }
 
     close(): void {
+      this.readyState = 3;
+    }
+
+    terminate(): void {
+      this.terminated = true;
       this.readyState = 3;
     }
 
@@ -223,7 +232,7 @@ const installManualCodexWebSocketMock = (
     }
   }
 
-  globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+  setCodexWebSocketConstructorForTests(MockWebSocket);
   return sockets;
 };
 
@@ -585,6 +594,163 @@ describe("proxy contract: codex", () => {
     });
   });
 
+  test("applies downstream backpressure to OpenAI SSE reads", async () => {
+    const encoder = new TextEncoder();
+    let pulls = 0;
+    const source = new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller): void {
+            pulls++;
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ type: "response.output_text.delta", delta: pulls })}\n\n`
+              )
+            );
+          },
+        },
+        { highWaterMark: 0 }
+      ),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+
+    const transformed = createOpenAiSseUsagePassthrough({
+      response: source,
+      extractUsage: () => null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(pulls).toBe(1);
+    await transformed.body?.cancel();
+  });
+
+  test("preserves explicit JSON content type for streaming errors", async () => {
+    const body = JSON.stringify({
+      error: { message: "bad request", type: "invalid_request_error" },
+    });
+    const response = createOpenAiSseUsagePassthrough({
+      response: new Response(body, {
+        status: 400,
+        headers: {
+          "content-encoding": "gzip",
+          "content-length": String(body.length),
+          "content-type": "application/json",
+        },
+      }),
+      extractUsage: () => null,
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.headers.get("content-type")).toBe("application/json");
+    expect(response.headers.has("content-length")).toBe(false);
+    expect(response.headers.has("content-encoding")).toBe(false);
+    expect(await response.json()).toEqual({
+      error: { message: "bad request", type: "invalid_request_error" },
+    });
+  });
+
+  test("does not inject keepalives into non-SSE bodies", async () => {
+    const encoder = new TextEncoder();
+    const createSlowResponse = (
+      payload: string,
+      contentType: string | null
+    ): Response =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller): Promise<void> {
+            controller.enqueue(encoder.encode(payload.slice(0, 4)));
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            controller.enqueue(encoder.encode(payload.slice(4)));
+            controller.close();
+          },
+        }),
+        contentType ? { headers: { "content-type": contentType } } : {}
+      );
+
+    const jsonBody = JSON.stringify({ error: { message: "slow error" } });
+    const jsonResponse = createOpenAiSseUsagePassthrough({
+      response: createSlowResponse(jsonBody, "application/json"),
+      extractUsage: () => null,
+      keepAliveIntervalMs: 5,
+    });
+    expect(await jsonResponse.text()).toBe(jsonBody);
+
+    const sseBody = 'data: {"type":"response.completed"}\n\n';
+    const sseResponse = createOpenAiSseUsagePassthrough({
+      response: createSlowResponse(sseBody, null),
+      extractUsage: () => null,
+      keepAliveIntervalMs: 5,
+    });
+    const sseText = await sseResponse.text();
+    expect(sseText).toContain("response.completed");
+    expect(sseText).toContain(": kleis-keepalive");
+  });
+
+  test("routes compaction turns over HTTP instead of WebSocket", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "compaction-session",
+    });
+
+    const response = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson: {
+        model: "gpt-5.5",
+        stream: true,
+        client_metadata: {
+          "x-codex-turn-metadata": JSON.stringify({
+            request_kind: "compaction",
+          }),
+        },
+        input: [{ role: "user", content: "compact" }],
+      },
+      accountKey: "key-1:account-1",
+    });
+
+    expect(response).toBeNull();
+    expect(sockets).toHaveLength(0);
+    expect(sentBodies).toHaveLength(0);
+  });
+
+  test("terminates websocket when the downstream request aborts", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const abortController = new AbortController();
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+
+    try {
+      const responsePromise = tryProxyCodexWebSocket({
+        headers: new Headers({
+          authorization: "Bearer codex-access",
+          [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+          "x-session-affinity": "abort-session",
+        }),
+        bodyJson: {
+          model: "gpt-5.5",
+          stream: true,
+          input: [{ role: "user", content: "hello" }],
+        },
+        accountKey: "key-1:account-1",
+        signal: abortController.signal,
+      });
+      await waitFor(() => sentBodies.length === 1);
+      abortController.abort(new Error("stop"));
+      expect(await responsePromise).toBeNull();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(sockets[0]?.terminated).toBe(true);
+    expect(warnings).toHaveLength(0);
+  });
+
   test("uses websocket cached delta transport for streaming requests", async () => {
     const firstAssistantItem = {
       type: "message",
@@ -641,6 +807,9 @@ describe("proxy contract: codex", () => {
       onTokenUsage: capture.onTokenUsage,
     });
     expect(first).not.toBeNull();
+    expect(first?.headers.get("cache-control")).toBe("no-cache, no-transform");
+    expect(first?.headers.get("x-accel-buffering")).toBe("no");
+    expect(first?.headers.get("content-length")).toBeNull();
     await first?.text();
 
     const second = await tryProxyCodexWebSocket({
@@ -1361,6 +1530,68 @@ describe("proxy contract: codex", () => {
     expect(sentBodies).toHaveLength(2);
   });
 
+  test("survives a socket close racing a connection limit retry", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "retry-close-race",
+    });
+    const bodyJson = {
+      model: "gpt-5-codex",
+      stream: true,
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "Race" }] },
+      ],
+    };
+
+    const responsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sentBodies.length === 1);
+
+    // The upstream sends the connection limit error and immediately closes
+    // the socket; both events are already queued before the retry can
+    // detach its listeners.
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "error",
+        error: { code: "websocket_connection_limit_reached" },
+      }),
+    });
+    sockets[0]?.dispatch("close", { code: 1006, reason: "Connection ended" });
+
+    await waitFor(() => sentBodies.length === 2 && sockets.length === 2);
+    sockets[1]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_race", status: "completed" },
+      }),
+    });
+
+    const response = await responsePromise;
+    expect(response).not.toBeNull();
+    expect(await response?.text()).toContain("response.completed");
+
+    // The stale close must not have marked the session for HTTP fallback.
+    const followUpPromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sentBodies.length === 3);
+    sockets.at(-1)?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_follow", status: "completed" },
+      }),
+    });
+    expect(await followUpPromise).not.toBeNull();
+  });
+
   test("preserves websocket rate limit status_code errors", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies);
@@ -1574,6 +1805,88 @@ describe("proxy contract: codex", () => {
     });
     expect(fallback).toBeNull();
     expect(sockets).toHaveLength(6);
+  });
+
+  test("isolates close-before-terminal fallback to one session", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "failed-session",
+    });
+    const bodyJson = {
+      model: "gpt-5.5",
+      stream: true,
+      input: [{ role: "user", content: "hello" }],
+    };
+
+    const failedResponsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sentBodies.length === 1);
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.created",
+        response: { id: "resp_failed" },
+      }),
+    });
+    const failedResponse = await failedResponsePromise;
+    const failedText = failedResponse?.text();
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    let streamFailed: boolean | undefined;
+    try {
+      sockets[0]?.dispatch("close", {
+        code: 1006,
+        reason: "Connection ended",
+      });
+      streamFailed = await failedText?.then(
+        () => false,
+        () => true
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(streamFailed).toBe(true);
+    expect(warnings).toHaveLength(1);
+    const warning = JSON.parse(warnings[0] ?? "{}") as Record<string, unknown>;
+    expect(warning.event).toBe("codex_websocket_stream_failed");
+    expect(warning.payloadCount).toBe(1);
+    expect(typeof warning.requestBytes).toBe("number");
+    expect(typeof warning.upstreamIdleMs).toBe("number");
+    expect(typeof warning.downstreamIdleMs).toBe("number");
+
+    const sameSession = await tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    expect(sameSession).toBeNull();
+    expect(sockets).toHaveLength(1);
+
+    headers.set("x-session-affinity", "healthy-session");
+    const healthyResponsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sentBodies.length === 2);
+    sockets[1]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_healthy", status: "completed" },
+      }),
+    });
+    const healthyResponse = await healthyResponsePromise;
+
+    expect(await healthyResponse?.text()).toContain("response.completed");
+    expect(sockets).toHaveLength(2);
   });
 
   test("treats same-session websocket connect races as busy", async () => {
@@ -2283,8 +2596,41 @@ describe("proxy contract: claude", () => {
     );
     const transformedResponse = await result.transformResponse(sourceResponse);
 
+    expect(transformedResponse.headers.get("cache-control")).toBe(
+      "no-cache, no-transform"
+    );
+    expect(transformedResponse.headers.get("x-accel-buffering")).toBe("no");
+    expect(transformedResponse.headers.get("content-length")).toBeNull();
     const transformedText = await transformedResponse.text();
     expect(transformedText).toContain('"name":"shell"');
+  });
+
+  test("applies downstream backpressure to Claude SSE reads", async () => {
+    const result = prepareClaudeUsageRequest();
+    const encoder = new TextEncoder();
+    let pulls = 0;
+    const source = new Response(
+      new ReadableStream<Uint8Array>(
+        {
+          pull(controller): void {
+            pulls++;
+            controller.enqueue(
+              encoder.encode(
+                `data: ${JSON.stringify({ type: "content_block_delta", index: pulls })}\n\n`
+              )
+            );
+          },
+        },
+        { highWaterMark: 0 }
+      ),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+
+    const transformed = await result.transformResponse(source);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(pulls).toBe(1);
+    await transformed.body?.cancel();
   });
 
   test("logs claude streaming error event details", async () => {

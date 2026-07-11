@@ -350,6 +350,7 @@ const proxyRequest = async (
       body: requestBody,
       // Provider streams can pause for minutes while a model is thinking.
       timeout: false,
+      signal: context.req.raw.signal,
     };
     if (headerTimeout) {
       upstreamRequestInit.signal = AbortSignal.any([
@@ -368,11 +369,15 @@ const proxyRequest = async (
       headerTimeout?.clear();
     }
   } catch (error) {
+    if (context.req.raw.signal.aborted) {
+      // Client disconnects are expected cancellations, not proxy failures.
+      throw error;
+    }
     logWarn("proxy_upstream_request_failed", {
       provider: route.provider,
       endpoint: route.endpoint,
       elapsedMs: Date.now() - startedAt,
-      aborted: context.req.raw.signal.aborted,
+      aborted: false,
       ...errorLogFields(error),
     });
     usageRecorder.recordImmediate(500);
