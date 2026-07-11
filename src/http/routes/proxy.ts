@@ -350,6 +350,7 @@ const proxyRequest = async (
       body: requestBody,
       // Provider streams can pause for minutes while a model is thinking.
       timeout: false,
+      signal: context.req.raw.signal,
     };
     if (headerTimeout) {
       upstreamRequestInit.signal = AbortSignal.any([
