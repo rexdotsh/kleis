@@ -1,3 +1,5 @@
+import { HttpsProxyAgent } from "https-proxy-agent";
+import { getProxyForUrl } from "proxy-from-env";
 import WebSocket from "ws";
 
 import {
@@ -31,7 +33,8 @@ type WebSocketListener = (event: unknown) => void;
 type WebSocketLike = {
   readonly readyState?: number;
   close(code?: number, reason?: string): void;
-  send(data: string): void;
+  terminate?: () => void;
+  send(data: string, callback?: (error?: Error) => void): void;
   addEventListener(type: WebSocketEventType, listener: WebSocketListener): void;
   removeEventListener(
     type: WebSocketEventType,
@@ -41,7 +44,7 @@ type WebSocketLike = {
 
 type WebSocketConstructor = new (
   url: string,
-  protocols?: string | string[] | { headers?: Record<string, string> }
+  options?: { headers?: Record<string, string>; agent?: unknown }
 ) => WebSocketLike;
 
 let webSocketConstructorOverride: WebSocketConstructor | null = null;
@@ -151,6 +154,18 @@ const closeSocket = (socket: WebSocketLike): void => {
     socket.close(1000, "done");
   } catch {
     // Ignore close failures from already-closed sockets.
+  }
+};
+
+const terminateSocket = (socket: WebSocketLike): void => {
+  try {
+    if (socket.terminate) {
+      socket.terminate();
+      return;
+    }
+    socket.close(1001, "invalid");
+  } catch {
+    // Ignore termination failures from already-closed sockets.
   }
 };
 
@@ -317,19 +332,24 @@ const connectWebSocket = (
     const onClose = (event: unknown): void =>
       fail(extractWebSocketCloseError(event));
     const onAbort = (): void => {
-      closeSocket(socket);
       fail(new Error("Request was aborted"));
+      terminateSocket(socket);
     };
     const onTimeout = (): void => {
-      closeSocket(socket);
       fail(
         new Error(`WebSocket connect timeout after ${CONNECT_TIMEOUT_MS}ms`)
       );
+      terminateSocket(socket);
     };
 
     try {
-      socket = new WebSocketCtor(resolveCodexWebSocketUrl(), {
+      const webSocketUrl = resolveCodexWebSocketUrl();
+      const proxyUrl = getProxyForUrl(
+        webSocketUrl.replace(/^wss:/u, "https:").replace(/^ws:/u, "http:")
+      );
+      socket = new WebSocketCtor(webSocketUrl, {
         headers: headersToRecord(headers),
+        ...(proxyUrl ? { agent: new HttpsProxyAgent(proxyUrl) } : {}),
       });
     } catch (error) {
       reject(error instanceof Error ? error : new Error(String(error)));
@@ -358,7 +378,13 @@ const acquireSocket = async (
     const acquired = {
       socket,
       cached: null,
-      release: (): void => closeSocket(acquired.socket),
+      release(keep: boolean): void {
+        if (keep) {
+          closeSocket(acquired.socket);
+          return;
+        }
+        terminateSocket(acquired.socket);
+      },
     };
     return acquired;
   }
@@ -383,7 +409,7 @@ const acquireSocket = async (
         cached: existing,
         release(keep: boolean): void {
           if (!(keep && isSocketOpen(existing.socket))) {
-            closeSocket(existing.socket);
+            terminateSocket(existing.socket);
             socketCache.delete(cacheKey);
             return;
           }
@@ -426,7 +452,7 @@ const acquireSocket = async (
     cached,
     release(keep: boolean): void {
       if (!(keep && isSocketOpen(cached.socket))) {
-        closeSocket(cached.socket);
+        terminateSocket(cached.socket);
         socketCache.delete(cacheKey);
         return;
       }
@@ -954,8 +980,17 @@ export const tryProxyCodexWebSocket = async (
       return;
     }
     try {
-      active.socket.send(requestPayloadText);
-      resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
+      resetResponseIdleTimer("idle_timeout_sending_websocket_request");
+      active.socket.send(requestPayloadText, (error?: Error) => {
+        if (settled) {
+          return;
+        }
+        if (error) {
+          fail("send_failed", error);
+          return;
+        }
+        resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
+      });
     } catch (error) {
       fail("send_failed", error);
     }
@@ -979,7 +1014,7 @@ export const tryProxyCodexWebSocket = async (
     active.socket.removeEventListener("message", onMessage);
     active.socket.removeEventListener("error", onError);
     active.socket.removeEventListener("close", onClose);
-    closeSocket(active.socket);
+    terminateSocket(active.socket);
 
     try {
       const nextSocket = await connectWebSocket(headers, input.signal);

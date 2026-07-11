@@ -80,10 +80,16 @@ type MockCodexWebSocketResponse = {
   terminalType?: "response.completed" | "response.done" | "response.incomplete";
 };
 
+type MockWebSocketOptions = {
+  headers?: Record<string, string>;
+  agent?: unknown;
+};
+
 const installCodexWebSocketMock = (
   responses: MockCodexWebSocketResponse[],
   sentBodies: unknown[],
-  constructorHeaders: Record<string, string>[] = []
+  constructorHeaders: Record<string, string>[] = [],
+  constructorOptions: MockWebSocketOptions[] = []
 ): void => {
   class MockWebSocket {
     static OPEN = 1;
@@ -93,17 +99,12 @@ const installCodexWebSocketMock = (
       Set<(event: unknown) => void>
     >();
 
-    constructor(
-      _url: string,
-      protocols?: string | string[] | { headers?: Record<string, string> }
-    ) {
-      if (
-        protocols &&
-        typeof protocols === "object" &&
-        !Array.isArray(protocols) &&
-        protocols.headers
-      ) {
-        constructorHeaders.push(protocols.headers);
+    constructor(_url: string, options?: MockWebSocketOptions) {
+      if (options) {
+        constructorOptions.push(options);
+      }
+      if (options?.headers) {
+        constructorHeaders.push(options.headers);
       }
       queueMicrotask(() => this.dispatch("open", {}));
     }
@@ -121,7 +122,7 @@ const installCodexWebSocketMock = (
       this.listeners.get(type)?.delete(listener);
     }
 
-    send(data: string): void {
+    send(data: string, callback?: (error?: Error) => void): void {
       sentBodies.push(JSON.parse(data) as unknown);
       const response = responses.shift();
       if (!response) {
@@ -129,6 +130,7 @@ const installCodexWebSocketMock = (
       }
 
       queueMicrotask(() => {
+        callback?.();
         for (const event of [
           { type: "response.created", response: { id: response.id } },
           ...(response.items ?? []).map((item) => ({
@@ -160,6 +162,10 @@ const installCodexWebSocketMock = (
       this.readyState = 3;
     }
 
+    terminate(): void {
+      this.readyState = 3;
+    }
+
     private dispatch(type: string, event: unknown): void {
       for (const listener of this.listeners.get(type) ?? []) {
         listener(event);
@@ -172,6 +178,7 @@ const installCodexWebSocketMock = (
 
 type ManualCodexWebSocket = {
   dispatch(type: string, event: unknown): void;
+  readonly terminated: boolean;
 };
 
 const installManualCodexWebSocketMock = (
@@ -183,6 +190,7 @@ const installManualCodexWebSocketMock = (
   class MockWebSocket {
     static OPEN = 1;
     readyState = MockWebSocket.OPEN;
+    terminated = false;
     private readonly listeners = new Map<
       string,
       Set<(event: unknown) => void>
@@ -208,11 +216,17 @@ const installManualCodexWebSocketMock = (
       this.listeners.get(type)?.delete(listener);
     }
 
-    send(data: string): void {
+    send(data: string, callback?: (error?: Error) => void): void {
       sentBodies.push(JSON.parse(data) as unknown);
+      callback?.();
     }
 
     close(): void {
+      this.readyState = 3;
+    }
+
+    terminate(): void {
+      this.terminated = true;
       this.readyState = 3;
     }
 
@@ -642,6 +656,75 @@ describe("proxy contract: codex", () => {
     expect(response).toBeNull();
     expect(sockets).toHaveLength(0);
     expect(sentBodies).toHaveLength(0);
+  });
+
+  test("uses standard proxy environment for websocket connections", async () => {
+    const sentBodies: unknown[] = [];
+    const constructorOptions: MockWebSocketOptions[] = [];
+    installCodexWebSocketMock(
+      [{ id: "resp_proxy" }],
+      sentBodies,
+      [],
+      constructorOptions
+    );
+    const originalHttpsProxy = process.env.HTTPS_PROXY;
+    const originalHttpsProxyLower = process.env.https_proxy;
+    const originalNoProxy = process.env.NO_PROXY;
+    const originalNoProxyLower = process.env.no_proxy;
+    process.env.HTTPS_PROXY = "http://127.0.0.1:3128";
+    process.env.https_proxy = "http://127.0.0.1:3128";
+    process.env.NO_PROXY = "";
+    process.env.no_proxy = "";
+
+    try {
+      const response = await tryProxyCodexWebSocket({
+        headers: new Headers({
+          authorization: "Bearer codex-access",
+          [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+          "x-session-affinity": "proxy-session",
+        }),
+        bodyJson: {
+          model: "gpt-5.5",
+          stream: true,
+          input: [{ role: "user", content: "hello" }],
+        },
+        accountKey: "key-1:account-1",
+      });
+      await response?.text();
+    } finally {
+      process.env.HTTPS_PROXY = originalHttpsProxy;
+      process.env.https_proxy = originalHttpsProxyLower;
+      process.env.NO_PROXY = originalNoProxy;
+      process.env.no_proxy = originalNoProxyLower;
+    }
+
+    expect(constructorOptions[0]?.agent).toBeDefined();
+  });
+
+  test("terminates websocket when the downstream request aborts", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const abortController = new AbortController();
+    const responsePromise = tryProxyCodexWebSocket({
+      headers: new Headers({
+        authorization: "Bearer codex-access",
+        [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+        "x-session-affinity": "abort-session",
+      }),
+      bodyJson: {
+        model: "gpt-5.5",
+        stream: true,
+        input: [{ role: "user", content: "hello" }],
+      },
+      accountKey: "key-1:account-1",
+      signal: abortController.signal,
+    });
+    await waitFor(() => sentBodies.length === 1);
+
+    abortController.abort(new Error("stop"));
+
+    expect(await responsePromise).toBeNull();
+    expect(sockets[0]?.terminated).toBe(true);
   });
 
   test("uses websocket cached delta transport for streaming requests", async () => {
