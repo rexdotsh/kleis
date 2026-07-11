@@ -332,6 +332,7 @@ const maybeTransformClaudeStreamResponse = (
   let bytes = 0;
   let chunks = 0;
   let lastChunkAt = startedAt;
+  let lastWriteAt = startedAt;
   let closed = false;
   let clearKeepAlive: (() => void) | null = null;
 
@@ -345,6 +346,7 @@ const maybeTransformClaudeStreamResponse = (
       transport: "sse_transform",
       elapsedMs: Date.now() - startedAt,
       idleMs: Date.now() - lastChunkAt,
+      downstreamIdleMs: Date.now() - lastWriteAt,
       bytes,
       chunks,
       ...fields,
@@ -461,6 +463,9 @@ const maybeTransformClaudeStreamResponse = (
         provider: "claude",
         transport: "sse_transform",
         getElapsedMs: () => Date.now() - startedAt,
+        onKeepAlive: () => {
+          lastWriteAt = Date.now();
+        },
       }).clear;
     },
     async pull(controller): Promise<void> {
@@ -484,6 +489,7 @@ const maybeTransformClaudeStreamResponse = (
                   )
                 )
               );
+              lastWriteAt = Date.now();
               buffer = "";
             }
             onTokenUsage?.(streamUsage);
@@ -518,6 +524,7 @@ const maybeTransformClaudeStreamResponse = (
                   )
                 )
               );
+              lastWriteAt = Date.now();
               enqueued = true;
             } catch (error) {
               logStreamAnomaly("claude_sse_enqueue_failed", {}, error);
@@ -541,9 +548,6 @@ const maybeTransformClaudeStreamResponse = (
       }
     },
     cancel(reason): Promise<void> {
-      if (!closed) {
-        logStreamAnomaly("claude_sse_downstream_cancelled", {}, reason);
-      }
       closed = true;
       clearKeepAlive?.();
       return reader.cancel(reason);

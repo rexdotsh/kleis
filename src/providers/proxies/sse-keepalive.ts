@@ -17,6 +17,7 @@ type SseKeepAliveInput = {
   provider: string;
   transport: string;
   getElapsedMs: () => number;
+  onKeepAlive?: () => void;
 };
 
 export const createSseKeepAlive = (
@@ -31,6 +32,7 @@ export const createSseKeepAlive = (
 
     try {
       controller.enqueue(SSE_KEEPALIVE_BYTES);
+      input.onKeepAlive?.();
     } catch (error) {
       active = false;
       clearInterval(timer);

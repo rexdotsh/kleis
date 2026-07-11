@@ -113,6 +113,7 @@ export const createOpenAiSseUsagePassthrough = (
   let bytes = 0;
   let chunks = 0;
   let lastChunkAt = startedAt;
+  let lastWriteAt = startedAt;
   let closed = false;
   let clearKeepAlive: (() => void) | null = null;
 
@@ -126,6 +127,7 @@ export const createOpenAiSseUsagePassthrough = (
       transport: "sse",
       elapsedMs: Date.now() - startedAt,
       idleMs: Date.now() - lastChunkAt,
+      downstreamIdleMs: Date.now() - lastWriteAt,
       bytes,
       chunks,
       ...fields,
@@ -139,6 +141,9 @@ export const createOpenAiSseUsagePassthrough = (
         provider: "openai",
         transport: "sse",
         getElapsedMs: () => Date.now() - startedAt,
+        onKeepAlive: () => {
+          lastWriteAt = Date.now();
+        },
       }).clear;
     },
     async pull(controller): Promise<void> {
@@ -185,6 +190,7 @@ export const createOpenAiSseUsagePassthrough = (
         );
         try {
           controller.enqueue(value);
+          lastWriteAt = Date.now();
         } catch (error) {
           logStreamAnomaly("openai_sse_enqueue_failed", {}, error);
           throw error;
@@ -201,9 +207,6 @@ export const createOpenAiSseUsagePassthrough = (
       }
     },
     cancel(reason): Promise<void> {
-      if (!closed) {
-        logStreamAnomaly("openai_sse_downstream_cancelled", {}, reason);
-      }
       closed = true;
       clearKeepAlive?.();
       return reader.cancel(reason);

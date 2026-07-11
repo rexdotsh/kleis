@@ -897,6 +897,9 @@ export const tryProxyCodexWebSocket = async (
   let retryingConnectionLimit = false;
   let responseIdleTimer: ReturnType<typeof setTimeout> | null = null;
   let clearStreamKeepAlive: (() => void) | null = null;
+  let payloadCount = 0;
+  let lastUpstreamEventAt = startedAt;
+  let lastDownstreamWriteAt = startedAt;
   let messageChain = Promise.resolve();
   let wake: (() => void) | null = null;
   const queue: Record<string, unknown>[] = [];
@@ -912,6 +915,9 @@ export const tryProxyCodexWebSocket = async (
       queueLength: queue.length,
       connectionLimitAttempts,
       requestBytes,
+      payloadCount,
+      upstreamIdleMs: Date.now() - lastUpstreamEventAt,
+      downstreamIdleMs: Date.now() - lastDownstreamWriteAt,
       ...fields,
     });
   };
@@ -1038,12 +1044,7 @@ export const tryProxyCodexWebSocket = async (
     clearStreamKeepAlive?.();
     cleanup();
     active.release(false);
-    if (isUserCancelledStage(stage)) {
-      logStreamAnomaly("codex_websocket_stream_cancelled", {
-        stage,
-        ...errorLogFields(error),
-      });
-    } else {
+    if (!isUserCancelledStage(stage)) {
       const webSocketCloseCode = readWebSocketCloseCode(error);
       const immediateFallback =
         stage === "socket_closed_before_terminal" &&
@@ -1136,6 +1137,8 @@ export const tryProxyCodexWebSocket = async (
       return;
     }
     resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
+    payloadCount++;
+    lastUpstreamEventAt = Date.now();
 
     if (!emittedPayload && isConnectionLimitPayload(payload)) {
       retryConnectionLimit().catch((error: unknown) => {
@@ -1209,6 +1212,7 @@ export const tryProxyCodexWebSocket = async (
     }
 
     controller.enqueue(encodeSse(payload));
+    lastDownstreamWriteAt = Date.now();
     if (isTerminalPayload(payload)) {
       terminal = true;
       finalEventType = payload.type;
@@ -1231,6 +1235,7 @@ export const tryProxyCodexWebSocket = async (
         }
       }
       controller.enqueue(encodeDoneSse());
+      lastDownstreamWriteAt = Date.now();
       finish();
     }
   };
@@ -1241,6 +1246,9 @@ export const tryProxyCodexWebSocket = async (
         provider: "codex",
         transport: "websocket_sse",
         getElapsedMs: () => Date.now() - startedAt,
+        onKeepAlive: () => {
+          lastDownstreamWriteAt = Date.now();
+        },
       }).clear;
     },
     async pull(controller): Promise<void> {

@@ -369,13 +369,15 @@ const proxyRequest = async (
       headerTimeout?.clear();
     }
   } catch (error) {
-    logWarn("proxy_upstream_request_failed", {
-      provider: route.provider,
-      endpoint: route.endpoint,
-      elapsedMs: Date.now() - startedAt,
-      aborted: context.req.raw.signal.aborted,
-      ...errorLogFields(error),
-    });
+    if (!context.req.raw.signal.aborted) {
+      logWarn("proxy_upstream_request_failed", {
+        provider: route.provider,
+        endpoint: route.endpoint,
+        elapsedMs: Date.now() - startedAt,
+        aborted: false,
+        ...errorLogFields(error),
+      });
+    }
     usageRecorder.recordImmediate(500);
     throw error;
   }

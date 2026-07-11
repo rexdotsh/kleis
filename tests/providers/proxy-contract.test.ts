@@ -705,26 +705,36 @@ describe("proxy contract: codex", () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies);
     const abortController = new AbortController();
-    const responsePromise = tryProxyCodexWebSocket({
-      headers: new Headers({
-        authorization: "Bearer codex-access",
-        [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
-        "x-session-affinity": "abort-session",
-      }),
-      bodyJson: {
-        model: "gpt-5.5",
-        stream: true,
-        input: [{ role: "user", content: "hello" }],
-      },
-      accountKey: "key-1:account-1",
-      signal: abortController.signal,
-    });
-    await waitFor(() => sentBodies.length === 1);
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
 
-    abortController.abort(new Error("stop"));
+    try {
+      const responsePromise = tryProxyCodexWebSocket({
+        headers: new Headers({
+          authorization: "Bearer codex-access",
+          [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+          "x-session-affinity": "abort-session",
+        }),
+        bodyJson: {
+          model: "gpt-5.5",
+          stream: true,
+          input: [{ role: "user", content: "hello" }],
+        },
+        accountKey: "key-1:account-1",
+        signal: abortController.signal,
+      });
+      await waitFor(() => sentBodies.length === 1);
+      abortController.abort(new Error("stop"));
+      expect(await responsePromise).toBeNull();
+    } finally {
+      console.warn = originalWarn;
+    }
 
-    expect(await responsePromise).toBeNull();
     expect(sockets[0]?.terminated).toBe(true);
+    expect(warnings).toHaveLength(0);
   });
 
   test("uses websocket cached delta transport for streaming requests", async () => {
@@ -1749,12 +1759,32 @@ describe("proxy contract: codex", () => {
     });
     const failedResponse = await failedResponsePromise;
     const failedText = failedResponse?.text();
-    sockets[0]?.dispatch("close", { code: 1006, reason: "Connection ended" });
-    const streamFailed = await failedText?.then(
-      () => false,
-      () => true
-    );
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    let streamFailed: boolean | undefined;
+    try {
+      sockets[0]?.dispatch("close", {
+        code: 1006,
+        reason: "Connection ended",
+      });
+      streamFailed = await failedText?.then(
+        () => false,
+        () => true
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
     expect(streamFailed).toBe(true);
+    expect(warnings).toHaveLength(1);
+    const warning = JSON.parse(warnings[0] ?? "{}") as Record<string, unknown>;
+    expect(warning.event).toBe("codex_websocket_stream_failed");
+    expect(warning.payloadCount).toBe(1);
+    expect(typeof warning.requestBytes).toBe("number");
+    expect(typeof warning.upstreamIdleMs).toBe("number");
+    expect(typeof warning.downstreamIdleMs).toBe("number");
 
     const sameSession = await tryProxyCodexWebSocket({
       headers,
