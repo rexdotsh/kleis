@@ -1551,6 +1551,68 @@ describe("proxy contract: codex", () => {
     expect(sentBodies).toHaveLength(2);
   });
 
+  test("survives a socket close racing a connection limit retry", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({
+      authorization: "Bearer codex-access",
+      [CODEX_ACCOUNT_ID_HEADER]: "acct_1",
+      "x-session-affinity": "retry-close-race",
+    });
+    const bodyJson = {
+      model: "gpt-5-codex",
+      stream: true,
+      input: [
+        { role: "user", content: [{ type: "input_text", text: "Race" }] },
+      ],
+    };
+
+    const responsePromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sentBodies.length === 1);
+
+    // The upstream sends the connection limit error and immediately closes
+    // the socket; both events are already queued before the retry can
+    // detach its listeners.
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "error",
+        error: { code: "websocket_connection_limit_reached" },
+      }),
+    });
+    sockets[0]?.dispatch("close", { code: 1006, reason: "Connection ended" });
+
+    await waitFor(() => sentBodies.length === 2 && sockets.length === 2);
+    sockets[1]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_race", status: "completed" },
+      }),
+    });
+
+    const response = await responsePromise;
+    expect(response).not.toBeNull();
+    expect(await response?.text()).toContain("response.completed");
+
+    // The stale close must not have marked the session for HTTP fallback.
+    const followUpPromise = tryProxyCodexWebSocket({
+      headers,
+      bodyJson,
+      accountKey: "key-1:account-1",
+    });
+    await waitFor(() => sentBodies.length === 3);
+    sockets.at(-1)?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp_follow", status: "completed" },
+      }),
+    });
+    expect(await followUpPromise).not.toBeNull();
+  });
+
   test("preserves websocket rate limit status_code errors", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies);

@@ -900,6 +900,7 @@ export const tryProxyCodexWebSocket = async (
   let payloadCount = 0;
   let lastUpstreamEventAt = startedAt;
   let lastDownstreamWriteAt = startedAt;
+  let socketEpoch = 0;
   let messageChain = Promise.resolve();
   let wake: (() => void) | null = null;
   const queue: Record<string, unknown>[] = [];
@@ -983,8 +984,11 @@ export const tryProxyCodexWebSocket = async (
     }
     try {
       resetResponseIdleTimer("idle_timeout_sending_websocket_request");
-      active.socket.send(requestPayloadText, (error?: Error) => {
-        if (settled) {
+      const sendingSocket = active.socket;
+      sendingSocket.send(requestPayloadText, (error?: Error) => {
+        // Terminated sockets flush pending send callbacks with an error;
+        // ignore callbacks from sockets replaced by a connection retry.
+        if (settled || sendingSocket !== active.socket) {
           return;
         }
         if (error) {
@@ -1012,6 +1016,9 @@ export const tryProxyCodexWebSocket = async (
 
     connectionLimitAttempts++;
     retryingConnectionLimit = true;
+    // Invalidate events already dispatched (or still queued) from the socket
+    // being replaced; they must not fail the retried stream.
+    socketEpoch++;
     clearResponseIdleTimer();
     active.socket.removeEventListener("message", onMessage);
     active.socket.removeEventListener("error", onError);
@@ -1020,6 +1027,12 @@ export const tryProxyCodexWebSocket = async (
 
     try {
       const nextSocket = await connectWebSocket(headers, input.signal);
+      if (settled) {
+        // A downstream cancel or abort raced the retry; do not leak the
+        // freshly opened socket.
+        terminateSocket(nextSocket);
+        return;
+      }
       active.socket = nextSocket;
       if (active.cached) {
         active.cached.socket = nextSocket;
@@ -1101,13 +1114,30 @@ export const tryProxyCodexWebSocket = async (
   const onAbort = (): void =>
     fail("request_aborted", new Error("Request was aborted"));
 
-  const onError = (event: unknown): void =>
-    fail("socket_error", extractWebSocketError(event));
-
-  const onClose = (event: unknown): void => {
+  const onError = (event: unknown): void => {
+    const eventEpoch = socketEpoch;
+    // Serialize behind in-flight message handling so an error event cannot
+    // clobber a terminal payload that is still being processed.
     messageChain = messageChain
       .then(() => {
-        if (terminal) {
+        if (terminal || eventEpoch !== socketEpoch) {
+          wakePull();
+          return;
+        }
+        fail("socket_error", extractWebSocketError(event));
+      })
+      .catch((error: unknown) => {
+        fail("message_parse_failed", error);
+      });
+  };
+
+  const onClose = (event: unknown): void => {
+    const eventEpoch = socketEpoch;
+    messageChain = messageChain
+      .then(() => {
+        if (terminal || eventEpoch !== socketEpoch) {
+          // A close from a socket replaced by a connection-limit retry must
+          // not fail the stream or mark session fallback.
           wakePull();
           return;
         }
