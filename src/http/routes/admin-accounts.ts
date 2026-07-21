@@ -17,6 +17,8 @@ import {
   deleteProviderAccount,
   findProviderAccountById,
   listProviderAccounts,
+  listProviderStatuses,
+  setProviderAccountsEnabled,
   setPrimaryProviderAccount,
   type ProviderAccountRecord,
   updateProviderAccountProfile,
@@ -38,6 +40,10 @@ const accountIdParamsSchema = z.strictObject({
 
 const oauthProviderParamsSchema = z.strictObject({
   provider: z.enum(providers),
+});
+
+const updateProviderStatusBodySchema = z.strictObject({
+  enabled: z.boolean(),
 });
 
 const oauthStartBodySchema = z.strictObject({
@@ -116,6 +122,7 @@ const toAdminAccountView = (
   label: account.label,
   accountId: account.accountId,
   isPrimary: account.isPrimary,
+  enabled: account.enabled,
   metadata: account.metadata,
   expiresAt: account.expiresAt,
   lastRefreshAt: account.lastRefreshAt,
@@ -126,9 +133,35 @@ const toAdminAccountView = (
 
 export const adminAccountsRoutes = new Hono()
   .get("/", async (context) => {
-    const accounts = await listProviderAccounts(db);
-    return context.json({ accounts: accounts.map(toAdminAccountView) });
+    const [accounts, providerStatuses] = await Promise.all([
+      listProviderAccounts(db),
+      listProviderStatuses(db),
+    ]);
+    return context.json({
+      accounts: accounts.map(toAdminAccountView),
+      providers: providerStatuses,
+    });
   })
+  .get("/providers", async (context) => {
+    const providerStatuses = await listProviderStatuses(db);
+    return context.json({ providers: providerStatuses });
+  })
+  .patch(
+    "/providers/:provider",
+    zValidator("param", oauthProviderParamsSchema),
+    zValidator("json", updateProviderStatusBodySchema),
+    async (context) => {
+      const { provider } = context.req.valid("param");
+      const { enabled } = context.req.valid("json");
+      const status = await setProviderAccountsEnabled(
+        db,
+        provider,
+        enabled,
+        Date.now()
+      );
+      return context.json({ provider: status, updated: true });
+    }
+  )
   .get(
     "/usage",
     zValidator("query", usageWindowQuerySchema),

@@ -26,6 +26,7 @@ const state = {
   token: readPersistedToken(),
   accounts: [],
   accountsById: new Map(),
+  providerStatuses: [],
   accountUsageById: new Map(),
   accountUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   keys: [],
@@ -510,7 +511,7 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
                 <span class="scope-account-copy">
                   <span class="scope-account-name">${escapeHtml(account.label || account.accountId || shortId(account.id))}</span>
                   ${account.isPrimary ? '<span class="badge badge-primary">primary</span>' : ""}
-                  <span class="scope-account-meta">${escapeHtml([shortId(account.id), account.expiresAt ? expiryCountdown(account.expiresAt) : ""].filter(Boolean).join(" · "))}</span>
+                  <span class="scope-account-meta">${escapeHtml([shortId(account.id), account.enabled === false ? "disabled" : "", account.expiresAt ? expiryCountdown(account.expiresAt) : ""].filter(Boolean).join(" · "))}</span>
                 </span>
               </label>`
             )
@@ -621,6 +622,7 @@ async function loadAccounts() {
 
     state.accounts = accountsResult.value.accounts || [];
     state.accountsById = usageMapFromList(state.accounts, "id");
+    state.providerStatuses = accountsResult.value.providers || [];
 
     if (usageResult.status === "fulfilled") {
       if (typeof usageResult.value.windowMs === "number") {
@@ -648,6 +650,8 @@ async function loadAccounts() {
     state.accounts = [];
     state.accountsById = new Map();
     state.accountUsageById = new Map();
+    state.providerStatuses = [];
+    $("#providers-status").innerHTML = "";
     $("#accounts-list").innerHTML =
       `<div class="empty-state"><div class="empty-state-text text-error">${escapeHtml(e.message)}</div></div>`;
     toast(e.message, "error");
@@ -713,6 +717,39 @@ async function setPrimary(id) {
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
+  }
+}
+
+async function toggleProvider(provider, enabled) {
+  if (!enabled) {
+    const confirmed = await showConfirm(
+      "Disable Provider",
+      `Disable ${provider}? All ${provider} accounts will stop receiving proxy traffic and its models will disappear from model registries. You can re-enable it at any time.`,
+      "disable"
+    );
+    if (!confirmed) return;
+  }
+
+  const btn = document.querySelector(
+    `[data-action="toggle-provider"][data-provider="${provider}"]`
+  );
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+  }
+  try {
+    await api(`/admin/accounts/providers/${provider}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    });
+    toast(enabled ? `${provider} enabled` : `${provider} disabled`);
+    await loadAccounts();
+  } catch (e) {
+    toast(e.message, "error");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = enabled ? "enable" : "disable";
+    }
   }
 }
 
@@ -1229,6 +1266,7 @@ function logout() {
   state.token = "";
   state.accounts = [];
   state.accountsById = new Map();
+  state.providerStatuses = [];
   state.accountUsageById = new Map();
   state.accountUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.keys = [];
@@ -1245,6 +1283,7 @@ function logout() {
   state.dashboardRequestSeq = 0;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
+  $("#providers-status").innerHTML = "";
   $("#dash-content").innerHTML = "";
   syncDashboardWindowButtons();
   syncAccountWindowButtons();
@@ -1307,6 +1346,7 @@ export {
   syncDashboardWindowButtons,
   syncScopedAccountAvailability,
   toast,
+  toggleProvider,
   tokenStatus,
   updateOAuthProviderUI,
   usageForKey,

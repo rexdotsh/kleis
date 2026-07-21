@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 
 import type { Database } from "../index";
-import { providerAccounts, type Provider } from "../schema";
+import { providerAccounts, providers, type Provider } from "../schema";
 import {
   parseProviderAccountMetadata,
   serializeProviderAccountMetadata,
@@ -14,6 +14,7 @@ export type ProviderAccountRecord = {
   label: string | null;
   accountId: string | null;
   isPrimary: boolean;
+  enabled: boolean;
   accessToken: string;
   refreshToken: string;
   refreshLockToken: string | null;
@@ -34,6 +35,7 @@ const toRecord = (
   label: row.label,
   accountId: row.accountId,
   isPrimary: row.isPrimary,
+  enabled: row.enabled,
   accessToken: row.accessToken,
   refreshToken: row.refreshToken,
   refreshLockToken: row.refreshLockToken,
@@ -67,7 +69,12 @@ export const listConfiguredProviders = async (
       provider: providerAccounts.provider,
     })
     .from(providerAccounts)
-    .where(eq(providerAccounts.isPrimary, true));
+    .where(
+      and(
+        eq(providerAccounts.isPrimary, true),
+        eq(providerAccounts.enabled, true)
+      )
+    );
 
   return rows.map((row) => row.provider);
 };
@@ -119,7 +126,8 @@ export const findPrimaryProviderAccount = async (
   const row = await database.query.providerAccounts.findFirst({
     where: and(
       eq(providerAccounts.provider, provider),
-      eq(providerAccounts.isPrimary, true)
+      eq(providerAccounts.isPrimary, true),
+      eq(providerAccounts.enabled, true)
     ),
     orderBy: desc(providerAccounts.createdAt),
   });
@@ -161,6 +169,16 @@ const hasPrimaryProviderAccount = async (
     ),
   });
   return Boolean(primary);
+};
+
+const isProviderEnabledForNewAccount = async (
+  database: Database,
+  provider: Provider
+): Promise<boolean> => {
+  const account = await database.query.providerAccounts.findFirst({
+    where: eq(providerAccounts.provider, provider),
+  });
+  return account?.enabled ?? true;
 };
 
 const isUniqueConstraintError = (error: unknown): boolean =>
@@ -236,12 +254,17 @@ export const upsertProviderAccount = async (
     database,
     input.provider
   ));
+  const enabled = await isProviderEnabledForNewAccount(
+    database,
+    input.provider
+  );
   const insertValues: typeof providerAccounts.$inferInsert = {
     id: crypto.randomUUID(),
     provider: input.provider,
     label: input.label === undefined ? null : input.label,
     accountId: input.accountId,
     isPrimary,
+    enabled,
     accessToken: input.accessToken,
     refreshToken: input.refreshToken,
     refreshLockToken: null,
@@ -619,4 +642,54 @@ export const setPrimaryProviderAccount = async (
 
     throw error;
   }
+};
+
+export type ProviderStatus = {
+  provider: Provider;
+  enabled: boolean;
+  accountCount: number;
+  enabledAccountCount: number;
+};
+
+export const listProviderStatuses = async (
+  database: Database
+): Promise<ProviderStatus[]> => {
+  const rows = await database
+    .select({
+      provider: providerAccounts.provider,
+      enabled: providerAccounts.enabled,
+    })
+    .from(providerAccounts);
+
+  return providers.map((provider) => {
+    const accounts = rows.filter((row) => row.provider === provider);
+    const enabledAccountCount = accounts.filter((row) => row.enabled).length;
+    return {
+      provider,
+      enabled: enabledAccountCount > 0,
+      accountCount: accounts.length,
+      enabledAccountCount,
+    };
+  });
+};
+
+export const setProviderAccountsEnabled = async (
+  database: Database,
+  provider: Provider,
+  enabled: boolean,
+  now: number
+): Promise<ProviderStatus> => {
+  await database.transaction(async (tx) => {
+    await tx
+      .update(providerAccounts)
+      .set({ enabled, updatedAt: now })
+      .where(eq(providerAccounts.provider, provider));
+  });
+
+  const statuses = await listProviderStatuses(database);
+  const status = statuses.find((item) => item.provider === provider);
+  if (!status) {
+    throw new Error(`Unknown provider: ${provider}`);
+  }
+  return status;
 };

@@ -27,8 +27,45 @@ import {
   usageWindowLabel,
 } from "./app-data.js";
 
+function providerStatusItemHtml(status) {
+  const { provider, enabled, accountCount, enabledAccountCount } = status;
+  const countLabel =
+    enabled && enabledAccountCount < accountCount
+      ? `${enabledAccountCount}/${accountCount} enabled`
+      : `${accountCount} account${accountCount === 1 ? "" : "s"}`;
+
+  return `<div class="provider-status-item${enabled ? "" : " disabled"}">
+    <span class="badge badge-${provider}">${provider}</span>
+    <span class="provider-status-meta">
+      <span class="status-dot ${enabled ? "active" : "expired"}"></span>
+      <span>${enabled ? "enabled" : "disabled"}</span>
+      <span class="dot-sep"></span>
+      <span>${countLabel}</span>
+    </span>
+    <button
+      class="btn ${enabled ? "btn-ghost" : "btn-primary"} btn-sm"
+      data-action="toggle-provider"
+      data-provider="${provider}"
+      data-enabled="${enabled ? "false" : "true"}"
+      type="button"
+    >${enabled ? "disable" : "enable"}</button>
+  </div>`;
+}
+
+function renderProviderStatuses() {
+  const statuses = (state.providerStatuses || []).filter(
+    (status) => status.accountCount > 0
+  );
+  $("#providers-status").innerHTML = statuses.length
+    ? statuses.map(providerStatusItemHtml).join("")
+    : "";
+}
+
 function accountCardHtml(account) {
-  const s = tokenStatus(account.expiresAt);
+  const disabled = account.enabled === false;
+  const s = disabled
+    ? { label: "disabled", class: "unknown" }
+    : tokenStatus(account.expiresAt);
   const name = account.label || account.accountId || account.id;
   const usage = accountUsageForId(account.id);
   const windowLabel = usageWindowLabel(state.accountUsageWindowMs);
@@ -58,12 +95,13 @@ function accountCardHtml(account) {
 
   const meta = metadataHtml(account.metadata);
 
-  return `<div class="card" data-account-id="${account.id}">
+  return `<div class="card${disabled ? " card-disabled" : ""}" data-account-id="${account.id}">
     <div class="card-top">
       <div class="card-identity">
         <span class="badge badge-${account.provider}">${account.provider}</span>
         <span class="card-label">${escapeHtml(name)}</span>
         ${account.isPrimary ? '<span class="badge badge-primary">primary</span>' : ""}
+        ${disabled ? '<span class="badge badge-disabled">disabled</span>' : ""}
       </div>
       <div class="card-actions">
         ${editBtn}
@@ -88,6 +126,7 @@ function accountCardHtml(account) {
 
 function renderAccounts() {
   const { accounts } = state;
+  renderProviderStatuses();
   $("#accounts-count").textContent = accounts.length
     ? `(${accounts.length})`
     : "";
