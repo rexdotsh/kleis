@@ -21,6 +21,7 @@ export const providerAccounts = sqliteTable(
     isPrimary: integer("is_primary", { mode: "boolean" })
       .notNull()
       .default(false),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
     accessToken: text("access_token").notNull(),
     refreshToken: text("refresh_token").notNull(),
     refreshLockToken: text("refresh_lock_token"),
@@ -36,6 +37,7 @@ export const providerAccounts = sqliteTable(
   },
   (table) => [
     index("provider_accounts_provider_idx").on(table.provider),
+    index("provider_accounts_enabled_idx").on(table.provider, table.enabled),
     index("provider_accounts_primary_idx").on(table.provider, table.isPrimary),
     uniqueIndex("provider_accounts_primary_unique")
       .on(table.provider)

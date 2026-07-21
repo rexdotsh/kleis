@@ -356,7 +356,7 @@ export const getRoutableProviderAccount = async (
 
   const account = pickPreferredProviderAccount(
     (await findProviderAccountsByIds(database, allowedAccountIds)).filter(
-      (candidate) => candidate.provider === provider
+      (candidate) => candidate.provider === provider && candidate.enabled
     )
   );
   if (!account) {
