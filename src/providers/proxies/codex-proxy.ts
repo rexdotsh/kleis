@@ -22,6 +22,34 @@ import {
 const trimString = (value: unknown): string =>
   typeof value === "string" ? value.trim() : "";
 
+const readLeadingInputInstruction = (body: JsonObject): string | null => {
+  if (!Array.isArray(body.input)) {
+    return null;
+  }
+  const first = body.input[0];
+  if (!isObjectRecord(first)) {
+    return null;
+  }
+  const role = trimString(first.role);
+  if (role !== "system" && role !== "developer") {
+    return null;
+  }
+  if (typeof first.content === "string") {
+    return trimString(first.content) || null;
+  }
+  if (!Array.isArray(first.content)) {
+    return null;
+  }
+  const textParts: string[] = [];
+  for (const part of first.content) {
+    if (!isObjectRecord(part) || typeof part.text !== "string") {
+      return null;
+    }
+    textParts.push(part.text);
+  }
+  return trimString(textParts.join("\n")) || null;
+};
+
 const toHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
@@ -88,15 +116,20 @@ export const transformCodexBodyJson = (
     ...nextBody
   } = bodyJson;
 
-  // OpenCode injects instructions internally in its Codex/OAuth path:
-  // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/llm.ts#L110-L112
-  // Non-Codex clients won't, so we fall back to OpenCode's default instructions for Codex.
-  // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/prompt/codex_header.txt
+  const incomingInstructions = trimString(nextBody.instructions);
+  const leadingInputInstruction = incomingInstructions
+    ? null
+    : readLeadingInputInstruction(nextBody);
   const instructions =
-    trimString(nextBody.instructions) || CODEX_DEFAULT_INSTRUCTIONS;
+    incomingInstructions ||
+    leadingInputInstruction ||
+    CODEX_DEFAULT_INSTRUCTIONS;
 
   return {
     ...nextBody,
+    ...(leadingInputInstruction && Array.isArray(nextBody.input)
+      ? { input: nextBody.input.slice(1) }
+      : {}),
     instructions,
     store: false,
     ...(sessionId ? { prompt_cache_key: sessionId } : {}),
