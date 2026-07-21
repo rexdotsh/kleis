@@ -88,15 +88,21 @@ export const transformCodexBodyJson = (
     ...nextBody
   } = bodyJson;
 
-  // OpenCode injects instructions internally in its Codex/OAuth path:
-  // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/llm.ts#L110-L112
-  // Non-Codex clients won't, so we fall back to OpenCode's default instructions for Codex.
-  // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/prompt/codex_header.txt
+  const incomingInstructions = trimString(nextBody.instructions);
+  const input = Array.isArray(nextBody.input) ? nextBody.input : [];
+  const firstInput = input[0];
+  const promotedInstructions =
+    !incomingInstructions &&
+    isObjectRecord(firstInput) &&
+    (firstInput.role === "system" || firstInput.role === "developer")
+      ? trimString(firstInput.content)
+      : "";
   const instructions =
-    trimString(nextBody.instructions) || CODEX_DEFAULT_INSTRUCTIONS;
+    incomingInstructions || promotedInstructions || CODEX_DEFAULT_INSTRUCTIONS;
 
   return {
     ...nextBody,
+    ...(promotedInstructions ? { input: input.slice(1) } : {}),
     instructions,
     store: false,
     ...(sessionId ? { prompt_cache_key: sessionId } : {}),

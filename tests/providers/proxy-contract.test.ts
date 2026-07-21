@@ -338,6 +338,39 @@ describe("proxy contract: codex", () => {
     );
   });
 
+  test("promotes OpenCode developer input instead of adding fallback instructions", () => {
+    const headers = new Headers();
+    const bodyJson = {
+      model: "gpt-5.6-sol",
+      input: [
+        {
+          role: "developer",
+          content: "Current OpenCode GPT instructions",
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text: "hello" }],
+        },
+      ],
+    };
+
+    const result = prepareCodexProxyRequest({
+      headers,
+      accessToken: "codex-access",
+      accountId: "acct-fallback",
+      metadata: null,
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+    });
+
+    expect(JSON.parse(result.bodyText)).toEqual({
+      model: "gpt-5.6-sol",
+      input: [bodyJson.input[1]],
+      instructions: "Current OpenCode GPT instructions",
+      store: false,
+    });
+  });
+
   test("uses derived session headers and prompt cache key for codex requests", () => {
     const headers = new Headers({
       session_id: "raw-session-underscore",
