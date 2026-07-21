@@ -34,6 +34,7 @@ import {
   syncKeyWindowButtons,
   syncScopedAccountAvailability,
   toast,
+  toggleProvider,
   updateOAuthProviderUI,
   verifyToken,
 } from "./app-data.js";
@@ -44,6 +45,12 @@ import {
   renderKeys,
   setupSnippet,
 } from "./app-render.js";
+
+$("#providers-status").addEventListener("click", (e) => {
+  const button = e.target.closest('button[data-action="toggle-provider"]');
+  if (!button) return;
+  toggleProvider(button.dataset.provider, button.dataset.enabled === "true");
+});
 
 $("#accounts-list").addEventListener("click", (e) => {
   const button = e.target.closest("button[data-action]");
