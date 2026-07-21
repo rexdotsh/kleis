@@ -2,7 +2,9 @@ import { createClient } from "@libsql/client";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { unlink } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import {
@@ -18,12 +20,15 @@ import * as schema from "../../src/db/schema";
 import { getRoutableProviderAccount } from "../../src/domain/providers/provider-service";
 
 describe("provider account enablement", () => {
-  let client: ReturnType<typeof createClient>;
+  let client: ReturnType<typeof createClient> | undefined;
   let database: Database;
-  let databasePath: string;
+  let databaseDirectory: string;
 
   beforeEach(async () => {
-    databasePath = `/tmp/opencode/kleis-provider-accounts-${crypto.randomUUID()}.db`;
+    databaseDirectory = await mkdtemp(
+      join(tmpdir(), "kleis-provider-accounts-")
+    );
+    const databasePath = join(databaseDirectory, "test.db");
     client = createClient({ url: `file:${databasePath}` });
     database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
@@ -64,8 +69,10 @@ describe("provider account enablement", () => {
   });
 
   afterEach(async () => {
-    client.close();
-    await unlink(databasePath).catch(() => undefined);
+    client?.close();
+    await rm(databaseDirectory, { recursive: true, force: true }).catch(
+      () => undefined
+    );
   });
 
   test("disables every account and excludes the provider from discovery and routing", async () => {
