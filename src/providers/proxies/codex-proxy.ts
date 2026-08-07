@@ -90,17 +90,17 @@ export const transformCodexBodyJson = (
     ...nextBody
   } = bodyJson;
 
+  const incomingInstructions = trimString(nextBody.instructions);
   const input = Array.isArray(nextBody.input) ? nextBody.input : [];
   const firstInput = input[0];
   const promotedInstructions =
+    !incomingInstructions &&
     isObjectRecord(firstInput) &&
     (firstInput.role === "system" || firstInput.role === "developer")
       ? trimString(firstInput.content)
       : "";
   const instructions =
-    promotedInstructions ||
-    trimString(nextBody.instructions) ||
-    CODEX_DEFAULT_INSTRUCTIONS;
+    incomingInstructions || promotedInstructions || CODEX_DEFAULT_INSTRUCTIONS;
 
   return {
     ...nextBody,
@@ -151,13 +151,13 @@ export const prepareCodexProxyRequest = (
 
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("content-type", "application/json");
-  if (!input.headers.has("User-Agent")) {
-    input.headers.set("User-Agent", CODEX_USER_AGENT);
-  }
+  input.headers.set("User-Agent", CODEX_USER_AGENT);
   if (isStreamingRequest) {
     input.headers.set("accept", "text/event-stream");
   }
-  input.headers.set("originator", CODEX_ORIGINATOR);
+  if (!input.headers.get("originator")) {
+    input.headers.set("originator", CODEX_ORIGINATOR);
+  }
 
   const accountId = input.metadata?.chatgptAccountId ?? input.accountId;
   if (accountId) {

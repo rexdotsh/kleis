@@ -40,28 +40,30 @@ const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
 const CODEX_DISALLOWED_OPENAI_MODEL_IDS = new Set(["gpt-5.5-pro", "gpt-5.6"]);
 const CODEX_DYNAMIC_GPT_VERSION_THRESHOLD = 5.4;
 
+// ChatGPT Codex limits are smaller than the public API limits. Match OpenCode
+// OAuth metadata so clients compact before the backend runs out of output room:
+// https://github.com/anomalyco/opencode/blob/4a57013cf8cb163f58638273fd9da8538cd33cb7/packages/opencode/src/plugin/openai/codex.ts#L293-L312
 const CODEX_MODEL_LIMIT_OVERRIDES: Record<string, JsonObject> = {
-  // Match OpenCode's Codex OAuth metadata so clients compact at the same point:
-  // https://github.com/anomalyco/opencode/blob/4a57013cf8cb163f58638273fd9da8538cd33cb7/packages/opencode/src/plugin/openai/codex.ts#L293-L312
   "gpt-5.5": {
     context: 400_000,
     input: 272_000,
     output: 128_000,
   },
-};
-// The ChatGPT backend accepts GPT-5.6 variants with a smaller context window
-// than the public API. Advertising the public limit starves long turns of
-// output tokens before OpenCode knows it needs to compact.
-const CODEX_GPT_56_LIMIT_OVERRIDE: JsonObject = {
-  context: 500_000,
-  input: 372_000,
-  output: 128_000,
-};
-const CODEX_SUBSCRIPTION_COST: JsonObject = {
-  input: 0,
-  output: 0,
-  cache_read: 0,
-  cache_write: 0,
+  "gpt-5.6-luna": {
+    context: 500_000,
+    input: 372_000,
+    output: 128_000,
+  },
+  "gpt-5.6-sol": {
+    context: 500_000,
+    input: 372_000,
+    output: 128_000,
+  },
+  "gpt-5.6-terra": {
+    context: 500_000,
+    input: 372_000,
+    output: 128_000,
+  },
 };
 
 const modelScopeRouteByCanonicalProvider = new Map<string, ModelScopeRoute>(
@@ -313,13 +315,10 @@ const mergeKleisProviderModels = (input: {
             return;
           }
 
-          const limitOverride = modelId.includes("gpt-5.6")
-            ? CODEX_GPT_56_LIMIT_OVERRIDE
-            : CODEX_MODEL_LIMIT_OVERRIDES[modelId];
+          const limitOverride = CODEX_MODEL_LIMIT_OVERRIDES[modelId];
           if (limitOverride) {
             model.limit = limitOverride;
           }
-          model.cost = CODEX_SUBSCRIPTION_COST;
         },
       })
     );

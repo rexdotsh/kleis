@@ -305,10 +305,8 @@ describe("proxy contract: codex", () => {
     expect(headers.get("authorization")).toBe("Bearer codex-access");
     expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBe("acct-meta");
     expect(headers.get("content-type")).toBe("application/json");
-    expect(headers.get("originator")).toBe(CODEX_ORIGINATOR);
-    expect(headers.get("User-Agent")).toBe(
-      "opencode/1.18.15 ai-sdk/provider-utils/4.0.38"
-    );
+    expect(headers.get("originator")).toBe("custom-client");
+    expect(headers.get("User-Agent")).toBe(CODEX_USER_AGENT);
     expect(result.upstreamUrl).toBe(CODEX_RESPONSE_ENDPOINT);
     expect(JSON.parse(result.bodyText)).toEqual({ ...bodyJson, store: false });
   });
@@ -335,6 +333,7 @@ describe("proxy contract: codex", () => {
     });
 
     expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBe("acct-fallback");
+    expect(headers.get("originator")).toBe(CODEX_ORIGINATOR);
     expect(headers.get("User-Agent")).toBe(CODEX_USER_AGENT);
     const transformed = JSON.parse(result.bodyText) as {
       instructions?: string;
@@ -373,39 +372,6 @@ describe("proxy contract: codex", () => {
       model: "gpt-5.6-sol",
       input: [bodyJson.input[1]],
       instructions: "Current OpenCode GPT instructions",
-      store: false,
-    });
-  });
-
-  test("uses the OpenCode system input as authoritative instructions", () => {
-    const bodyJson = {
-      model: "gpt-5.6-sol",
-      instructions: "Configured provider instructions",
-      input: [
-        {
-          role: "system",
-          content: "Current OpenCode session instructions",
-        },
-        {
-          role: "user",
-          content: [{ type: "input_text", text: "hello" }],
-        },
-      ],
-    };
-
-    const result = prepareCodexProxyRequest({
-      headers: new Headers(),
-      accessToken: "codex-access",
-      accountId: "acct-fallback",
-      metadata: null,
-      bodyText: JSON.stringify(bodyJson),
-      bodyJson,
-    });
-
-    expect(JSON.parse(result.bodyText)).toEqual({
-      model: "gpt-5.6-sol",
-      input: [bodyJson.input[1]],
-      instructions: "Current OpenCode session instructions",
       store: false,
     });
   });

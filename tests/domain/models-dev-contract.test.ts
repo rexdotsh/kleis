@@ -208,7 +208,7 @@ describe("models registry contract", () => {
     });
   });
 
-  test("overrides Codex gpt-5.6 variant limits and costs to match OpenCode OAuth", () => {
+  test("overrides Codex gpt-5.6 variant limits to match OpenCode OAuth", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/",
@@ -216,18 +216,12 @@ describe("models registry contract", () => {
     });
 
     const kleis = registry.kleis as {
-      models?: Record<string, { limit?: unknown; cost?: unknown }>;
+      models?: Record<string, { limit?: unknown }>;
     };
     expect(kleis.models?.["gpt-5.6-luna"]?.limit).toEqual({
       context: 500_000,
       input: 372_000,
       output: 128_000,
-    });
-    expect(kleis.models?.["gpt-5.6-luna"]?.cost).toEqual({
-      input: 0,
-      output: 0,
-      cache_read: 0,
-      cache_write: 0,
     });
   });
 
