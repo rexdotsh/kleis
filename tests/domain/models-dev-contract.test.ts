@@ -179,7 +179,7 @@ describe("models registry contract", () => {
     );
     expect(kleis.models?.["gpt-5.5"]?.id).toBe("gpt-5.5");
     expect(kleis.models?.["gpt-5.5-pro"]).toBeUndefined();
-    expect(kleis.models?.["gpt-5.6"]?.id).toBe("gpt-5.6");
+    expect(kleis.models?.["gpt-5.6"]).toBeUndefined();
     expect(kleis.models?.["gpt-5.6-luna"]?.id).toBe("gpt-5.6-luna");
     expect(kleis.models?.["openai/gpt-5.3-codex"]).toBeUndefined();
     expect(kleis.models?.["github-copilot/gpt-5"]?.id).toBe(
@@ -205,6 +205,29 @@ describe("models registry contract", () => {
       context: 400_000,
       input: 272_000,
       output: 128_000,
+    });
+  });
+
+  test("overrides Codex gpt-5.6 variant limits and costs to match OpenCode OAuth", () => {
+    const registry = buildProxyModelsRegistry({
+      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
+      baseOrigin: "https://kleis.example/",
+      configuredProviders: ["codex"],
+    });
+
+    const kleis = registry.kleis as {
+      models?: Record<string, { limit?: unknown; cost?: unknown }>;
+    };
+    expect(kleis.models?.["gpt-5.6-luna"]?.limit).toEqual({
+      context: 500_000,
+      input: 372_000,
+      output: 128_000,
+    });
+    expect(kleis.models?.["gpt-5.6-luna"]?.cost).toEqual({
+      input: 0,
+      output: 0,
+      cache_read: 0,
+      cache_write: 0,
     });
   });
 
@@ -325,7 +348,7 @@ describe("models registry contract", () => {
       configuredProviders: ["codex", "claude", "copilot"],
       apiKeyScopes: {
         providerScopes: ["codex", "copilot"],
-        modelScopes: ["openai/gpt-5.6", "gpt-5-mini"],
+        modelScopes: ["openai/gpt-5.6-luna", "gpt-5-mini"],
         accountProviderScopes: null,
       },
     });
@@ -366,7 +389,7 @@ describe("models registry contract", () => {
     };
     expect(Object.keys(kleis.models ?? {}).sort()).toEqual([
       "github-copilot/gpt-5-mini",
-      "gpt-5.6",
+      "gpt-5.6-luna",
     ]);
   });
 
@@ -404,7 +427,6 @@ describe("models registry contract", () => {
     expect(Object.keys(kleis.models ?? {})).toEqual([
       "gpt-5.3-codex-spark",
       "gpt-5.5",
-      "gpt-5.6",
       "gpt-5.6-luna",
     ]);
   });

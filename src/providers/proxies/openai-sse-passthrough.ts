@@ -12,16 +12,46 @@ type OpenAiSsePassthroughInput = {
   keepAliveIntervalMs?: number;
 };
 
-const readSseTerminalAnomaly = (payload: unknown): string | null => {
+type SseTerminalAnomaly = Record<string, string | number | boolean>;
+
+const readSseTerminalAnomaly = (
+  payload: unknown
+): SseTerminalAnomaly | null => {
   if (!isObjectRecord(payload)) {
     return null;
   }
 
   if (payload.type === "response.incomplete") {
-    return "response.incomplete";
+    const response = isObjectRecord(payload.response) ? payload.response : null;
+    const incompleteDetails = isObjectRecord(response?.incomplete_details)
+      ? response.incomplete_details
+      : null;
+    return {
+      terminalAnomaly: "response.incomplete",
+      ...(typeof response?.status === "string"
+        ? { responseStatus: response.status }
+        : {}),
+      ...(typeof incompleteDetails?.reason === "string"
+        ? { incompleteReason: incompleteDetails.reason }
+        : {}),
+    };
   }
   if (payload.type === "response.failed" || payload.type === "error") {
-    return String(payload.type);
+    const response = isObjectRecord(payload.response) ? payload.response : null;
+    const nestedError = isObjectRecord(response?.error) ? response.error : null;
+    const error = isObjectRecord(payload.error) ? payload.error : nestedError;
+    const errorCode = error?.code ?? payload.code;
+    const errorMessage = error?.message ?? payload.message;
+    const errorParam = error?.param ?? payload.param;
+    return {
+      terminalAnomaly: String(payload.type),
+      ...(typeof response?.status === "string"
+        ? { responseStatus: response.status }
+        : {}),
+      ...(typeof errorCode === "string" ? { errorCode } : {}),
+      ...(typeof errorMessage === "string" ? { errorMessage } : {}),
+      ...(typeof errorParam === "string" ? { errorParam } : {}),
+    };
   }
 
   return null;
@@ -40,7 +70,7 @@ const readLatestUsageFromSse = (
   state: {
     eventDataLines: string[];
     latestUsage: TokenUsage | null;
-    terminalAnomaly: string | null;
+    terminalAnomaly: SseTerminalAnomaly | null;
   },
   extractUsage: SseUsageExtractor
 ): string => {
@@ -114,7 +144,7 @@ export const createOpenAiSseUsagePassthrough = (
   const usageState = {
     eventDataLines: [] as string[],
     latestUsage: null as TokenUsage | null,
-    terminalAnomaly: null as string | null,
+    terminalAnomaly: null as SseTerminalAnomaly | null,
   };
   let pendingText = "";
   let bytes = 0;
@@ -181,9 +211,10 @@ export const createOpenAiSseUsagePassthrough = (
             input.onTokenUsage?.(usageState.latestUsage);
           }
           if (usageState.terminalAnomaly) {
-            logStreamAnomaly("openai_sse_terminal_anomaly", {
-              terminalAnomaly: usageState.terminalAnomaly,
-            });
+            logStreamAnomaly(
+              "openai_sse_terminal_anomaly",
+              usageState.terminalAnomaly
+            );
           }
           closed = true;
           clearKeepAlive?.();

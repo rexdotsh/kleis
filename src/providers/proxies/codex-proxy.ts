@@ -56,13 +56,15 @@ export const applyCodexSessionHeaders = (
 ): void => {
   clearCodexSessionHeaders(headers);
   headers.set("session-id", sessionId);
-  headers.set("x-client-request-id", sessionId);
+  headers.set("x-session-affinity", sessionId);
+  headers.set("x-session-id", sessionId);
 };
 
 export const clearCodexSessionHeaders = (headers: Headers): void => {
   headers.delete("session_id");
   headers.delete("session-id");
   headers.delete("x-session-affinity");
+  headers.delete("x-session-id");
   headers.delete("x-client-request-id");
 };
 
@@ -88,17 +90,17 @@ export const transformCodexBodyJson = (
     ...nextBody
   } = bodyJson;
 
-  const incomingInstructions = trimString(nextBody.instructions);
   const input = Array.isArray(nextBody.input) ? nextBody.input : [];
   const firstInput = input[0];
   const promotedInstructions =
-    !incomingInstructions &&
     isObjectRecord(firstInput) &&
     (firstInput.role === "system" || firstInput.role === "developer")
       ? trimString(firstInput.content)
       : "";
   const instructions =
-    incomingInstructions || promotedInstructions || CODEX_DEFAULT_INSTRUCTIONS;
+    promotedInstructions ||
+    trimString(nextBody.instructions) ||
+    CODEX_DEFAULT_INSTRUCTIONS;
 
   return {
     ...nextBody,
@@ -149,13 +151,13 @@ export const prepareCodexProxyRequest = (
 
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("content-type", "application/json");
-  input.headers.set("User-Agent", CODEX_USER_AGENT);
+  if (!input.headers.has("User-Agent")) {
+    input.headers.set("User-Agent", CODEX_USER_AGENT);
+  }
   if (isStreamingRequest) {
     input.headers.set("accept", "text/event-stream");
   }
-  if (!input.headers.get("originator")) {
-    input.headers.set("originator", CODEX_ORIGINATOR);
-  }
+  input.headers.set("originator", CODEX_ORIGINATOR);
 
   const accountId = input.metadata?.chatgptAccountId ?? input.accountId;
   if (accountId) {
