@@ -47,6 +47,9 @@ TURSO_CONNECTION_URL=libsql://<your-db>.<region>.turso.io
 TURSO_AUTH_TOKEN=<your-turso-token>
 ```
 
+Codex uses HTTP/SSE by default. The lower-latency WebSocket transport is
+experimental and can be enabled with `CODEX_WEBSOCKET_ENABLED=true`.
+
 ```sh
 bun run db:migrate
 bun run dev

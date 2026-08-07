@@ -37,6 +37,8 @@ const proxyErrorResponse = (message: string, type = "proxy_error") => ({
 });
 
 const CODEX_SSE_HEADER_TIMEOUT_MS = 60_000;
+const CODEX_WEBSOCKET_ENABLED =
+  process.env.CODEX_WEBSOCKET_ENABLED?.trim().toLowerCase() === "true";
 
 const createCodexSseHeaderTimeout = (): {
   signal: AbortSignal;
@@ -276,18 +278,20 @@ const proxyRequest = async (
       useCodexSseHeaderTimeout =
         readBooleanField(codexProxy.bodyJson, "stream") === true;
 
-      const webSocketResponse = await tryProxyCodexWebSocket({
-        headers,
-        bodyJson: codexProxy.bodyJson,
-        accountKey: `${apiKeyId}:${account.id}`,
-        sessionId: codexSessionId,
-        upstreamSessionId: codexUpstreamSessionId,
-        onTokenUsage: usageRecorder.onTokenUsage,
-        signal: context.req.raw.signal,
-      });
-      if (webSocketResponse) {
-        usageRecorder.recordFinal(webSocketResponse.status);
-        return webSocketResponse;
+      if (CODEX_WEBSOCKET_ENABLED) {
+        const webSocketResponse = await tryProxyCodexWebSocket({
+          headers,
+          bodyJson: codexProxy.bodyJson,
+          accountKey: `${apiKeyId}:${account.id}`,
+          sessionId: codexSessionId,
+          upstreamSessionId: codexUpstreamSessionId,
+          onTokenUsage: usageRecorder.onTokenUsage,
+          signal: context.req.raw.signal,
+        });
+        if (webSocketResponse) {
+          usageRecorder.recordFinal(webSocketResponse.status);
+          return webSocketResponse;
+        }
       }
       break;
     }
