@@ -56,13 +56,15 @@ export const applyCodexSessionHeaders = (
 ): void => {
   clearCodexSessionHeaders(headers);
   headers.set("session-id", sessionId);
-  headers.set("x-client-request-id", sessionId);
+  headers.set("x-session-affinity", sessionId);
+  headers.set("x-session-id", sessionId);
 };
 
 export const clearCodexSessionHeaders = (headers: Headers): void => {
   headers.delete("session_id");
   headers.delete("session-id");
   headers.delete("x-session-affinity");
+  headers.delete("x-session-id");
   headers.delete("x-client-request-id");
 };
 

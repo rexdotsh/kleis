@@ -268,7 +268,10 @@ describe("proxy contract: codex", () => {
     });
 
   test("applies auth, account-id, and endpoint from metadata", () => {
-    const headers = new Headers();
+    const headers = new Headers({
+      originator: "custom-client",
+      "user-agent": "opencode/1.18.15 ai-sdk/provider-utils/4.0.38",
+    });
     const bodyJson = {
       model: "gpt-5-codex",
       instructions: "Keep responses concise",
@@ -302,7 +305,7 @@ describe("proxy contract: codex", () => {
     expect(headers.get("authorization")).toBe("Bearer codex-access");
     expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBe("acct-meta");
     expect(headers.get("content-type")).toBe("application/json");
-    expect(headers.get("originator")).toBe(CODEX_ORIGINATOR);
+    expect(headers.get("originator")).toBe("custom-client");
     expect(headers.get("User-Agent")).toBe(CODEX_USER_AGENT);
     expect(result.upstreamUrl).toBe(CODEX_RESPONSE_ENDPOINT);
     expect(JSON.parse(result.bodyText)).toEqual({ ...bodyJson, store: false });
@@ -330,6 +333,8 @@ describe("proxy contract: codex", () => {
     });
 
     expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBe("acct-fallback");
+    expect(headers.get("originator")).toBe(CODEX_ORIGINATOR);
+    expect(headers.get("User-Agent")).toBe(CODEX_USER_AGENT);
     const transformed = JSON.parse(result.bodyText) as {
       instructions?: string;
     };
@@ -376,6 +381,7 @@ describe("proxy contract: codex", () => {
       session_id: "raw-session-underscore",
       "session-id": "raw-session-header",
       "x-session-affinity": "raw-session-affinity",
+      "x-session-id": "raw-x-session-id",
       "x-client-request-id": "raw-request-id",
     });
     const bodyJson = {
@@ -404,9 +410,10 @@ describe("proxy contract: codex", () => {
     };
     expect(transformed.prompt_cache_key).toBe("kleis_derived_session");
     expect(headers.get("session_id")).toBeNull();
-    expect(headers.get("x-session-affinity")).toBeNull();
+    expect(headers.get("x-session-affinity")).toBe("kleis_derived_session");
+    expect(headers.get("x-session-id")).toBe("kleis_derived_session");
     expect(headers.get("session-id")).toBe("kleis_derived_session");
-    expect(headers.get("x-client-request-id")).toBe("kleis_derived_session");
+    expect(headers.get("x-client-request-id")).toBeNull();
   });
 
   test("does not use x-client-request-id as codex session affinity", () => {
@@ -719,6 +726,77 @@ describe("proxy contract: codex", () => {
     expect(sseText).toContain(": kleis-keepalive");
   });
 
+  test("logs OpenAI terminal failure details", async () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const response = createOpenAiSseUsagePassthrough({
+        response: createSseResponse([
+          {
+            type: "response.failed",
+            response: {
+              status: "failed",
+              error: {
+                code: "context_length_exceeded",
+                message: "Input exceeded the model context window",
+                param: "input",
+              },
+            },
+          },
+        ]),
+        extractUsage: () => null,
+      });
+      await response.text();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(warnings).toHaveLength(1);
+    expect(JSON.parse(warnings[0] ?? "{}")).toMatchObject({
+      event: "openai_sse_terminal_anomaly",
+      terminalAnomaly: "response.failed",
+      responseStatus: "failed",
+      errorCode: "context_length_exceeded",
+      errorMessage: "Input exceeded the model context window",
+      errorParam: "input",
+    });
+  });
+
+  test("logs OpenAI incomplete reasons", async () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const response = createOpenAiSseUsagePassthrough({
+        response: createSseResponse([
+          {
+            type: "response.incomplete",
+            response: {
+              status: "incomplete",
+              incomplete_details: { reason: "max_output_tokens" },
+            },
+          },
+        ]),
+        extractUsage: () => null,
+      });
+      await response.text();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(JSON.parse(warnings[0] ?? "{}")).toMatchObject({
+      event: "openai_sse_terminal_anomaly",
+      terminalAnomaly: "response.incomplete",
+      responseStatus: "incomplete",
+      incompleteReason: "max_output_tokens",
+    });
+  });
+
   test("routes compaction turns over HTTP instead of WebSocket", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies);
@@ -906,11 +984,14 @@ describe("proxy contract: codex", () => {
     expect(lowerHeaderEntries.authorization).toBe("Bearer codex-access");
     expect(lowerHeaderEntries["content-length"]).toBeUndefined();
     expect(lowerHeaderEntries.session_id).toBeUndefined();
-    expect(lowerHeaderEntries["x-session-affinity"]).toBeUndefined();
     expect(lowerHeaderEntries["session-id"]).toMatch(/^kleis_/);
-    expect(lowerHeaderEntries["x-client-request-id"]).toBe(
+    expect(lowerHeaderEntries["x-session-affinity"]).toBe(
       lowerHeaderEntries["session-id"]
     );
+    expect(lowerHeaderEntries["x-session-id"]).toBe(
+      lowerHeaderEntries["session-id"]
+    );
+    expect(lowerHeaderEntries["x-client-request-id"]).toBeUndefined();
   });
 
   test("uses cached delta for raw response item replay", async () => {

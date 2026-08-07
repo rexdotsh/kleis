@@ -36,7 +36,7 @@ const proxyErrorResponse = (message: string, type = "proxy_error") => ({
   },
 });
 
-const CODEX_SSE_HEADER_TIMEOUT_MS = 60_000;
+const CODEX_SSE_HEADER_TIMEOUT_MS = 5 * 60 * 1000;
 const CODEX_WEBSOCKET_ENABLED =
   process.env.CODEX_WEBSOCKET_ENABLED?.trim().toLowerCase() === "true";
 
