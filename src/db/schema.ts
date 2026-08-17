@@ -154,62 +154,6 @@ export const requestUsageBuckets = sqliteTable(
   ]
 );
 
-export const providerAccountTracking = sqliteTable(
-  "provider_account_tracking",
-  {
-    providerAccountId: text("provider_account_id")
-      .primaryKey()
-      .references(() => providerAccounts.id, { onDelete: "cascade" }),
-    provider: text("provider", { enum: providers }).notNull(),
-    fetchedAt: integer("fetched_at", { mode: "number" }),
-    attemptedAt: integer("attempted_at", { mode: "number" }).notNull(),
-    nextFetchAt: integer("next_fetch_at", { mode: "number" }),
-    failureCount: integer("failure_count", { mode: "number" })
-      .notNull()
-      .default(0),
-    lastHttpStatus: integer("last_http_status", { mode: "number" }),
-    lastError: text("last_error"),
-    dataJson: text("data_json"),
-  },
-  (table) => [
-    index("provider_account_tracking_provider_idx").on(table.provider),
-  ]
-);
-
-export const claudeApiRateLimitSnapshots = sqliteTable(
-  "claude_api_rate_limit_snapshots",
-  {
-    providerAccountId: text("provider_account_id")
-      .primaryKey()
-      .references(() => providerAccounts.id, { onDelete: "cascade" }),
-    fetchedAt: integer("fetched_at", { mode: "number" }).notNull(),
-    sourceEndpoint: text("source_endpoint").notNull(),
-    workspaceId: text("workspace_id"),
-    dataJson: text("data_json").notNull(),
-  }
-);
-
-export const codexThreadUsage = sqliteTable(
-  "codex_thread_usage",
-  {
-    providerAccountId: text("provider_account_id")
-      .notNull()
-      .references(() => providerAccounts.id, { onDelete: "cascade" }),
-    threadId: text("thread_id").notNull(),
-    fetchedAt: integer("fetched_at", { mode: "number" }).notNull(),
-    estimatedUsageCreditsMicros: integer("estimated_usage_credits_micros", {
-      mode: "number",
-    }),
-    estimatedUsageUsdMicros: integer("estimated_usage_usd_micros", {
-      mode: "number",
-    }),
-    groupsJson: text("groups_json").notNull(),
-  },
-  (table) => [
-    primaryKey({ columns: [table.providerAccountId, table.threadId] }),
-  ]
-);
-
 export const codexResetCreditRedemptions = sqliteTable(
   "codex_reset_credit_redemptions",
   {

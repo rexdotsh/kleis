@@ -1,7 +1,6 @@
 import {
   $,
   accountById,
-  accountTrackingForId,
   accountUsageForId,
   activeKeysWithModelsUrl,
   api,
@@ -143,7 +142,7 @@ function claudeTrackingHtml(tracking) {
 }
 
 function accountTrackingHtml(account) {
-  const tracking = accountTrackingForId(account.id);
+  const tracking = account.quota;
   if (account.provider === "copilot") return "";
   if (!tracking) {
     return '<div class="account-quota-empty">Quota has not been fetched yet.</div>';
@@ -152,14 +151,13 @@ function accountTrackingHtml(account) {
     account.provider === "codex"
       ? codexTrackingHtml(account, tracking)
       : claudeTrackingHtml(tracking);
-  const stateClass = tracking.stale ? "stale" : "fresh";
+  const stateClass = tracking.error ? "stale" : "fresh";
   const fetched = tracking.fetchedAt
     ? `quota ${relativeTime(tracking.fetchedAt)}`
     : "quota unavailable";
   return `<div class="account-quota-state ${stateClass}">
     <span>${escapeHtml(fetched)}</span>
-    ${tracking.stale ? "<span>stale</span>" : ""}
-    ${tracking.lastError ? `<span class="text-error" title="${escapeHtml(tracking.lastError)}">${escapeHtml(tracking.lastError)}</span>` : ""}
+    ${tracking.error ? `<span class="text-error" title="${escapeHtml(tracking.error)}">${escapeHtml(tracking.error)}</span>` : ""}
   </div>${snapshot}`;
 }
 
@@ -211,10 +209,6 @@ function accountCardHtml(account) {
     ? ""
     : `<button class="btn btn-ghost btn-sm" data-action="set-primary" data-account-id="${account.id}" type="button">set primary</button>`;
   const editBtn = `<button class="btn btn-ghost btn-sm" data-action="edit-account" data-account-id="${account.id}" type="button">edit</button>`;
-  const quotaBtn =
-    account.provider === "copilot"
-      ? ""
-      : `<button class="btn btn-ghost btn-sm" data-action="refresh-account-tracking" data-account-id="${account.id}" type="button">quota</button>`;
 
   const identityParts = [];
   if (account.accountId && account.accountId !== name) {
@@ -246,7 +240,6 @@ function accountCardHtml(account) {
       <div class="card-actions">
         ${editBtn}
         ${setPrimaryBtn}
-        ${quotaBtn}
         <button class="btn btn-ghost btn-sm" data-action="refresh-account" data-account-id="${account.id}" type="button">refresh</button>
         <button class="btn btn-danger btn-sm" data-action="delete-account" data-account-id="${account.id}" type="button">delete</button>
       </div>

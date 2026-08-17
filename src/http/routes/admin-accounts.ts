@@ -11,11 +11,9 @@ import {
 } from "../../domain/providers/provider-service";
 import {
   CodexResetCreditConsumeError,
-  getProviderAccountTrackingView,
-  listProviderAccountTrackingViews,
+  listProviderAccountQuotas,
   queryCodexThreadUsage,
   redeemCodexResetCredit,
-  refreshProviderAccountTracking,
 } from "../../domain/providers/provider-account-tracking";
 import {
   getProviderAccountUsageDetail,
@@ -154,8 +152,12 @@ export const adminAccountsRoutes = new Hono()
       listProviderAccounts(db),
       listProviderStatuses(db),
     ]);
+    const quotas = await listProviderAccountQuotas(db, accounts);
     return context.json({
-      accounts: accounts.map(toAdminAccountView),
+      accounts: accounts.map((account) => ({
+        ...toAdminAccountView(account),
+        quota: quotas.get(account.id) ?? null,
+      })),
       providers: providerStatuses,
     });
   })
@@ -194,50 +196,6 @@ export const adminAccountsRoutes = new Hono()
         now,
         usage,
       });
-    }
-  )
-  .get("/tracking", async (context) => {
-    const tracking = await listProviderAccountTrackingViews(db);
-    return context.json({ tracking });
-  })
-  .get(
-    "/:id/tracking",
-    zValidator("param", accountIdParamsSchema),
-    async (context) => {
-      const { id } = context.req.valid("param");
-      const account = await findProviderAccountById(db, id);
-      if (!account) {
-        return context.json(accountNotFoundBody, 404);
-      }
-      const tracking = await getProviderAccountTrackingView(db, id);
-      return context.json({ tracking });
-    }
-  )
-  .post(
-    "/:id/tracking/refresh",
-    zValidator("param", accountIdParamsSchema),
-    async (context) => {
-      const { id } = context.req.valid("param");
-      const account = await findProviderAccountById(db, id);
-      if (!account) {
-        return context.json(accountNotFoundBody, 404);
-      }
-      if (account.provider === "copilot") {
-        return context.json(
-          {
-            error: "bad_request",
-            message: "Account quota tracking is available for Codex and Claude",
-          },
-          400
-        );
-      }
-      const refreshed = await refreshProviderAccountTracking(db, id, {
-        force: true,
-      });
-      const tracking = refreshed
-        ? await getProviderAccountTrackingView(db, id)
-        : null;
-      return context.json({ tracking, refreshed: true });
     }
   )
   .post(

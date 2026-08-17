@@ -85,6 +85,13 @@
       "when": 1786973049039,
       "tag": "0011_slimy_doctor_doom",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1786976809005,
+      "tag": "0012_perfect_sugar_man",
+      "breakpoints": true
     }
   ]
 }

@@ -28,7 +28,6 @@ const state = {
   accountsById: new Map(),
   providerStatuses: [],
   accountUsageById: new Map(),
-  accountTrackingById: new Map(),
   accountUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   keys: [],
   keysById: new Map(),
@@ -184,10 +183,6 @@ function modelsUrlForKey(key) {
 
 function accountUsageForId(accountId) {
   return state.accountUsageById.get(accountId) || null;
-}
-
-function accountTrackingForId(accountId) {
-  return state.accountTrackingById.get(accountId) || null;
 }
 
 function usageForKey(keyId) {
@@ -622,12 +617,10 @@ async function loadDashboard() {
 async function loadAccounts() {
   showLoading("accounts-list");
   try {
-    const [accountsResult, usageResult, trackingResult] =
-      await Promise.allSettled([
-        api("/admin/accounts"),
-        api(`/admin/accounts/usage?windowMs=${state.accountUsageWindowMs}`),
-        api("/admin/accounts/tracking"),
-      ]);
+    const [accountsResult, usageResult] = await Promise.allSettled([
+      api("/admin/accounts"),
+      api(`/admin/accounts/usage?windowMs=${state.accountUsageWindowMs}`),
+    ]);
 
     if (accountsResult.status !== "fulfilled") throw accountsResult.reason;
 
@@ -648,16 +641,6 @@ async function loadAccounts() {
       toast("Failed to load account usage", "error");
     }
 
-    if (trackingResult.status === "fulfilled") {
-      state.accountTrackingById = usageMapFromList(
-        trackingResult.value.tracking,
-        "providerAccountId"
-      );
-    } else {
-      state.accountTrackingById = new Map();
-      toast("Failed to load account quotas", "error");
-    }
-
     syncAccountWindowButtons();
 
     refreshOpenKeyScopeModal("create");
@@ -671,7 +654,6 @@ async function loadAccounts() {
     state.accounts = [];
     state.accountsById = new Map();
     state.accountUsageById = new Map();
-    state.accountTrackingById = new Map();
     state.providerStatuses = [];
     $("#providers-status").innerHTML = "";
     $("#accounts-list").innerHTML =
@@ -794,42 +776,26 @@ async function deleteAccount(id) {
   }
 }
 
-async function runAccountRefresh(id, options) {
+async function refreshAccount(id) {
   const btn = document.querySelector(
-    `[data-action="${options.action}"][data-account-id="${id}"]`
+    `[data-action="refresh-account"][data-account-id="${id}"]`
   );
   if (btn) {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span>';
   }
   try {
-    await api(`/admin/accounts/${id}/${options.path}`, { method: "POST" });
-    toast(options.message);
+    await api(`/admin/accounts/${id}/refresh`, { method: "POST" });
+    toast("Token refreshed");
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
     if (btn) {
       btn.disabled = false;
-      btn.textContent = options.label;
+      btn.textContent = "refresh";
     }
   }
 }
-
-const refreshAccount = (id) =>
-  runAccountRefresh(id, {
-    action: "refresh-account",
-    path: "refresh",
-    message: "Token refreshed",
-    label: "refresh",
-  });
-
-const refreshAccountTracking = (id) =>
-  runAccountRefresh(id, {
-    action: "refresh-account-tracking",
-    path: "tracking/refresh",
-    message: "Account quota refreshed",
-    label: "quota",
-  });
 
 async function redeemResetCredit(accountId, creditId) {
   const account = accountById(accountId);
@@ -1375,7 +1341,6 @@ export {
   $,
   $$,
   accountById,
-  accountTrackingForId,
   accountUsageForId,
   activeKeysWithModelsUrl,
   api,
@@ -1410,7 +1375,6 @@ export {
   openEditKeyModal,
   readPersistedToken,
   refreshAccount,
-  refreshAccountTracking,
   redeemResetCredit,
   relativeTime,
   resolveConfirm,

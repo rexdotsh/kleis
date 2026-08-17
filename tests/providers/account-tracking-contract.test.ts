@@ -8,10 +8,7 @@ import {
   decodeCodexUsageProfile,
   decodeCodexUsageStatus,
 } from "../../src/providers/account-tracking/codex";
-import {
-  decodeClaudeSubscriptionUsage,
-  readClaudeRateLimitHeaders,
-} from "../../src/providers/account-tracking/claude";
+import { decodeClaudeSubscriptionUsage } from "../../src/providers/account-tracking/claude";
 
 describe("Codex account tracking contracts", () => {
   test("builds both supported private route styles", () => {
@@ -154,24 +151,5 @@ describe("Claude account tracking contracts", () => {
     expect(result.limits[0]?.modelDisplayName).toBe("Fable");
     expect(result.limits[0]?.isActive).toBe(false);
     expect(result).not.toHaveProperty("future_field");
-  });
-
-  test("normalizes unified response headers from 0-1 to 0-100", () => {
-    const headers = new Headers({
-      "anthropic-ratelimit-unified-5h-utilization": "0.43",
-      "anthropic-ratelimit-unified-5h-reset": "2026-08-17T16:30:00Z",
-      "anthropic-ratelimit-tokens-remaining": "1200",
-      "anthropic-workspace-id": "workspace-1",
-    });
-    const result = readClaudeRateLimitHeaders(headers);
-
-    expect(result?.workspaceId).toBe("workspace-1");
-    expect(result?.unified.fiveHour).toEqual({
-      utilization: 43,
-      rawUtilization: "0.43",
-      resetsAt: "2026-08-17T16:30:00Z",
-    });
-    expect(result?.limits["anthropic-ratelimit-tokens-remaining"]).toBe("1200");
-    expect(readClaudeRateLimitHeaders(new Headers())).toBeNull();
   });
 });

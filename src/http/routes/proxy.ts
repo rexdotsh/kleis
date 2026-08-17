@@ -6,10 +6,8 @@ import {
   recordRequestUsage,
   recordTokenUsage,
 } from "../../db/repositories/request-usage";
-import { saveClaudeRateLimitSnapshot } from "../../db/repositories/provider-account-tracking";
 import { getRoutableProviderAccount } from "../../domain/providers/provider-service";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
-import { readClaudeRateLimitHeaders } from "../../providers/account-tracking/claude";
 import {
   deriveCodexSessionId,
   prepareCodexProxyRequest,
@@ -388,24 +386,6 @@ const proxyRequest = async (
     });
     usageRecorder.recordImmediate(500);
     throw error;
-  }
-
-  if (route.provider === "claude") {
-    const rateLimits = readClaudeRateLimitHeaders(upstreamResponse.headers);
-    if (rateLimits) {
-      runInBackground(
-        saveClaudeRateLimitSnapshot(db, {
-          providerAccountId,
-          fetchedAt: Date.now(),
-          sourceEndpoint: route.endpoint,
-          workspaceId: rateLimits.workspaceId,
-          data: {
-            limits: rateLimits.limits,
-            unified: rateLimits.unified,
-          },
-        })
-      );
-    }
   }
 
   let responseToClient = upstreamResponse;
