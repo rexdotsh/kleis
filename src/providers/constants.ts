@@ -19,7 +19,7 @@ export const ANTHROPIC_API_BASE_URL = "https://api.anthropic.com";
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/provider/provider.ts#L124-L127
 // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L536
 const CLAUDE_CODE_BETA_HEADER = "claude-code-20250219";
-const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
+export const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
 const CLAUDE_INTERLEAVED_THINKING_BETA_HEADER =
   "interleaved-thinking-2025-05-14";
 const CLAUDE_FINE_GRAINED_TOOL_STREAMING_BETA_HEADER =

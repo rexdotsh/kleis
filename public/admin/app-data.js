@@ -794,47 +794,42 @@ async function deleteAccount(id) {
   }
 }
 
-async function refreshAccount(id) {
+async function runAccountRefresh(id, options) {
   const btn = document.querySelector(
-    `[data-action="refresh-account"][data-account-id="${id}"]`
+    `[data-action="${options.action}"][data-account-id="${id}"]`
   );
   if (btn) {
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner"></span>';
   }
   try {
-    await api(`/admin/accounts/${id}/refresh`, { method: "POST" });
-    toast("Token refreshed");
+    await api(`/admin/accounts/${id}/${options.path}`, { method: "POST" });
+    toast(options.message);
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "refresh";
+      btn.textContent = options.label;
     }
   }
 }
 
-async function refreshAccountTracking(id) {
-  const btn = document.querySelector(
-    `[data-action="refresh-account-tracking"][data-account-id="${id}"]`
-  );
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>';
-  }
-  try {
-    await api(`/admin/accounts/${id}/tracking/refresh`, { method: "POST" });
-    toast("Account quota refreshed");
-    await loadAccounts();
-  } catch (e) {
-    toast(e.message, "error");
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = "quota";
-    }
-  }
-}
+const refreshAccount = (id) =>
+  runAccountRefresh(id, {
+    action: "refresh-account",
+    path: "refresh",
+    message: "Token refreshed",
+    label: "refresh",
+  });
+
+const refreshAccountTracking = (id) =>
+  runAccountRefresh(id, {
+    action: "refresh-account-tracking",
+    path: "tracking/refresh",
+    message: "Account quota refreshed",
+    label: "quota",
+  });
 
 async function redeemResetCredit(accountId, creditId) {
   const account = accountById(accountId);

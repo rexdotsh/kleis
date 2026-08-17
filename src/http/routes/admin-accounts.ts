@@ -283,12 +283,7 @@ export const adminAccountsRoutes = new Hono()
         );
       }
       try {
-        const result = await redeemCodexResetCredit(db, id, {
-          ...(body.creditId !== undefined ? { creditId: body.creditId } : {}),
-          ...(body.redeemRequestId !== undefined
-            ? { redeemRequestId: body.redeemRequestId }
-            : {}),
-        });
+        const result = await redeemCodexResetCredit(db, id, body);
         return context.json({ result });
       } catch (error) {
         if (error instanceof CodexResetCreditConsumeError) {

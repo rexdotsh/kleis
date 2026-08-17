@@ -9,61 +9,26 @@ import {
   type Provider,
 } from "../schema";
 import type {
-  CodexResetCredit,
+  CodexAccounts,
+  CodexResetCredits,
   CodexThreadUsageEntry,
+  CodexUsageProfile,
   CodexUsageStatus,
 } from "../../providers/account-tracking/codex";
+import type { ClaudeSubscriptionUsage } from "../../providers/account-tracking/claude";
 import { isObjectRecord } from "../../utils/object";
 
 export type CodexTrackingData = {
   provider: "codex";
   status?: CodexUsageStatus;
-  resetCredits?: {
-    availableCount: number | null;
-    credits: CodexResetCredit[];
-  };
-  profile?: {
-    lifetimeTokens: number | null;
-    peakDailyTokens: number | null;
-    longestRunningTurnSeconds: number | null;
-    currentStreakDays: number | null;
-    longestStreakDays: number | null;
-    dailyUsageBuckets: Array<{ startDate: string; tokens: number }>;
-  };
-  accounts?: {
-    accounts: Array<{
-      id: string;
-      name: string | null;
-      profilePictureUrl: string | null;
-      structure: string | null;
-    }>;
-    accountOrdering: string[];
-    defaultAccountId: string | null;
-  };
+  resetCredits?: CodexResetCredits;
+  profile?: CodexUsageProfile;
+  accounts?: CodexAccounts;
 };
 
 export type ClaudeTrackingData = {
   provider: "claude";
-  subscription?: {
-    source: "oauth";
-    fiveHour: {
-      utilization: number | null;
-      resetsAt: string | null;
-      limitDollars: number | null;
-      usedDollars: number | null;
-      remainingDollars: number | null;
-    } | null;
-    sevenDay: {
-      utilization: number | null;
-      resetsAt: string | null;
-      limitDollars: number | null;
-      usedDollars: number | null;
-      remainingDollars: number | null;
-    } | null;
-    modelWindows: Record<string, unknown>;
-    extraUsage: Record<string, unknown> | null;
-    limits: Record<string, unknown>[];
-  };
+  subscription?: ClaudeSubscriptionUsage;
 };
 
 export type ProviderTrackingData = CodexTrackingData | ClaudeTrackingData;
@@ -156,21 +121,18 @@ export const saveProviderAccountTracking = async (
     lastError: input.lastError,
     dataJson: input.data ? JSON.stringify(input.data) : null,
   };
-  await database
+  const [saved] = await database
     .insert(providerAccountTracking)
     .values(values)
     .onConflictDoUpdate({
       target: providerAccountTracking.providerAccountId,
       set: values,
-    });
-  const saved = await findProviderAccountTracking(
-    database,
-    input.providerAccountId
-  );
+    })
+    .returning();
   if (!saved) {
-    throw new Error("Failed to load provider account tracking snapshot");
+    throw new Error("Failed to save provider account tracking snapshot");
   }
-  return saved;
+  return toTrackingRecord(saved);
 };
 
 export const saveClaudeRateLimitSnapshot = async (

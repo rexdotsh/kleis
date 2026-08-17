@@ -1,55 +1,41 @@
+import { ANTHROPIC_API_BASE_URL, CLAUDE_OAUTH_BETA_HEADER } from "../constants";
 import {
-  ANTHROPIC_API_BASE_URL,
-  CLAUDE_REQUIRED_BETA_HEADERS,
-} from "../constants";
-import { isObjectRecord } from "../../utils/object";
+  decodeArray,
+  decodeFields,
+  readBoolean,
+  readNumber,
+  readObject,
+  readString,
+  requireObject,
+} from "./decode";
 import { fetchTrackingJson } from "./http";
 
 const CLAUDE_USAGE_TIMEOUT_MS = 10_000;
 
-const readString = (value: unknown): string | null =>
-  typeof value === "string" ? value : null;
-const readNumber = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? value : null;
-const readBoolean = (value: unknown): boolean | null =>
-  typeof value === "boolean" ? value : null;
-const readObject = (value: unknown): Record<string, unknown> | null =>
-  isObjectRecord(value) ? value : null;
+const decodeUsageWindow = (value: unknown) =>
+  decodeFields(value, {
+    utilization: ["utilization", readNumber],
+    resetsAt: ["resets_at", readString],
+    limitDollars: ["limit_dollars", readNumber],
+    usedDollars: ["used_dollars", readNumber],
+    remainingDollars: ["remaining_dollars", readNumber],
+  });
 
-const decodeUsageWindow = (value: unknown) => {
-  const input = readObject(value);
-  if (!input) {
-    return null;
-  }
-  return {
-    utilization: readNumber(input.utilization),
-    resetsAt: readString(input.resets_at),
-    limitDollars: readNumber(input.limit_dollars),
-    usedDollars: readNumber(input.used_dollars),
-    remainingDollars: readNumber(input.remaining_dollars),
-  };
-};
-
-const decodeExtraUsage = (value: unknown) => {
-  const input = readObject(value);
-  if (!input) {
-    return null;
-  }
-  return {
-    isEnabled: readBoolean(input.is_enabled),
-    monthlyLimit: readNumber(input.monthly_limit),
-    usedCredits: readNumber(input.used_credits),
-    utilization: readNumber(input.utilization),
-    currency: readString(input.currency),
-    decimalPlaces: readNumber(input.decimal_places),
-    disabledReason: readString(input.disabled_reason),
-    userDisabled: readBoolean(input.user_disabled),
-    spendLimitReached: readBoolean(input.spend_limit_reached),
-    creditsEverEnabled: readBoolean(input.credits_ever_enabled),
-    daily: decodeUsageWindow(input.daily),
-    weekly: decodeUsageWindow(input.weekly),
-  };
-};
+const decodeExtraUsage = (value: unknown) =>
+  decodeFields(value, {
+    isEnabled: ["is_enabled", readBoolean],
+    monthlyLimit: ["monthly_limit", readNumber],
+    usedCredits: ["used_credits", readNumber],
+    utilization: ["utilization", readNumber],
+    currency: ["currency", readString],
+    decimalPlaces: ["decimal_places", readNumber],
+    disabledReason: ["disabled_reason", readString],
+    userDisabled: ["user_disabled", readBoolean],
+    spendLimitReached: ["spend_limit_reached", readBoolean],
+    creditsEverEnabled: ["credits_ever_enabled", readBoolean],
+    daily: ["daily", decodeUsageWindow],
+    weekly: ["weekly", decodeUsageWindow],
+  });
 
 const decodeLimit = (value: unknown) => {
   const input = readObject(value);
@@ -59,23 +45,25 @@ const decodeLimit = (value: unknown) => {
   const scope = readObject(input.scope);
   const model = readObject(scope?.model);
   return {
-    kind: readString(input.kind),
-    group: readString(input.group),
-    percent: readNumber(input.percent),
-    severity: readString(input.severity),
-    resetsAt: readString(input.resets_at),
+    ...decodeFields(input, {
+      kind: ["kind", readString],
+      group: ["group", readString],
+      percent: ["percent", readNumber],
+      severity: ["severity", readString],
+      resetsAt: ["resets_at", readString],
+      isActive: ["is_active", readBoolean],
+    }),
     modelId: readString(model?.id),
     modelDisplayName: readString(model?.display_name),
     surface: readString(scope?.surface),
-    isActive: readBoolean(input.is_active),
   };
 };
 
 export const decodeClaudeSubscriptionUsage = (value: unknown) => {
-  const input = readObject(value);
-  if (!input) {
-    throw new Error("Claude subscription usage response is malformed");
-  }
+  const input = requireObject(
+    value,
+    "Claude subscription usage response is malformed"
+  );
 
   const modelWindows: Record<string, ReturnType<typeof decodeUsageWindow>> = {};
   for (const [key, entry] of Object.entries(input)) {
@@ -90,11 +78,13 @@ export const decodeClaudeSubscriptionUsage = (value: unknown) => {
     sevenDay: decodeUsageWindow(input.seven_day),
     modelWindows,
     extraUsage: decodeExtraUsage(input.extra_usage),
-    limits: Array.isArray(input.limits)
-      ? input.limits.map(decodeLimit).filter((limit) => limit !== null)
-      : [],
+    limits: decodeArray(input.limits, decodeLimit),
   };
 };
+
+export type ClaudeSubscriptionUsage = ReturnType<
+  typeof decodeClaudeSubscriptionUsage
+>;
 
 export const fetchClaudeSubscriptionUsage = async (accessToken: string) => {
   const data = await fetchTrackingJson({
@@ -102,10 +92,7 @@ export const fetchClaudeSubscriptionUsage = async (accessToken: string) => {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
-      "anthropic-beta":
-        CLAUDE_REQUIRED_BETA_HEADERS.find((header) =>
-          header.startsWith("oauth-")
-        ) ?? "oauth-2025-04-20",
+      "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
       "anthropic-version": "2023-06-01",
       "User-Agent": "Kleis/1 account-usage",
     },
@@ -117,32 +104,15 @@ export const fetchClaudeSubscriptionUsage = async (accessToken: string) => {
 
 const RATE_LIMIT_FIELDS = [
   "retry-after",
-  "anthropic-ratelimit-requests-limit",
-  "anthropic-ratelimit-requests-remaining",
-  "anthropic-ratelimit-requests-reset",
-  "anthropic-ratelimit-tokens-limit",
-  "anthropic-ratelimit-tokens-remaining",
-  "anthropic-ratelimit-tokens-reset",
-  "anthropic-ratelimit-input-tokens-limit",
-  "anthropic-ratelimit-input-tokens-remaining",
-  "anthropic-ratelimit-input-tokens-reset",
-  "anthropic-ratelimit-output-tokens-limit",
-  "anthropic-ratelimit-output-tokens-remaining",
-  "anthropic-ratelimit-output-tokens-reset",
-] as const;
+  ...["requests", "tokens", "input-tokens", "output-tokens"].flatMap(
+    (resource) =>
+      ["limit", "remaining", "reset"].map(
+        (metric) => `anthropic-ratelimit-${resource}-${metric}`
+      )
+  ),
+];
 
-const UNIFIED_FIELDS = [
-  [
-    "fiveHour",
-    "anthropic-ratelimit-unified-5h-utilization",
-    "anthropic-ratelimit-unified-5h-reset",
-  ],
-  [
-    "sevenDay",
-    "anthropic-ratelimit-unified-7d-utilization",
-    "anthropic-ratelimit-unified-7d-reset",
-  ],
-] as const;
+const UNIFIED_WINDOWS = { fiveHour: "5h", sevenDay: "7d" } as const;
 
 export const readClaudeRateLimitHeaders = (headers: Headers) => {
   const limits: Record<string, string> = {};
@@ -157,7 +127,8 @@ export const readClaudeRateLimitHeaders = (headers: Headers) => {
     string,
     { utilization: number; rawUtilization: string; resetsAt: string | null }
   > = {};
-  for (const [name, utilizationHeader, resetHeader] of UNIFIED_FIELDS) {
+  for (const [name, window] of Object.entries(UNIFIED_WINDOWS)) {
+    const utilizationHeader = `anthropic-ratelimit-unified-${window}-utilization`;
     const rawUtilization = headers.get(utilizationHeader);
     if (rawUtilization === null) {
       continue;
@@ -169,7 +140,7 @@ export const readClaudeRateLimitHeaders = (headers: Headers) => {
     unified[name] = {
       utilization: Math.max(0, Math.min(100, parsed * 100)),
       rawUtilization,
-      resetsAt: headers.get(resetHeader),
+      resetsAt: headers.get(`anthropic-ratelimit-unified-${window}-reset`),
     };
   }
 

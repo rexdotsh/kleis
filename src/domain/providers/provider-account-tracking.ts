@@ -42,9 +42,6 @@ const isSupportedTrackingAccount = (
   account.provider === "codex" || account.provider === "claude";
 
 const safeErrorMessage = (error: unknown): string => {
-  if (error instanceof AccountTrackingHttpError) {
-    return error.message;
-  }
   if (error instanceof DOMException && error.name === "TimeoutError") {
     return "Account tracking request timed out";
   }
@@ -61,22 +58,19 @@ const calculateNextFetchAt = (
   failureCount: number,
   errors: readonly unknown[]
 ): number => {
-  const retryAfterMs = errors.reduce<number | null>((current, error) => {
-    if (!(error instanceof AccountTrackingHttpError)) {
-      return current;
-    }
-    if (error.retryAfterMs === null) {
-      return current;
-    }
-    return Math.max(current ?? 0, error.retryAfterMs);
-  }, null);
-  if (retryAfterMs !== null) {
-    return now + Math.min(retryAfterMs, MAX_BACKOFF_MS);
-  }
+  const retryAfterMs = errors.flatMap((error) =>
+    error instanceof AccountTrackingHttpError && error.retryAfterMs !== null
+      ? [error.retryAfterMs]
+      : []
+  );
+  const backoffMs = Math.min(
+    TRACKING_CACHE_MS * 2 ** Math.max(0, failureCount - 1),
+    MAX_BACKOFF_MS
+  );
   return (
     now +
     Math.min(
-      TRACKING_CACHE_MS * 2 ** Math.max(0, failureCount - 1),
+      retryAfterMs.length ? Math.max(...retryAfterMs) : backoffMs,
       MAX_BACKOFF_MS
     )
   );
@@ -86,9 +80,12 @@ const resolveTrackingAccount = async (
   database: Database,
   providerAccountId: string,
   now: number,
-  forceTokenRefresh = false
+  forceTokenRefresh = false,
+  knownAccount?: ProviderAccountRecord
 ): Promise<SupportedTrackingAccount | null> => {
-  let account = await findProviderAccountById(database, providerAccountId);
+  let account =
+    knownAccount ??
+    (await findProviderAccountById(database, providerAccountId));
   if (!account || !isSupportedTrackingAccount(account)) {
     return null;
   }
@@ -100,129 +97,124 @@ const resolveTrackingAccount = async (
   return account && isSupportedTrackingAccount(account) ? account : null;
 };
 
-const shouldRetryAuthorization = (
-  results: readonly PromiseSettledResult<unknown>[]
-): boolean =>
-  results.some(
-    (result) =>
-      result.status === "rejected" && errorStatus(result.reason) === 401
-  );
-
-const fetchCodexSnapshot = (account: SupportedTrackingAccount) => {
-  const fetchAll = () =>
-    Promise.allSettled([
-      fetchCodexUsageStatus(account.accessToken, account.accountId),
-      fetchCodexResetCredits(account.accessToken, account.accountId),
-      fetchCodexUsageProfile(account.accessToken, account.accountId),
-      fetchCodexAccounts(account.accessToken, account.accountId),
-    ]);
-  return fetchAll();
+const settle = async <T>(
+  promise: Promise<T>
+): Promise<PromiseSettledResult<T>> => {
+  try {
+    return { status: "fulfilled", value: await promise };
+  } catch (reason) {
+    return { status: "rejected", reason };
+  }
 };
 
-const saveCodexSnapshot = (
-  database: Database,
+type CodexSnapshotField = "status" | "resetCredits" | "profile" | "accounts";
+type CodexSnapshotResult = [CodexSnapshotField, PromiseSettledResult<unknown>];
+type TrackingFetchResult = {
+  data: CodexTrackingData | ClaudeTrackingData;
+  errors: unknown[];
+  fetched: boolean;
+};
+
+const CODEX_SNAPSHOT_FETCHERS: readonly [
+  CodexSnapshotField,
+  (accessToken: string, accountId: string | null) => Promise<unknown>,
+][] = [
+  ["status", fetchCodexUsageStatus],
+  ["resetCredits", fetchCodexResetCredits],
+  ["profile", fetchCodexUsageProfile],
+  ["accounts", fetchCodexAccounts],
+];
+
+const fetchCodexSnapshot = async (
   account: SupportedTrackingAccount,
-  existing: ProviderAccountTrackingRecord | null,
-  results: Awaited<ReturnType<typeof fetchCodexSnapshot>>,
-  now: number
-) => {
-  const previous: CodexTrackingData =
-    existing?.data?.provider === "codex"
-      ? existing.data
-      : { provider: "codex" };
-  const data: CodexTrackingData = { ...previous };
-  const fields = ["status", "resetCredits", "profile", "accounts"] as const;
+  previous: CodexTrackingData
+): Promise<TrackingFetchResult> => {
+  const results = await Promise.all(
+    CODEX_SNAPSHOT_FETCHERS.map(async ([field, fetcher]) => [
+      field,
+      await settle(fetcher(account.accessToken, account.accountId)),
+    ]) as Promise<CodexSnapshotResult>[]
+  );
+  const data = { ...previous };
   const errors: unknown[] = [];
-  let successCount = 0;
-  for (const [index, result] of results.entries()) {
+  for (const [field, result] of results) {
     if (result.status === "fulfilled") {
-      const field = fields[index];
-      if (field) {
-        Object.assign(data, { [field]: result.value });
-        successCount += 1;
-      }
+      Object.assign(data, { [field]: result.value });
     } else {
       errors.push(result.reason);
     }
   }
-  const failureCount =
-    errors.length > 0 ? (existing?.failureCount ?? 0) + 1 : 0;
-  return saveProviderAccountTracking(database, {
-    providerAccountId: account.id,
-    provider: "codex",
-    attemptedAt: now,
-    fetchedAt: successCount > 0 ? now : (existing?.fetchedAt ?? null),
-    nextFetchAt:
-      errors.length > 0
-        ? calculateNextFetchAt(now, failureCount, errors)
-        : now + TRACKING_CACHE_MS,
-    failureCount,
-    lastHttpStatus:
-      errors.map(errorStatus).find((status) => status !== null) ?? null,
-    lastError:
-      errors.length > 0 ? errors.map(safeErrorMessage).join("; ") : null,
+  return {
     data,
-  });
+    errors,
+    fetched: errors.length < CODEX_SNAPSHOT_FETCHERS.length,
+  };
 };
 
-const saveClaudeSnapshot = (
+const fetchClaudeSnapshot = async (
+  account: SupportedTrackingAccount,
+  previous: ClaudeTrackingData
+): Promise<TrackingFetchResult> => {
+  const result = await settle(
+    fetchClaudeSubscriptionUsage(account.accessToken)
+  );
+  return result.status === "fulfilled"
+    ? {
+        data: { ...previous, subscription: result.value },
+        errors: [],
+        fetched: true,
+      }
+    : { data: previous, errors: [result.reason], fetched: false };
+};
+
+const withAuthRetry = async <T>(
   database: Database,
   account: SupportedTrackingAccount,
-  existing: ProviderAccountTrackingRecord | null,
-  result: PromiseSettledResult<
-    Awaited<ReturnType<typeof fetchClaudeSubscriptionUsage>>
-  >,
-  now: number
-) => {
-  const previous: ClaudeTrackingData =
-    existing?.data?.provider === "claude"
-      ? existing.data
-      : { provider: "claude" };
-  if (result.status === "fulfilled") {
-    return saveProviderAccountTracking(database, {
-      providerAccountId: account.id,
-      provider: "claude",
-      attemptedAt: now,
-      fetchedAt: now,
-      nextFetchAt: now + TRACKING_CACHE_MS,
-      failureCount: 0,
-      lastHttpStatus: null,
-      lastError: null,
-      data: { ...previous, subscription: result.value },
-    });
+  operation: (current: SupportedTrackingAccount) => Promise<T>,
+  shouldRetry: (result: T) => boolean
+): Promise<{
+  account: SupportedTrackingAccount;
+  result: T;
+}> => {
+  const result = await operation(account);
+  if (!shouldRetry(result)) {
+    return { account, result };
   }
-  const failureCount = (existing?.failureCount ?? 0) + 1;
-  return saveProviderAccountTracking(database, {
-    providerAccountId: account.id,
-    provider: "claude",
-    attemptedAt: now,
-    fetchedAt: existing?.fetchedAt ?? null,
-    nextFetchAt: calculateNextFetchAt(now, failureCount, [result.reason]),
-    failureCount,
-    lastHttpStatus: errorStatus(result.reason),
-    lastError: safeErrorMessage(result.reason),
-    data: previous,
-  });
+  const refreshed = await resolveTrackingAccount(
+    database,
+    account.id,
+    Date.now(),
+    true
+  );
+  if (!refreshed) {
+    return { account, result };
+  }
+  return { account: refreshed, result: await operation(refreshed) };
 };
 
-const saveTrackingFailure = (
+const saveSnapshot = (
   database: Database,
   account: SupportedTrackingAccount,
   existing: ProviderAccountTrackingRecord | null,
-  error: unknown,
+  data: CodexTrackingData | ClaudeTrackingData,
+  errors: readonly unknown[],
+  fetched: boolean,
   now: number
 ) => {
-  const failureCount = (existing?.failureCount ?? 0) + 1;
+  const failureCount = errors.length ? (existing?.failureCount ?? 0) + 1 : 0;
   return saveProviderAccountTracking(database, {
     providerAccountId: account.id,
     provider: account.provider,
     attemptedAt: now,
-    fetchedAt: existing?.fetchedAt ?? null,
-    nextFetchAt: calculateNextFetchAt(now, failureCount, [error]),
+    fetchedAt: fetched ? now : (existing?.fetchedAt ?? null),
+    nextFetchAt: errors.length
+      ? calculateNextFetchAt(now, failureCount, errors)
+      : now + TRACKING_CACHE_MS,
     failureCount,
-    lastHttpStatus: errorStatus(error),
-    lastError: safeErrorMessage(error),
-    data: existing?.data ?? { provider: account.provider },
+    lastHttpStatus:
+      errors.map(errorStatus).find((status) => status !== null) ?? null,
+    lastError: errors.length ? errors.map(safeErrorMessage).join("; ") : null,
+    data,
   });
 };
 
@@ -248,85 +240,51 @@ export const refreshProviderAccountTracking = async (
     return null;
   }
 
-  let account: SupportedTrackingAccount | null;
   try {
-    account = await resolveTrackingAccount(database, providerAccountId, now);
+    const account = await resolveTrackingAccount(
+      database,
+      providerAccountId,
+      now,
+      false,
+      storedAccount
+    );
+    if (!account) {
+      return null;
+    }
+    const previous =
+      existing?.data?.provider === account.provider
+        ? existing.data
+        : { provider: account.provider };
+    const fetched = await withAuthRetry(
+      database,
+      account,
+      account.provider === "codex"
+        ? (current) =>
+            fetchCodexSnapshot(current, previous as CodexTrackingData)
+        : (current) =>
+            fetchClaudeSnapshot(current, previous as ClaudeTrackingData),
+      (result) => result.errors.some((error) => errorStatus(error) === 401)
+    );
+    return saveSnapshot(
+      database,
+      fetched.account,
+      existing,
+      fetched.result.data,
+      fetched.result.errors,
+      fetched.result.fetched,
+      Date.now()
+    );
   } catch (error) {
-    return saveTrackingFailure(
+    return saveSnapshot(
       database,
       storedAccount,
       existing,
-      error,
+      existing?.data ?? { provider: storedAccount.provider },
+      [error],
+      false,
       Date.now()
     );
   }
-  if (!account) {
-    return null;
-  }
-
-  if (account.provider === "codex") {
-    let results = await fetchCodexSnapshot(account);
-    if (shouldRetryAuthorization(results)) {
-      let refreshed: SupportedTrackingAccount | null;
-      try {
-        refreshed = await resolveTrackingAccount(
-          database,
-          providerAccountId,
-          Date.now(),
-          true
-        );
-      } catch (error) {
-        return saveTrackingFailure(
-          database,
-          account,
-          existing,
-          error,
-          Date.now()
-        );
-      }
-      if (refreshed) {
-        account = refreshed;
-        results = await fetchCodexSnapshot(account);
-      }
-    }
-    return saveCodexSnapshot(database, account, existing, results, Date.now());
-  }
-
-  let result = await Promise.allSettled([
-    fetchClaudeSubscriptionUsage(account.accessToken),
-  ]).then((results) => results[0]);
-  if (!result) {
-    throw new Error("Claude account tracking result is missing");
-  }
-  if (result.status === "rejected" && errorStatus(result.reason) === 401) {
-    let refreshed: SupportedTrackingAccount | null;
-    try {
-      refreshed = await resolveTrackingAccount(
-        database,
-        providerAccountId,
-        Date.now(),
-        true
-      );
-    } catch (error) {
-      return saveTrackingFailure(
-        database,
-        account,
-        existing,
-        error,
-        Date.now()
-      );
-    }
-    if (refreshed) {
-      account = refreshed;
-      result = await Promise.allSettled([
-        fetchClaudeSubscriptionUsage(account.accessToken),
-      ]).then((results) => results[0]);
-      if (!result) {
-        throw new Error("Claude account tracking retry result is missing");
-      }
-    }
-  }
-  return saveClaudeSnapshot(database, account, existing, result, Date.now());
 };
 
 const toTrackingView = async (
@@ -365,28 +323,22 @@ export const listProviderAccountTrackingViews = async (
   );
 };
 
-const retryCodexOperationAfter401 = async <T>(input: {
-  database: Database;
-  account: SupportedTrackingAccount;
-  operation: (account: SupportedTrackingAccount) => Promise<T>;
-}): Promise<T> => {
-  try {
-    return await input.operation(input.account);
-  } catch (error) {
-    if (errorStatus(error) !== 401) {
-      throw error;
-    }
-    const refreshed = await resolveTrackingAccount(
-      input.database,
-      input.account.id,
-      Date.now(),
-      true
-    );
-    if (!refreshed) {
-      throw error;
-    }
-    return input.operation(refreshed);
+const retryCodexOperationAfter401 = async <T>(
+  database: Database,
+  account: SupportedTrackingAccount,
+  operation: (account: SupportedTrackingAccount) => Promise<T>
+): Promise<T> => {
+  const { result } = await withAuthRetry(
+    database,
+    account,
+    (current) => settle(operation(current)),
+    (settled) =>
+      settled.status === "rejected" && errorStatus(settled.reason) === 401
+  );
+  if (result.status === "rejected") {
+    throw result.reason;
   }
+  return result.value;
 };
 
 export const queryCodexThreadUsage = async (
@@ -402,12 +354,12 @@ export const queryCodexThreadUsage = async (
   if (!account || account.provider !== "codex") {
     return null;
   }
-  const entries = await retryCodexOperationAfter401({
+  const entries = await retryCodexOperationAfter401(
     database,
     account,
-    operation: (current) =>
-      fetchCodexThreadUsage(current.accessToken, current.accountId, threadIds),
-  });
+    (current) =>
+      fetchCodexThreadUsage(current.accessToken, current.accountId, threadIds)
+  );
   await upsertCodexThreadUsage(
     database,
     providerAccountId,
@@ -430,7 +382,10 @@ export class CodexResetCreditConsumeError extends Error {
 export const redeemCodexResetCredit = async (
   database: Database,
   providerAccountId: string,
-  input: { creditId?: string | null; redeemRequestId?: string | null }
+  input: {
+    creditId?: string | null | undefined;
+    redeemRequestId?: string | null | undefined;
+  }
 ) => {
   const account = await resolveTrackingAccount(
     database,
@@ -456,41 +411,39 @@ export const redeemCodexResetCredit = async (
     };
   }
   const now = Date.now();
-  await saveCodexResetCreditRedemption(database, {
-    redeemRequestId,
-    providerAccountId,
-    creditId: input.creditId ?? existing?.creditId ?? null,
-    status: "pending",
-    resultCode: null,
-    windowsReset: null,
-    lastError: null,
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now,
-  });
+  const creditId = input.creditId ?? existing?.creditId ?? null;
+  const saveRedemption = (
+    status: string,
+    resultCode: string | null,
+    windowsReset: number | null,
+    lastError: string | null
+  ) =>
+    saveCodexResetCreditRedemption(database, {
+      redeemRequestId,
+      providerAccountId,
+      creditId,
+      status,
+      resultCode,
+      windowsReset,
+      lastError,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: Date.now(),
+    });
+  await saveRedemption("pending", null, null, null);
 
   try {
-    const result = await retryCodexOperationAfter401({
+    const result = await retryCodexOperationAfter401(
       database,
       account,
-      operation: (current) =>
+      (current) =>
         consumeCodexResetCredit({
           accessToken: current.accessToken,
           accountId: current.accountId,
           redeemRequestId,
-          creditId: input.creditId ?? existing?.creditId ?? null,
-        }),
-    });
-    await saveCodexResetCreditRedemption(database, {
-      redeemRequestId,
-      providerAccountId,
-      creditId: input.creditId ?? existing?.creditId ?? null,
-      status: "completed",
-      resultCode: result.code,
-      windowsReset: result.windowsReset,
-      lastError: null,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: Date.now(),
-    });
+          creditId,
+        })
+    );
+    await saveRedemption("completed", result.code, result.windowsReset, null);
     if (result.code === "reset" || result.code === "already_redeemed") {
       await refreshProviderAccountTracking(database, providerAccountId, {
         force: true,
@@ -498,17 +451,7 @@ export const redeemCodexResetCredit = async (
     }
     return { redeemRequestId, ...result };
   } catch (error) {
-    await saveCodexResetCreditRedemption(database, {
-      redeemRequestId,
-      providerAccountId,
-      creditId: input.creditId ?? existing?.creditId ?? null,
-      status: "retryable",
-      resultCode: null,
-      windowsReset: null,
-      lastError: safeErrorMessage(error),
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: Date.now(),
-    });
+    await saveRedemption("retryable", null, null, safeErrorMessage(error));
     throw new CodexResetCreditConsumeError(
       safeErrorMessage(error),
       redeemRequestId
