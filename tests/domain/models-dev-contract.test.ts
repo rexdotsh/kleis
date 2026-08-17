@@ -219,8 +219,8 @@ describe("models registry contract", () => {
       models?: Record<string, { limit?: unknown }>;
     };
     expect(kleis.models?.["gpt-5.6-luna"]?.limit).toEqual({
-      context: 500_000,
-      input: 372_000,
+      context: 400_000,
+      input: 272_000,
       output: 128_000,
     });
   });
