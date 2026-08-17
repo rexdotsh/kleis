@@ -19,6 +19,7 @@ import {
   openEditAccountModal,
   openEditKeyModal,
   readPersistedToken,
+  redeemResetCredit,
   refreshAccount,
   resolveConfirm,
   revokeKey,
@@ -66,6 +67,8 @@ $("#accounts-list").addEventListener("click", (e) => {
     if (action === "edit-account") openEditAccountModal(accountId);
     if (action === "set-primary") setPrimary(accountId);
     if (action === "refresh-account") refreshAccount(accountId);
+    if (action === "redeem-reset-credit")
+      redeemResetCredit(accountId, button.dataset.creditId || null);
     if (action === "delete-account") deleteAccount(accountId);
     return;
   }

@@ -41,6 +41,7 @@ const state = {
   dashboardData: null,
   dashboardLoading: false,
   dashboardRequestSeq: 0,
+  pendingResetRedemptions: new Map(),
 };
 
 const APP_ORIGIN = window.location.origin;
@@ -72,7 +73,10 @@ async function api(path, options = {}) {
         `${body?.message || "Too many requests"}. Retry in ${retryAfter}s`
       );
     }
-    throw new Error(body?.message || `Request failed (${res.status})`);
+    const error = new Error(body?.message || `Request failed (${res.status})`);
+    error.status = res.status;
+    error.body = body;
+    throw error;
   }
   return body;
 }
@@ -793,6 +797,45 @@ async function refreshAccount(id) {
   }
 }
 
+async function redeemResetCredit(accountId, creditId) {
+  const account = accountById(accountId);
+  const label = account?.label || account?.accountId || accountId;
+  const redemptionKey = `${accountId}:${creditId || "auto"}`;
+  const existingRequestId = state.pendingResetRedemptions.get(redemptionKey);
+  const confirmed = await showConfirm(
+    "Reset Codex Limits",
+    existingRequestId
+      ? `Retry the pending reset for "${label}" with the same idempotency key?`
+      : `Consume a reset credit for "${label}"? This changes the upstream Codex account quota.`,
+    existingRequestId ? "retry reset" : "use credit"
+  );
+  if (!confirmed) return;
+
+  try {
+    const body = {};
+    if (creditId) body.creditId = creditId;
+    if (existingRequestId) body.redeemRequestId = existingRequestId;
+    const response = await api(
+      `/admin/accounts/${accountId}/tracking/codex/reset-credits/consume`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+    state.pendingResetRedemptions.delete(redemptionKey);
+    toast(`Codex reset result: ${response.result?.code || "complete"}`);
+    await loadAccounts();
+  } catch (e) {
+    const redeemRequestId = e.body?.redeemRequestId;
+    if (redeemRequestId) {
+      state.pendingResetRedemptions.set(redemptionKey, redeemRequestId);
+      toast(
+        "Reset status is ambiguous; the next retry will reuse its request ID",
+        "error"
+      );
+      return;
+    }
+    toast(e.message, "error");
+  }
+}
+
 function openEditAccountModal(id) {
   const account = accountById(id);
   if (!account) {
@@ -1332,6 +1375,7 @@ export {
   openEditKeyModal,
   readPersistedToken,
   refreshAccount,
+  redeemResetCredit,
   relativeTime,
   resolveConfirm,
   revokeKey,

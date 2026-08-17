@@ -27,6 +27,164 @@ import {
   usageWindowLabel,
 } from "./app-data.js";
 
+function quotaTimestamp(value) {
+  if (typeof value === "number") {
+    return value < 10_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string" && value) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function limitResetLabel(resetsAt) {
+  const timestamp = quotaTimestamp(resetsAt);
+  return timestamp ? `resets ${relativeTime(timestamp)}` : "";
+}
+
+function limitRowHtml(label, percent, resetsAt) {
+  if (typeof percent !== "number" || !Number.isFinite(percent)) return "";
+  const pct = Math.max(0, Math.min(100, percent));
+  const severity = pct >= 90 ? "critical" : pct >= 70 ? "warn" : "ok";
+  return `<div class="limit-row limit-${severity}">
+    <span class="limit-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+    <span class="limit-track"><span class="limit-fill" style="width:${pct}%"></span></span>
+    <span class="limit-pct">${Math.round(pct)}%</span>
+    <span class="limit-reset">${escapeHtml(limitResetLabel(resetsAt))}</span>
+  </div>`;
+}
+
+const windowLimitRow = (label, window) =>
+  limitRowHtml(
+    label,
+    window?.usedPercent ?? window?.utilization,
+    window?.resetAt ?? window?.resetsAt
+  );
+
+function windowSpanName(seconds, fallback) {
+  if (typeof seconds !== "number" || seconds <= 0) return fallback;
+  const hours = Math.round(seconds / 3600);
+  if (hours >= 24 && hours % 24 === 0) return `${hours / 24}d window`;
+  return `${hours}h window`;
+}
+
+function compactTokens(value) {
+  return value >= 1_000_000_000
+    ? `${(value / 1_000_000_000).toFixed(1)}B`
+    : formatCompact(value);
+}
+
+function codexLimitsBody(account, data) {
+  const status = data.status;
+  const rows = [
+    windowLimitRow(
+      windowSpanName(status?.primaryWindow?.windowSeconds, "5h window"),
+      status?.primaryWindow
+    ),
+    windowLimitRow(
+      windowSpanName(status?.secondaryWindow?.windowSeconds, "weekly"),
+      status?.secondaryWindow
+    ),
+    ...(status?.additionalRateLimits || []).map((limit) =>
+      windowLimitRow(
+        limit.limitName || limit.meteredFeature || "extra limit",
+        limit.primaryWindow
+      )
+    ),
+  ];
+
+  const chips = [];
+  if (status?.planType) chips.push(`${status.planType} plan`);
+  if (typeof data.profile?.lifetimeTokens === "number") {
+    chips.push(`${compactTokens(data.profile.lifetimeTokens)} lifetime tok`);
+  }
+
+  const available =
+    data.resetCredits?.availableCount ?? status?.resetCreditsAvailable;
+  const actions = (data.resetCredits?.credits || [])
+    .filter((credit) => credit.status === "available")
+    .map(
+      (credit) =>
+        `<button class="btn btn-credit btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" data-credit-id="${escapeHtml(credit.id)}" type="button" title="${escapeHtml(credit.description || "Consume a reset credit to restore limits")}">${escapeHtml(credit.title || "restore limits")}</button>`
+    );
+  if (!actions.length && typeof available === "number" && available > 0) {
+    actions.push(
+      `<button class="btn btn-credit btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" type="button" title="Consume a reset credit to restore limits">restore limits${available > 1 ? ` (${available})` : ""}</button>`
+    );
+  }
+
+  return { rows, chips, actions };
+}
+
+function claudeLimitsBody(data) {
+  const subscription = data.subscription;
+  const rows = [
+    windowLimitRow("5h window", subscription?.fiveHour),
+    windowLimitRow("weekly", subscription?.sevenDay),
+    ...(subscription?.limits || [])
+      .filter((limit) => limit.kind === "weekly_scoped")
+      .map((limit) =>
+        limitRowHtml(
+          (
+            limit.modelDisplayName ||
+            limit.kind ||
+            "scoped weekly"
+          ).toLowerCase(),
+          limit.percent,
+          limit.resetsAt
+        )
+      ),
+  ];
+
+  const chips = [];
+  const extra = subscription?.extraUsage;
+  if (extra?.isEnabled) {
+    chips.push(
+      typeof extra.utilization === "number"
+        ? `extra usage on \u00b7 ${Math.round(extra.utilization)}% used`
+        : "extra usage on"
+    );
+  }
+
+  return { rows, chips, actions: [] };
+}
+
+function accountTrackingHtml(account) {
+  if (account.provider === "copilot") return "";
+  const tracking = account.quota;
+  if (!tracking) {
+    return `<div class="limits">
+      <div class="limits-head"><span class="limits-title">rate limits</span><span class="limits-sync idle">awaiting first sync</span></div>
+    </div>`;
+  }
+
+  const data = tracking.data || {};
+  const body =
+    data.provider === "codex"
+      ? codexLimitsBody(account, data)
+      : claudeLimitsBody(data);
+  const rows = body.rows.filter(Boolean).join("");
+
+  const sync = tracking.error
+    ? `<span class="limits-sync error" title="${escapeHtml(tracking.error)}">sync failed</span>`
+    : `<span class="limits-sync ok">synced ${escapeHtml(relativeTime(tracking.fetchedAt))}</span>`;
+
+  const foot =
+    body.chips.length || body.actions.length
+      ? `<div class="limits-foot">
+          <div class="limits-chips">${body.chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('<span class="dot-sep"></span>')}</div>
+          ${body.actions.length ? `<div class="limits-actions">${body.actions.join("")}</div>` : ""}
+        </div>`
+      : "";
+
+  return `<div class="limits">
+    <div class="limits-head"><span class="limits-title">rate limits</span>${sync}</div>
+    ${rows ? `<div class="limit-rows">${rows}</div>` : '<div class="limits-empty-text">no limit data reported</div>'}
+    ${foot}
+  </div>`;
+}
+
 function providerStatusItemHtml(status) {
   const { provider, enabled, accountCount, enabledAccountCount } = status;
   const countLabel =
@@ -121,6 +279,7 @@ function accountCardHtml(account) {
     <div class="card-meta">${identityParts.join("")}</div>
     ${usageParts.length ? `<div class="card-meta">${usageParts.join("")}</div>` : ""}
     ${meta ? `<div class="card-meta">${meta}</div>` : ""}
+    ${accountTrackingHtml(account)}
   </div>`;
 }
 

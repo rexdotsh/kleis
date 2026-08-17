@@ -153,3 +153,23 @@ export const requestUsageBuckets = sqliteTable(
     index("request_usage_buckets_bucket_idx").on(table.bucketStart),
   ]
 );
+
+export const codexResetCreditRedemptions = sqliteTable(
+  "codex_reset_credit_redemptions",
+  {
+    redeemRequestId: text("redeem_request_id").primaryKey(),
+    providerAccountId: text("provider_account_id")
+      .notNull()
+      .references(() => providerAccounts.id, { onDelete: "cascade" }),
+    creditId: text("credit_id"),
+    status: text("status").notNull(),
+    resultCode: text("result_code"),
+    windowsReset: integer("windows_reset", { mode: "number" }),
+    lastError: text("last_error"),
+    createdAt: integer("created_at", { mode: "number" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("codex_reset_redemptions_account_idx").on(table.providerAccountId),
+  ]
+);

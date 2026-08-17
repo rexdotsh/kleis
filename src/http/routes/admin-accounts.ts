@@ -10,6 +10,12 @@ import {
   startProviderOAuth,
 } from "../../domain/providers/provider-service";
 import {
+  CodexResetCreditConsumeError,
+  listProviderAccountQuotas,
+  queryCodexThreadUsage,
+  redeemCodexResetCredit,
+} from "../../domain/providers/provider-account-tracking";
+import {
   getProviderAccountUsageDetail,
   listProviderAccountUsageSummaries,
 } from "../../db/repositories/account-usage";
@@ -68,6 +74,15 @@ const updateAccountBodySchema = z.strictObject({
   accountId: z.string().trim().max(200).nullable().optional(),
   label: z.string().trim().max(160).nullable().optional(),
   metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+
+const codexThreadUsageBodySchema = z.strictObject({
+  threadIds: z.array(z.string().trim().min(1).max(200)).min(1).max(100),
+});
+
+const codexResetCreditBodySchema = z.strictObject({
+  creditId: z.string().trim().min(1).max(300).nullable().optional(),
+  redeemRequestId: z.string().trim().min(1).max(200).nullable().optional(),
 });
 
 const accountNotFoundBody = {
@@ -137,8 +152,12 @@ export const adminAccountsRoutes = new Hono()
       listProviderAccounts(db),
       listProviderStatuses(db),
     ]);
+    const quotas = await listProviderAccountQuotas(db, accounts);
     return context.json({
-      accounts: accounts.map(toAdminAccountView),
+      accounts: accounts.map((account) => ({
+        ...toAdminAccountView(account),
+        quota: quotas.get(account.id) ?? null,
+      })),
       providers: providerStatuses,
     });
   })
@@ -177,6 +196,67 @@ export const adminAccountsRoutes = new Hono()
         now,
         usage,
       });
+    }
+  )
+  .post(
+    "/:id/tracking/codex/threads",
+    zValidator("param", accountIdParamsSchema),
+    zValidator("json", codexThreadUsageBodySchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const { threadIds } = context.req.valid("json");
+      const account = await findProviderAccountById(db, id);
+      if (!account) {
+        return context.json(accountNotFoundBody, 404);
+      }
+      if (account.provider !== "codex") {
+        return context.json(
+          { error: "bad_request", message: "Account is not a Codex account" },
+          400
+        );
+      }
+      const threads = await queryCodexThreadUsage(
+        db,
+        id,
+        Array.from(new Set(threadIds))
+      );
+      return context.json({ threads: threads ?? [] });
+    }
+  )
+  .post(
+    "/:id/tracking/codex/reset-credits/consume",
+    zValidator("param", accountIdParamsSchema),
+    zValidator("json", codexResetCreditBodySchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const body = context.req.valid("json");
+      const account = await findProviderAccountById(db, id);
+      if (!account) {
+        return context.json(accountNotFoundBody, 404);
+      }
+      if (account.provider !== "codex") {
+        return context.json(
+          { error: "bad_request", message: "Account is not a Codex account" },
+          400
+        );
+      }
+      try {
+        const result = await redeemCodexResetCredit(db, id, body);
+        return context.json({ result });
+      } catch (error) {
+        if (error instanceof CodexResetCreditConsumeError) {
+          return context.json(
+            {
+              error: "upstream_error",
+              message: error.message,
+              redeemRequestId: error.redeemRequestId,
+              retryable: true,
+            },
+            502
+          );
+        }
+        throw error;
+      }
     }
   )
   .get(
