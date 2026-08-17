@@ -27,138 +27,163 @@ import {
   usageWindowLabel,
 } from "./app-data.js";
 
-function quotaResetLabel(value) {
-  if (!value) return "reset unknown";
-  const timestamp =
-    typeof value === "number" && value < 10_000_000_000
-      ? value * 1000
-      : typeof value === "number"
-        ? value
-        : Date.parse(value);
-  return Number.isFinite(timestamp)
-    ? `resets ${relativeTime(timestamp)}`
-    : "reset unknown";
+function quotaTimestamp(value) {
+  if (typeof value === "number") {
+    return value < 10_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string" && value) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
-function quotaMeterHtml(label, percent, resetsAt, detail = "") {
+function limitResetLabel(resetsAt) {
+  const timestamp = quotaTimestamp(resetsAt);
+  return timestamp ? `resets ${relativeTime(timestamp)}` : "";
+}
+
+function limitRowHtml(label, percent, resetsAt, options = {}) {
   if (typeof percent !== "number" || !Number.isFinite(percent)) return "";
-  const normalized = Math.max(0, Math.min(100, percent));
-  const severity =
-    normalized >= 90 ? "critical" : normalized >= 70 ? "warn" : "normal";
-  return `<div class="quota-meter quota-${severity}">
-    <div class="quota-meter-head"><span>${escapeHtml(label)}</span><strong>${Math.round(normalized)}%</strong></div>
-    <div class="quota-track"><span style="width:${normalized}%"></span></div>
-    <div class="quota-meter-foot"><span>${escapeHtml(quotaResetLabel(resetsAt))}</span>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}</div>
+  const pct = Math.max(0, Math.min(100, percent));
+  const severity = pct >= 90 ? "critical" : pct >= 70 ? "warn" : "ok";
+  return `<div class="limit-row limit-${severity}${options.inactive ? " limit-inactive" : ""}">
+    <span class="limit-label" title="${escapeHtml(options.title || label)}">${escapeHtml(label)}</span>
+    <span class="limit-track"><span class="limit-fill" style="width:${pct}%"></span></span>
+    <span class="limit-pct">${Math.round(pct)}%</span>
+    <span class="limit-reset">${escapeHtml(options.inactive ? "inactive" : limitResetLabel(resetsAt))}</span>
   </div>`;
 }
 
-const windowMeterHtml = (label, window, detail = "") =>
-  quotaMeterHtml(
+const windowLimitRow = (label, window) =>
+  limitRowHtml(
     label,
     window?.usedPercent ?? window?.utilization,
-    window?.resetAt ?? window?.resetsAt,
-    detail
+    window?.resetAt ?? window?.resetsAt
   );
 
-function codexTrackingHtml(account, tracking) {
-  const data = tracking?.data?.provider === "codex" ? tracking.data : null;
-  if (!data) return "";
+function windowSpanName(seconds, fallback) {
+  if (typeof seconds !== "number" || seconds <= 0) return fallback;
+  const hours = Math.round(seconds / 3600);
+  if (hours >= 24 && hours % 24 === 0) return `${hours / 24}d window`;
+  return `${hours}h window`;
+}
+
+function compactTokens(value) {
+  return value >= 1_000_000_000
+    ? `${(value / 1_000_000_000).toFixed(1)}B`
+    : formatCompact(value);
+}
+
+function codexLimitsBody(account, data) {
   const status = data.status;
-  const meters = [
-    windowMeterHtml(
-      "primary window",
-      status?.primaryWindow,
-      status?.primaryWindow?.windowSeconds
-        ? `${Math.round(status.primaryWindow.windowSeconds / 3600)}h window`
-        : ""
+  const rows = [
+    windowLimitRow(
+      windowSpanName(status?.primaryWindow?.windowSeconds, "5h window"),
+      status?.primaryWindow
     ),
-    windowMeterHtml("secondary window", status?.secondaryWindow),
+    windowLimitRow(
+      windowSpanName(status?.secondaryWindow?.windowSeconds, "weekly"),
+      status?.secondaryWindow
+    ),
     ...(status?.additionalRateLimits || []).map((limit) =>
-      windowMeterHtml(
-        limit.limitName || limit.meteredFeature || "additional limit",
+      windowLimitRow(
+        limit.limitName || limit.meteredFeature || "extra limit",
         limit.primaryWindow
       )
     ),
   ];
-  const resetCredits = data.resetCredits;
+
+  const chips = [];
+  if (status?.planType) chips.push(`${status.planType} plan`);
+  if (typeof data.profile?.lifetimeTokens === "number") {
+    chips.push(`${compactTokens(data.profile.lifetimeTokens)} lifetime tok`);
+  }
+
   const available =
-    resetCredits?.availableCount ?? status?.resetCreditsAvailable;
-  const creditButtons = (resetCredits?.credits || [])
+    data.resetCredits?.availableCount ?? status?.resetCreditsAvailable;
+  const actions = (data.resetCredits?.credits || [])
     .filter((credit) => credit.status === "available")
     .map(
       (credit) =>
-        `<button class="btn btn-ghost btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" data-credit-id="${escapeHtml(credit.id)}" type="button" title="${escapeHtml(credit.description || "Consume this reset credit")}">${escapeHtml(credit.title || "use reset credit")}</button>`
+        `<button class="btn btn-credit btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" data-credit-id="${escapeHtml(credit.id)}" type="button" title="${escapeHtml(credit.description || "Consume a reset credit to restore limits")}">${escapeHtml(credit.title || "restore limits")}</button>`
     );
-  if (!creditButtons.length && typeof available === "number" && available > 0) {
-    creditButtons.push(
-      `<button class="btn btn-ghost btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" type="button">use reset credit</button>`
+  if (!actions.length && typeof available === "number" && available > 0) {
+    actions.push(
+      `<button class="btn btn-credit btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" type="button" title="Consume a reset credit to restore limits">restore limits${available > 1 ? ` (${available})` : ""}</button>`
     );
   }
-  const profile = data.profile;
-  const plan = status?.planType
-    ? `<span>${escapeHtml(status.planType)} plan</span>`
-    : "";
-  const lifetime =
-    typeof profile?.lifetimeTokens === "number"
-      ? `<span>${formatCount(profile.lifetimeTokens)} lifetime tokens</span>`
-      : "";
-  const resetCount =
-    typeof available === "number"
-      ? `<span>${available} reset credit${available === 1 ? "" : "s"}</span>`
-      : "";
-  return `<div class="account-quota">
-    <div class="account-quota-meta">${plan}${lifetime}${resetCount}</div>
-    <div class="quota-grid">${meters.filter(Boolean).join("")}</div>
-    ${creditButtons.length ? `<div class="quota-actions">${creditButtons.join("")}</div>` : ""}
-  </div>`;
+
+  return { rows, chips, actions };
 }
 
-function claudeTrackingHtml(tracking) {
-  const data = tracking?.data?.provider === "claude" ? tracking.data : null;
-  const subscription = data?.subscription;
-  if (!subscription) return "";
-  const meters = [
-    windowMeterHtml("5-hour session", subscription.fiveHour),
-    windowMeterHtml("7-day total", subscription.sevenDay),
-    ...(subscription.limits || [])
+function claudeLimitsBody(data) {
+  const subscription = data.subscription;
+  const rows = [
+    windowLimitRow("5h window", subscription?.fiveHour),
+    windowLimitRow("weekly", subscription?.sevenDay),
+    ...(subscription?.limits || [])
       .filter((limit) => limit.kind === "weekly_scoped")
       .map((limit) =>
-        quotaMeterHtml(
-          limit.modelDisplayName || limit.kind || "scoped weekly",
+        limitRowHtml(
+          (
+            limit.modelDisplayName ||
+            limit.kind ||
+            "scoped weekly"
+          ).toLowerCase(),
           limit.percent,
           limit.resetsAt,
-          limit.isActive === false ? "inactive window" : ""
+          { inactive: limit.isActive === false }
         )
       ),
   ];
-  const extra = subscription.extraUsage;
-  const overage = extra
-    ? `<span>extra usage ${extra.isEnabled ? "enabled" : "disabled"}</span>${typeof extra.utilization === "number" ? `<span>${Math.round(extra.utilization)}% overage used</span>` : ""}${extra.currency ? `<span>${escapeHtml(extra.currency)}</span>` : ""}`
-    : "";
-  return `<div class="account-quota">
-    ${overage ? `<div class="account-quota-meta">${overage}</div>` : ""}
-    <div class="quota-grid">${meters.filter(Boolean).join("")}</div>
-  </div>`;
+
+  const chips = [];
+  const extra = subscription?.extraUsage;
+  if (extra?.isEnabled) {
+    chips.push(
+      typeof extra.utilization === "number"
+        ? `extra usage on \u00b7 ${Math.round(extra.utilization)}% used`
+        : "extra usage on"
+    );
+  }
+
+  return { rows, chips, actions: [] };
 }
 
 function accountTrackingHtml(account) {
-  const tracking = account.quota;
   if (account.provider === "copilot") return "";
+  const tracking = account.quota;
   if (!tracking) {
-    return '<div class="account-quota-empty">Quota has not been fetched yet.</div>';
+    return `<div class="limits">
+      <div class="limits-head"><span class="limits-title">rate limits</span><span class="limits-sync idle">awaiting first sync</span></div>
+    </div>`;
   }
-  const snapshot =
-    account.provider === "codex"
-      ? codexTrackingHtml(account, tracking)
-      : claudeTrackingHtml(tracking);
-  const stateClass = tracking.error ? "stale" : "fresh";
-  const fetched = tracking.fetchedAt
-    ? `quota ${relativeTime(tracking.fetchedAt)}`
-    : "quota unavailable";
-  return `<div class="account-quota-state ${stateClass}">
-    <span>${escapeHtml(fetched)}</span>
-    ${tracking.error ? `<span class="text-error" title="${escapeHtml(tracking.error)}">${escapeHtml(tracking.error)}</span>` : ""}
-  </div>${snapshot}`;
+
+  const data = tracking.data || {};
+  const body =
+    data.provider === "codex"
+      ? codexLimitsBody(account, data)
+      : claudeLimitsBody(data);
+  const rows = body.rows.filter(Boolean).join("");
+
+  const sync = tracking.error
+    ? `<span class="limits-sync error" title="${escapeHtml(tracking.error)}">sync failed</span>`
+    : `<span class="limits-sync ok">synced ${escapeHtml(relativeTime(tracking.fetchedAt))}</span>`;
+
+  const foot =
+    body.chips.length || body.actions.length
+      ? `<div class="limits-foot">
+          <div class="limits-chips">${body.chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('<span class="dot-sep"></span>')}</div>
+          ${body.actions.length ? `<div class="limits-actions">${body.actions.join("")}</div>` : ""}
+        </div>`
+      : "";
+
+  return `<div class="limits">
+    <div class="limits-head"><span class="limits-title">rate limits</span>${sync}</div>
+    ${rows ? `<div class="limit-rows">${rows}</div>` : '<div class="limits-empty-text">no limit data reported</div>'}
+    ${foot}
+  </div>`;
 }
 
 function providerStatusItemHtml(status) {
