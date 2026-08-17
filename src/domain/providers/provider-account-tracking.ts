@@ -5,7 +5,6 @@ import {
 } from "../../db/repositories/codex-reset-redemptions";
 import {
   findProviderAccountById,
-  listProviderAccounts,
   type ProviderAccountRecord,
 } from "../../db/repositories/provider-accounts";
 import {
@@ -64,6 +63,14 @@ const errorMessage = (error: unknown): string => {
 
 const errorStatus = (error: unknown): number | null =>
   error instanceof AccountTrackingHttpError ? error.status : null;
+
+const cacheDuration = (errors: unknown[]): number =>
+  Math.max(
+    CACHE_MS,
+    ...errors.map((error) =>
+      error instanceof AccountTrackingHttpError ? (error.retryAfterMs ?? 0) : 0
+    )
+  );
 
 const resolveAccount = async (
   database: Database,
@@ -166,19 +173,14 @@ const toQuota = (
   data,
 });
 
-export const getProviderAccountQuota = async (
+const getProviderAccountQuota = async (
   database: Database,
-  providerAccountId: string,
-  input?: { force?: boolean }
+  stored: TrackingAccount,
+  force = false
 ): Promise<AccountQuota | null> => {
-  const cached = cache.get(providerAccountId);
-  if (!input?.force && cached && cached.expiresAt > Date.now()) {
+  const cached = cache.get(stored.id);
+  if (!force && cached && cached.expiresAt > Date.now()) {
     return cached.quota;
-  }
-
-  const stored = await findProviderAccountById(database, providerAccountId);
-  if (!stored || !isTrackingAccount(stored)) {
-    return null;
   }
   const now = Date.now();
   try {
@@ -188,24 +190,28 @@ export const getProviderAccountQuota = async (
     }
     const result = await fetchAccountData(database, account);
     const quota = toQuota(result.data, result.errors, now);
-    cache.set(account.id, { expiresAt: now + CACHE_MS, quota });
+    cache.set(account.id, {
+      expiresAt: now + cacheDuration(result.errors),
+      quota,
+    });
     return quota;
   } catch (error) {
     const quota = toQuota({ provider: stored.provider }, [error], now);
-    cache.set(stored.id, { expiresAt: now + CACHE_MS, quota });
+    cache.set(stored.id, {
+      expiresAt: now + cacheDuration([error]),
+      quota,
+    });
     return quota;
   }
 };
 
 export const listProviderAccountQuotas = async (
   database: Database,
-  providerAccounts?: readonly ProviderAccountRecord[]
+  providerAccounts: readonly ProviderAccountRecord[]
 ) => {
-  const accounts = (
-    providerAccounts ?? (await listProviderAccounts(database))
-  ).filter(isTrackingAccount);
+  const accounts = providerAccounts.filter(isTrackingAccount);
   const quotas = await Promise.all(
-    accounts.map((account) => getProviderAccountQuota(database, account.id))
+    accounts.map((account) => getProviderAccountQuota(database, account))
   );
   return new Map(
     accounts.map((account, index) => [account.id, quotas[index] ?? null])
@@ -305,9 +311,7 @@ export const redeemCodexResetCredit = async (
     await save("completed", result.code, result.windowsReset, null);
     cache.delete(providerAccountId);
     if (result.code === "reset" || result.code === "already_redeemed") {
-      await getProviderAccountQuota(database, providerAccountId, {
-        force: true,
-      });
+      await getProviderAccountQuota(database, account, true);
     }
     return { redeemRequestId, ...result };
   } catch (error) {
