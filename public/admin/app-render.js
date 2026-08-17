@@ -1,6 +1,7 @@
 import {
   $,
   accountById,
+  accountTrackingForId,
   accountUsageForId,
   activeKeysWithModelsUrl,
   api,
@@ -26,6 +27,150 @@ import {
   usageMetaParts,
   usageWindowLabel,
 } from "./app-data.js";
+
+function quotaResetLabel(value) {
+  if (!value) return "reset unknown";
+  const timestamp =
+    typeof value === "number" && value < 10_000_000_000
+      ? value * 1000
+      : typeof value === "number"
+        ? value
+        : Date.parse(value);
+  return Number.isFinite(timestamp)
+    ? `resets ${relativeTime(timestamp)}`
+    : "reset unknown";
+}
+
+function quotaMeterHtml(label, percent, resetsAt, detail = "") {
+  if (typeof percent !== "number" || !Number.isFinite(percent)) return "";
+  const normalized = Math.max(0, Math.min(100, percent));
+  const severity =
+    normalized >= 90 ? "critical" : normalized >= 70 ? "warn" : "normal";
+  return `<div class="quota-meter quota-${severity}">
+    <div class="quota-meter-head"><span>${escapeHtml(label)}</span><strong>${Math.round(normalized)}%</strong></div>
+    <div class="quota-track"><span style="width:${normalized}%"></span></div>
+    <div class="quota-meter-foot"><span>${escapeHtml(quotaResetLabel(resetsAt))}</span>${detail ? `<span>${escapeHtml(detail)}</span>` : ""}</div>
+  </div>`;
+}
+
+function codexTrackingHtml(account, tracking) {
+  const data = tracking?.data?.provider === "codex" ? tracking.data : null;
+  if (!data) return "";
+  const status = data.status;
+  const meters = [
+    quotaMeterHtml(
+      "primary window",
+      status?.primaryWindow?.usedPercent,
+      status?.primaryWindow?.resetAt,
+      status?.primaryWindow?.windowSeconds
+        ? `${Math.round(status.primaryWindow.windowSeconds / 3600)}h window`
+        : ""
+    ),
+    quotaMeterHtml(
+      "secondary window",
+      status?.secondaryWindow?.usedPercent,
+      status?.secondaryWindow?.resetAt
+    ),
+  ];
+  for (const limit of status?.additionalRateLimits || []) {
+    meters.push(
+      quotaMeterHtml(
+        limit.limitName || limit.meteredFeature || "additional limit",
+        limit.primaryWindow?.usedPercent,
+        limit.primaryWindow?.resetAt
+      )
+    );
+  }
+  const resetCredits = data.resetCredits;
+  const available =
+    resetCredits?.availableCount ?? status?.resetCreditsAvailable;
+  const creditButtons = (resetCredits?.credits || [])
+    .filter((credit) => credit.status === "available")
+    .map(
+      (credit) =>
+        `<button class="btn btn-ghost btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" data-credit-id="${escapeHtml(credit.id)}" type="button" title="${escapeHtml(credit.description || "Consume this reset credit")}">${escapeHtml(credit.title || "use reset credit")}</button>`
+    );
+  if (!creditButtons.length && typeof available === "number" && available > 0) {
+    creditButtons.push(
+      `<button class="btn btn-ghost btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" type="button">use reset credit</button>`
+    );
+  }
+  const profile = data.profile;
+  const plan = status?.planType
+    ? `<span>${escapeHtml(status.planType)} plan</span>`
+    : "";
+  const lifetime =
+    typeof profile?.lifetimeTokens === "number"
+      ? `<span>${formatCount(profile.lifetimeTokens)} lifetime tokens</span>`
+      : "";
+  const resetCount =
+    typeof available === "number"
+      ? `<span>${available} reset credit${available === 1 ? "" : "s"}</span>`
+      : "";
+  return `<div class="account-quota">
+    <div class="account-quota-meta">${plan}${lifetime}${resetCount}</div>
+    <div class="quota-grid">${meters.filter(Boolean).join("")}</div>
+    ${creditButtons.length ? `<div class="quota-actions">${creditButtons.join("")}</div>` : ""}
+  </div>`;
+}
+
+function claudeTrackingHtml(tracking) {
+  const data = tracking?.data?.provider === "claude" ? tracking.data : null;
+  const subscription = data?.subscription;
+  if (!subscription) return "";
+  const meters = [
+    quotaMeterHtml(
+      "5-hour session",
+      subscription.fiveHour?.utilization,
+      subscription.fiveHour?.resetsAt
+    ),
+    quotaMeterHtml(
+      "7-day total",
+      subscription.sevenDay?.utilization,
+      subscription.sevenDay?.resetsAt
+    ),
+  ];
+  for (const limit of subscription.limits || []) {
+    if (limit.kind !== "weekly_scoped") continue;
+    meters.push(
+      quotaMeterHtml(
+        limit.modelDisplayName || limit.kind || "scoped weekly",
+        limit.percent,
+        limit.resetsAt,
+        limit.isActive === false ? "inactive window" : ""
+      )
+    );
+  }
+  const extra = subscription.extraUsage;
+  const overage = extra
+    ? `<span>extra usage ${extra.isEnabled ? "enabled" : "disabled"}</span>${typeof extra.utilization === "number" ? `<span>${Math.round(extra.utilization)}% overage used</span>` : ""}${extra.currency ? `<span>${escapeHtml(extra.currency)}</span>` : ""}`
+    : "";
+  return `<div class="account-quota">
+    ${overage ? `<div class="account-quota-meta">${overage}</div>` : ""}
+    <div class="quota-grid">${meters.filter(Boolean).join("")}</div>
+  </div>`;
+}
+
+function accountTrackingHtml(account) {
+  const tracking = accountTrackingForId(account.id);
+  if (account.provider === "copilot") return "";
+  if (!tracking) {
+    return '<div class="account-quota-empty">Quota has not been fetched yet.</div>';
+  }
+  const snapshot =
+    account.provider === "codex"
+      ? codexTrackingHtml(account, tracking)
+      : claudeTrackingHtml(tracking);
+  const stateClass = tracking.stale ? "stale" : "fresh";
+  const fetched = tracking.fetchedAt
+    ? `quota ${relativeTime(tracking.fetchedAt)}`
+    : "quota unavailable";
+  return `<div class="account-quota-state ${stateClass}">
+    <span>${escapeHtml(fetched)}</span>
+    ${tracking.stale ? "<span>stale</span>" : ""}
+    ${tracking.lastError ? `<span class="text-error" title="${escapeHtml(tracking.lastError)}">${escapeHtml(tracking.lastError)}</span>` : ""}
+  </div>${snapshot}`;
+}
 
 function providerStatusItemHtml(status) {
   const { provider, enabled, accountCount, enabledAccountCount } = status;
@@ -75,6 +220,10 @@ function accountCardHtml(account) {
     ? ""
     : `<button class="btn btn-ghost btn-sm" data-action="set-primary" data-account-id="${account.id}" type="button">set primary</button>`;
   const editBtn = `<button class="btn btn-ghost btn-sm" data-action="edit-account" data-account-id="${account.id}" type="button">edit</button>`;
+  const quotaBtn =
+    account.provider === "copilot"
+      ? ""
+      : `<button class="btn btn-ghost btn-sm" data-action="refresh-account-tracking" data-account-id="${account.id}" type="button">quota</button>`;
 
   const identityParts = [];
   if (account.accountId && account.accountId !== name) {
@@ -106,6 +255,7 @@ function accountCardHtml(account) {
       <div class="card-actions">
         ${editBtn}
         ${setPrimaryBtn}
+        ${quotaBtn}
         <button class="btn btn-ghost btn-sm" data-action="refresh-account" data-account-id="${account.id}" type="button">refresh</button>
         <button class="btn btn-danger btn-sm" data-action="delete-account" data-account-id="${account.id}" type="button">delete</button>
       </div>
@@ -121,6 +271,7 @@ function accountCardHtml(account) {
     <div class="card-meta">${identityParts.join("")}</div>
     ${usageParts.length ? `<div class="card-meta">${usageParts.join("")}</div>` : ""}
     ${meta ? `<div class="card-meta">${meta}</div>` : ""}
+    ${accountTrackingHtml(account)}
   </div>`;
 }
 

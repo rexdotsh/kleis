@@ -394,6 +394,109 @@ body {
   gap: 5px;
 }
 
+.account-quota-state {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.account-quota-state.fresh span:first-child {
+  color: var(--green);
+}
+.account-quota-state.stale span:nth-child(2) {
+  color: var(--amber);
+}
+.account-quota-state .text-error {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-quota,
+.account-quota-empty {
+  margin-top: 10px;
+}
+.account-quota-empty {
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.account-quota-meta,
+.quota-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.quota-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+.quota-meter {
+  padding: 9px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+}
+.quota-meter-head,
+.quota-meter-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.quota-meter-head {
+  color: var(--text-secondary);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.quota-meter-head strong {
+  color: var(--green);
+  font-weight: 600;
+}
+.quota-warn .quota-meter-head strong {
+  color: var(--amber);
+}
+.quota-critical .quota-meter-head strong {
+  color: var(--red);
+}
+.quota-track {
+  height: 4px;
+  margin: 7px 0 6px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--border-subtle);
+}
+.quota-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+}
+.quota-warn .quota-track span {
+  background: var(--amber);
+}
+.quota-critical .quota-track span {
+  background: var(--red);
+}
+.quota-meter-foot {
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+.quota-actions {
+  margin-top: 10px;
+}
+
 .dot-sep {
   color: var(--text-tertiary);
   opacity: 0.5;
@@ -987,6 +1090,9 @@ select.field-input {
   }
   .card-meta {
     gap: 8px;
+  }
+  .quota-grid {
+    grid-template-columns: 1fr;
   }
 }
 

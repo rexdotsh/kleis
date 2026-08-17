@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { db } from "../../db";
 import { listProviderAccounts } from "../../db/repositories/provider-accounts";
 import { refreshProviderAccount } from "../../domain/providers/provider-service";
+import { refreshProviderAccountTracking } from "../../domain/providers/provider-account-tracking";
 import { requireCronAuth } from "../middleware/bearer-env-auth";
 
 const isRefreshInProgressError = (error: unknown): boolean =>
@@ -24,6 +25,8 @@ export const cronRoutes = new Hono().get(
     }> = [];
     let refreshedCount = 0;
     let inProgressCount = 0;
+    let trackingRefreshedCount = 0;
+    let trackingStaleCount = 0;
 
     for (const account of accounts) {
       try {
@@ -38,6 +41,20 @@ export const cronRoutes = new Hono().get(
 
         if (refreshed) {
           refreshedCount += 1;
+        }
+        if (account.provider === "codex" || account.provider === "claude") {
+          const tracking = await refreshProviderAccountTracking(
+            db,
+            account.id,
+            {
+              force: true,
+            }
+          );
+          if (tracking?.lastError) {
+            trackingStaleCount += 1;
+          } else if (tracking) {
+            trackingRefreshedCount += 1;
+          }
         }
       } catch (error) {
         if (isRefreshInProgressError(error)) {
@@ -68,6 +85,10 @@ export const cronRoutes = new Hono().get(
           refreshed: refreshedCount,
           inProgress: inProgressCount,
           failed: failed.length,
+        },
+        tracking: {
+          refreshed: trackingRefreshedCount,
+          stale: trackingStaleCount,
         },
         ...(failed.length > 0 ? { failures: failed } : {}),
       },

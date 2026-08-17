@@ -28,6 +28,7 @@ const state = {
   accountsById: new Map(),
   providerStatuses: [],
   accountUsageById: new Map(),
+  accountTrackingById: new Map(),
   accountUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   keys: [],
   keysById: new Map(),
@@ -41,6 +42,7 @@ const state = {
   dashboardData: null,
   dashboardLoading: false,
   dashboardRequestSeq: 0,
+  pendingResetRedemptions: new Map(),
 };
 
 const APP_ORIGIN = window.location.origin;
@@ -72,7 +74,10 @@ async function api(path, options = {}) {
         `${body?.message || "Too many requests"}. Retry in ${retryAfter}s`
       );
     }
-    throw new Error(body?.message || `Request failed (${res.status})`);
+    const error = new Error(body?.message || `Request failed (${res.status})`);
+    error.status = res.status;
+    error.body = body;
+    throw error;
   }
   return body;
 }
@@ -179,6 +184,10 @@ function modelsUrlForKey(key) {
 
 function accountUsageForId(accountId) {
   return state.accountUsageById.get(accountId) || null;
+}
+
+function accountTrackingForId(accountId) {
+  return state.accountTrackingById.get(accountId) || null;
 }
 
 function usageForKey(keyId) {
@@ -613,10 +622,12 @@ async function loadDashboard() {
 async function loadAccounts() {
   showLoading("accounts-list");
   try {
-    const [accountsResult, usageResult] = await Promise.allSettled([
-      api("/admin/accounts"),
-      api(`/admin/accounts/usage?windowMs=${state.accountUsageWindowMs}`),
-    ]);
+    const [accountsResult, usageResult, trackingResult] =
+      await Promise.allSettled([
+        api("/admin/accounts"),
+        api(`/admin/accounts/usage?windowMs=${state.accountUsageWindowMs}`),
+        api("/admin/accounts/tracking"),
+      ]);
 
     if (accountsResult.status !== "fulfilled") throw accountsResult.reason;
 
@@ -637,6 +648,16 @@ async function loadAccounts() {
       toast("Failed to load account usage", "error");
     }
 
+    if (trackingResult.status === "fulfilled") {
+      state.accountTrackingById = usageMapFromList(
+        trackingResult.value.tracking,
+        "providerAccountId"
+      );
+    } else {
+      state.accountTrackingById = new Map();
+      toast("Failed to load account quotas", "error");
+    }
+
     syncAccountWindowButtons();
 
     refreshOpenKeyScopeModal("create");
@@ -650,6 +671,7 @@ async function loadAccounts() {
     state.accounts = [];
     state.accountsById = new Map();
     state.accountUsageById = new Map();
+    state.accountTrackingById = new Map();
     state.providerStatuses = [];
     $("#providers-status").innerHTML = "";
     $("#accounts-list").innerHTML =
@@ -790,6 +812,66 @@ async function refreshAccount(id) {
       btn.disabled = false;
       btn.textContent = "refresh";
     }
+  }
+}
+
+async function refreshAccountTracking(id) {
+  const btn = document.querySelector(
+    `[data-action="refresh-account-tracking"][data-account-id="${id}"]`
+  );
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span>';
+  }
+  try {
+    await api(`/admin/accounts/${id}/tracking/refresh`, { method: "POST" });
+    toast("Account quota refreshed");
+    await loadAccounts();
+  } catch (e) {
+    toast(e.message, "error");
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "quota";
+    }
+  }
+}
+
+async function redeemResetCredit(accountId, creditId) {
+  const account = accountById(accountId);
+  const label = account?.label || account?.accountId || accountId;
+  const redemptionKey = `${accountId}:${creditId || "auto"}`;
+  const existingRequestId = state.pendingResetRedemptions.get(redemptionKey);
+  const confirmed = await showConfirm(
+    "Reset Codex Limits",
+    existingRequestId
+      ? `Retry the pending reset for "${label}" with the same idempotency key?`
+      : `Consume a reset credit for "${label}"? This changes the upstream Codex account quota.`,
+    existingRequestId ? "retry reset" : "use credit"
+  );
+  if (!confirmed) return;
+
+  try {
+    const body = {};
+    if (creditId) body.creditId = creditId;
+    if (existingRequestId) body.redeemRequestId = existingRequestId;
+    const response = await api(
+      `/admin/accounts/${accountId}/tracking/codex/reset-credits/consume`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+    state.pendingResetRedemptions.delete(redemptionKey);
+    toast(`Codex reset result: ${response.result?.code || "complete"}`);
+    await loadAccounts();
+  } catch (e) {
+    const redeemRequestId = e.body?.redeemRequestId;
+    if (redeemRequestId) {
+      state.pendingResetRedemptions.set(redemptionKey, redeemRequestId);
+      toast(
+        "Reset status is ambiguous; the next retry will reuse its request ID",
+        "error"
+      );
+      return;
+    }
+    toast(e.message, "error");
   }
 }
 
@@ -1298,6 +1380,7 @@ export {
   $,
   $$,
   accountById,
+  accountTrackingForId,
   accountUsageForId,
   activeKeysWithModelsUrl,
   api,
@@ -1332,6 +1415,8 @@ export {
   openEditKeyModal,
   readPersistedToken,
   refreshAccount,
+  refreshAccountTracking,
+  redeemResetCredit,
   relativeTime,
   resolveConfirm,
   revokeKey,

@@ -78,6 +78,13 @@
       "when": 1784655400876,
       "tag": "0010_lumpy_sentinels",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1786973049039,
+      "tag": "0011_slimy_doctor_doom",
+      "breakpoints": true
     }
   ]
 }
