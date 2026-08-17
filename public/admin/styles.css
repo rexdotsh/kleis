@@ -458,9 +458,6 @@ body {
   grid-column: 1 / -1;
   align-items: center;
 }
-.limit-inactive {
-  opacity: 0.45;
-}
 .limit-label {
   max-width: 180px;
   overflow: hidden;

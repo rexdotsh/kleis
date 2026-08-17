@@ -43,15 +43,15 @@ function limitResetLabel(resetsAt) {
   return timestamp ? `resets ${relativeTime(timestamp)}` : "";
 }
 
-function limitRowHtml(label, percent, resetsAt, options = {}) {
+function limitRowHtml(label, percent, resetsAt) {
   if (typeof percent !== "number" || !Number.isFinite(percent)) return "";
   const pct = Math.max(0, Math.min(100, percent));
   const severity = pct >= 90 ? "critical" : pct >= 70 ? "warn" : "ok";
-  return `<div class="limit-row limit-${severity}${options.inactive ? " limit-inactive" : ""}">
-    <span class="limit-label" title="${escapeHtml(options.title || label)}">${escapeHtml(label)}</span>
+  return `<div class="limit-row limit-${severity}">
+    <span class="limit-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
     <span class="limit-track"><span class="limit-fill" style="width:${pct}%"></span></span>
     <span class="limit-pct">${Math.round(pct)}%</span>
-    <span class="limit-reset">${escapeHtml(options.inactive ? "inactive" : limitResetLabel(resetsAt))}</span>
+    <span class="limit-reset">${escapeHtml(limitResetLabel(resetsAt))}</span>
   </div>`;
 }
 
@@ -132,8 +132,7 @@ function claudeLimitsBody(data) {
             "scoped weekly"
           ).toLowerCase(),
           limit.percent,
-          limit.resetsAt,
-          { inactive: limit.isActive === false }
+          limit.resetsAt
         )
       ),
   ];
