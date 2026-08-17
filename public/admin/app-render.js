@@ -53,34 +53,34 @@ function quotaMeterHtml(label, percent, resetsAt, detail = "") {
   </div>`;
 }
 
+const windowMeterHtml = (label, window, detail = "") =>
+  quotaMeterHtml(
+    label,
+    window?.usedPercent ?? window?.utilization,
+    window?.resetAt ?? window?.resetsAt,
+    detail
+  );
+
 function codexTrackingHtml(account, tracking) {
   const data = tracking?.data?.provider === "codex" ? tracking.data : null;
   if (!data) return "";
   const status = data.status;
   const meters = [
-    quotaMeterHtml(
+    windowMeterHtml(
       "primary window",
-      status?.primaryWindow?.usedPercent,
-      status?.primaryWindow?.resetAt,
+      status?.primaryWindow,
       status?.primaryWindow?.windowSeconds
         ? `${Math.round(status.primaryWindow.windowSeconds / 3600)}h window`
         : ""
     ),
-    quotaMeterHtml(
-      "secondary window",
-      status?.secondaryWindow?.usedPercent,
-      status?.secondaryWindow?.resetAt
+    windowMeterHtml("secondary window", status?.secondaryWindow),
+    ...(status?.additionalRateLimits || []).map((limit) =>
+      windowMeterHtml(
+        limit.limitName || limit.meteredFeature || "additional limit",
+        limit.primaryWindow
+      )
     ),
   ];
-  for (const limit of status?.additionalRateLimits || []) {
-    meters.push(
-      quotaMeterHtml(
-        limit.limitName || limit.meteredFeature || "additional limit",
-        limit.primaryWindow?.usedPercent,
-        limit.primaryWindow?.resetAt
-      )
-    );
-  }
   const resetCredits = data.resetCredits;
   const available =
     resetCredits?.availableCount ?? status?.resetCreditsAvailable;
@@ -119,28 +119,19 @@ function claudeTrackingHtml(tracking) {
   const subscription = data?.subscription;
   if (!subscription) return "";
   const meters = [
-    quotaMeterHtml(
-      "5-hour session",
-      subscription.fiveHour?.utilization,
-      subscription.fiveHour?.resetsAt
-    ),
-    quotaMeterHtml(
-      "7-day total",
-      subscription.sevenDay?.utilization,
-      subscription.sevenDay?.resetsAt
-    ),
+    windowMeterHtml("5-hour session", subscription.fiveHour),
+    windowMeterHtml("7-day total", subscription.sevenDay),
+    ...(subscription.limits || [])
+      .filter((limit) => limit.kind === "weekly_scoped")
+      .map((limit) =>
+        quotaMeterHtml(
+          limit.modelDisplayName || limit.kind || "scoped weekly",
+          limit.percent,
+          limit.resetsAt,
+          limit.isActive === false ? "inactive window" : ""
+        )
+      ),
   ];
-  for (const limit of subscription.limits || []) {
-    if (limit.kind !== "weekly_scoped") continue;
-    meters.push(
-      quotaMeterHtml(
-        limit.modelDisplayName || limit.kind || "scoped weekly",
-        limit.percent,
-        limit.resetsAt,
-        limit.isActive === false ? "inactive window" : ""
-      )
-    );
-  }
   const extra = subscription.extraUsage;
   const overage = extra
     ? `<span>extra usage ${extra.isEnabled ? "enabled" : "disabled"}</span>${typeof extra.utilization === "number" ? `<span>${Math.round(extra.utilization)}% overage used</span>` : ""}${extra.currency ? `<span>${escapeHtml(extra.currency)}</span>` : ""}`

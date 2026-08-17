@@ -45,24 +45,27 @@ export type ProviderAccountTrackingRecord = {
   data: ProviderTrackingData | null;
 };
 
-const parseTrackingData = (
+const parseJsonObject = (
   value: string | null
-): ProviderTrackingData | null => {
+): Record<string, unknown> | null => {
   if (!value) {
     return null;
   }
   try {
     const parsed = JSON.parse(value) as unknown;
-    if (
-      isObjectRecord(parsed) &&
-      (parsed.provider === "codex" || parsed.provider === "claude")
-    ) {
-      return parsed as ProviderTrackingData;
-    }
+    return isObjectRecord(parsed) ? parsed : null;
   } catch {
     return null;
   }
-  return null;
+};
+
+const parseTrackingData = (
+  value: string | null
+): ProviderTrackingData | null => {
+  const parsed = parseJsonObject(value);
+  return parsed?.provider === "codex" || parsed?.provider === "claude"
+    ? (parsed as ProviderTrackingData)
+    : null;
 };
 
 const toTrackingRecord = (
@@ -171,21 +174,12 @@ export const findClaudeRateLimitSnapshot = async (
   if (!row) {
     return null;
   }
-  let data: Record<string, unknown> = {};
-  try {
-    const parsed = JSON.parse(row.dataJson) as unknown;
-    if (isObjectRecord(parsed)) {
-      data = parsed;
-    }
-  } catch {
-    data = {};
-  }
   return {
     providerAccountId: row.providerAccountId,
     fetchedAt: row.fetchedAt,
     sourceEndpoint: row.sourceEndpoint,
     workspaceId: row.workspaceId,
-    data,
+    data: parseJsonObject(row.dataJson) ?? {},
   };
 };
 
