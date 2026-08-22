@@ -797,6 +797,34 @@ async function refreshAccount(id) {
   }
 }
 
+function resetResultToast(result) {
+  const windows =
+    typeof result?.windowsReset === "number" && result.windowsReset > 0
+      ? ` (${result.windowsReset} window${result.windowsReset === 1 ? "" : "s"} reset)`
+      : "";
+  switch (result?.code) {
+    case "reset":
+      return { message: `Limits restored${windows}`, type: "success" };
+    case "nothing_to_reset":
+      return {
+        message: "Nothing to reset - limits are already clear",
+        type: "info",
+      };
+    case "no_credit":
+      return {
+        message: "No reset credit available on this account",
+        type: "error",
+      };
+    case "already_redeemed":
+      return { message: `Credit was already redeemed${windows}`, type: "info" };
+    default:
+      return {
+        message: `Codex reset result: ${result?.code || "complete"}`,
+        type: "info",
+      };
+  }
+}
+
 async function redeemResetCredit(accountId, creditId) {
   const account = accountById(accountId);
   const label = account?.label || account?.accountId || accountId;
@@ -820,7 +848,8 @@ async function redeemResetCredit(accountId, creditId) {
       { method: "POST", body: JSON.stringify(body) }
     );
     state.pendingResetRedemptions.delete(redemptionKey);
-    toast(`Codex reset result: ${response.result?.code || "complete"}`);
+    const { message, type } = resetResultToast(response.result);
+    toast(message, type);
     await loadAccounts();
   } catch (e) {
     const redeemRequestId = e.body?.redeemRequestId;
