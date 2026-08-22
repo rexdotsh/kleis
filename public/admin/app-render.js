@@ -102,16 +102,30 @@ function codexLimitsBody(account, data) {
 
   const available =
     data.resetCredits?.availableCount ?? status?.resetCreditsAvailable;
-  const actions = (data.resetCredits?.credits || [])
+  const availableCredits = (data.resetCredits?.credits || [])
     .filter((credit) => credit.status === "available")
-    .map(
-      (credit) =>
-        `<button class="btn btn-credit btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" data-credit-id="${escapeHtml(credit.id)}" type="button" title="${escapeHtml(credit.description || "Consume a reset credit to restore limits")}">${escapeHtml(credit.title || "restore limits")}</button>`
+    .sort(
+      (a, b) =>
+        (quotaTimestamp(a.expiresAt) ?? Number.POSITIVE_INFINITY) -
+        (quotaTimestamp(b.expiresAt) ?? Number.POSITIVE_INFINITY)
     );
+  const actions = availableCredits.map((credit) => {
+    const expiry = quotaTimestamp(credit.expiresAt);
+    const expiryLabel = expiry
+      ? `credit expires ${relativeTime(expiry)}`
+      : "credit does not expire";
+    const title = `${credit.description || "Consume a reset credit to restore limits"} \u00b7 ${expiryLabel}`;
+    return `<button class="btn btn-credit btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" data-credit-id="${escapeHtml(credit.id)}" type="button" title="${escapeHtml(title)}">${escapeHtml((credit.title || "restore limits").toLowerCase())}</button>`;
+  });
   if (!actions.length && typeof available === "number" && available > 0) {
     actions.push(
       `<button class="btn btn-credit btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" type="button" title="Consume a reset credit to restore limits">restore limits${available > 1 ? ` (${available})` : ""}</button>`
     );
+  }
+
+  const soonestExpiry = quotaTimestamp(availableCredits[0]?.expiresAt);
+  if (soonestExpiry) {
+    chips.push(`reset credit expires ${relativeTime(soonestExpiry)}`);
   }
 
   return { rows, chips, actions };
