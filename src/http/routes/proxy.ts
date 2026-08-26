@@ -19,7 +19,6 @@ import {
   readCodexSessionId,
 } from "../../providers/proxies/codex-proxy";
 import { tryProxyCodexWebSocket } from "../../providers/proxies/codex-websocket";
-import { prepareCopilotProxyRequest } from "../../providers/proxies/copilot-proxy";
 import type { UsageRequestSource } from "../../usage/request-outcome";
 import {
   isTokenUsagePopulated,
@@ -415,24 +414,6 @@ const proxyRequest = async (
 
       usageRecorder.recordFinal(attempt.response.status);
       return responseToClient;
-    }
-
-    case "copilot": {
-      const copilotProxy = prepareCopilotProxyRequest({
-        endpoint: route.endpoint,
-        requestUrl,
-        headers,
-        bodyText: requestBody,
-        bodyJson: requestBodyJson,
-        githubAccessToken: account.refreshToken,
-        metadata:
-          account.metadata?.provider === "copilot" ? account.metadata : null,
-        onTokenUsage: usageRecorder.onTokenUsage,
-      });
-      upstreamUrl = copilotProxy.upstreamUrl;
-      requestBody = copilotProxy.bodyText;
-      responseTransformer = copilotProxy.transformResponse;
-      break;
     }
 
     case "claude": {

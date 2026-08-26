@@ -1,5 +1,5 @@
 kleis.rex.wf {
-	@streaming path /openai/v1/* /anthropic/v1/* /copilot/v1/*
+	@streaming path /openai/v1/* /anthropic/v1/*
 
 	handle @streaming {
 		reverse_proxy 127.0.0.1:3003 {

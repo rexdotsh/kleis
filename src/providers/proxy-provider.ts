@@ -4,7 +4,7 @@ import type { CanonicalProvider, ProxyRouteSuffix } from "./proxy-endpoints";
 type ProxyProviderMapping = {
   internalProvider: Provider;
   canonicalProvider: CanonicalProvider;
-  routeBasePath: "/openai/v1" | "/anthropic/v1" | "/copilot/v1";
+  routeBasePath: "/openai/v1" | "/anthropic/v1";
   npm: string;
   defaultName: string;
 };
@@ -23,13 +23,6 @@ export const proxyProviderMappings: readonly ProxyProviderMapping[] = [
     routeBasePath: "/anthropic/v1",
     npm: "@ai-sdk/anthropic",
     defaultName: "Anthropic",
-  },
-  {
-    internalProvider: "copilot",
-    canonicalProvider: "github-copilot",
-    routeBasePath: "/copilot/v1",
-    npm: "@ai-sdk/github-copilot",
-    defaultName: "GitHub Copilot",
   },
 ] as const;
 

@@ -1,6 +1,6 @@
 # Kleis
 
-Single OAuth account proxy for coding agents. One base URL that stores OAuth credentials centrally, refreshes tokens automatically, and routes requests to Copilot/Codex/Claude through provider-compatible proxy endpoints.
+Single OAuth account proxy for coding agents. One base URL that stores OAuth credentials centrally, refreshes tokens automatically, and routes requests to Codex and Claude through provider-compatible proxy endpoints.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ Single OAuth account proxy for coding agents. One base URL that stores OAuth cre
 
 ## Database Schema (4 tables)
 
-- **`provider_accounts`**: OAuth credentials per provider (copilot/codex/claude). Includes access/refresh tokens, expiry, primary flag, metadata JSON, distributed refresh lock fields.
+- **`provider_accounts`**: OAuth credentials per provider (codex/claude). Includes access/refresh tokens, expiry, primary flag, metadata JSON, distributed refresh lock fields.
 - **`api_keys`**: Proxy auth keys (`kleis_*` format). Provider and model scope arrays. Each key gets a `modelsDiscoveryToken` for scoped model URLs.
 - **`oauth_states`**: Ephemeral records for in-flight OAuth flows.
 - **`request_usage_buckets`**: Minute-bucketed analytics. Tracks request/success/error counts and latency per key+account+provider+endpoint.
@@ -26,14 +26,10 @@ All require `Authorization: Bearer <kleis_api_key>`:
 
 | Route | Provider | Upstream |
 |---|---|---|
-| `POST /copilot/v1/chat/completions` | Copilot | GitHub Copilot chat completions |
-| `POST /copilot/v1/responses` | Copilot | GitHub Copilot responses API |
 | `POST /openai/v1/responses` | Codex | ChatGPT Codex responses API |
 | `POST /anthropic/v1/messages` | Claude | Anthropic messages API |
 
 ## Provider Details
-
-**Copilot**: GitHub device flow OAuth. Derives vision/initiator headers from message content. Supports enterprise domain override.
 
 **Codex**: OpenAI browser (PKCE) or headless (device) flow. Injects Codex-specific headers (`ChatGPT-Account-Id`, `originator`). Strips unsupported params.
 
