@@ -61,7 +61,7 @@ describe("proxy route mapping", () => {
   });
 
   test("rejects foreign prefixed model candidates", () => {
-    const route = resolveProxyRoute("/copilot/v1/responses");
+    const route = resolveProxyRoute("/anthropic/v1/messages");
     expect(route).not.toBeNull();
     if (!route) {
       throw new Error("route missing");
@@ -76,7 +76,6 @@ describe("request idle timeouts", () => {
   test("disables Bun idle timeouts for streaming proxy routes", () => {
     expect(resolveRequestIdleTimeout("/openai/v1/responses")).toBe(0);
     expect(resolveRequestIdleTimeout("/anthropic/v1/messages")).toBe(0);
-    expect(resolveRequestIdleTimeout("/copilot/v1/chat/completions")).toBe(0);
   });
 
   test("leaves normal app routes on the server default idle timeout", () => {

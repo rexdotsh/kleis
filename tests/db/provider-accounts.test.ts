@@ -36,8 +36,8 @@ describe("provider account enablement", () => {
     const now = Date.now();
     await database.insert(providerAccounts).values([
       {
-        id: "copilot-primary",
-        provider: "copilot",
+        id: "claude-primary",
+        provider: "claude",
         isPrimary: true,
         accessToken: "access-primary",
         refreshToken: "refresh-primary",
@@ -46,8 +46,8 @@ describe("provider account enablement", () => {
         updatedAt: now,
       },
       {
-        id: "copilot-secondary",
-        provider: "copilot",
+        id: "claude-secondary",
+        provider: "claude",
         isPrimary: false,
         accessToken: "access-secondary",
         refreshToken: "refresh-secondary",
@@ -79,40 +79,40 @@ describe("provider account enablement", () => {
     const now = Date.now();
     const status = await setProviderAccountsEnabled(
       database,
-      "copilot",
+      "claude",
       false,
       now
     );
 
     expect(status).toEqual({
-      provider: "copilot",
+      provider: "claude",
       enabled: false,
       accountCount: 2,
       enabledAccountCount: 0,
     });
     expect(
       (await listProviderAccounts(database))
-        .filter((account) => account.provider === "copilot")
+        .filter((account) => account.provider === "claude")
         .every((account) => !account.enabled)
     ).toBe(true);
     expect(await listConfiguredProviders(database)).toEqual(["codex"]);
-    expect(await findPrimaryProviderAccount(database, "copilot")).toBeNull();
+    expect(await findPrimaryProviderAccount(database, "claude")).toBeNull();
     expect(
-      await getRoutableProviderAccount(database, "copilot", now)
+      await getRoutableProviderAccount(database, "claude", now)
     ).toBeNull();
     expect(
-      await getRoutableProviderAccount(database, "copilot", now, {
-        allowedAccountIds: ["copilot-secondary"],
+      await getRoutableProviderAccount(database, "claude", now, {
+        allowedAccountIds: ["claude-secondary"],
       })
     ).toBeNull();
   });
 
   test("new accounts inherit disabled state and re-enabling restores routing", async () => {
     const now = Date.now();
-    await setProviderAccountsEnabled(database, "copilot", false, now);
+    await setProviderAccountsEnabled(database, "claude", false, now);
 
     const created = await upsertProviderAccount(database, {
-      provider: "copilot",
+      provider: "claude",
       accountId: "new-account",
       accessToken: "access-new",
       refreshToken: "refresh-new",
@@ -124,15 +124,15 @@ describe("provider account enablement", () => {
 
     const status = await setProviderAccountsEnabled(
       database,
-      "copilot",
+      "claude",
       true,
       now + 1
     );
     expect(status.enabledAccountCount).toBe(3);
-    expect(await listConfiguredProviders(database)).toContain("copilot");
+    expect(await listConfiguredProviders(database)).toContain("claude");
     expect(
-      (await getRoutableProviderAccount(database, "copilot", now + 1))?.id
-    ).toBe("copilot-primary");
+      (await getRoutableProviderAccount(database, "claude", now + 1))?.id
+    ).toBe("claude-primary");
     expect(await listProviderStatuses(database)).toContainEqual(status);
   });
 });

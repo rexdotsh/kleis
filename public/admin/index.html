@@ -265,22 +265,9 @@
             <div class="field">
               <label class="field-label" for="oauth-provider">Provider</label>
               <select id="oauth-provider" class="field-input">
-                <option value="copilot">Copilot (GitHub)</option>
                 <option value="codex">Codex (OpenAI)</option>
                 <option value="claude">Claude (Anthropic)</option>
               </select>
-            </div>
-            <div id="oauth-copilot-opts" class="field">
-              <label class="field-label" for="oauth-enterprise-domain">
-                Enterprise Domain (optional)
-              </label>
-              <input
-                id="oauth-enterprise-domain"
-                class="field-input"
-                type="text"
-                placeholder="github.mycompany.com"
-              >
-              <div class="field-hint">Leave blank for github.com</div>
             </div>
             <div id="oauth-codex-opts" class="field" style="display:none">
               <label class="field-label" for="oauth-codex-mode">
@@ -318,7 +305,6 @@
                   Provider
                 </label>
                 <select id="import-provider" class="field-input">
-                  <option value="copilot">Copilot (GitHub)</option>
                   <option value="codex">Codex (OpenAI)</option>
                   <option value="claude">Claude (Anthropic)</option>
                 </select>
@@ -371,7 +357,7 @@
                   id="import-account-id"
                   class="field-input"
                   type="text"
-                  placeholder="chatgpt-org-id or github user id"
+                  placeholder="provider-specific account id"
                 >
               </div>
               <div class="field">
@@ -431,10 +417,6 @@
           </div>
           <div class="scope-grid">
             <label class="scope-check">
-              <input type="checkbox" value="copilot" class="key-scope-provider">
-              copilot
-            </label>
-            <label class="scope-check">
               <input type="checkbox" value="codex" class="key-scope-provider">
               codex
             </label>
@@ -460,7 +442,7 @@
           <textarea
             id="key-model-scopes"
             class="field-input field-input-compact"
-            placeholder="github-copilot/gpt-5-mini, anthropic/claude-sonnet-4-5"
+            placeholder="gpt-5.6-luna, anthropic/claude-sonnet-4-5"
             rows="2"
           ></textarea>
           <div class="field-hint">
@@ -515,7 +497,7 @@
           <textarea
             id="edit-account-metadata"
             class="field-input"
-            placeholder='{"githubLogin":"octocat"}'
+            placeholder='{"chatgptAccountId":"org_123"}'
           ></textarea>
           <div class="field-hint">
             Must be a JSON object. Leave empty to clear metadata.
@@ -558,14 +540,6 @@
             <label class="scope-check">
               <input
                 type="checkbox"
-                value="copilot"
-                class="edit-key-scope-provider"
-              >
-              copilot
-            </label>
-            <label class="scope-check">
-              <input
-                type="checkbox"
                 value="codex"
                 class="edit-key-scope-provider"
               >
@@ -596,7 +570,7 @@
           <textarea
             id="edit-key-model-scopes"
             class="field-input field-input-compact"
-            placeholder="github-copilot/gpt-5-mini, anthropic/claude-sonnet-4-5"
+            placeholder="gpt-5.6-luna, anthropic/claude-sonnet-4-5"
             rows="2"
           ></textarea>
           <div class="field-hint">

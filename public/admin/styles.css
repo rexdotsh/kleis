@@ -17,8 +17,6 @@
   --green-dim: rgba(74, 222, 128, 0.15);
   --red: #f87171;
   --red-dim: rgba(248, 113, 113, 0.15);
-  --copilot: #79c0ff;
-  --copilot-dim: rgba(121, 192, 255, 0.12);
   --codex: #a78bfa;
   --codex-dim: rgba(167, 139, 250, 0.12);
   --claude: #fb923c;
@@ -572,10 +570,6 @@ body {
   text-transform: uppercase;
   border-radius: var(--radius-sm);
   line-height: 1;
-}
-.badge-copilot {
-  color: var(--copilot);
-  background: var(--copilot-dim);
 }
 .badge-codex {
   color: var(--codex);
