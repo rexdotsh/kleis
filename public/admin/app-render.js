@@ -38,9 +38,10 @@ function quotaTimestamp(value) {
   return null;
 }
 
-function limitResetLabel(resetsAt) {
+function limitResetLabel(resetsAt, pct) {
   const timestamp = quotaTimestamp(resetsAt);
-  return timestamp ? `resets ${relativeTime(timestamp)}` : "";
+  if (timestamp) return `resets ${relativeTime(timestamp)}`;
+  return pct === 0 ? "starts on first use" : "";
 }
 
 function limitRowHtml(label, percent, resetsAt) {
@@ -51,7 +52,7 @@ function limitRowHtml(label, percent, resetsAt) {
     <span class="limit-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
     <span class="limit-track"><span class="limit-fill" style="width:${pct}%"></span></span>
     <span class="limit-pct">${Math.round(pct)}%</span>
-    <span class="limit-reset">${escapeHtml(limitResetLabel(resetsAt))}</span>
+    <span class="limit-reset">${escapeHtml(limitResetLabel(resetsAt, pct))}</span>
   </div>`;
 }
 
@@ -67,6 +68,28 @@ function windowSpanName(seconds, fallback) {
   const hours = Math.round(seconds / 3600);
   if (hours >= 24 && hours % 24 === 0) return `${hours / 24}d window`;
   return `${hours}h window`;
+}
+
+const CODEX_PLAN_LABELS = {
+  free: "free",
+  go: "go",
+  plus: "plus",
+  pro: "pro",
+  prolite: "pro lite",
+  team: "team",
+  self_serve_business_prolite: "business pro",
+  self_serve_business_usage_based: "business usage-based",
+  business: "business",
+  ent26: "enterprise",
+  enterprise_cbp_automation: "enterprise automation",
+  enterprise_cbp_usage_based: "enterprise usage-based",
+  enterprise: "enterprise",
+  edu: "education",
+  unknown: "unknown",
+};
+
+function codexPlanLabel(planType) {
+  return planType ? CODEX_PLAN_LABELS[planType] || planType : "";
 }
 
 function compactTokens(value) {
@@ -95,7 +118,8 @@ function codexLimitsBody(account, data) {
   ];
 
   const chips = [];
-  if (status?.planType) chips.push(`${status.planType} plan`);
+  const planLabel = codexPlanLabel(status?.planType);
+  if (planLabel) chips.push(`${planLabel} plan`);
   if (typeof data.profile?.lifetimeTokens === "number") {
     chips.push(`${compactTokens(data.profile.lifetimeTokens)} lifetime tok`);
   }

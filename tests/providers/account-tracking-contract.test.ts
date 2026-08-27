@@ -22,7 +22,7 @@ describe("Codex account tracking contracts", () => {
 
   test("normalizes quota windows and ignores additive fields", () => {
     const result = decodeCodexUsageStatus({
-      plan_type: "plus",
+      plan_type: "self_serve_business_prolite",
       rate_limit: {
         allowed: true,
         limit_reached: false,
@@ -52,7 +52,7 @@ describe("Codex account tracking contracts", () => {
       unknown_top_level: "ignored",
     });
 
-    expect(result.planType).toBe("plus");
+    expect(result.planType).toBe("self_serve_business_prolite");
     expect(result.primaryWindow).toEqual({
       usedPercent: 36,
       windowSeconds: 18_000,
