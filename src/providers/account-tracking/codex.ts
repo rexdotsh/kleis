@@ -58,6 +58,7 @@ export const decodeCodexUsageStatus = (value: unknown) => {
   const credits = readObject(input.credits);
   const spendControl = readObject(input.spend_control);
   const resetCredits = readObject(input.rate_limit_reset_credits);
+
   return {
     planType: readString(input.plan_type),
     allowed: readBoolean(rateLimit?.allowed),
