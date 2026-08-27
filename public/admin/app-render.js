@@ -41,7 +41,7 @@ function quotaTimestamp(value) {
 function limitResetLabel(resetsAt, pct) {
   const timestamp = quotaTimestamp(resetsAt);
   if (timestamp) return `resets ${relativeTime(timestamp)}`;
-  return pct === 0 ? "starts on first use" : "";
+  return pct === 0 ? "not started" : "";
 }
 
 function limitRowHtml(label, percent, resetsAt) {
