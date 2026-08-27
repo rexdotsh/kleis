@@ -88,6 +88,10 @@ const CODEX_PLAN_LABELS = {
   unknown: "unknown",
 };
 
+function codexPlanLabel(planType) {
+  return planType ? CODEX_PLAN_LABELS[planType] || planType : "";
+}
+
 function compactTokens(value) {
   return value >= 1_000_000_000
     ? `${(value / 1_000_000_000).toFixed(1)}B`
@@ -114,7 +118,7 @@ function codexLimitsBody(account, data) {
   ];
 
   const chips = [];
-  const planLabel = CODEX_PLAN_LABELS[status?.planType];
+  const planLabel = codexPlanLabel(status?.planType);
   if (planLabel) chips.push(`${planLabel} plan`);
   if (typeof data.profile?.lifetimeTokens === "number") {
     chips.push(`${compactTokens(data.profile.lifetimeTokens)} lifetime tok`);

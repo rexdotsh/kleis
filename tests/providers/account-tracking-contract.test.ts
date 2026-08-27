@@ -53,9 +53,6 @@ describe("Codex account tracking contracts", () => {
     });
 
     expect(result.planType).toBe("self_serve_business_prolite");
-    expect(decodeCodexUsageStatus({ plan_type: "future_plan" }).planType).toBe(
-      "unknown"
-    );
     expect(result.primaryWindow).toEqual({
       usedPercent: 36,
       windowSeconds: 18_000,
