@@ -26,24 +26,6 @@ const codexMetadataSchema = z.strictObject({
     .optional(),
 });
 
-const copilotMetadataSchema = z.strictObject({
-  provider: z.literal("copilot"),
-  tokenType: z.string().nullable(),
-  scope: z.string().nullable(),
-  enterpriseDomain: z.string().nullable(),
-  copilotApiBaseUrl: z.string().nullable(),
-  githubUserId: z.string().nullable(),
-  githubLogin: z.string().nullable(),
-  githubEmail: z.string().nullable(),
-  requestProfile: z
-    .strictObject({
-      openaiIntent: z.string().optional(),
-      initiatorHeader: z.string().optional(),
-      visionHeader: z.string().optional(),
-    })
-    .optional(),
-});
-
 const claudeMetadataSchema = z.strictObject({
   provider: z.literal("claude"),
   tokenType: z.string().nullable(),
@@ -58,12 +40,10 @@ const claudeMetadataSchema = z.strictObject({
 
 export const providerAccountMetadataSchema = z.discriminatedUnion("provider", [
   codexMetadataSchema,
-  copilotMetadataSchema,
   claudeMetadataSchema,
 ]);
 
 export type CodexAccountMetadata = z.infer<typeof codexMetadataSchema>;
-export type CopilotAccountMetadata = z.infer<typeof copilotMetadataSchema>;
 export type ClaudeAccountMetadata = z.infer<typeof claudeMetadataSchema>;
 
 export type ProviderAccountMetadata = z.infer<
@@ -83,19 +63,6 @@ const buildDefaultProviderAccountMetadata = (
       chatgptAccountId: accountId,
       organizationIds: [],
       email: null,
-    };
-  }
-
-  if (provider === "copilot") {
-    return {
-      provider,
-      tokenType: null,
-      scope: null,
-      enterpriseDomain: null,
-      copilotApiBaseUrl: null,
-      githubUserId: accountId,
-      githubLogin: null,
-      githubEmail: null,
     };
   }
 
@@ -149,10 +116,6 @@ export const resolveImportedProviderAccountId = (
 
   if (metadata.provider === "codex") {
     return metadata.chatgptAccountId;
-  }
-
-  if (metadata.provider === "copilot") {
-    return metadata.githubUserId;
   }
 
   return null;

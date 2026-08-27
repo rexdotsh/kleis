@@ -94,29 +94,6 @@ const upstreamRegistry = {
       },
     },
   },
-  "github-copilot": {
-    id: "github-copilot",
-    name: "GitHub Copilot",
-    env: ["GITHUB_TOKEN"],
-    models: {
-      "gpt-5": {
-        id: "gpt-5",
-        name: "GPT-5",
-        provider: {
-          api: "https://api.githubcopilot.com",
-          npm: "@ai-sdk/github-copilot",
-        },
-      },
-      "gpt-5-mini": {
-        id: "gpt-5-mini",
-        name: "GPT-5 Mini",
-        provider: {
-          api: "https://api.githubcopilot.com",
-          npm: "@ai-sdk/github-copilot",
-        },
-      },
-    },
-  },
 } as const;
 
 describe("models registry contract", () => {
@@ -124,7 +101,7 @@ describe("models registry contract", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex", "claude", "copilot"],
+      configuredProviders: ["codex", "claude"],
     });
 
     const anthropic = registry.anthropic as {
@@ -134,16 +111,6 @@ describe("models registry contract", () => {
     expect(anthropic.env).toEqual(["ANTHROPIC_API_KEY"]);
     expect(anthropic.models?.["claude-sonnet-4"]?.provider?.api).toBe(
       "https://api.anthropic.com/v1"
-    );
-
-    const copilot = registry["github-copilot"] as {
-      env?: string[];
-      models?: Record<string, { id?: string; provider?: { api?: string } }>;
-    };
-    expect(copilot.env).toEqual(["GITHUB_TOKEN"]);
-    expect(copilot.models?.["gpt-5"]?.id).toBe("gpt-5");
-    expect(copilot.models?.["gpt-5"]?.provider?.api).toBe(
-      "https://api.githubcopilot.com"
     );
 
     const openai = registry.openai as {
@@ -166,7 +133,7 @@ describe("models registry contract", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex", "claude", "copilot"],
+      configuredProviders: ["codex", "claude"],
     });
 
     const kleis = registry.kleis as {
@@ -182,12 +149,6 @@ describe("models registry contract", () => {
     expect(kleis.models?.["gpt-5.6"]).toBeUndefined();
     expect(kleis.models?.["gpt-5.6-luna"]?.id).toBe("gpt-5.6-luna");
     expect(kleis.models?.["openai/gpt-5.3-codex"]).toBeUndefined();
-    expect(kleis.models?.["github-copilot/gpt-5"]?.id).toBe(
-      "github-copilot/gpt-5"
-    );
-    expect(kleis.models?.["github-copilot/gpt-5"]?.provider?.api).toBe(
-      "https://kleis.example/copilot/v1"
-    );
     expect(kleis.models?.["openai/text-embedding-3-large"]).toBeUndefined();
   });
 
@@ -247,7 +208,7 @@ describe("models registry contract", () => {
         },
       } as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex", "claude", "copilot"],
+      configuredProviders: ["codex", "claude"],
     });
 
     const kleis = registry.kleis as {
@@ -283,15 +244,6 @@ describe("models registry contract", () => {
       "https://api.anthropic.com/v1"
     );
 
-    const copilot = registry["github-copilot"] as {
-      env?: string[];
-      models?: Record<string, { provider?: { api?: string } }>;
-    };
-    expect(copilot.env).toEqual(["GITHUB_TOKEN"]);
-    expect(copilot.models?.["gpt-5"]?.provider?.api).toBe(
-      "https://api.githubcopilot.com"
-    );
-
     const openai = registry.openai as {
       env?: string[];
       models?: Record<string, { id?: string }>;
@@ -307,7 +259,6 @@ describe("models registry contract", () => {
       "gpt-5.3-codex-spark"
     );
     expect(kleis.models?.["anthropic/claude-sonnet-4"]).toBeUndefined();
-    expect(kleis.models?.["github-copilot/gpt-5"]).toBeUndefined();
   });
 
   test("preserves all upstream providers when none are configured", () => {
@@ -325,8 +276,6 @@ describe("models registry contract", () => {
     expect(Object.keys(openai.models ?? {})).toHaveLength(8);
 
     expect(registry.anthropic).toBeDefined();
-    expect(registry["github-copilot"]).toBeDefined();
-
     const kleis = registry.kleis as {
       env?: string[];
       models?: Record<string, unknown>;
@@ -339,17 +288,16 @@ describe("models registry contract", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/api/kmd_abc123",
-      configuredProviders: ["codex", "claude", "copilot"],
+      configuredProviders: ["codex", "claude"],
       apiKeyScopes: {
-        providerScopes: ["codex", "copilot"],
-        modelScopes: ["openai/gpt-5.6-luna", "gpt-5-mini"],
+        providerScopes: ["codex"],
+        modelScopes: ["openai/gpt-5.6-luna"],
         accountProviderScopes: null,
       },
     });
 
     expect(Object.keys(registry).sort()).toEqual([
       "anthropic",
-      "github-copilot",
       "kleis",
       "openai",
     ]);
@@ -373,18 +321,10 @@ describe("models registry contract", () => {
       "https://api.openai.com/v1"
     );
 
-    const copilot = registry["github-copilot"] as {
-      models?: Record<string, { id?: string }>;
-    };
-    expect(Object.keys(copilot.models ?? {})).toEqual(["gpt-5", "gpt-5-mini"]);
-
     const kleis = registry.kleis as {
       models?: Record<string, { id?: string }>;
     };
-    expect(Object.keys(kleis.models ?? {}).sort()).toEqual([
-      "github-copilot/gpt-5-mini",
-      "gpt-5.6-luna",
-    ]);
+    expect(Object.keys(kleis.models ?? {}).sort()).toEqual(["gpt-5.6-luna"]);
   });
 
   test("scoped mode preserves upstream providers unchanged", () => {
@@ -408,13 +348,6 @@ describe("models registry contract", () => {
       "https://api.anthropic.com/v1"
     );
 
-    const copilot = registry["github-copilot"] as {
-      env?: string[];
-      models?: Record<string, unknown>;
-    };
-    expect(copilot.env).toEqual(["GITHUB_TOKEN"]);
-    expect(Object.keys(copilot.models ?? {})).toEqual(["gpt-5", "gpt-5-mini"]);
-
     const kleis = registry.kleis as {
       models?: Record<string, unknown>;
     };
@@ -429,7 +362,7 @@ describe("models registry contract", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/api/kmd_acc123",
-      configuredProviders: ["codex", "claude", "copilot"],
+      configuredProviders: ["codex", "claude"],
       apiKeyScopes: {
         providerScopes: null,
         modelScopes: null,
@@ -439,7 +372,6 @@ describe("models registry contract", () => {
 
     expect(Object.keys(registry).sort()).toEqual([
       "anthropic",
-      "github-copilot",
       "kleis",
       "openai",
     ]);
@@ -466,7 +398,7 @@ describe("models registry contract", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/api/kmd_acc456",
-      configuredProviders: ["codex", "claude", "copilot"],
+      configuredProviders: ["codex", "claude"],
       apiKeyScopes: {
         providerScopes: ["codex", "claude"],
         modelScopes: null,

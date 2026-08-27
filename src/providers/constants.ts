@@ -8,13 +8,6 @@ export const CODEX_WEBSOCKET_BETA_HEADER = "responses_websockets=2026-02-06";
 export const CODEX_ORIGINATOR = "opencode";
 export const CODEX_USER_AGENT = "opencode";
 
-// https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/plugin/copilot.ts#L121-L131
-// https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/github-copilot-headers.ts#L27-L34
-export const COPILOT_DEFAULT_API_BASE_URL = "https://api.githubcopilot.com";
-export const COPILOT_OPENAI_INTENT = "conversation-edits";
-export const COPILOT_INITIATOR_HEADER = "x-initiator";
-export const COPILOT_VISION_HEADER = "Copilot-Vision-Request";
-
 export const ANTHROPIC_API_BASE_URL = "https://api.anthropic.com";
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/provider/provider.ts#L124-L127
 // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L536

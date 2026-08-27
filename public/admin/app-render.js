@@ -189,7 +189,6 @@ function claudeLimitsBody(data) {
 }
 
 function accountTrackingHtml(account) {
-  if (account.provider === "copilot") return "";
   const tracking = account.quota;
   if (!tracking) {
     return `<div class="limits">
@@ -784,7 +783,7 @@ function renderDashKpis(m, pm) {
       label: "cache hit",
       value: `${cr}%`,
       delta: dashDelta(cr, prevCr),
-      accent: "var(--copilot)",
+      accent: "var(--amber)",
     },
     {
       label: "avg latency",
@@ -888,7 +887,7 @@ function tokenSeriesExtractor(bucket) {
   return [
     { value: m.inputTokens, color: "var(--amber)", label: "input" },
     { value: m.outputTokens, color: "var(--green)", label: "output" },
-    { value: m.cacheReadTokens, color: "var(--copilot)", label: "cache read" },
+    { value: m.cacheReadTokens, color: "var(--amber)", label: "cache read" },
     {
       value: m.cacheWriteTokens,
       color: "var(--text-secondary)",
@@ -977,7 +976,7 @@ function renderDashboard(data) {
       html += `<div class="dash-card"><div class="dash-chart-title">request volume</div>${reqChart}<div class="dash-legend"><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--green)"></span>success</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--red)"></span>proxy fail</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--text-secondary)"></span>upstream/other fail</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--amber)"></span>429</span></div></div>`;
     }
     if (tokChart) {
-      html += `<div class="dash-card"><div class="dash-chart-title">token usage</div>${tokChart}<div class="dash-legend"><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--amber)"></span>input</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--green)"></span>output</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--copilot)"></span>cache read</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--text-secondary)"></span>cache write</span></div></div>`;
+      html += `<div class="dash-card"><div class="dash-chart-title">token usage</div>${tokChart}<div class="dash-legend"><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--amber)"></span>input</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--green)"></span>output</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--amber)"></span>cache read</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--text-secondary)"></span>cache write</span></div></div>`;
     }
     html += "</div>";
   }
