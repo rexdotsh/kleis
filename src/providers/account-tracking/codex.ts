@@ -22,6 +22,34 @@ export type CodexRateLimitWindow = {
   resetAt: number | null;
 };
 
+const PLAN_TYPES = [
+  "free",
+  "go",
+  "plus",
+  "pro",
+  "prolite",
+  "team",
+  "self_serve_business_prolite",
+  "self_serve_business_usage_based",
+  "business",
+  "ent26",
+  "enterprise_cbp_automation",
+  "enterprise_cbp_usage_based",
+  "enterprise",
+  "edu",
+  "unknown",
+] as const;
+
+export type PlanType = (typeof PLAN_TYPES)[number];
+
+const decodePlanType = (value: unknown): PlanType | null => {
+  const planType = readString(value);
+  if (!planType) return null;
+  return PLAN_TYPES.includes(planType as PlanType)
+    ? (planType as PlanType)
+    : "unknown";
+};
+
 const decodeWindow = (value: unknown): CodexRateLimitWindow | null =>
   decodeFields(value, {
     usedPercent: ["used_percent", readNumber],
@@ -58,9 +86,8 @@ export const decodeCodexUsageStatus = (value: unknown) => {
   const credits = readObject(input.credits);
   const spendControl = readObject(input.spend_control);
   const resetCredits = readObject(input.rate_limit_reset_credits);
-
   return {
-    planType: readString(input.plan_type),
+    planType: decodePlanType(input.plan_type),
     allowed: readBoolean(rateLimit?.allowed),
     limitReached: readBoolean(rateLimit?.limit_reached),
     primaryWindow: decodeWindow(rateLimit?.primary_window),
