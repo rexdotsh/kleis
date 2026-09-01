@@ -655,10 +655,9 @@ export const prepareClaudeProxyRequest = (
   // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L525-L538
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("anthropic-beta", mergedBetas);
-  input.headers.set(
-    "user-agent",
-    input.metadata?.userAgent ?? CLAUDE_CLI_USER_AGENT
-  );
+  // Keep existing accounts on the minimum supported Claude Code version even
+  // when their persisted metadata still contains an older user agent.
+  input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
   input.headers.set("x-app", "cli");
 
   const transformedPayload = transformClaudeRequestPayload(

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  CLAUDE_CLI_USER_AGENT,
   CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
   CODEX_ACCOUNT_ID_HEADER,
@@ -12,6 +13,7 @@ import {
   COPILOT_VISION_HEADER,
 } from "../../src/providers/constants";
 import type {
+  ClaudeAccountMetadata,
   CodexAccountMetadata,
   CopilotAccountMetadata,
 } from "../../src/providers/metadata";
@@ -2388,6 +2390,18 @@ describe("proxy contract: copilot", () => {
 });
 
 describe("proxy contract: claude", () => {
+  const legacyClaudeMetadata: ClaudeAccountMetadata = {
+    provider: "claude",
+    tokenType: null,
+    scope: null,
+    oauthMode: "max",
+    oauthHost: "claude.ai",
+    betaHeaders: [...CLAUDE_REQUIRED_BETA_HEADERS],
+    userAgent: "claude-cli/2.1.2 (external, cli)",
+    systemIdentity: CLAUDE_SYSTEM_IDENTITY,
+    toolPrefix: "mcp_",
+  };
+
   const prepareClaudeUsageRequest = (
     onTokenUsage?: ((usage: TokenUsage) => void) | null
   ) =>
@@ -2434,7 +2448,7 @@ describe("proxy contract: claude", () => {
       bodyText: JSON.stringify(requestBody),
       bodyJson: requestBody,
       accessToken: "claude-token",
-      metadata: null,
+      metadata: legacyClaudeMetadata,
     });
 
     const transformed = JSON.parse(result.bodyText) as {
@@ -2445,6 +2459,7 @@ describe("proxy contract: claude", () => {
     };
 
     expect(headers.get("authorization")).toBe("Bearer claude-token");
+    expect(headers.get("user-agent")).toBe(CLAUDE_CLI_USER_AGENT);
     expect(headers.get("anthropic-beta")).toBe(
       [...CLAUDE_REQUIRED_BETA_HEADERS, "custom-beta"].join(",")
     );
