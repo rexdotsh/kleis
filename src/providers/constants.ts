@@ -30,8 +30,8 @@ export const CLAUDE_REQUIRED_BETA_HEADERS = [
   CLAUDE_INTERLEAVED_THINKING_BETA_HEADER,
   CLAUDE_FINE_GRAINED_TOOL_STREAMING_BETA_HEADER,
 ] as const;
-// https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L537
-export const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.2 (external, cli)";
+// Claude Fable 5.1 requires Claude Code 2.1.251 or newer.
+export const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.251 (external, cli)";
 // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L581-L586
 export const CLAUDE_SYSTEM_IDENTITY =
   "You are Claude Code, Anthropic's official CLI for Claude.";
