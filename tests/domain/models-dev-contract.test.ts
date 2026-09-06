@@ -61,6 +61,14 @@ const upstreamRegistry = {
           npm: "@ai-sdk/openai",
         },
       },
+      "gpt-6-astra": {
+        id: "gpt-6-astra",
+        name: "GPT-6 Astra",
+        provider: {
+          api: "https://api.openai.com/v1",
+          npm: "@ai-sdk/openai",
+        },
+      },
       "gpt-5": {
         id: "gpt-5",
         name: "GPT-5",
@@ -181,6 +189,7 @@ describe("models registry contract", () => {
     expect(kleis.models?.["gpt-5.5-pro"]).toBeUndefined();
     expect(kleis.models?.["gpt-5.6"]).toBeUndefined();
     expect(kleis.models?.["gpt-5.6-luna"]?.id).toBe("gpt-5.6-luna");
+    expect(kleis.models?.["gpt-6-astra"]?.id).toBe("gpt-6-astra");
     expect(kleis.models?.["openai/gpt-5.3-codex"]).toBeUndefined();
     expect(kleis.models?.["github-copilot/gpt-5"]?.id).toBe(
       "github-copilot/gpt-5"
@@ -297,7 +306,7 @@ describe("models registry contract", () => {
       models?: Record<string, { id?: string }>;
     };
     expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(Object.keys(openai.models ?? {})).toHaveLength(8);
+    expect(Object.keys(openai.models ?? {})).toHaveLength(9);
 
     const kleis = registry.kleis as {
       models?: Record<string, { id?: string }>;
@@ -322,7 +331,7 @@ describe("models registry contract", () => {
       models?: Record<string, unknown>;
     };
     expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(Object.keys(openai.models ?? {})).toHaveLength(8);
+    expect(Object.keys(openai.models ?? {})).toHaveLength(9);
 
     expect(registry.anthropic).toBeDefined();
     expect(registry["github-copilot"]).toBeDefined();
@@ -366,6 +375,7 @@ describe("models registry contract", () => {
       "gpt-5.5-pro",
       "gpt-5.6",
       "gpt-5.6-luna",
+      "gpt-6-astra",
       "gpt-5",
       "text-embedding-3-large",
     ]);
@@ -422,6 +432,7 @@ describe("models registry contract", () => {
       "gpt-5.3-codex-spark",
       "gpt-5.5",
       "gpt-5.6-luna",
+      "gpt-6-astra",
     ]);
   });
 

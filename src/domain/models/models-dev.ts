@@ -30,7 +30,7 @@ const PROXY_API_KEY_ENV = "KLEIS_API_KEY";
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const MODELS_DEV_CACHE_TTL_MS = 5 * 60 * 1000;
 // Match OpenCode's ChatGPT OAuth model gate.
-// https://github.com/anomalyco/opencode/blob/4a57013cf8cb163f58638273fd9da8538cd33cb7/packages/opencode/src/plugin/openai/codex.ts#L276-L315
+// https://github.com/anomalyco/opencode/blob/337fd144d2ba144743368f78d9579a99cce175bd/packages/opencode/src/plugin/openai/codex.ts#L286-L310
 const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
   "gpt-5.3-codex-spark",
   "gpt-5.4",
@@ -38,7 +38,7 @@ const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
   "gpt-5.5",
 ]);
 const CODEX_DISALLOWED_OPENAI_MODEL_IDS = new Set(["gpt-5.5-pro", "gpt-5.6"]);
-const CODEX_DYNAMIC_GPT_VERSION_THRESHOLD = 5.4;
+const CODEX_DYNAMIC_GPT_VERSION_THRESHOLD = { major: 5, minor: 4 };
 
 // ChatGPT Codex limits are smaller than the public API limits. Match OpenCode
 // OAuth metadata so clients compact before the backend runs out of output room:
@@ -182,11 +182,21 @@ const isModelSupportedByProxyProvider = (
     return false;
   }
 
-  const gptVersion = normalizedModelId.match(/^gpt-(\d+\.\d+)/u)?.[1];
+  if (CODEX_ALLOWED_OPENAI_MODEL_IDS.has(normalizedModelId)) {
+    return true;
+  }
+
+  const gptVersion = normalizedModelId.match(/^gpt-(\d+)(?:\.(\d+))?/u);
+  if (!gptVersion) {
+    return false;
+  }
+
+  const major = Number(gptVersion[1]);
+  const minor = Number(gptVersion[2] ?? 0);
   return (
-    CODEX_ALLOWED_OPENAI_MODEL_IDS.has(normalizedModelId) ||
-    (gptVersion !== undefined &&
-      Number.parseFloat(gptVersion) > CODEX_DYNAMIC_GPT_VERSION_THRESHOLD)
+    major > CODEX_DYNAMIC_GPT_VERSION_THRESHOLD.major ||
+    (major === CODEX_DYNAMIC_GPT_VERSION_THRESHOLD.major &&
+      minor > CODEX_DYNAMIC_GPT_VERSION_THRESHOLD.minor)
   );
 };
 
