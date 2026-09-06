@@ -2534,6 +2534,80 @@ describe("proxy contract: claude", () => {
     ]);
   });
 
+  test("sanitizes the Pi default prompt preamble for Claude OAuth", () => {
+    const requestBody = {
+      system:
+        "You are an expert coding assistant operating inside pi, a coding agent harness.\n\n" +
+        "Available tools:\n" +
+        "- read: Read file contents\n\n" +
+        "In addition to the tools above, you may have access to other custom tools depending on the project.\n\n" +
+        "Guidelines:\n" +
+        "- Be concise in your responses\n\n" +
+        "Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):\n" +
+        "- Main documentation: /tmp/pi/README.md\n" +
+        "- When asked about: pi packages (docs/packages.md), environment variables (docs/environment-variables.md)\n" +
+        "- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing\n\n" +
+        "- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)\n\n" +
+        "<project_context>\n\n" +
+        "Project-specific instructions.",
+    };
+
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(requestBody),
+      bodyJson: requestBody,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      system: Array<{ type: string; text: string }>;
+    };
+    const systemText = transformed.system[1]?.text ?? "";
+
+    expect(systemText).toContain(
+      "You are an expert coding assistant operating inside pi"
+    );
+    expect(systemText).toContain("Available tools:");
+    expect(systemText).toContain("Guidelines:");
+    expect(systemText).toContain("<project_context>");
+    expect(systemText).toContain("operating inside pi");
+    expect(systemText).toContain("In addition to the tools above");
+    expect(systemText).toContain("Pi documentation");
+    expect(systemText).toContain("Always read pi .md files completely");
+    expect(systemText).not.toContain("pi packages (docs/packages.md)");
+    expect(systemText).not.toContain("When working on pi topics");
+  });
+
+  test("rewrites the known Anthropic classifier phrase", () => {
+    const requestBody = {
+      system:
+        "Custom context\n\n" +
+        "Here is some useful information about the environment you are running in:",
+    };
+
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(requestBody),
+      bodyJson: requestBody,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      system: Array<{ type: string; text: string }>;
+    };
+
+    expect(transformed.system[1]?.text).toContain(
+      "Environment context you are running in:"
+    );
+    expect(transformed.system[1]?.text).not.toContain(
+      "some useful information"
+    );
+  });
+
   test("rewrites the feedback repo path in OpenCode system prompts", () => {
     const requestBody = {
       system:
