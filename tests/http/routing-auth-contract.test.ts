@@ -36,6 +36,13 @@ describe("proxy route mapping", () => {
     expect(route?.endpoint).toBe("responses");
   });
 
+  test("maps openai response compaction to codex provider", () => {
+    const route = resolveProxyRoute("/openai/v1/responses/compact");
+    expect(route?.provider).toBe("codex");
+    expect(route?.endpoint).toBe("responses");
+    expect(route?.operation).toBe("compact");
+  });
+
   test("does not match openai chat completions", () => {
     expect(resolveProxyRoute("/openai/v1/chat/completions")).toBeNull();
   });

@@ -5,6 +5,9 @@ import {
   CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
   CODEX_ACCOUNT_ID_HEADER,
+  CODEX_BETA_FEATURES,
+  CODEX_BETA_FEATURES_HEADER,
+  CODEX_COMPACTION_ENDPOINT,
   CODEX_ORIGINATOR,
   CODEX_RESPONSE_ENDPOINT,
   CODEX_USER_AGENT,
@@ -307,6 +310,7 @@ describe("proxy contract: codex", () => {
     expect(headers.get("authorization")).toBe("Bearer codex-access");
     expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBe("acct-meta");
     expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get(CODEX_BETA_FEATURES_HEADER)).toBe(CODEX_BETA_FEATURES);
     expect(headers.get("originator")).toBe("custom-client");
     expect(headers.get("User-Agent")).toBe(CODEX_USER_AGENT);
     expect(result.upstreamUrl).toBe(CODEX_RESPONSE_ENDPOINT);
@@ -343,6 +347,30 @@ describe("proxy contract: codex", () => {
     expect(transformed.instructions).toContain(
       "You are OpenCode, the best coding agent on the planet."
     );
+  });
+
+  test("drops caller account id when stored account ids are blank", () => {
+    const headers = new Headers({
+      [CODEX_ACCOUNT_ID_HEADER.toLowerCase()]: "caller-account",
+    });
+    prepareCodexProxyRequest({
+      headers,
+      accessToken: "codex-access",
+      accountId: "   ",
+      metadata: {
+        provider: "codex",
+        tokenType: null,
+        scope: null,
+        idToken: null,
+        chatgptAccountId: " ",
+        organizationIds: [],
+        email: null,
+      },
+      bodyText: JSON.stringify(codexUsageBody),
+      bodyJson: codexUsageBody,
+    });
+
+    expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBeNull();
   });
 
   test("promotes OpenCode developer input instead of adding fallback instructions", () => {
@@ -449,7 +477,7 @@ describe("proxy contract: codex", () => {
     expect(headers.get("x-client-request-id")).toBeNull();
   });
 
-  test("removes unsupported token limit params", () => {
+  test("preserves Responses output limits and removes completion limits", () => {
     const bodyJson = {
       model: "gpt-5-codex",
       instructions: "Keep responses concise",
@@ -478,9 +506,79 @@ describe("proxy contract: codex", () => {
       max_completion_tokens?: number;
       store?: boolean;
     };
-    expect(transformed.max_output_tokens).toBeUndefined();
+    expect(transformed.max_output_tokens).toBe(4096);
     expect(transformed.max_completion_tokens).toBeUndefined();
     expect(transformed.store).toBe(false);
+  });
+
+  test("routes native response compaction without response-only fields", async () => {
+    const capture = createUsageCapture();
+    const headers = new Headers({
+      [CODEX_ACCOUNT_ID_HEADER]: "untrusted-account",
+    });
+    const bodyJson = {
+      model: "gpt-5.6-sol",
+      input: [{ role: "user", content: "compact this history" }],
+      instructions: "Keep the useful context",
+      prompt_cache_key: "raw-cache-key",
+      stream: true,
+      store: true,
+      max_output_tokens: 4096,
+    };
+
+    const result = prepareCodexProxyRequest({
+      operation: "compact",
+      headers,
+      accessToken: "codex-access",
+      accountId: null,
+      metadata: null,
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+      sessionId: "kleis_compaction_session",
+      onTokenUsage: capture.onTokenUsage,
+    });
+
+    expect(result.upstreamUrl).toBe(CODEX_COMPACTION_ENDPOINT);
+    expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBeNull();
+    expect(headers.get("accept")).toBe("application/json");
+    expect(JSON.parse(result.bodyText)).toEqual({
+      model: bodyJson.model,
+      input: bodyJson.input,
+      instructions: bodyJson.instructions,
+      prompt_cache_key: "kleis_compaction_session",
+    });
+
+    await result.transformResponse(
+      Response.json({
+        object: "response.compaction",
+        output: [],
+        usage: { input_tokens: 12, output_tokens: 3 },
+      })
+    );
+    expect(capture.read()).toEqual({
+      inputTokens: 12,
+      outputTokens: 3,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  test("removes output limits from in-band compaction triggers", () => {
+    const bodyJson = {
+      model: "gpt-5.6-sol",
+      input: [{ type: "compaction_trigger" }],
+      max_output_tokens: 4096,
+    };
+    const result = prepareCodexProxyRequest({
+      headers: new Headers(),
+      accessToken: "codex-access",
+      accountId: null,
+      metadata: null,
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+    });
+
+    expect(JSON.parse(result.bodyText)).not.toHaveProperty("max_output_tokens");
   });
 
   test("extracts normalized usage from non-streaming responses", async () => {
@@ -494,8 +592,13 @@ describe("proxy contract: codex", () => {
       usage: {
         input_tokens: 120,
         output_tokens: 34,
+        total_tokens: 154,
         input_tokens_details: {
           cached_tokens: 20,
+          cache_write_tokens: 5,
+        },
+        output_tokens_details: {
+          reasoning_tokens: 7,
         },
       },
     });
@@ -503,10 +606,12 @@ describe("proxy contract: codex", () => {
     await result.transformResponse(sourceResponse);
 
     expect(capture.read()).toEqual({
-      inputTokens: 100,
+      inputTokens: 95,
       outputTokens: 34,
       cacheReadTokens: 20,
-      cacheWriteTokens: 0,
+      cacheWriteTokens: 5,
+      reasoningTokens: 7,
+      totalTokens: 154,
     });
   });
 
@@ -594,9 +699,13 @@ describe("proxy contract: codex", () => {
           },
         ])
       );
-      await transformed.text();
+      const responseText = await transformed.text();
 
       expect(capture.read()).toEqual(testCase.expected);
+      if (testCase.eventType === "response.done") {
+        expect(responseText).toContain('"type":"response.completed"');
+        expect(responseText).not.toContain('"type":"response.done"');
+      }
     });
   }
 
@@ -646,7 +755,7 @@ describe("proxy contract: codex", () => {
             pulls++;
             controller.enqueue(
               encoder.encode(
-                `data: ${JSON.stringify({ type: "response.output_text.delta", delta: pulls })}\n\n`
+                `data: ${JSON.stringify({ type: "response.output_text.delta", delta: String(pulls) })}\n\n`
               )
             );
           },
@@ -782,9 +891,10 @@ describe("proxy contract: codex", () => {
       terminalAnomaly: "response.failed",
       responseStatus: "failed",
       errorCode: "context_length_exceeded",
-      errorMessage: "Input exceeded the model context window",
-      errorParam: "input",
     });
+    expect(warnings[0]).not.toContain(
+      "Input exceeded the model context window"
+    );
   });
 
   test("logs OpenAI incomplete reasons", async () => {
@@ -817,6 +927,89 @@ describe("proxy contract: codex", () => {
       responseStatus: "incomplete",
       incompleteReason: "max_output_tokens",
     });
+  });
+
+  test("logs malformed SSE diagnostics without exposing frame content", async () => {
+    const secret = "private prompt text";
+    const malformed = `data: {"type":"response.output_text.delta","delta":"${secret}"\n\n`;
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const response = createOpenAiSseUsagePassthrough({
+        response: new Response(malformed, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+        extractUsage: () => null,
+      });
+      expect(await response.text()).toBe(malformed);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(JSON.parse(warnings[0] ?? "{}")).toMatchObject({
+      event: "openai_sse_invalid_json",
+      parseCategory: "invalid_json_or_non_object",
+    });
+    expect(warnings.join("\n")).not.toContain(secret);
+  });
+
+  test("passes unknown valid SSE events without malformed diagnostics", async () => {
+    const event = 'data: {"type":"response.future_event","value":true}\n\n';
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const response = createOpenAiSseUsagePassthrough({
+        response: new Response(event, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+        extractUsage: () => null,
+      });
+      expect(await response.text()).toBe(event);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(warnings).toHaveLength(0);
+  });
+
+  test("classifies invalid SSE UTF-8 without logging frame bytes", async () => {
+    const encoder = new TextEncoder();
+    const prefix = encoder.encode(
+      'data: {"type":"response.output_text.delta","delta":"'
+    );
+    const suffix = encoder.encode('"}\n\n');
+    const bytes = new Uint8Array(prefix.length + 2 + suffix.length);
+    bytes.set(prefix);
+    bytes.set([0xc3, 0x28], prefix.length);
+    bytes.set(suffix, prefix.length + 2);
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const response = createOpenAiSseUsagePassthrough({
+        response: new Response(bytes, {
+          headers: { "content-type": "text/event-stream" },
+        }),
+        extractUsage: () => null,
+      });
+      await response.text();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(JSON.parse(warnings[0] ?? "{}")).toMatchObject({
+      event: "openai_sse_invalid_frame",
+      parseCategory: "invalid_utf8",
+    });
+    expect(warnings.join("\n")).not.toContain("response.output_text.delta");
   });
 
   test("routes compaction turns over HTTP instead of WebSocket", async () => {
@@ -882,6 +1075,147 @@ describe("proxy contract: codex", () => {
 
     expect(sockets[0]?.terminated).toBe(true);
     expect(warnings).toHaveLength(0);
+  });
+
+  test("falls back when the websocket relay frame bound is exceeded", async () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const sentBodies: unknown[] = [];
+      const sockets = installManualCodexWebSocketMock(sentBodies);
+      const responsePromise = tryProxyCodexWebSocket({
+        headers: new Headers({ authorization: "Bearer codex-access" }),
+        bodyJson: {
+          model: "gpt-5.6-sol",
+          stream: true,
+          input: [{ role: "user", content: "hello" }],
+        },
+        accountKey: "key-1:queue-account",
+      });
+      await waitFor(() => sockets.length === 1 && sentBodies.length === 1);
+
+      for (let index = 0; index < 257; index++) {
+        sockets[0]?.dispatch("message", {
+          data: JSON.stringify({ type: "response.output_text.delta", index }),
+        });
+      }
+
+      expect(await responsePromise).toBeNull();
+      expect(sockets[0]?.terminated).toBe(true);
+      expect(
+        warnings.some((warning) => {
+          const fields = JSON.parse(warning) as Record<string, unknown>;
+          return (
+            fields.event === "codex_websocket_queue_overflow" &&
+            fields.reason === "frames"
+          );
+        })
+      ).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("falls back when one websocket frame exceeds the byte bound", async () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const sentBodies: unknown[] = [];
+      const sockets = installManualCodexWebSocketMock(sentBodies);
+      const responsePromise = tryProxyCodexWebSocket({
+        headers: new Headers({ authorization: "Bearer codex-access" }),
+        bodyJson: {
+          model: "gpt-5.6-sol",
+          stream: true,
+          input: [{ role: "user", content: "hello" }],
+        },
+        accountKey: "key-1:large-frame-account",
+      });
+      await waitFor(() => sockets.length === 1 && sentBodies.length === 1);
+
+      sockets[0]?.dispatch("message", {
+        data: "x".repeat(4 * 1024 * 1024 + 1),
+      });
+
+      expect(await responsePromise).toBeNull();
+      expect(sockets[0]?.terminated).toBe(true);
+      expect(warnings.join("\n")).not.toContain("xxxxxxxx");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("fails the stream when the websocket queue overflows after output", async () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const sentBodies: unknown[] = [];
+      const sockets = installManualCodexWebSocketMock(sentBodies);
+      const responsePromise = tryProxyCodexWebSocket({
+        headers: new Headers({ authorization: "Bearer codex-access" }),
+        bodyJson: {
+          model: "gpt-5.6-sol",
+          stream: true,
+          input: [{ role: "user", content: "hello" }],
+        },
+        accountKey: "key-1:stream-overflow-account",
+      });
+      await waitFor(() => sockets.length === 1 && sentBodies.length === 1);
+      sockets[0]?.dispatch("message", {
+        data: JSON.stringify({
+          type: "response.created",
+          response: { id: "resp-overflow" },
+        }),
+      });
+      const response = await responsePromise;
+      expect(response).not.toBeNull();
+
+      for (let index = 0; index < 257; index++) {
+        sockets[0]?.dispatch("message", {
+          data: JSON.stringify({
+            type: "response.output_text.delta",
+            delta: String(index),
+          }),
+        });
+      }
+
+      await expect(response?.text()).rejects.toThrow("queue overflow");
+      expect(sockets[0]?.terminated).toBe(true);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
+  test("normalizes websocket response.done terminal events", async () => {
+    const sentBodies: unknown[] = [];
+    installCodexWebSocketMock(
+      [{ id: "resp_done", terminalType: "response.done" }],
+      sentBodies
+    );
+
+    const response = await tryProxyCodexWebSocket({
+      headers: new Headers({ authorization: "Bearer codex-access" }),
+      bodyJson: {
+        model: "gpt-5.6-sol",
+        stream: true,
+        input: [{ role: "user", content: "hello" }],
+      },
+      accountKey: "key-1:done-account",
+    });
+    const responseText = await response?.text();
+
+    expect(responseText).toContain('"type":"response.completed"');
+    expect(responseText).not.toContain('"type":"response.done"');
+    expect(responseText).toEndWith("data: [DONE]\n\n");
   });
 
   test("uses websocket cached delta transport for streaming requests", async () => {
@@ -1003,6 +1337,9 @@ describe("proxy contract: codex", () => {
       ])
     );
     expect(lowerHeaderEntries["openai-beta"]).toBe(CODEX_WEBSOCKET_BETA_HEADER);
+    expect(lowerHeaderEntries[CODEX_BETA_FEATURES_HEADER]).toBe(
+      CODEX_BETA_FEATURES
+    );
     expect(lowerHeaderEntries.authorization).toBe("Bearer codex-access");
     expect(lowerHeaderEntries["content-length"]).toBeUndefined();
     expect(lowerHeaderEntries.session_id).toBeUndefined();

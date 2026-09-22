@@ -81,12 +81,20 @@ const refreshProviderAccountWithLock = async (
   database: Database,
   accountId: string,
   lockToken: string,
-  forceRefresh: boolean
+  forceRefresh: boolean,
+  failedAccessToken?: string
 ): Promise<ProviderAccountRecord | null> => {
   try {
     const account = await findProviderAccountById(database, accountId);
     if (!account) {
       return null;
+    }
+
+    if (
+      failedAccessToken !== undefined &&
+      account.accessToken !== failedAccessToken
+    ) {
+      return account;
     }
 
     const refreshNow = Date.now();
@@ -143,6 +151,56 @@ const refreshProviderAccountWithLock = async (
       Date.now()
     ).catch(() => undefined);
   }
+};
+
+export const refreshProviderAccountAfterAuthFailure = async (
+  database: Database,
+  accountId: string,
+  failedAccessToken: string
+): Promise<ProviderAccountRecord | null> => {
+  const account = await findProviderAccountById(database, accountId);
+  if (!account || account.accessToken !== failedAccessToken) {
+    return account;
+  }
+
+  const lockToken = crypto.randomUUID();
+  const lockClaimedAt = Date.now();
+  const lockAcquired = await tryAcquireProviderAccountRefreshLock(
+    database,
+    account.id,
+    {
+      token: lockToken,
+      now: lockClaimedAt,
+      expiresAt: lockClaimedAt + REFRESH_LOCK_LEASE_MS,
+    }
+  );
+
+  if (lockAcquired) {
+    return refreshProviderAccountWithLock(
+      database,
+      account.id,
+      lockToken,
+      true,
+      failedAccessToken
+    );
+  }
+
+  const waited = await waitForInFlightRefresh(
+    database,
+    account.id,
+    Date.now(),
+    true
+  );
+  if (!waited) {
+    return null;
+  }
+  if (waited.accessToken !== failedAccessToken) {
+    return waited;
+  }
+
+  throw new Error(
+    "Provider account refresh did not replace the rejected token"
+  );
 };
 
 export const startProviderOAuth = (

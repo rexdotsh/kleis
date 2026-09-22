@@ -6,6 +6,8 @@ export type TokenUsage = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  reasoningTokens?: number;
+  totalTokens?: number;
 };
 
 const fromUsage = (
@@ -22,8 +24,9 @@ const fromUsage = (
 
 const subtractCachedTokens = (
   inputTokens: number,
-  cachedTokens: number
-): number => Math.max(0, inputTokens - cachedTokens);
+  cachedTokens: number,
+  cacheWriteTokens = 0
+): number => Math.max(0, inputTokens - cachedTokens - cacheWriteTokens);
 
 export const isTokenUsagePopulated = (
   usage: TokenUsage | null
@@ -68,13 +71,29 @@ const readOpenAiResponsesUsageObject = (usage: unknown): TokenUsage | null => {
     ? usage.input_tokens_details
     : null;
   const cachedTokens = toNonNegativeInteger(details?.cached_tokens);
+  const cacheWriteTokens = toNonNegativeInteger(details?.cache_write_tokens);
   const totalInputTokens = toNonNegativeInteger(usage.input_tokens);
+  const outputDetails = isObjectRecord(usage.output_tokens_details)
+    ? usage.output_tokens_details
+    : null;
 
   return {
-    inputTokens: subtractCachedTokens(totalInputTokens, cachedTokens),
+    inputTokens: subtractCachedTokens(
+      totalInputTokens,
+      cachedTokens,
+      cacheWriteTokens
+    ),
     outputTokens: toNonNegativeInteger(usage.output_tokens),
     cacheReadTokens: cachedTokens,
-    cacheWriteTokens: 0,
+    cacheWriteTokens,
+    ...(outputDetails && "reasoning_tokens" in outputDetails
+      ? {
+          reasoningTokens: toNonNegativeInteger(outputDetails.reasoning_tokens),
+        }
+      : {}),
+    ...("total_tokens" in usage
+      ? { totalTokens: toNonNegativeInteger(usage.total_tokens) }
+      : {}),
   };
 };
 

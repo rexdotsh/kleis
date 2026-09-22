@@ -1,5 +1,6 @@
 import { createClient } from "@libsql/client";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -17,9 +18,14 @@ import {
 } from "../../src/db/repositories/provider-accounts";
 import { providerAccounts } from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
-import { getRoutableProviderAccount } from "../../src/domain/providers/provider-service";
+import {
+  getRoutableProviderAccount,
+  refreshProviderAccountAfterAuthFailure,
+} from "../../src/domain/providers/provider-service";
+import { codexAdapter } from "../../src/providers/codex";
 
 describe("provider account enablement", () => {
+  const originalCodexRefreshAccount = codexAdapter.refreshAccount;
   let client: ReturnType<typeof createClient> | undefined;
   let database: Database;
   let databaseDirectory: string;
@@ -69,10 +75,60 @@ describe("provider account enablement", () => {
   });
 
   afterEach(async () => {
+    codexAdapter.refreshAccount = originalCodexRefreshAccount;
     client?.close();
     await rm(databaseDirectory, { recursive: true, force: true }).catch(
       () => undefined
     );
+  });
+
+  test("coalesces concurrent refreshes after a rejected Codex token", async () => {
+    let refreshCount = 0;
+    codexAdapter.refreshAccount = async (account, now) => {
+      refreshCount++;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return {
+        accessToken: "access-codex-refreshed",
+        refreshToken: account.refreshToken,
+        expiresAt: now + 60_000,
+        accountId: account.accountId,
+        metadata: account.metadata,
+      };
+    };
+
+    const [left, right] = await Promise.all([
+      refreshProviderAccountAfterAuthFailure(
+        database,
+        "codex-primary",
+        "access-codex"
+      ),
+      refreshProviderAccountAfterAuthFailure(
+        database,
+        "codex-primary",
+        "access-codex"
+      ),
+    ]);
+
+    expect(refreshCount).toBe(1);
+    expect(left?.accessToken).toBe("access-codex-refreshed");
+    expect(right?.accessToken).toBe("access-codex-refreshed");
+  });
+
+  test("adopts a token already refreshed by another request", async () => {
+    await database
+      .update(providerAccounts)
+      .set({ accessToken: "access-codex-new" })
+      .where(eq(providerAccounts.id, "codex-primary"));
+    codexAdapter.refreshAccount = () =>
+      Promise.reject(new Error("unexpected duplicate refresh"));
+
+    const account = await refreshProviderAccountAfterAuthFailure(
+      database,
+      "codex-primary",
+      "access-codex"
+    );
+
+    expect(account?.accessToken).toBe("access-codex-new");
   });
 
   test("disables every account and excludes the provider from discovery and routing", async () => {

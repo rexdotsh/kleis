@@ -2,11 +2,18 @@ export type CanonicalProvider = "openai" | "anthropic" | "github-copilot";
 
 export type ProxyEndpoint = "chat_completions" | "responses" | "messages";
 
-export type ProxyRouteSuffix = "/responses" | "/messages" | "/chat/completions";
+export type ProxyOperation = "compact";
+
+export type ProxyRouteSuffix =
+  | "/responses"
+  | "/responses/compact"
+  | "/messages"
+  | "/chat/completions";
 
 type ProxyEndpointRoute = {
   publicProvider: CanonicalProvider;
   endpoint: ProxyEndpoint;
+  operation?: ProxyOperation;
   publicSuffix: ProxyRouteSuffix;
   upstreamSuffix: string;
 };
@@ -17,6 +24,13 @@ export const proxyEndpointRoutes: readonly ProxyEndpointRoute[] = [
     endpoint: "responses",
     publicSuffix: "/responses",
     upstreamSuffix: "/responses",
+  },
+  {
+    publicProvider: "openai",
+    endpoint: "responses",
+    operation: "compact",
+    publicSuffix: "/responses/compact",
+    upstreamSuffix: "/responses/compact",
   },
   {
     publicProvider: "anthropic",
