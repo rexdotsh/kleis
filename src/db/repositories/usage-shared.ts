@@ -53,7 +53,10 @@ export const selectUsageLatencySums = (table: UsageBucketsTable) => ({
 
 export const selectUsageTokenSums = (table: UsageBucketsTable) => ({
   inputTokens: sql<number>`sum(${table.inputTokens})`,
+  inputTotalTokens: sql<number>`sum(coalesce(${table.inputTotalTokens}, ${table.inputTokens} + ${table.cacheReadTokens} + ${table.cacheWriteTokens}))`,
   outputTokens: sql<number>`sum(${table.outputTokens})`,
+  reasoningTokens: sql<number>`sum(coalesce(${table.reasoningTokens}, 0))`,
+  totalTokens: sql<number>`sum(coalesce(${table.totalTokens}, coalesce(${table.inputTotalTokens}, ${table.inputTokens} + ${table.cacheReadTokens} + ${table.cacheWriteTokens}) + ${table.outputTokens}))`,
   cacheReadTokens: sql<number>`sum(${table.cacheReadTokens})`,
   cacheWriteTokens: sql<number>`sum(${table.cacheWriteTokens})`,
 });
@@ -74,7 +77,10 @@ export type UsageTotals = {
   totalLatencyMs: number;
   maxLatencyMs: number;
   inputTokens: number;
+  inputTotalTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   lastRequestAt: number | null;
@@ -93,7 +99,10 @@ export type AveragedUsageTotals = {
   avgLatencyMs: number;
   maxLatencyMs: number;
   inputTokens: number;
+  inputTotalTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   lastRequestAt: number | null;
@@ -111,7 +120,10 @@ export const emptyUsageTotals = (): UsageTotals => ({
   totalLatencyMs: 0,
   maxLatencyMs: 0,
   inputTokens: 0,
+  inputTotalTokens: 0,
   outputTokens: 0,
+  reasoningTokens: 0,
+  totalTokens: 0,
   cacheReadTokens: 0,
   cacheWriteTokens: 0,
   lastRequestAt: null,
@@ -129,7 +141,10 @@ type UsageTotalsRow = {
   totalLatencyMs: unknown;
   maxLatencyMs: unknown;
   inputTokens?: unknown;
+  inputTotalTokens?: unknown;
   outputTokens?: unknown;
+  reasoningTokens?: unknown;
+  totalTokens?: unknown;
   cacheReadTokens?: unknown;
   cacheWriteTokens?: unknown;
   lastRequestAt: unknown;
@@ -153,7 +168,10 @@ export const applyTotalsRow = (
     toNonNegativeInteger(row.maxLatencyMs)
   );
   target.inputTokens += toNonNegativeInteger(row.inputTokens);
+  target.inputTotalTokens += toNonNegativeInteger(row.inputTotalTokens);
   target.outputTokens += toNonNegativeInteger(row.outputTokens);
+  target.reasoningTokens += toNonNegativeInteger(row.reasoningTokens);
+  target.totalTokens += toNonNegativeInteger(row.totalTokens);
   target.cacheReadTokens += toNonNegativeInteger(row.cacheReadTokens);
   target.cacheWriteTokens += toNonNegativeInteger(row.cacheWriteTokens);
   target.lastRequestAt = maxTimestamp(target.lastRequestAt, row.lastRequestAt);
@@ -175,7 +193,10 @@ export const toAveragedTotals = (totals: UsageTotals): AveragedUsageTotals => ({
       : 0,
   maxLatencyMs: totals.maxLatencyMs,
   inputTokens: totals.inputTokens,
+  inputTotalTokens: totals.inputTotalTokens,
   outputTokens: totals.outputTokens,
+  reasoningTokens: totals.reasoningTokens,
+  totalTokens: totals.totalTokens,
   cacheReadTokens: totals.cacheReadTokens,
   cacheWriteTokens: totals.cacheWriteTokens,
   lastRequestAt: totals.lastRequestAt,
@@ -192,7 +213,10 @@ export type UsageProviderSummary = {
   proxyErrorCount: number;
   upstreamErrorCount: number;
   inputTokens: number;
+  inputTotalTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
 };
@@ -208,7 +232,10 @@ type UsageProviderSummaryRow = {
   proxyErrorCount?: unknown;
   upstreamErrorCount?: unknown;
   inputTokens?: unknown;
+  inputTotalTokens?: unknown;
   outputTokens?: unknown;
+  reasoningTokens?: unknown;
+  totalTokens?: unknown;
   cacheReadTokens?: unknown;
   cacheWriteTokens?: unknown;
 };
@@ -233,7 +260,10 @@ const ensureProviderSummary = (
     proxyErrorCount: 0,
     upstreamErrorCount: 0,
     inputTokens: 0,
+    inputTotalTokens: 0,
     outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
   };
@@ -254,7 +284,10 @@ const applyProviderSummaryRow = (
   target.proxyErrorCount += toNonNegativeInteger(row.proxyErrorCount);
   target.upstreamErrorCount += toNonNegativeInteger(row.upstreamErrorCount);
   target.inputTokens += toNonNegativeInteger(row.inputTokens);
+  target.inputTotalTokens += toNonNegativeInteger(row.inputTotalTokens);
   target.outputTokens += toNonNegativeInteger(row.outputTokens);
+  target.reasoningTokens += toNonNegativeInteger(row.reasoningTokens);
+  target.totalTokens += toNonNegativeInteger(row.totalTokens);
   target.cacheReadTokens += toNonNegativeInteger(row.cacheReadTokens);
   target.cacheWriteTokens += toNonNegativeInteger(row.cacheWriteTokens);
 };
@@ -345,7 +378,10 @@ export type UsageEndpointBreakdown = {
   avgLatencyMs: number;
   maxLatencyMs: number;
   inputTokens: number;
+  inputTotalTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   lastRequestAt: number | null;
@@ -356,7 +392,10 @@ type UsageEndpointRow = UsageProviderSummaryRow & {
   totalLatencyMs: unknown;
   maxLatencyMs: unknown;
   inputTokens?: unknown;
+  inputTotalTokens?: unknown;
   outputTokens?: unknown;
+  reasoningTokens?: unknown;
+  totalTokens?: unknown;
   cacheReadTokens?: unknown;
   cacheWriteTokens?: unknown;
   lastRequestAt: unknown;
@@ -391,7 +430,10 @@ export const mapEndpointUsageRows = (
         : 0,
       maxLatencyMs: toNonNegativeInteger(row.maxLatencyMs),
       inputTokens: toNonNegativeInteger(row.inputTokens),
+      inputTotalTokens: toNonNegativeInteger(row.inputTotalTokens),
       outputTokens: toNonNegativeInteger(row.outputTokens),
+      reasoningTokens: toNonNegativeInteger(row.reasoningTokens),
+      totalTokens: toNonNegativeInteger(row.totalTokens),
       cacheReadTokens: toNonNegativeInteger(row.cacheReadTokens),
       cacheWriteTokens: toNonNegativeInteger(row.cacheWriteTokens),
       lastRequestAt:
@@ -416,7 +458,10 @@ export type UsageBucketRow = {
   proxyErrorCount: number;
   upstreamErrorCount: number;
   inputTokens: number;
+  inputTotalTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
 };
@@ -432,7 +477,10 @@ type UsageBucketSummaryRow = {
   proxyErrorCount?: unknown;
   upstreamErrorCount?: unknown;
   inputTokens?: unknown;
+  inputTotalTokens?: unknown;
   outputTokens?: unknown;
+  reasoningTokens?: unknown;
+  totalTokens?: unknown;
   cacheReadTokens?: unknown;
   cacheWriteTokens?: unknown;
 };
@@ -453,7 +501,10 @@ export const mapUsageBucketRows = (
         proxyErrorCount: toNonNegativeInteger(row.proxyErrorCount),
         upstreamErrorCount: toNonNegativeInteger(row.upstreamErrorCount),
         inputTokens: toNonNegativeInteger(row.inputTokens),
+        inputTotalTokens: toNonNegativeInteger(row.inputTotalTokens),
         outputTokens: toNonNegativeInteger(row.outputTokens),
+        reasoningTokens: toNonNegativeInteger(row.reasoningTokens),
+        totalTokens: toNonNegativeInteger(row.totalTokens),
         cacheReadTokens: toNonNegativeInteger(row.cacheReadTokens),
         cacheWriteTokens: toNonNegativeInteger(row.cacheWriteTokens),
       })
@@ -475,7 +526,10 @@ export type UsageModelBreakdown = {
   avgLatencyMs: number;
   maxLatencyMs: number;
   inputTokens: number;
+  inputTotalTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   lastRequestAt: number | null;
@@ -515,7 +569,10 @@ export const mapModelUsageRows = (
         : 0,
       maxLatencyMs: toNonNegativeInteger(row.maxLatencyMs),
       inputTokens: toNonNegativeInteger(row.inputTokens),
+      inputTotalTokens: toNonNegativeInteger(row.inputTotalTokens),
       outputTokens: toNonNegativeInteger(row.outputTokens),
+      reasoningTokens: toNonNegativeInteger(row.reasoningTokens),
+      totalTokens: toNonNegativeInteger(row.totalTokens),
       cacheReadTokens: toNonNegativeInteger(row.cacheReadTokens),
       cacheWriteTokens: toNonNegativeInteger(row.cacheWriteTokens),
       lastRequestAt:

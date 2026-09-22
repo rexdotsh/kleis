@@ -504,8 +504,11 @@ function renderDetailStats(totals) {
     [formatCount(metrics.rateLimitCount), "429"],
     [`${formatCount(metrics.avgLatencyMs)}ms`, "avg latency"],
     [`${formatCount(metrics.maxLatencyMs)}ms`, "max latency"],
-    [formatCount(metrics.inputTokens), "input tokens"],
+    [formatCount(metrics.inputTotalTokens), "input total"],
+    [formatCount(metrics.inputTokens), "input uncached"],
     [formatCount(metrics.outputTokens), "output tokens"],
+    [formatCount(metrics.reasoningTokens), "reasoning"],
+    [formatCount(metrics.totalTokens), "total tokens"],
     [formatCount(metrics.cacheReadTokens), "cache read"],
     [formatCount(metrics.cacheWriteTokens), "cache write"],
   ];

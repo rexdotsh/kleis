@@ -55,12 +55,24 @@ type RecordTokenUsageInput = {
   tokenUsage: TokenUsage;
 };
 
-const tokenColumns = (tokenUsage: TokenUsage | null | undefined) => ({
-  inputTokens: toNonNegativeInteger(tokenUsage?.inputTokens),
-  outputTokens: toNonNegativeInteger(tokenUsage?.outputTokens),
-  cacheReadTokens: toNonNegativeInteger(tokenUsage?.cacheReadTokens),
-  cacheWriteTokens: toNonNegativeInteger(tokenUsage?.cacheWriteTokens),
-});
+const tokenColumns = (tokenUsage: TokenUsage | null | undefined) => {
+  const inputTokens = toNonNegativeInteger(tokenUsage?.inputTokens);
+  const outputTokens = toNonNegativeInteger(tokenUsage?.outputTokens);
+  const cacheReadTokens = toNonNegativeInteger(tokenUsage?.cacheReadTokens);
+  const cacheWriteTokens = toNonNegativeInteger(tokenUsage?.cacheWriteTokens);
+  const inputTotalTokens = inputTokens + cacheReadTokens + cacheWriteTokens;
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
+    inputTotalTokens,
+    reasoningTokens: toNonNegativeInteger(tokenUsage?.reasoningTokens),
+    totalTokens: toNonNegativeInteger(
+      tokenUsage?.totalTokens ?? inputTotalTokens + outputTokens
+    ),
+  };
+};
 
 const usageBucketConflictTarget = [
   requestUsageBuckets.bucketStart,
@@ -101,6 +113,9 @@ export const recordRequestUsage = async (
     outputTokens: tokens.outputTokens,
     cacheReadTokens: tokens.cacheReadTokens,
     cacheWriteTokens: tokens.cacheWriteTokens,
+    inputTotalTokens: tokens.inputTotalTokens,
+    reasoningTokens: tokens.reasoningTokens,
+    totalTokens: tokens.totalTokens,
     lastRequestAt: occurredAt,
   };
 
@@ -124,6 +139,9 @@ export const recordRequestUsage = async (
         outputTokens: sql`${requestUsageBuckets.outputTokens} + ${row.outputTokens}`,
         cacheReadTokens: sql`${requestUsageBuckets.cacheReadTokens} + ${row.cacheReadTokens}`,
         cacheWriteTokens: sql`${requestUsageBuckets.cacheWriteTokens} + ${row.cacheWriteTokens}`,
+        inputTotalTokens: sql`coalesce(${requestUsageBuckets.inputTotalTokens}, 0) + ${row.inputTotalTokens}`,
+        reasoningTokens: sql`coalesce(${requestUsageBuckets.reasoningTokens}, 0) + ${row.reasoningTokens}`,
+        totalTokens: sql`coalesce(${requestUsageBuckets.totalTokens}, 0) + ${row.totalTokens}`,
         lastRequestAt: sql`max(${requestUsageBuckets.lastRequestAt}, ${row.lastRequestAt})`,
       },
     });
@@ -157,6 +175,9 @@ export const recordTokenUsage = async (
     outputTokens: tokens.outputTokens,
     cacheReadTokens: tokens.cacheReadTokens,
     cacheWriteTokens: tokens.cacheWriteTokens,
+    inputTotalTokens: tokens.inputTotalTokens,
+    reasoningTokens: tokens.reasoningTokens,
+    totalTokens: tokens.totalTokens,
     lastRequestAt: occurredAt,
   };
 
@@ -170,6 +191,9 @@ export const recordTokenUsage = async (
         outputTokens: sql`${requestUsageBuckets.outputTokens} + ${row.outputTokens}`,
         cacheReadTokens: sql`${requestUsageBuckets.cacheReadTokens} + ${row.cacheReadTokens}`,
         cacheWriteTokens: sql`${requestUsageBuckets.cacheWriteTokens} + ${row.cacheWriteTokens}`,
+        inputTotalTokens: sql`coalesce(${requestUsageBuckets.inputTotalTokens}, 0) + ${row.inputTotalTokens}`,
+        reasoningTokens: sql`coalesce(${requestUsageBuckets.reasoningTokens}, 0) + ${row.reasoningTokens}`,
+        totalTokens: sql`coalesce(${requestUsageBuckets.totalTokens}, 0) + ${row.totalTokens}`,
         lastRequestAt: sql`max(${requestUsageBuckets.lastRequestAt}, ${row.lastRequestAt})`,
       },
     });
