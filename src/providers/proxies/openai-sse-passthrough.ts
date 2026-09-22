@@ -69,6 +69,7 @@ const readLatestUsageFromSse = (
   text: string,
   state: {
     eventDataLines: string[];
+    eventOpen: boolean;
     latestUsage: TokenUsage | null;
     terminalAnomaly: SseTerminalAnomaly | null;
   },
@@ -114,9 +115,11 @@ const readLatestUsageFromSse = (
 
     if (line.length === 0) {
       flushEvent();
+      state.eventOpen = false;
       continue;
     }
 
+    state.eventOpen = true;
     if (line.startsWith("data:")) {
       state.eventDataLines.push(line.slice(5).trimStart());
     }
@@ -143,6 +146,7 @@ export const createOpenAiSseUsagePassthrough = (
   const isSseBody = !contentType || contentType.includes("text/event-stream");
   const usageState = {
     eventDataLines: [] as string[],
+    eventOpen: false,
     latestUsage: null as TokenUsage | null,
     terminalAnomaly: null as SseTerminalAnomaly | null,
   };
@@ -181,6 +185,7 @@ export const createOpenAiSseUsagePassthrough = (
         provider: "openai",
         transport: "sse",
         getElapsedMs: () => Date.now() - startedAt,
+        canEnqueue: () => !(pendingText || usageState.eventOpen),
         onKeepAlive: () => {
           lastWriteAt = Date.now();
         },

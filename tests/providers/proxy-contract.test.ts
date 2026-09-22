@@ -691,7 +691,7 @@ describe("proxy contract: codex", () => {
     });
   });
 
-  test("does not inject keepalives into non-SSE bodies", async () => {
+  test("injects keepalives only at SSE event boundaries", async () => {
     const encoder = new TextEncoder();
     const createSlowResponse = (
       payload: string,
@@ -725,7 +725,27 @@ describe("proxy contract: codex", () => {
     });
     const sseText = await sseResponse.text();
     expect(sseText).toContain("response.completed");
-    expect(sseText).toContain(": kleis-keepalive");
+    expect(sseText).not.toContain(": kleis-keepalive");
+    expect(JSON.parse(sseText.slice("data: ".length).trim())).toEqual({
+      type: "response.completed",
+    });
+
+    const delayedSseResponse = createOpenAiSseUsagePassthrough({
+      response: new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller): Promise<void> {
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            controller.enqueue(encoder.encode(sseBody));
+            controller.close();
+          },
+        })
+      ),
+      extractUsage: () => null,
+      keepAliveIntervalMs: 5,
+    });
+    const delayedSseText = await delayedSseResponse.text();
+    expect(delayedSseText).toContain(": kleis-keepalive\n\n");
+    expect(delayedSseText).toEndWith(sseBody);
   });
 
   test("logs OpenAI terminal failure details", async () => {
