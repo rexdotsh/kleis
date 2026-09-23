@@ -2397,7 +2397,7 @@ describe("proxy contract: claude", () => {
     oauthMode: "max",
     oauthHost: "claude.ai",
     betaHeaders: [...CLAUDE_REQUIRED_BETA_HEADERS],
-    userAgent: "claude-cli/2.1.2 (external, cli)",
+    userAgent: "claude-cli/2.1.251 (external, cli)",
     systemIdentity: CLAUDE_SYSTEM_IDENTITY,
     toolPrefix: "mcp_",
   };
