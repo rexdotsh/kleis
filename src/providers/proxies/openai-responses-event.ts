@@ -43,11 +43,22 @@ export const normalizeOpenAiResponsesEvent = (
     return payload;
   }
 
-  const response = isObjectRecord(payload.response) ? payload.response : null;
+  if (!isObjectRecord(payload.response)) {
+    return payload;
+  }
+  const response = payload.response;
+  if (
+    response.status !== undefined &&
+    response.status !== "completed" &&
+    response.status !== "failed" &&
+    response.status !== "incomplete"
+  ) {
+    return payload;
+  }
   const type =
-    response?.status === "failed"
+    response.status === "failed"
       ? "response.failed"
-      : response?.status === "incomplete"
+      : response.status === "incomplete"
         ? "response.incomplete"
         : "response.completed";
   return { ...payload, type };

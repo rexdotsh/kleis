@@ -1,9 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  CodexAuthRefreshError,
-  sendCodexWithAuthReplay,
-} from "../../src/http/codex-auth-replay";
+import { sendCodexWithAuthReplay } from "../../src/http/codex-auth-replay";
 
 describe("Codex auth replay", () => {
   const originalAccount = { id: "account-1", accessToken: "expired-token" };
@@ -32,6 +29,7 @@ describe("Codex auth replay", () => {
     expect(refreshCount).toBe(1);
     expect(result.attempt.response.status).toBe(200);
     expect(result.replayed).toBe(true);
+    expect(result.refreshFailed).toBe(false);
   });
 
   test("returns a second 401 without another replay", async () => {
@@ -72,14 +70,38 @@ describe("Codex auth replay", () => {
     expect(result.replayed).toBe(false);
   });
 
-  test("surfaces refresh failures separately from replay failures", async () => {
-    await expect(
-      sendCodexWithAuthReplay({
-        account: originalAccount,
-        send: () =>
-          Promise.resolve({ response: new Response(null, { status: 401 }) }),
-        refresh: () => Promise.reject(new Error("refresh failed")),
-      })
-    ).rejects.toBeInstanceOf(CodexAuthRefreshError);
+  test("preserves the upstream 401 when refresh fails", async () => {
+    const result = await sendCodexWithAuthReplay({
+      account: originalAccount,
+      send: () =>
+        Promise.resolve({
+          response: new Response("upstream unauthorized", { status: 401 }),
+        }),
+      refresh: () => Promise.reject(new Error("refresh failed")),
+    });
+
+    expect(result.attempt.response.status).toBe(401);
+    expect(await result.attempt.response.text()).toBe("upstream unauthorized");
+    expect(result.replayed).toBe(false);
+    expect(result.refreshFailed).toBe(true);
+  });
+
+  test("does not replay when refresh keeps the rejected token", async () => {
+    let sendCount = 0;
+    const result = await sendCodexWithAuthReplay({
+      account: originalAccount,
+      send: () => {
+        sendCount++;
+        return Promise.resolve({
+          response: new Response("unauthorized", { status: 401 }),
+        });
+      },
+      refresh: () => Promise.resolve(originalAccount),
+    });
+
+    expect(sendCount).toBe(1);
+    expect(result.replayed).toBe(false);
+    expect(result.refreshFailed).toBe(true);
+    expect(await result.attempt.response.text()).toBe("unauthorized");
   });
 });

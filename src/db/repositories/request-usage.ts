@@ -139,9 +139,9 @@ export const recordRequestUsage = async (
         outputTokens: sql`${requestUsageBuckets.outputTokens} + ${row.outputTokens}`,
         cacheReadTokens: sql`${requestUsageBuckets.cacheReadTokens} + ${row.cacheReadTokens}`,
         cacheWriteTokens: sql`${requestUsageBuckets.cacheWriteTokens} + ${row.cacheWriteTokens}`,
-        inputTotalTokens: sql`coalesce(${requestUsageBuckets.inputTotalTokens}, 0) + ${row.inputTotalTokens}`,
+        inputTotalTokens: sql`coalesce(${requestUsageBuckets.inputTotalTokens}, ${requestUsageBuckets.inputTokens} + ${requestUsageBuckets.cacheReadTokens} + ${requestUsageBuckets.cacheWriteTokens}) + ${row.inputTotalTokens}`,
         reasoningTokens: sql`coalesce(${requestUsageBuckets.reasoningTokens}, 0) + ${row.reasoningTokens}`,
-        totalTokens: sql`coalesce(${requestUsageBuckets.totalTokens}, 0) + ${row.totalTokens}`,
+        totalTokens: sql`coalesce(${requestUsageBuckets.totalTokens}, coalesce(${requestUsageBuckets.inputTotalTokens}, ${requestUsageBuckets.inputTokens} + ${requestUsageBuckets.cacheReadTokens} + ${requestUsageBuckets.cacheWriteTokens}) + ${requestUsageBuckets.outputTokens}) + ${row.totalTokens}`,
         lastRequestAt: sql`max(${requestUsageBuckets.lastRequestAt}, ${row.lastRequestAt})`,
       },
     });
@@ -191,9 +191,9 @@ export const recordTokenUsage = async (
         outputTokens: sql`${requestUsageBuckets.outputTokens} + ${row.outputTokens}`,
         cacheReadTokens: sql`${requestUsageBuckets.cacheReadTokens} + ${row.cacheReadTokens}`,
         cacheWriteTokens: sql`${requestUsageBuckets.cacheWriteTokens} + ${row.cacheWriteTokens}`,
-        inputTotalTokens: sql`coalesce(${requestUsageBuckets.inputTotalTokens}, 0) + ${row.inputTotalTokens}`,
+        inputTotalTokens: sql`coalesce(${requestUsageBuckets.inputTotalTokens}, ${requestUsageBuckets.inputTokens} + ${requestUsageBuckets.cacheReadTokens} + ${requestUsageBuckets.cacheWriteTokens}) + ${row.inputTotalTokens}`,
         reasoningTokens: sql`coalesce(${requestUsageBuckets.reasoningTokens}, 0) + ${row.reasoningTokens}`,
-        totalTokens: sql`coalesce(${requestUsageBuckets.totalTokens}, 0) + ${row.totalTokens}`,
+        totalTokens: sql`coalesce(${requestUsageBuckets.totalTokens}, coalesce(${requestUsageBuckets.inputTotalTokens}, ${requestUsageBuckets.inputTokens} + ${requestUsageBuckets.cacheReadTokens} + ${requestUsageBuckets.cacheWriteTokens}) + ${requestUsageBuckets.outputTokens}) + ${row.totalTokens}`,
         lastRequestAt: sql`max(${requestUsageBuckets.lastRequestAt}, ${row.lastRequestAt})`,
       },
     });

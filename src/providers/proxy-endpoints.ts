@@ -55,11 +55,13 @@ export const proxyEndpointRoutes: readonly ProxyEndpointRoute[] = [
 export const requireProxyEndpointRoute = (input: {
   publicProvider: CanonicalProvider;
   endpoint: ProxyEndpoint;
+  operation?: ProxyOperation;
 }): ProxyEndpointRoute => {
   for (const route of proxyEndpointRoutes) {
     if (
       route.publicProvider === input.publicProvider &&
-      route.endpoint === input.endpoint
+      route.endpoint === input.endpoint &&
+      route.operation === input.operation
     ) {
       return route;
     }

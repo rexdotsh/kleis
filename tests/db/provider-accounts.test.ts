@@ -112,6 +112,14 @@ describe("provider account enablement", () => {
     expect(refreshCount).toBe(1);
     expect(left?.accessToken).toBe("access-codex-refreshed");
     expect(right?.accessToken).toBe("access-codex-refreshed");
+
+    const cooldownAccount = await refreshProviderAccountAfterAuthFailure(
+      database,
+      "codex-primary",
+      "access-codex-refreshed"
+    );
+    expect(refreshCount).toBe(1);
+    expect(cooldownAccount?.accessToken).toBe("access-codex-refreshed");
   });
 
   test("adopts a token already refreshed by another request", async () => {

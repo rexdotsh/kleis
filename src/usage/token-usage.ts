@@ -86,12 +86,14 @@ const readOpenAiResponsesUsageObject = (usage: unknown): TokenUsage | null => {
     outputTokens: toNonNegativeInteger(usage.output_tokens),
     cacheReadTokens: cachedTokens,
     cacheWriteTokens,
-    ...(outputDetails && "reasoning_tokens" in outputDetails
+    ...(typeof outputDetails?.reasoning_tokens === "number" &&
+    Number.isFinite(outputDetails.reasoning_tokens)
       ? {
           reasoningTokens: toNonNegativeInteger(outputDetails.reasoning_tokens),
         }
       : {}),
-    ...("total_tokens" in usage
+    ...(typeof usage.total_tokens === "number" &&
+    Number.isFinite(usage.total_tokens)
       ? { totalTokens: toNonNegativeInteger(usage.total_tokens) }
       : {}),
   };
@@ -117,7 +119,8 @@ export const readOpenAiResponsesUsageFromSseEvent = (
   if (
     payload.type !== "response.completed" &&
     payload.type !== "response.done" &&
-    payload.type !== "response.incomplete"
+    payload.type !== "response.incomplete" &&
+    payload.type !== "response.failed"
   ) {
     return null;
   }

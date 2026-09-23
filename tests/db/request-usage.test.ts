@@ -9,6 +9,7 @@ import type { Database } from "../../src/db";
 import {
   listApiKeyUsageSummaries,
   recordRequestUsage,
+  recordTokenUsage,
 } from "../../src/db/repositories/request-usage";
 import { requestUsageBuckets } from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
@@ -70,6 +71,20 @@ describe("request usage token accounting", () => {
       cacheWriteTokens: 3,
       lastRequestAt: now,
     });
+    await recordTokenUsage(database, {
+      apiKeyId: "legacy-key",
+      providerAccountId: "codex-account",
+      provider: "codex",
+      endpoint: "responses",
+      model: "gpt-5-codex",
+      occurredAt: now,
+      tokenUsage: {
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    });
 
     const summaries = await listApiKeyUsageSummaries(database, now - 60_000);
     const rich = summaries.find((summary) => summary.apiKeyId === "rich-key");
@@ -87,11 +102,11 @@ describe("request usage token accounting", () => {
       cacheWriteTokens: 10,
     });
     expect(legacy).toMatchObject({
-      inputTokens: 10,
-      inputTotalTokens: 15,
-      outputTokens: 4,
+      inputTokens: 11,
+      inputTotalTokens: 16,
+      outputTokens: 6,
       reasoningTokens: 0,
-      totalTokens: 19,
+      totalTokens: 22,
     });
   });
 });

@@ -30,7 +30,7 @@ const STREAM_FAILURE_RETRIES = 5;
 const MAX_TRACKED_FAILURE_SESSIONS = 1000;
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
-const MAX_RELAY_QUEUE_FRAMES = 256;
+const MAX_RELAY_QUEUE_FRAMES = 8192;
 const MAX_RELAY_QUEUE_BYTES = 4 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 
@@ -829,7 +829,9 @@ const isSessionConcurrencyError = (error: unknown): boolean =>
     error.message === "Codex WebSocket session is connecting");
 
 const isUserCancelledStage = (stage: string): boolean =>
-  stage === "request_aborted" || stage === "downstream_cancel";
+  stage === "request_aborted" ||
+  stage === "downstream_cancel" ||
+  stage === "relay_queue_overflow";
 
 const isCacheableFinalEvent = (
   eventType: unknown,
@@ -1210,13 +1212,18 @@ export const tryProxyCodexWebSocket = async (
     const frameBytes = textEncoder.encode(text).byteLength;
     bufferedFrameBytes += frameBytes - reservedBytes;
     if (bufferedFrameBytes > MAX_RELAY_QUEUE_BYTES) {
+      const stage =
+        frameBytes > MAX_RELAY_QUEUE_BYTES
+          ? "relay_frame_too_large"
+          : "relay_queue_overflow";
       logStreamAnomaly("codex_websocket_queue_overflow", {
-        reason: "bytes",
+        reason:
+          frameBytes > MAX_RELAY_QUEUE_BYTES ? "frame_too_large" : "bytes",
         frameBytes,
         maxQueueFrames: MAX_RELAY_QUEUE_FRAMES,
         maxQueueBytes: MAX_RELAY_QUEUE_BYTES,
       });
-      fail("relay_queue_overflow", new Error("Codex WebSocket queue overflow"));
+      fail(stage, new Error("Codex WebSocket queue overflow"));
       return { bytes: frameBytes, queued: false };
     }
 
@@ -1228,13 +1235,20 @@ export const tryProxyCodexWebSocket = async (
         parseCategory: "invalid_json",
         frameBytes,
       });
-      throw new Error("Codex WebSocket frame contains invalid JSON");
+      fail(
+        "message_parse_failed",
+        new Error("Codex WebSocket frame contains invalid JSON")
+      );
+      return { bytes: frameBytes, queued: false };
     }
     if (!isObjectRecord(parsedPayload)) {
       logStreamAnomaly("codex_websocket_invalid_frame", {
         parseCategory: "non_object_payload",
         frameBytes,
       });
+      return { bytes: frameBytes, queued: false };
+    }
+    if (terminal) {
       return { bytes: frameBytes, queued: false };
     }
     const shapeIssue = readOpenAiResponsesEventShapeIssue(parsedPayload);
@@ -1286,14 +1300,22 @@ export const tryProxyCodexWebSocket = async (
       bufferedFrameCount + 1 > MAX_RELAY_QUEUE_FRAMES ||
       bufferedFrameBytes + reservedBytes > MAX_RELAY_QUEUE_BYTES
     ) {
+      const frameTooLarge = reservedBytes > MAX_RELAY_QUEUE_BYTES;
       logStreamAnomaly("codex_websocket_queue_overflow", {
         reason:
-          bufferedFrameCount + 1 > MAX_RELAY_QUEUE_FRAMES ? "frames" : "bytes",
+          bufferedFrameCount + 1 > MAX_RELAY_QUEUE_FRAMES
+            ? "frames"
+            : frameTooLarge
+              ? "frame_too_large"
+              : "bytes",
         frameBytes: reservedBytes,
         maxQueueFrames: MAX_RELAY_QUEUE_FRAMES,
         maxQueueBytes: MAX_RELAY_QUEUE_BYTES,
       });
-      fail("relay_queue_overflow", new Error("Codex WebSocket queue overflow"));
+      fail(
+        frameTooLarge ? "relay_frame_too_large" : "relay_queue_overflow",
+        new Error("Codex WebSocket queue overflow")
+      );
       return;
     }
     bufferedFrameCount++;

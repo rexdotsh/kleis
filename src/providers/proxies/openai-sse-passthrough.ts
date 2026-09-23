@@ -109,6 +109,10 @@ const rewriteSseData = (
       }
       continue;
     }
+    if (line === "event" || line.startsWith("event:")) {
+      lines.push(`event: ${String(payload.type)}`);
+      continue;
+    }
     lines.push(line);
   }
   return `${lines.join(newline)}${chunk.slice(boundary.index)}`;
@@ -119,6 +123,7 @@ const transformSseEvent = (
   state: {
     latestUsage: TokenUsage | null;
     terminalAnomaly: SseTerminalAnomaly | null;
+    sawTerminal: boolean;
   },
   extractUsage: SseUsageExtractor,
   onInvalidJson: (input: { bytes: number; lines: number }) => void,
@@ -146,8 +151,19 @@ const transformSseEvent = (
   if (shapeIssue) {
     onInvalidShape(shapeIssue);
   }
-  const normalized = normalizeOpenAiResponsesEvent(jsonPayload);
-  state.terminalAnomaly = readSseTerminalAnomaly(normalized);
+  const normalized = state.sawTerminal
+    ? jsonPayload
+    : normalizeOpenAiResponsesEvent(jsonPayload);
+  if (
+    normalized.type === "response.completed" ||
+    normalized.type === "response.incomplete" ||
+    normalized.type === "response.failed" ||
+    normalized.type === "error"
+  ) {
+    state.sawTerminal = true;
+  }
+  state.terminalAnomaly =
+    readSseTerminalAnomaly(normalized) ?? state.terminalAnomaly;
   const usage = extractUsage(normalized);
   if (usage) {
     state.latestUsage = usage;
@@ -176,8 +192,10 @@ export const createOpenAiSseUsagePassthrough = (
   const usageState = {
     latestUsage: null as TokenUsage | null,
     terminalAnomaly: null as SseTerminalAnomaly | null,
+    sawTerminal: false,
   };
   let pendingText = "";
+  let pendingBytes = 0;
   let bytes = 0;
   let chunks = 0;
   let lastChunkAt = startedAt;
@@ -205,6 +223,25 @@ export const createOpenAiSseUsagePassthrough = (
       chunks,
       ...fields,
       ...(error === undefined ? {} : errorLogFields(error)),
+    });
+  };
+
+  const reportInvalidJson = (details: {
+    bytes: number;
+    lines: number;
+  }): void => {
+    logStreamAnomaly("openai_sse_invalid_json", {
+      eventDataBytes: details.bytes,
+      eventDataLines: details.lines,
+      parseCategory: "invalid_json_or_non_object",
+    });
+  };
+
+  const reportInvalidShape = (issue: OpenAiResponsesEventShapeIssue): void => {
+    logStreamAnomaly("openai_sse_invalid_shape", {
+      parseCategory: "invalid_field_type",
+      eventType: issue.eventType,
+      fields: issue.fields,
     });
   };
 
@@ -250,8 +287,23 @@ export const createOpenAiSseUsagePassthrough = (
               }
             }
             if (isSseBody && pendingText.trim()) {
+              const suffix = pendingText.endsWith("\r\n")
+                ? "\r\n"
+                : pendingText.endsWith("\n")
+                  ? "\n"
+                  : pendingText.endsWith("\r")
+                    ? "\r"
+                    : "\n\n";
+              const framed = transformSseEvent(
+                `${pendingText}${suffix}`,
+                usageState,
+                input.extractUsage,
+                reportInvalidJson,
+                reportInvalidShape
+              );
+              pendingText = framed.slice(0, -suffix.length);
               logStreamAnomaly("openai_sse_truncated_event", {
-                pendingBytes: encoder.encode(pendingText).byteLength,
+                pendingBytes,
                 parseCategory: "truncated_event",
               });
             }
@@ -283,6 +335,7 @@ export const createOpenAiSseUsagePassthrough = (
             return;
           }
 
+          pendingBytes += value.byteLength;
           if (utf8ValidationEnabled) {
             try {
               validationDecoder.decode(value, { stream: true });
@@ -295,15 +348,6 @@ export const createOpenAiSseUsagePassthrough = (
             }
           }
           pendingText += decoder.decode(value, { stream: true });
-          const pendingBytes = encoder.encode(pendingText).byteLength;
-          if (pendingBytes > MAX_SSE_EVENT_BYTES) {
-            logStreamAnomaly("openai_sse_event_too_large", {
-              pendingBytes,
-              maxEventBytes: MAX_SSE_EVENT_BYTES,
-              parseCategory: "event_size_limit",
-            });
-            throw new Error("OpenAI SSE event exceeds the proxy buffer limit");
-          }
           let output = "";
           let boundary = findSseEventBoundary(pendingText);
           while (boundary) {
@@ -312,23 +356,22 @@ export const createOpenAiSseUsagePassthrough = (
               pendingText.slice(0, eventEnd),
               usageState,
               input.extractUsage,
-              ({ bytes: invalidBytes, lines }) => {
-                logStreamAnomaly("openai_sse_invalid_json", {
-                  eventDataBytes: invalidBytes,
-                  eventDataLines: lines,
-                  parseCategory: "invalid_json_or_non_object",
-                });
-              },
-              (issue) => {
-                logStreamAnomaly("openai_sse_invalid_shape", {
-                  parseCategory: "invalid_field_type",
-                  eventType: issue.eventType,
-                  fields: issue.fields,
-                });
-              }
+              reportInvalidJson,
+              reportInvalidShape
             );
             pendingText = pendingText.slice(eventEnd);
             boundary = findSseEventBoundary(pendingText);
+          }
+          if (output) {
+            pendingBytes = encoder.encode(pendingText).byteLength;
+          }
+          if (pendingBytes > MAX_SSE_EVENT_BYTES) {
+            logStreamAnomaly("openai_sse_event_too_large", {
+              pendingBytes,
+              maxEventBytes: MAX_SSE_EVENT_BYTES,
+              parseCategory: "event_size_limit",
+            });
+            throw new Error("OpenAI SSE event exceeds the proxy buffer limit");
           }
           if (output) {
             controller.enqueue(encoder.encode(output));
@@ -343,6 +386,7 @@ export const createOpenAiSseUsagePassthrough = (
         }
         closed = true;
         clearKeepAlive?.();
+        reader.cancel(error).catch(() => undefined);
         logStreamAnomaly("openai_sse_stream_failed", {}, error);
         controller.error(error);
       }

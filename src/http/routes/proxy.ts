@@ -27,10 +27,7 @@ import {
 } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
-import {
-  CodexAuthRefreshError,
-  sendCodexWithAuthReplay,
-} from "../codex-auth-replay";
+import { sendCodexWithAuthReplay } from "../codex-auth-replay";
 import {
   parseModelForProxyRoute,
   proxyRouteTable,
@@ -373,21 +370,6 @@ const proxyRequest = async (
       try {
         result = await sendWithAuthReplay();
       } catch (error) {
-        if (error instanceof CodexAuthRefreshError) {
-          logWarn("codex_auth_refresh_replay_failed", {
-            accountId: account.id,
-            elapsedMs: Date.now() - startedAt,
-            ...errorLogFields(error.cause ?? error),
-          });
-          usageRecorder.recordImmediate(502);
-          return context.json(
-            proxyErrorResponse(
-              "Failed to refresh codex account token",
-              "token_refresh_failed"
-            ),
-            502
-          );
-        }
         if (context.req.raw.signal.aborted) {
           throw error;
         }
@@ -402,6 +384,13 @@ const proxyRequest = async (
         throw error;
       }
       account = result.account;
+      if (result.refreshFailed) {
+        logWarn("codex_auth_refresh_replay_failed", {
+          accountId: account.id,
+          elapsedMs: Date.now() - startedAt,
+          upstreamStatus: result.attempt.response.status,
+        });
+      }
       const { attempt } = result;
 
       let responseToClient = attempt.response;

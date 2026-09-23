@@ -628,8 +628,12 @@ describe("proxy contract: codex", () => {
           usage: {
             input_tokens: 60,
             output_tokens: 10,
+            total_tokens: null,
             input_tokens_details: {
               cached_tokens: 5,
+            },
+            output_tokens_details: {
+              reasoning_tokens: null,
             },
           },
         })
@@ -679,6 +683,22 @@ describe("proxy contract: codex", () => {
         cacheWriteTokens: 0,
       },
     },
+    {
+      eventType: "response.failed",
+      usage: {
+        input_tokens: 22,
+        output_tokens: 4,
+        input_tokens_details: {
+          cached_tokens: 2,
+        },
+      },
+      expected: {
+        inputTokens: 20,
+        outputTokens: 4,
+        cacheReadTokens: 2,
+        cacheWriteTokens: 0,
+      },
+    },
   ] as const;
 
   for (const testCase of codexStreamUsageCases) {
@@ -708,6 +728,63 @@ describe("proxy contract: codex", () => {
       }
     });
   }
+
+  test("normalizes an unterminated response.done event at EOF", async () => {
+    const capture = createUsageCapture();
+    const result = prepareCodexUsageRequest(
+      codexStreamingUsageBody,
+      capture.onTokenUsage
+    );
+    const upstreamBody = `event: response.done\ndata: ${JSON.stringify({
+      type: "response.done",
+      response: {
+        status: "completed",
+        usage: { input_tokens: 14, output_tokens: 6 },
+      },
+    })}`;
+
+    const transformed = await result.transformResponse(
+      new Response(upstreamBody, {
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+    const responseText = await transformed.text();
+
+    expect(responseText).toStartWith("event: response.completed\n");
+    expect(responseText).toContain('"type":"response.completed"');
+    expect(responseText).not.toContain("response.done");
+    expect(capture.read()).toEqual({
+      inputTokens: 14,
+      outputTokens: 6,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  test("does not create a second terminal event from trailing response.done", async () => {
+    const upstreamBody = [
+      {
+        type: "response.completed",
+        response: { id: "resp-1", status: "completed" },
+      },
+      {
+        type: "response.done",
+        response: { id: "resp-1", status: "completed" },
+      },
+    ]
+      .map((event) => `data: ${JSON.stringify(event)}\n\n`)
+      .join("");
+    const response = createOpenAiSseUsagePassthrough({
+      response: new Response(upstreamBody, {
+        headers: { "content-type": "text/event-stream" },
+      }),
+      extractUsage: () => null,
+    });
+    const responseText = await response.text();
+
+    expect(responseText.match(/"type":"response.completed"/gu)).toHaveLength(1);
+    expect(responseText.match(/"type":"response.done"/gu)).toHaveLength(1);
+  });
 
   test("extracts usage from streaming responses without content-type", async () => {
     const capture = createUsageCapture();
@@ -877,6 +954,7 @@ describe("proxy contract: codex", () => {
               },
             },
           },
+          { type: "response.future_event", value: true },
         ]),
         extractUsage: () => null,
       });
@@ -1012,6 +1090,42 @@ describe("proxy contract: codex", () => {
     expect(warnings.join("\n")).not.toContain("response.output_text.delta");
   });
 
+  test("cancels upstream when an SSE event exceeds the buffer limit", async () => {
+    let cancelled = false;
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const source = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller): void {
+            controller.enqueue(
+              new TextEncoder().encode(`data: ${"x".repeat(4 * 1024 * 1024)}`)
+            );
+          },
+          cancel(): void {
+            cancelled = true;
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } }
+      );
+      const response = createOpenAiSseUsagePassthrough({
+        response: source,
+        extractUsage: () => null,
+      });
+
+      await expect(response.text()).rejects.toThrow("buffer limit");
+      await waitFor(() => cancelled);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(cancelled).toBe(true);
+    expect(warnings.join("\n")).not.toContain("xxxx");
+  });
+
   test("routes compaction turns over HTTP instead of WebSocket", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies);
@@ -1097,7 +1211,7 @@ describe("proxy contract: codex", () => {
       });
       await waitFor(() => sockets.length === 1 && sentBodies.length === 1);
 
-      for (let index = 0; index < 257; index++) {
+      for (let index = 0; index < 8193; index++) {
         sockets[0]?.dispatch("message", {
           data: JSON.stringify({ type: "response.output_text.delta", index }),
         });
@@ -1179,7 +1293,7 @@ describe("proxy contract: codex", () => {
       const response = await responsePromise;
       expect(response).not.toBeNull();
 
-      for (let index = 0; index < 257; index++) {
+      for (let index = 0; index < 8193; index++) {
         sockets[0]?.dispatch("message", {
           data: JSON.stringify({
             type: "response.output_text.delta",
@@ -1216,6 +1330,47 @@ describe("proxy contract: codex", () => {
     expect(responseText).toContain('"type":"response.completed"');
     expect(responseText).not.toContain('"type":"response.done"');
     expect(responseText).toEndWith("data: [DONE]\n\n");
+  });
+
+  test("drops websocket events after the first terminal", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const responsePromise = tryProxyCodexWebSocket({
+      headers: new Headers({ authorization: "Bearer codex-access" }),
+      bodyJson: {
+        model: "gpt-5.6-sol",
+        stream: true,
+        input: [{ role: "user", content: "hello" }],
+      },
+      accountKey: "key-1:duplicate-terminal-account",
+    });
+    await waitFor(() => sockets.length === 1 && sentBodies.length === 1);
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.created",
+        response: { id: "resp-duplicate" },
+      }),
+    });
+    const response = await responsePromise;
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp-duplicate", status: "completed" },
+      }),
+    });
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.done",
+        response: { id: "resp-duplicate", status: "completed" },
+      }),
+    });
+    const responseText = await response?.text();
+
+    expect(responseText?.match(/"type":"response.completed"/gu)).toHaveLength(
+      1
+    );
+    expect(responseText).not.toContain('"type":"response.done"');
+    expect(responseText?.match(/data: \[DONE\]/gu)).toHaveLength(1);
   });
 
   test("uses websocket cached delta transport for streaming requests", async () => {
