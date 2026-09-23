@@ -11,7 +11,6 @@ import {
   CLAUDE_SYSTEM_IDENTITY,
   CLAUDE_TOOL_PREFIX,
 } from "./constants";
-import { requireOkResponse } from "./http";
 import type { ClaudeAccountMetadata } from "./metadata";
 import {
   generatePkce,
@@ -28,14 +27,17 @@ import type {
 } from "./types";
 
 const CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
-const CLAUDE_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token";
-const CLAUDE_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback";
-const CLAUDE_SCOPE = "org:create_api_key user:profile user:inference";
+const CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const CLAUDE_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
+const CLAUDE_SCOPE =
+  "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 const CLAUDE_STATE_TTL_MS = 15 * 60 * 1000;
+const CLAUDE_TOKEN_TIMEOUT_MS = 15_000;
+const CLAUDE_EXPIRY_SKEW_MS = 60_000;
 
 const claudeStateMetadataSchema = z.strictObject({
   mode: z.enum(["max", "console"]),
-  host: z.enum(["claude.ai", "console.anthropic.com"]),
+  host: z.enum(["claude.ai", "console.anthropic.com", "platform.claude.com"]),
   replaceAccountId: z.string().uuid().optional(),
 });
 
@@ -45,6 +47,78 @@ type ClaudeTokenResponse = {
   expires_in?: number;
   token_type?: string;
   scope?: string;
+  account?: { uuid?: string };
+};
+
+export class ClaudeOAuthError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+
+  constructor(status: number, code: string | null) {
+    super(
+      `Claude OAuth request failed (HTTP ${status}${code ? `, ${code}` : ""})`
+    );
+    this.name = "ClaudeOAuthError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+const requestClaudeTokens = async (
+  body: Record<string, string>
+): Promise<ClaudeTokenResponse> => {
+  const response = await fetch(CLAUDE_TOKEN_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/plain, */*",
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(CLAUDE_TOKEN_TIMEOUT_MS),
+    redirect: "error",
+  });
+  if (!response.ok) {
+    let code: string | null = null;
+    try {
+      const raw: unknown = await response.json();
+      if (raw && typeof raw === "object" && "error" in raw) {
+        const value = raw.error;
+        const candidate =
+          typeof value === "string"
+            ? value
+            : value && typeof value === "object" && "type" in value
+              ? value.type
+              : null;
+        if (
+          typeof candidate === "string" &&
+          /^(invalid_grant|invalid_client|invalid_scope|rate_limit_error|temporarily_unavailable)$/u.test(
+            candidate
+          )
+        ) {
+          code = candidate;
+        }
+      }
+    } catch {
+      // Ignore provider text and preserve only an allowlisted OAuth code.
+    }
+    throw new ClaudeOAuthError(response.status, code);
+  }
+
+  const value: unknown = await response.json();
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Claude OAuth response is not an object");
+  }
+  const tokens = value as ClaudeTokenResponse;
+  if (
+    typeof tokens.access_token !== "string" ||
+    !tokens.access_token.trim() ||
+    typeof tokens.expires_in !== "number" ||
+    !Number.isFinite(tokens.expires_in) ||
+    tokens.expires_in <= 60
+  ) {
+    throw new Error("Claude OAuth response has invalid token fields");
+  }
+  return tokens;
 };
 
 const exchangeCodeForTokens = async (input: {
@@ -52,60 +126,41 @@ const exchangeCodeForTokens = async (input: {
   state: string;
   verifier: string;
 }): Promise<ClaudeTokenResponse> => {
-  const response = await fetch(CLAUDE_TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      code: input.code,
-      state: input.state,
-      grant_type: "authorization_code",
-      client_id: CLAUDE_CLIENT_ID,
-      redirect_uri: CLAUDE_REDIRECT_URI,
-      code_verifier: input.verifier,
-    }),
+  const tokens = await requestClaudeTokens({
+    code: input.code,
+    state: input.state,
+    grant_type: "authorization_code",
+    client_id: CLAUDE_CLIENT_ID,
+    redirect_uri: CLAUDE_REDIRECT_URI,
+    code_verifier: input.verifier,
   });
-
-  await requireOkResponse(response, "Claude token exchange failed");
-
-  const body = (await response.json()) as ClaudeTokenResponse;
-  if (!body.access_token || !body.refresh_token) {
+  if (!tokens.refresh_token) {
     throw new Error("Claude OAuth response is missing tokens");
   }
-
-  return body;
+  return tokens;
 };
 
 const refreshClaudeTokens = async (
   refreshToken: string
 ): Promise<ClaudeTokenResponse> => {
-  const response = await fetch(CLAUDE_TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      grant_type: "refresh_token",
-      client_id: CLAUDE_CLIENT_ID,
-      refresh_token: refreshToken,
-    }),
+  const tokens = await requestClaudeTokens({
+    grant_type: "refresh_token",
+    client_id: CLAUDE_CLIENT_ID,
+    refresh_token: refreshToken,
   });
-
-  await requireOkResponse(response, "Claude token refresh failed");
-
-  const body = (await response.json()) as ClaudeTokenResponse;
-  if (!body.access_token) {
-    throw new Error("Claude refresh response is missing access_token");
+  if (
+    typeof tokens.refresh_token !== "string" ||
+    !tokens.refresh_token.trim()
+  ) {
+    throw new Error("Claude refresh response is missing refresh_token");
   }
-
-  return body;
+  return tokens;
 };
 
 const buildClaudeMetadata = (input: {
   tokens: ClaudeTokenResponse;
   mode: "max" | "console";
-  host: "claude.ai" | "console.anthropic.com";
+  host: "claude.ai" | "console.anthropic.com" | "platform.claude.com";
   existing: ClaudeAccountMetadata | null;
 }): ClaudeAccountMetadata => ({
   provider: "claude",
@@ -121,11 +176,11 @@ const buildClaudeMetadata = (input: {
 
 const buildTokenResult = (input: {
   tokens: ClaudeTokenResponse;
-  now: number;
   mode: "max" | "console";
-  host: "claude.ai" | "console.anthropic.com";
+  host: "claude.ai" | "console.anthropic.com" | "platform.claude.com";
   existing: ClaudeAccountMetadata | null;
   fallbackRefreshToken: string | null;
+  fallbackAccountId?: string | null;
 }): ProviderTokenResult => {
   const accessToken = input.tokens.access_token;
   if (!accessToken) {
@@ -146,8 +201,12 @@ const buildTokenResult = (input: {
   return {
     accessToken,
     refreshToken,
-    expiresAt: input.now + (input.tokens.expires_in ?? 3600) * 1000,
-    accountId: null,
+    expiresAt:
+      Date.now() +
+      (input.tokens.expires_in ?? 0) * 1000 -
+      CLAUDE_EXPIRY_SKEW_MS,
+    accountId:
+      input.tokens.account?.uuid?.trim() || input.fallbackAccountId || null,
     metadata,
     label: metadata.oauthMode === "max" ? "claude-max" : "claude-console",
   };
@@ -159,7 +218,7 @@ export const claudeAdapter: ProviderAdapter = {
     input: ProviderOAuthStartInput
   ): Promise<ProviderOAuthStartResult> {
     const mode = input.options?.mode === "console" ? "console" : "max";
-    const host = mode === "console" ? "console.anthropic.com" : "claude.ai";
+    const host = mode === "console" ? "platform.claude.com" : "claude.ai";
     const pkce = await generatePkce();
     const state = generateState();
 
@@ -240,7 +299,6 @@ export const claudeAdapter: ProviderAdapter = {
     return {
       ...buildTokenResult({
         tokens,
-        now: input.now,
         mode: stateMetadata.mode,
         host: stateMetadata.host,
         existing: null,
@@ -253,7 +311,7 @@ export const claudeAdapter: ProviderAdapter = {
   },
   async refreshAccount(
     account: ProviderAccountRecord,
-    now: number
+    _now: number
   ): Promise<ProviderTokenResult> {
     const existing =
       account.metadata?.provider === "claude" ? account.metadata : null;
@@ -261,11 +319,11 @@ export const claudeAdapter: ProviderAdapter = {
 
     return buildTokenResult({
       tokens,
-      now,
       mode: existing?.oauthMode ?? "max",
       host: existing?.oauthHost ?? "claude.ai",
       existing,
       fallbackRefreshToken: account.refreshToken,
+      fallbackAccountId: account.accountId,
     });
   },
 };

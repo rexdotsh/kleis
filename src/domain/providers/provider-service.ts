@@ -15,16 +15,20 @@ import {
 } from "../../db/repositories/provider-accounts";
 import type { Provider } from "../../db/schema";
 import type { ProviderAccountMetadata } from "../../providers/metadata";
+import { ClaudeOAuthError } from "../../providers/claude";
 import { getProviderAdapter } from "../../providers/registry";
 import type { ProviderOAuthStartResult } from "../../providers/types";
+import { logWarn } from "../../utils/log";
 import { sleep } from "../../utils/sleep";
 
 const normalizeTokenField = (value: string): string => value.trim();
 
-const REFRESH_LOCK_LEASE_MS = 20_000;
+const REFRESH_LOCK_LEASE_MS = 45_000;
 const REFRESH_LOCK_HEARTBEAT_MS = 5000;
 const REFRESH_WAIT_TIMEOUT_MS = 3000;
 const AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS = 30_000;
+const CLAUDE_REFRESH_WAIT_TIMEOUT_MS = 30_000;
+const CLAUDE_TRANSIENT_REFRESH_COOLDOWN_MS = 30_000;
 const REFRESH_WAIT_POLL_INTERVAL_MS = 150;
 
 const assertExpiresAt = (expiresAt: number, now: number): number => {
@@ -97,6 +101,10 @@ const refreshProviderAccountWithLock = async (
       return null;
     }
 
+    if (account.provider === "claude") {
+      assertClaudeRefreshAllowed(account);
+    }
+
     if (
       failedAccessToken !== undefined &&
       account.accessToken !== failedAccessToken
@@ -130,22 +138,55 @@ const refreshProviderAccountWithLock = async (
         accountId: tokens.accountId,
         metadata: tokens.metadata,
         refreshLockToken: lockToken,
+        ...(account.provider === "claude"
+          ? { expectedRefreshToken: account.refreshToken }
+          : {}),
         lastRefreshStatus: "success",
         now: refreshNow,
       });
 
       if (!updated) {
-        return await findProviderAccountById(database, account.id);
+        const current = await findProviderAccountById(database, account.id);
+        if (
+          account.provider !== "claude" ||
+          (current &&
+            current.accessToken !== account.accessToken &&
+            current.expiresAt > Date.now())
+        ) {
+          return current;
+        }
+        throw new Error("Claude refresh lost its credential lock");
       }
 
       return updated;
     } catch (error) {
+      const status =
+        account.provider === "claude" && error instanceof ClaudeOAuthError
+          ? error.code === "invalid_grant"
+            ? "reauthorize"
+            : error.status === 429
+              ? "rate_limited"
+              : "transient"
+          : account.provider === "claude"
+            ? "transient"
+            : "failed";
       await recordProviderAccountRefreshFailure(
         database,
         account.id,
         refreshNow,
-        lockToken
+        lockToken,
+        status
       );
+      if (account.provider === "claude") {
+        logWarn("claude_oauth_refresh_failed", {
+          accountId: account.id,
+          endpoint: "platform.claude.com/v1/oauth/token",
+          status: error instanceof ClaudeOAuthError ? error.status : null,
+          oauthCode: error instanceof ClaudeOAuthError ? error.code : null,
+          classification: status,
+          elapsedMs: Date.now() - refreshNow,
+        });
+      }
       throw error;
     } finally {
       stopRefreshLockHeartbeat();
@@ -171,6 +212,9 @@ export const refreshProviderAccountAfterAuthFailure = async (
   signal?.throwIfAborted();
   if (!account || account.accessToken !== failedAccessToken) {
     return account;
+  }
+  if (account.provider === "claude") {
+    assertClaudeRefreshAllowed(account);
   }
 
   const lockToken = crypto.randomUUID();
@@ -265,6 +309,20 @@ export class ProviderReauthorizationTargetError extends Error {
     this.name = "ProviderReauthorizationTargetError";
   }
 }
+
+const assertClaudeRefreshAllowed = (account: ProviderAccountRecord): void => {
+  if (account.lastRefreshStatus === "reauthorize") {
+    throw new Error("Claude account needs reauthorization");
+  }
+  if (
+    (account.lastRefreshStatus === "rate_limited" ||
+      account.lastRefreshStatus === "transient") &&
+    account.lastRefreshAt !== null &&
+    Date.now() - account.lastRefreshAt < CLAUDE_TRANSIENT_REFRESH_COOLDOWN_MS
+  ) {
+    throw new Error("Claude OAuth refresh is temporarily unavailable");
+  }
+};
 
 export const completeProviderOAuth = async (
   database: Database,
@@ -367,6 +425,9 @@ export const refreshProviderAccount = async (
   if (!account) {
     return null;
   }
+  if (account.provider === "claude") {
+    assertClaudeRefreshAllowed(account);
+  }
 
   const lockToken = crypto.randomUUID();
   const lockClaimedAt = Date.now();
@@ -393,14 +454,35 @@ export const refreshProviderAccount = async (
     database,
     account.id,
     now,
-    forceRefresh
+    forceRefresh,
+    account.provider === "claude"
+      ? CLAUDE_REFRESH_WAIT_TIMEOUT_MS
+      : REFRESH_WAIT_TIMEOUT_MS
   );
   if (!waited) {
     return null;
   }
 
+  if (
+    account.provider === "claude" &&
+    waited.refreshToken !== account.refreshToken &&
+    waited.expiresAt > Date.now()
+  ) {
+    return waited;
+  }
+
   if (!forceRefresh && waited.expiresAt > now) {
     return waited;
+  }
+
+  if (
+    account.provider === "claude" &&
+    hasActiveProviderAccountRefreshLock(waited, Date.now())
+  ) {
+    throw new Error("Claude account refresh is already in progress");
+  }
+  if (account.provider === "claude") {
+    assertClaudeRefreshAllowed(waited);
   }
 
   const retryLockToken = crypto.randomUUID();

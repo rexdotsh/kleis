@@ -7,7 +7,7 @@ type AuthReplayAttempt = {
   response: Response;
 };
 
-export const sendCodexWithAuthReplay = async <
+export const sendWithAuthReplay = async <
   Account extends AuthReplayAccount,
   Attempt extends AuthReplayAttempt,
 >(input: {

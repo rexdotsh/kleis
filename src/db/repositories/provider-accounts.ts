@@ -405,6 +405,7 @@ type UpdateProviderAccountTokensInput = {
   accountId?: string | null;
   metadata?: ProviderAccountMetadata | null;
   refreshLockToken?: string;
+  expectedRefreshToken?: string;
   lastRefreshStatus: "success" | "failed";
   now: number;
 };
@@ -433,13 +434,18 @@ export const updateProviderAccountTokens = async (
     );
   }
 
-  const whereClause = input.refreshLockToken
-    ? and(
-        eq(providerAccounts.id, id),
-        eq(providerAccounts.refreshLockToken, input.refreshLockToken),
-        gt(providerAccounts.refreshLockExpiresAt, input.now)
-      )
-    : eq(providerAccounts.id, id);
+  const whereClause = and(
+    eq(providerAccounts.id, id),
+    ...(input.refreshLockToken
+      ? [
+          eq(providerAccounts.refreshLockToken, input.refreshLockToken),
+          gt(providerAccounts.refreshLockExpiresAt, Date.now()),
+        ]
+      : []),
+    ...(input.expectedRefreshToken
+      ? [eq(providerAccounts.refreshToken, input.expectedRefreshToken)]
+      : [])
+  );
 
   const result = await database
     .update(providerAccounts)
@@ -456,13 +462,14 @@ export const recordProviderAccountRefreshFailure = async (
   database: Database,
   id: string,
   now: number,
-  refreshLockToken?: string
+  refreshLockToken?: string,
+  status = "failed"
 ): Promise<void> => {
   const whereClause = refreshLockToken
     ? and(
         eq(providerAccounts.id, id),
         eq(providerAccounts.refreshLockToken, refreshLockToken),
-        gt(providerAccounts.refreshLockExpiresAt, now)
+        gt(providerAccounts.refreshLockExpiresAt, Date.now())
       )
     : eq(providerAccounts.id, id);
 
@@ -470,7 +477,7 @@ export const recordProviderAccountRefreshFailure = async (
     .update(providerAccounts)
     .set({
       lastRefreshAt: now,
-      lastRefreshStatus: "failed",
+      lastRefreshStatus: status,
       updatedAt: now,
     })
     .where(whereClause);

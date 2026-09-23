@@ -27,7 +27,7 @@ import {
 } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
-import { sendCodexWithAuthReplay } from "../codex-auth-replay";
+import { sendWithAuthReplay } from "../auth-replay";
 import {
   parseModelForProxyRoute,
   proxyRouteTable,
@@ -352,8 +352,8 @@ const proxyRequest = async (
         return { response, transformResponse: codexProxy.transformResponse };
       };
 
-      const sendWithAuthReplay = () =>
-        sendCodexWithAuthReplay<
+      const sendCodexWithAuthReplay = () =>
+        sendWithAuthReplay<
           ProviderAccountRecord,
           Awaited<ReturnType<typeof sendAttempt>>
         >({
@@ -368,9 +368,9 @@ const proxyRequest = async (
               context.req.raw.signal
             ),
         });
-      let result: Awaited<ReturnType<typeof sendWithAuthReplay>>;
+      let result: Awaited<ReturnType<typeof sendCodexWithAuthReplay>>;
       try {
-        result = await sendWithAuthReplay();
+        result = await sendCodexWithAuthReplay();
       } catch (error) {
         if (context.req.raw.signal.aborted) {
           throw error;
@@ -436,20 +436,95 @@ const proxyRequest = async (
     }
 
     case "claude": {
-      const claudeProxy = prepareClaudeProxyRequest({
-        requestUrl,
-        headers,
-        bodyText: requestBody,
-        bodyJson: requestBodyJson,
-        accessToken: account.accessToken,
-        metadata:
-          account.metadata?.provider === "claude" ? account.metadata : null,
-        onTokenUsage: usageRecorder.onTokenUsage,
-      });
-      upstreamUrl = claudeProxy.upstreamUrl;
-      requestBody = claudeProxy.bodyText;
-      responseTransformer = claudeProxy.transformResponse;
-      break;
+      const initialClaudeAccount = account;
+      const baseHeaders = new Headers(headers);
+      const sendAttempt = async (attemptAccount: ProviderAccountRecord) => {
+        const attemptHeaders = new Headers(baseHeaders);
+        const claudeProxy = prepareClaudeProxyRequest({
+          requestUrl,
+          headers: attemptHeaders,
+          bodyText: requestBody,
+          bodyJson: requestBodyJson,
+          accessToken: attemptAccount.accessToken,
+          metadata:
+            attemptAccount.metadata?.provider === "claude"
+              ? attemptAccount.metadata
+              : null,
+          onTokenUsage: usageRecorder.onTokenUsage,
+        });
+        return {
+          response: await fetchProxyUpstream({
+            url: claudeProxy.upstreamUrl,
+            method: context.req.method,
+            headers: attemptHeaders,
+            body: claudeProxy.bodyText,
+            signal: context.req.raw.signal,
+            useCodexSseHeaderTimeout: false,
+          }),
+          transformResponse: claudeProxy.transformResponse,
+        };
+      };
+      let result: Awaited<
+        ReturnType<
+          typeof sendWithAuthReplay<
+            ProviderAccountRecord,
+            Awaited<ReturnType<typeof sendAttempt>>
+          >
+        >
+      >;
+      try {
+        result = await sendWithAuthReplay({
+          account: initialClaudeAccount,
+          signal: context.req.raw.signal,
+          send: sendAttempt,
+          refresh: (accountId, failedAccessToken) =>
+            refreshProviderAccountAfterAuthFailure(
+              db,
+              accountId,
+              failedAccessToken,
+              context.req.raw.signal
+            ),
+        });
+      } catch (error) {
+        if (context.req.raw.signal.aborted) {
+          throw error;
+        }
+        logWarn("proxy_upstream_request_failed", {
+          provider: route.provider,
+          endpoint: route.endpoint,
+          elapsedMs: Date.now() - startedAt,
+          aborted: false,
+          ...errorLogFields(error),
+        });
+        usageRecorder.recordImmediate(500);
+        throw error;
+      }
+      account = result.account;
+      if (result.refreshFailed) {
+        logWarn("claude_auth_refresh_replay_failed", {
+          accountId: account.id,
+          elapsedMs: Date.now() - startedAt,
+          upstreamStatus: result.attempt.response.status,
+        });
+      }
+      const { attempt } = result;
+      let responseToClient = attempt.response;
+      try {
+        responseToClient = await attempt.transformResponse(attempt.response);
+        responseToClient.headers.delete("content-encoding");
+      } catch (error) {
+        logWarn("proxy_response_transform_failed", {
+          provider: route.provider,
+          endpoint: route.endpoint,
+          status: attempt.response.status,
+          elapsedMs: Date.now() - startedAt,
+          ...errorLogFields(error),
+        });
+        usageRecorder.recordImmediate(500);
+        throw error;
+      }
+      usageRecorder.recordFinal(attempt.response.status);
+      return responseToClient;
     }
 
     default: {
