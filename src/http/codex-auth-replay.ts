@@ -12,6 +12,7 @@ export const sendCodexWithAuthReplay = async <
   Attempt extends AuthReplayAttempt,
 >(input: {
   account: Account;
+  signal?: AbortSignal;
   send(account: Account): Promise<Attempt>;
   refresh(
     accountId: string,
@@ -40,6 +41,7 @@ export const sendCodexWithAuthReplay = async <
       input.account.accessToken
     );
   } catch {
+    input.signal?.throwIfAborted();
     return {
       account: input.account,
       attempt: firstAttempt,

@@ -358,12 +358,14 @@ const proxyRequest = async (
           Awaited<ReturnType<typeof sendAttempt>>
         >({
           account: initialCodexAccount,
+          signal: context.req.raw.signal,
           send: sendAttempt,
           refresh: (accountId, failedAccessToken) =>
             refreshProviderAccountAfterAuthFailure(
               db,
               accountId,
-              failedAccessToken
+              failedAccessToken,
+              context.req.raw.signal
             ),
         });
       let result: Awaited<ReturnType<typeof sendWithAuthReplay>>;

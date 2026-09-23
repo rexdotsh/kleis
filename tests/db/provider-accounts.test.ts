@@ -151,6 +151,51 @@ describe("provider account enablement", () => {
     expect(secondAccount?.accessToken).toBe("access-after-slow-refresh");
   });
 
+  test("stops waiting for another refresh when the request disconnects", async () => {
+    let startedRefresh: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => {
+      startedRefresh = resolve;
+    });
+    let releaseRefresh: (() => void) | undefined;
+    const refreshReleased = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    codexAdapter.refreshAccount = async (account, now) => {
+      startedRefresh?.();
+      await refreshReleased;
+      return {
+        accessToken: "access-after-disconnect",
+        refreshToken: account.refreshToken,
+        expiresAt: now + 60_000,
+        accountId: account.accountId,
+        metadata: account.metadata,
+      };
+    };
+
+    const first = refreshProviderAccountAfterAuthFailure(
+      database,
+      "codex-primary",
+      "access-codex"
+    );
+    await refreshStarted;
+    const controller = new AbortController();
+    const waiting = refreshProviderAccountAfterAuthFailure(
+      database,
+      "codex-primary",
+      "access-codex",
+      controller.signal
+    );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    controller.abort(new Error("client disconnected"));
+
+    try {
+      await expect(waiting).rejects.toThrow("client disconnected");
+    } finally {
+      releaseRefresh?.();
+      await first;
+    }
+  });
+
   test("refreshes a rejected token even after a recent ordinary refresh", async () => {
     await database
       .update(providerAccounts)

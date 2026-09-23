@@ -58,12 +58,15 @@ const waitForInFlightRefresh = async (
   accountId: string,
   now: number,
   forceRefresh: boolean,
-  timeoutMs = REFRESH_WAIT_TIMEOUT_MS
+  timeoutMs = REFRESH_WAIT_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<ProviderAccountRecord | null> => {
+  signal?.throwIfAborted();
   const deadline = Date.now() + timeoutMs;
   let account = await findProviderAccountById(database, accountId);
 
   while (account && Date.now() < deadline) {
+    signal?.throwIfAborted();
     if (!forceRefresh && account.expiresAt > now) {
       return account;
     }
@@ -73,6 +76,7 @@ const waitForInFlightRefresh = async (
     }
 
     await sleep(REFRESH_WAIT_POLL_INTERVAL_MS);
+    signal?.throwIfAborted();
     account = await findProviderAccountById(database, accountId);
   }
 
@@ -158,9 +162,12 @@ const refreshProviderAccountWithLock = async (
 export const refreshProviderAccountAfterAuthFailure = async (
   database: Database,
   accountId: string,
-  failedAccessToken: string
+  failedAccessToken: string,
+  signal?: AbortSignal
 ): Promise<ProviderAccountRecord | null> => {
+  signal?.throwIfAborted();
   const account = await findProviderAccountById(database, accountId);
+  signal?.throwIfAborted();
   if (!account || account.accessToken !== failedAccessToken) {
     return account;
   }
@@ -192,7 +199,8 @@ export const refreshProviderAccountAfterAuthFailure = async (
     account.id,
     Date.now(),
     true,
-    AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS
+    AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS,
+    signal
   );
   if (!waited) {
     return null;
