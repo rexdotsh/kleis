@@ -37,6 +37,9 @@ const state = {
   showRevokedKeys: false,
   activeOAuth: null,
   reauthorizeAccountId: null,
+  oauthRequestSeq: 0,
+  accountsRequestSeq: 0,
+  keysRequestSeq: 0,
   revealedKeyIds: new Set(),
   dashboardWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   dashboardData: null,
@@ -48,6 +51,19 @@ const state = {
 const APP_ORIGIN = window.location.origin;
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
+const modalPreviousFocus = new WeakMap();
+
+function openModal(modal, focusSelector = "button, input, select") {
+  modalPreviousFocus.set(modal, document.activeElement);
+  modal.classList.add("open");
+  modal.querySelector(focusSelector)?.focus();
+}
+
+function closeModal(modal) {
+  modal.classList.remove("open");
+  modalPreviousFocus.get(modal)?.focus?.();
+  modalPreviousFocus.delete(modal);
+}
 
 function escapeHtml(str) {
   const el = document.createElement("span");
@@ -96,13 +112,14 @@ function toast(message, type = "success") {
 let confirmResolve = null;
 
 function showConfirm(title, message, actionLabel = "confirm", extrasHtml = "") {
+  if (confirmResolve) resolveConfirm(false);
   return new Promise((resolve) => {
     confirmResolve = resolve;
     $("#confirm-title").textContent = title;
     $("#confirm-message").textContent = message;
     $("#confirm-extras").innerHTML = extrasHtml;
     $("#btn-confirm-action").textContent = actionLabel;
-    $("#modal-confirm").classList.add("open");
+    openModal($("#modal-confirm"), "#btn-confirm-cancel");
   });
 }
 
@@ -111,7 +128,7 @@ function resolveConfirm(value) {
     confirmResolve(value);
     confirmResolve = null;
   }
-  $("#modal-confirm").classList.remove("open");
+  closeModal($("#modal-confirm"));
 }
 
 function relativeTime(ts) {
@@ -384,8 +401,12 @@ function usageMapFromList(items, idField) {
 }
 
 function switchToTab(name) {
-  for (const t of $$(".tab"))
-    t.classList.toggle("active", t.dataset.tab === name);
+  for (const t of $$(".tab")) {
+    const active = t.dataset.tab === name;
+    t.classList.toggle("active", active);
+    t.setAttribute("aria-selected", String(active));
+    t.tabIndex = active ? 0 : -1;
+  }
   for (const p of $$(".tab-panel"))
     p.classList.toggle("active", p.id === `panel-${name}`);
   history.replaceState(null, "", `#${name}`);
@@ -626,7 +647,8 @@ async function loadDashboard() {
 }
 
 async function loadAccounts() {
-  showLoading("accounts-list");
+  const requestSeq = ++state.accountsRequestSeq;
+  if (!state.accounts.length) showLoading("accounts-list");
   try {
     const [accountsResult, usageResult] = await Promise.allSettled([
       api("/admin/accounts"),
@@ -634,6 +656,7 @@ async function loadAccounts() {
     ]);
 
     if (accountsResult.status !== "fulfilled") throw accountsResult.reason;
+    if (requestSeq !== state.accountsRequestSeq) return;
 
     state.accounts = accountsResult.value.accounts || [];
     state.accountsById = usageMapFromList(state.accounts, "id");
@@ -662,6 +685,7 @@ async function loadAccounts() {
       renderKeys();
     }
   } catch (e) {
+    if (requestSeq !== state.accountsRequestSeq) return;
     state.accounts = [];
     state.accountsById = new Map();
     state.accountUsageById = new Map();
@@ -674,7 +698,8 @@ async function loadAccounts() {
 }
 
 async function loadKeys() {
-  showLoading("keys-list");
+  const requestSeq = ++state.keysRequestSeq;
+  if (!state.keysLoaded) showLoading("keys-list");
   try {
     const [keysResult, usageResult] = await Promise.allSettled([
       api("/admin/keys"),
@@ -682,6 +707,7 @@ async function loadKeys() {
     ]);
 
     if (keysResult.status !== "fulfilled") throw keysResult.reason;
+    if (requestSeq !== state.keysRequestSeq) return;
 
     state.keys = keysResult.value.keys || [];
     state.keysById = usageMapFromList(state.keys, "id");
@@ -706,6 +732,7 @@ async function loadKeys() {
       renderDashboard(state.dashboardData);
     }
   } catch (e) {
+    if (requestSeq !== state.keysRequestSeq) return;
     state.keys = [];
     state.keysById = new Map();
     state.keyUsageById = new Map();
@@ -888,7 +915,7 @@ function openEditAccountModal(id) {
   $("#edit-account-account-id").value = account.accountId || "";
   $("#edit-account-metadata").value = formatMetadataForInput(account.metadata);
   $("#btn-modal-save-account").dataset.accountId = account.id;
-  $("#modal-edit-account").classList.add("open");
+  openModal($("#modal-edit-account"), "#edit-account-label");
 }
 
 async function saveAccountEdits() {
@@ -923,7 +950,7 @@ async function saveAccountEdits() {
         metadata,
       }),
     });
-    $("#modal-edit-account").classList.remove("open");
+    closeModal($("#modal-edit-account"));
     saveButton.dataset.accountId = "";
     toast("Account profile updated");
     await loadAccounts();
@@ -941,10 +968,12 @@ function openCreateKeyModal() {
   for (const cb of $$(".key-scope-provider")) cb.checked = false;
   renderAccountScopeOptions("create");
   syncScopedAccountAvailability("create");
-  $("#modal-create-key").classList.add("open");
+  openModal($("#modal-create-key"), "#key-label");
 }
 
 async function createKey() {
+  const btn = $("#btn-modal-create-key");
+  if (btn.disabled) return;
   const label = trimmedOrNull($("#key-label").value);
   const providerScopes = checkedValues(".key-scope-provider");
   const accountScopes = checkedValues(".key-scope-account");
@@ -956,17 +985,22 @@ async function createKey() {
     ...(modelScopes.length ? { modelScopes } : {}),
   };
 
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> creating...';
   try {
     const data = await api("/admin/keys", {
       method: "POST",
       body: JSON.stringify(body),
     });
-    $("#modal-create-key").classList.remove("open");
+    closeModal($("#modal-create-key"));
     toast("API key created");
     showKeyReveal(data.key.key);
     await loadKeys();
   } catch (e) {
     toast(e.message, "error");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "create";
   }
 }
 
@@ -989,7 +1023,7 @@ function openEditKeyModal(id) {
   saveButton.dataset.keyId = key.id;
   saveButton.dataset.originalExpiresAt =
     key.expiresAt === null ? "" : String(key.expiresAt);
-  $("#modal-edit-key").classList.add("open");
+  openModal($("#modal-edit-key"), "#edit-key-label");
 }
 
 async function saveKeyEdits() {
@@ -1037,7 +1071,7 @@ async function saveKeyEdits() {
       method: "PATCH",
       body: JSON.stringify(body),
     });
-    $("#modal-edit-key").classList.remove("open");
+    closeModal($("#modal-edit-key"));
     saveButton.dataset.keyId = "";
     saveButton.dataset.originalExpiresAt = "";
     toast("API key updated");
@@ -1169,11 +1203,17 @@ async function copyToClipboard(text, btn) {
 }
 
 function clearReauthorization() {
+  if (state.activeOAuth) return;
   state.reauthorizeAccountId = null;
   $("#oauth-reauthorize-target").style.display = "none";
+  $("#oauth-provider").disabled = false;
+  $("#oauth-codex-mode").disabled = false;
+  $("#oauth-claude-mode").disabled = false;
+  $("#btn-oauth-clear-target").disabled = false;
 }
 
 function updateOAuthProviderUI() {
+  if (state.activeOAuth) return;
   const p = $("#oauth-provider").value;
   clearReauthorization();
   $("#oauth-copilot-opts").style.display = p === "copilot" ? "block" : "none";
@@ -1181,14 +1221,26 @@ function updateOAuthProviderUI() {
   $("#oauth-claude-opts").style.display = p === "claude" ? "block" : "none";
 }
 
-function reauthorizeAccount(id) {
+async function reauthorizeAccount(id) {
   const account = accountById(id);
   if (!account || !["codex", "claude"].includes(account.provider)) return;
+  if (state.activeOAuth) {
+    const confirmed = await showConfirm(
+      "Replace active OAuth flow?",
+      "The current authorization code will no longer work in this form.",
+      "start over"
+    );
+    if (!confirmed) return;
+    cancelOAuthFlow();
+  }
+  if ($("#btn-oauth-start").disabled) cancelOAuthFlow();
   state.reauthorizeAccountId = id;
   const target = $("#oauth-reauthorize-target");
-  target.textContent = `Replacing credentials for ${account.label || account.provider}; account settings and scopes will be kept. Change Provider to cancel.`;
-  target.style.display = "block";
+  $("#oauth-reauthorize-label").textContent =
+    `Reauthorizing ${account.label || account.accountId || account.provider}. Existing settings and API-key scopes stay attached to this account.${account.provider === "claude" ? " Verify you sign in to the same Claude account and organization; this cannot be checked automatically." : ""}`;
+  target.style.display = "flex";
   $("#oauth-provider").value = account.provider;
+  $("#oauth-provider").disabled = true;
   $("#oauth-copilot-opts").style.display = "none";
   $("#oauth-codex-opts").style.display =
     account.provider === "codex" ? "block" : "none";
@@ -1196,12 +1248,24 @@ function reauthorizeAccount(id) {
     account.provider === "claude" ? "block" : "none";
   if (account.provider === "claude") {
     $("#oauth-claude-mode").value = account.metadata?.oauthMode || "max";
+    $("#oauth-claude-mode").disabled = true;
   }
   switchToTab("oauth");
   toast(`Reauthorizing ${account.label || account.provider}`);
 }
 
+function cancelOAuthFlow() {
+  state.oauthRequestSeq++;
+  state.activeOAuth = null;
+  $("#oauth-flow-active").style.display = "none";
+  $("#oauth-flow-active").innerHTML = "";
+  $("#btn-oauth-start").disabled = false;
+  clearReauthorization();
+}
+
 async function startOAuth() {
+  if (state.activeOAuth || $("#btn-oauth-start").disabled) return;
+  const requestSeq = ++state.oauthRequestSeq;
   const provider = $("#oauth-provider").value;
   const btn = $("#btn-oauth-start");
   btn.disabled = true;
@@ -1233,19 +1297,35 @@ async function startOAuth() {
       method: "POST",
       body: JSON.stringify(body),
     });
-    state.activeOAuth = { provider, ...data };
+    if (requestSeq !== state.oauthRequestSeq) return;
+    const account = accountById(state.reauthorizeAccountId);
+    state.activeOAuth = {
+      provider,
+      ...data,
+      accountName:
+        account?.label || account?.accountId || (account ? account.id : null),
+      mode: body.options?.mode || null,
+    };
+    $("#oauth-provider").disabled = true;
+    $("#oauth-codex-mode").disabled = true;
+    $("#oauth-claude-mode").disabled = true;
+    $("#btn-oauth-clear-target").disabled = true;
     renderOAuthFlow(data, provider);
     toast("OAuth flow started");
   } catch (e) {
+    if (requestSeq !== state.oauthRequestSeq) return;
     toast(e.message, "error");
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = "start oauth flow";
+    if (requestSeq === state.oauthRequestSeq) {
+      btn.disabled = Boolean(state.activeOAuth);
+      btn.innerHTML = "start oauth flow";
+    }
   }
 }
 
 async function completeOAuth() {
   if (!state.activeOAuth) return;
+  const requestSeq = state.oauthRequestSeq;
   const btn = $("#btn-oauth-complete");
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> completing...';
@@ -1262,16 +1342,18 @@ async function completeOAuth() {
       method: "POST",
       body: JSON.stringify(body),
     });
-    toast("Account connected");
-    state.activeOAuth = null;
-    state.reauthorizeAccountId = null;
-    $("#oauth-reauthorize-target").style.display = "none";
-    $("#oauth-flow-active").style.display = "none";
-    $("#oauth-flow-active").innerHTML = "";
+    if (requestSeq !== state.oauthRequestSeq) return;
+    toast(
+      state.reauthorizeAccountId ? "Account reauthorized" : "Account connected"
+    );
+    cancelOAuthFlow();
     await loadAccounts();
     switchToTab("accounts");
   } catch (e) {
-    toast(e.message, "error");
+    if (requestSeq !== state.oauthRequestSeq) return;
+    const error = $("#oauth-flow-error");
+    error.textContent = `${e.message}. If this code was consumed or the flow expired, cancel and start over.`;
+    error.hidden = false;
     btn.disabled = false;
     btn.innerHTML = "complete flow";
   }
@@ -1374,7 +1456,7 @@ function enterApp() {
   $("#login-gate").classList.add("hidden");
   $("#app").classList.add("visible");
   const hash = location.hash.slice(1);
-  if (hash && $(`#panel-${hash}`)) switchToTab(hash);
+  switchToTab(hash && $(`#panel-${hash}`) ? hash : "usage");
   syncDashboardWindowButtons();
   syncAccountWindowButtons();
   syncKeyWindowButtons();
@@ -1384,6 +1466,11 @@ function enterApp() {
 }
 
 function logout() {
+  state.dashboardRequestSeq++;
+  state.accountsRequestSeq++;
+  state.keysRequestSeq++;
+  cancelOAuthFlow();
+  resolveConfirm(false);
   clearPersistedToken();
   state.token = "";
   state.accounts = [];
@@ -1399,12 +1486,10 @@ function logout() {
   state.showRevokedKeys = false;
   state.activeOAuth = null;
   state.reauthorizeAccountId = null;
-  $("#oauth-reauthorize-target").style.display = "none";
   state.revealedKeyIds.clear();
   state.dashboardWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.dashboardData = null;
   state.dashboardLoading = false;
-  state.dashboardRequestSeq = 0;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
   $("#providers-status").innerHTML = "";
@@ -1427,7 +1512,9 @@ export {
   api,
   cacheHitRate,
   clearPersistedToken,
+  closeModal,
   clearReauthorization,
+  cancelOAuthFlow,
   completeOAuth,
   copyToClipboard,
   createKey,
@@ -1453,6 +1540,7 @@ export {
   modelsUrlForKey,
   normalizeUsage,
   openCreateKeyModal,
+  openModal,
   openEditAccountModal,
   openEditKeyModal,
   readPersistedToken,

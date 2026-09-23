@@ -5,6 +5,7 @@ import {
   activeKeysWithModelsUrl,
   api,
   cacheHitRate,
+  cancelOAuthFlow,
   completeOAuth,
   copyToClipboard,
   escapeHtml,
@@ -19,6 +20,7 @@ import {
   metadataHtml,
   modelsUrlForKey,
   normalizeUsage,
+  openModal,
   relativeTime,
   state,
   tokenStatus,
@@ -300,6 +302,7 @@ function accountCardHtml(account) {
         ${disabled ? '<span class="badge badge-disabled">disabled</span>' : ""}
       </div>
       <div class="card-actions">
+        <button class="btn btn-ghost btn-sm" data-action="account-detail" data-account-id="${account.id}" type="button" aria-label="Usage details for ${escapeHtml(name)}">details</button>
         ${editBtn}
         ${setPrimaryBtn}
         ${account.provider === "codex" || account.provider === "claude" ? `<button class="btn btn-ghost btn-sm" data-action="reauthorize-account" data-account-id="${account.id}" type="button">reauthorize</button>` : ""}
@@ -433,6 +436,7 @@ function keyCardHtml(key) {
         <span class="badge badge-${status}">${status}</span>
       </div>
       <div class="card-actions">
+        <button class="btn btn-ghost btn-sm" data-action="key-detail" data-key-id="${key.id}" type="button" aria-label="Usage details for ${escapeHtml(key.label || "untitled key")}">details</button>
         <button class="btn btn-ghost btn-sm" data-action="copy-key" data-key-id="${key.id}" type="button">copy</button>
         ${modelsUrl ? `<button class="btn btn-ghost btn-sm" data-action="copy-models-url" data-key-id="${key.id}" type="button">copy models url</button>` : ""}
         <button class="btn btn-ghost btn-sm" data-action="toggle-key" data-key-id="${key.id}" type="button">${isRevealed ? "hide" : "show"}</button>
@@ -627,7 +631,7 @@ function renderAccountDetailBody(data) {
 async function openUsageDetailModal({ title, path, renderBody }) {
   $("#key-detail-title").textContent = title;
   $("#key-detail-body").innerHTML = DETAIL_LOADING_HTML;
-  $("#modal-key-detail").classList.add("open");
+  openModal($("#modal-key-detail"), ".modal-close");
 
   try {
     const data = await api(path);
@@ -702,7 +706,7 @@ function openSetupModal() {
 
   const selected = keys.length ? keys[0] : null;
   snippet.textContent = setupSnippet(selected);
-  $("#modal-opencode-setup").classList.add("open");
+  openModal($("#modal-opencode-setup"), "#setup-key-select");
 }
 
 function showKeyReveal(fullKey) {
@@ -739,13 +743,18 @@ function renderOAuthFlow(data, provider) {
     ? '<div style="margin-bottom:8px">Once you have authorized, click complete:</div><button class="btn btn-primary" type="button" id="btn-oauth-complete">complete flow</button>'
     : '<div style="margin-bottom:8px">After authorizing, paste callback code or full callback URL:</div><input id="oauth-code" class="field-input" type="text" placeholder="code or callback URL" style="margin-bottom:8px"><button class="btn btn-primary" type="button" id="btn-oauth-complete">complete flow</button>';
 
+  const target = state.activeOAuth?.accountName;
+  const mode = state.activeOAuth?.mode;
   container.innerHTML = `<div class="oauth-flow-panel">
-    <div class="oauth-flow-title">Active Flow: <span class="badge badge-${provider}">${provider}</span></div>
+    <div class="oauth-flow-title">${target ? "Reauthorizing" : "Connecting"} <span class="badge badge-${provider}">${provider}</span>${target ? ` <strong>${escapeHtml(target)}</strong>` : ""}${mode ? ` <span class="text-muted">· ${escapeHtml(mode)}</span>` : ""}</div>
     ${urlStep}${instrStep}
     <div class="oauth-step"><span class="oauth-step-num">${lastNum}</span><div>${completeStep}</div></div>
+    <p id="oauth-flow-error" class="oauth-flow-error" role="alert" hidden></p>
+    <button class="btn btn-ghost btn-sm" type="button" id="btn-oauth-cancel">cancel flow / start over</button>
   </div>`;
 
   $("#btn-oauth-complete").addEventListener("click", completeOAuth);
+  $("#btn-oauth-cancel").addEventListener("click", cancelOAuthFlow);
 }
 
 function dashDelta(current, previous) {

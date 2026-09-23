@@ -3,6 +3,8 @@ import {
   $$,
   clearPersistedToken,
   clearReauthorization,
+  closeModal,
+  cancelOAuthFlow,
   copyToClipboard,
   createKey,
   deleteAccount,
@@ -68,6 +70,7 @@ $("#accounts-list").addEventListener("click", (e) => {
     }
     if (!accountId) return;
     if (action === "edit-account") openEditAccountModal(accountId);
+    if (action === "account-detail") openAccountDetail(accountId);
     if (action === "set-primary") setPrimary(accountId);
     if (action === "refresh-account") refreshAccount(accountId);
     if (action === "reauthorize-account") reauthorizeAccount(accountId);
@@ -119,6 +122,7 @@ $("#keys-list").addEventListener("click", (e) => {
       return;
     }
     if (action === "edit-key") openEditKeyModal(keyId);
+    if (action === "key-detail") openKeyDetail(keyId);
     if (action === "rotate-key") rotateKey(keyId, button);
     if (action === "revoke-key") revokeKey(keyId);
     if (action === "delete-key") deleteKey(keyId);
@@ -199,6 +203,11 @@ for (const [sel, acct, prov, mode] of [
 }
 
 $("#oauth-provider").addEventListener("change", updateOAuthProviderUI);
+$("#btn-oauth-clear-target").addEventListener("click", () => {
+  if (state.activeOAuth) return;
+  if ($("#btn-oauth-start").disabled) cancelOAuthFlow();
+  clearReauthorization();
+});
 updateOAuthProviderUI();
 
 $("#setup-key-select").addEventListener("change", (e) => {
@@ -212,34 +221,74 @@ $("#btn-copy-setup").addEventListener("click", (e) => {
 });
 
 for (const tab of $$(".tab")) {
+  tab.id = `tab-${tab.dataset.tab}`;
+  tab.setAttribute("role", "tab");
+  tab.setAttribute("aria-controls", `panel-${tab.dataset.tab}`);
+  const panel = $(`#panel-${tab.dataset.tab}`);
+  panel.setAttribute("role", "tabpanel");
+  panel.setAttribute("aria-labelledby", tab.id);
   tab.addEventListener("click", () => {
-    if (tab.dataset.tab === "oauth") clearReauthorization();
     switchToTab(tab.dataset.tab);
   });
 }
+$(".tabs").addEventListener("keydown", (event) => {
+  const tabs = Array.from($$(".tab"));
+  const index = tabs.indexOf(document.activeElement);
+  if (index < 0) return;
+  const next = {
+    ArrowRight: tabs[(index + 1) % tabs.length],
+    ArrowLeft: tabs[(index + tabs.length - 1) % tabs.length],
+    Home: tabs[0],
+    End: tabs.at(-1),
+  }[event.key];
+  if (!next) return;
+  event.preventDefault();
+  next.focus();
+  switchToTab(next.dataset.tab);
+});
 
 for (const el of $$(".modal-close")) {
-  el.addEventListener("click", () =>
-    el.closest(".modal-backdrop").classList.remove("open")
-  );
+  el.addEventListener("click", () => closeModal(el.closest(".modal-backdrop")));
 }
 for (const backdrop of $$(".modal-backdrop")) {
   backdrop.addEventListener("click", (e) => {
     if (e.target !== backdrop) return;
     if (backdrop.id === "modal-confirm") resolveConfirm(false);
-    else backdrop.classList.remove("open");
+    else closeModal(backdrop);
   });
 }
 $("#btn-confirm-cancel").addEventListener("click", () => resolveConfirm(false));
 $("#btn-confirm-action").addEventListener("click", () => resolveConfirm(true));
 
 document.addEventListener("keydown", (e) => {
+  const modal = $(".modal-backdrop.open");
+  if (e.key === "Tab" && modal) {
+    const focusable = Array.from(
+      modal.querySelectorAll(
+        "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]"
+      )
+    );
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (first && !modal.contains(document.activeElement)) {
+      e.preventDefault();
+      first.focus();
+    } else if (
+      first &&
+      ((e.shiftKey && document.activeElement === first) ||
+        (!e.shiftKey && document.activeElement === last))
+    ) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    }
+    return;
+  }
   if (e.key !== "Escape") return;
   if ($("#modal-confirm").classList.contains("open")) {
     resolveConfirm(false);
     return;
   }
-  for (const m of $$(".modal-backdrop.open")) m.classList.remove("open");
+  for (const m of $$(".modal-backdrop.open")) closeModal(m);
 });
 
 (async () => {

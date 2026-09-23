@@ -35,11 +35,11 @@
             authenticate
           </button>
         </div>
-        <div id="login-error" class="login-error"></div>
+        <div id="login-error" class="login-error" role="alert"></div>
       </div>
     </div>
 
-    <div id="toast-container"></div>
+    <div id="toast-container" role="status" aria-live="polite"></div>
 
     <div id="app">
       <header class="header">
@@ -55,7 +55,7 @@
       </header>
 
       <div class="shell">
-        <nav class="tabs fade-in">
+        <nav class="tabs fade-in" role="tablist" aria-label="Admin sections">
           <button class="tab active" data-tab="usage" type="button">
             usage
           </button>
@@ -300,14 +300,23 @@
               </label>
               <select id="oauth-claude-mode" class="field-input">
                 <option value="max">Max (claude.ai)</option>
-                <option value="console">Console (console.anthropic.com)</option>
+                <option value="console">Console (platform.claude.com)</option>
               </select>
             </div>
             <div
               id="oauth-reauthorize-target"
-              class="field-hint"
-              style="display:none;margin-bottom:12px"
-            ></div>
+              class="oauth-target"
+              style="display:none"
+            >
+              <span id="oauth-reauthorize-label"></span>
+              <button
+                id="btn-oauth-clear-target"
+                class="btn btn-ghost btn-sm"
+                type="button"
+              >
+                cancel reauthorization
+              </button>
+            </div>
             <button id="btn-oauth-start" class="btn btn-primary" type="button">
               start oauth flow
             </button>
@@ -417,8 +426,13 @@
     </div>
 
     <div id="modal-create-key" class="modal-backdrop">
-      <div class="modal modal-wide">
-        <div class="modal-title">Create API Key</div>
+      <div
+        class="modal modal-wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-key-title"
+      >
+        <div class="modal-title" id="create-key-title">Create API Key</div>
         <div class="field">
           <label class="field-label" for="key-label">Label</label>
           <input
@@ -488,7 +502,12 @@
     </div>
 
     <div id="modal-edit-account" class="modal-backdrop">
-      <div class="modal">
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="edit-account-title"
+      >
         <div class="modal-title" id="edit-account-title">Edit Account</div>
         <div class="field">
           <label class="field-label" for="edit-account-label">Label</label>
@@ -542,8 +561,13 @@
     </div>
 
     <div id="modal-edit-key" class="modal-backdrop">
-      <div class="modal modal-wide">
-        <div class="modal-title">Edit API Key</div>
+      <div
+        class="modal modal-wide"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="edit-key-title"
+      >
+        <div class="modal-title" id="edit-key-title">Edit API Key</div>
         <div class="field">
           <label class="field-label" for="edit-key-label">Label</label>
           <input
@@ -634,7 +658,13 @@
     </div>
 
     <div id="modal-confirm" class="modal-backdrop">
-      <div class="modal modal-sm">
+      <div
+        class="modal modal-sm"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        aria-describedby="confirm-message"
+      >
         <div class="modal-title" id="confirm-title"></div>
         <div class="modal-body" id="confirm-message"></div>
         <div id="confirm-extras"></div>
@@ -650,7 +680,13 @@
     </div>
 
     <div id="modal-key-detail" class="modal-backdrop">
-      <div class="modal" style="width:min(90vw, 900px)">
+      <div
+        class="modal"
+        style="width:min(90vw, 900px)"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="key-detail-title"
+      >
         <div
           style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px"
         >
@@ -672,11 +708,19 @@
     </div>
 
     <div id="modal-opencode-setup" class="modal-backdrop">
-      <div class="modal" style="width:560px">
+      <div
+        class="modal"
+        style="width:560px"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="setup-title"
+      >
         <div
           style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px"
         >
-          <div class="modal-title" style="margin-bottom:0">OpenCode setup</div>
+          <div class="modal-title" id="setup-title" style="margin-bottom:0">
+            OpenCode setup
+          </div>
           <button class="btn btn-ghost btn-sm modal-close" type="button">
             close
           </button>
