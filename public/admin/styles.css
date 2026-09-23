@@ -972,6 +972,46 @@ select.field-input {
   padding: 20px;
   margin-top: 12px;
 }
+.oauth-target {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-left: 2px solid var(--amber);
+  background: var(--amber-glow);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.oauth-target .btn {
+  flex-shrink: 0;
+}
+.oauth-flow-error {
+  color: var(--red);
+  border-left: 2px solid var(--red);
+  padding: 9px 12px;
+  background: var(--red-dim);
+  line-height: 1.5;
+  font-size: 12px;
+}
+.oauth-flow-error[hidden] {
+  display: none;
+}
+:is(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 3px;
+}
+@media (max-width: 640px) {
+  .oauth-target {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .oauth-url {
+    overflow-wrap: anywhere;
+  }
+}
 .oauth-flow-title {
   font-family: var(--font-display);
   font-size: 13px;
