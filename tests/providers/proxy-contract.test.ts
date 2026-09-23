@@ -287,11 +287,7 @@ describe("proxy contract: codex", () => {
     const bodyText = JSON.stringify(bodyJson);
     const metadata: CodexAccountMetadata = {
       provider: "codex",
-      tokenType: null,
-      scope: null,
-      idToken: null,
       chatgptAccountId: "acct-meta",
-      organizationIds: [],
       email: null,
     };
 
@@ -356,11 +352,7 @@ describe("proxy contract: codex", () => {
       accountId: "   ",
       metadata: {
         provider: "codex",
-        tokenType: null,
-        scope: null,
-        idToken: null,
         chatgptAccountId: " ",
-        organizationIds: [],
         email: null,
       },
       bodyText: JSON.stringify(codexUsageBody),
@@ -2720,14 +2712,8 @@ describe("proxy contract: codex", () => {
 describe("proxy contract: claude", () => {
   const legacyClaudeMetadata: ClaudeAccountMetadata = {
     provider: "claude",
-    tokenType: null,
-    scope: null,
     oauthMode: "max",
     oauthHost: "claude.ai",
-    betaHeaders: [...CLAUDE_REQUIRED_BETA_HEADERS],
-    userAgent: "claude-cli/2.1.251 (external, cli)",
-    systemIdentity: CLAUDE_SYSTEM_IDENTITY,
-    toolPrefix: "mcp_",
   };
 
   const prepareClaudeUsageRequest = (
@@ -2915,7 +2901,7 @@ describe("proxy contract: claude", () => {
     ).toBe(CLAUDE_SYSTEM_IDENTITY);
   });
 
-  test("derives interleaved thinking beta from the request", () => {
+  test("keeps baseline Claude Code betas across models and thinking settings", () => {
     const prepare = (bodyJson: Record<string, unknown>): string => {
       const headers = new Headers();
       prepareClaudeProxyRequest({
@@ -2929,14 +2915,17 @@ describe("proxy contract: claude", () => {
       return headers.get("anthropic-beta") ?? "";
     };
 
-    expect(prepare({ model: "claude-opus-5-5" })).not.toContain(
+    expect(prepare({ model: "claude-opus-5-5" })).toContain(
       CLAUDE_INTERLEAVED_THINKING_BETA_HEADER
     );
     expect(
       prepare({ model: "claude-opus-5-5", thinking: { type: "adaptive" } })
     ).toContain(CLAUDE_INTERLEAVED_THINKING_BETA_HEADER);
-    expect(prepare({ model: "claude-haiku-4-5" })).not.toContain(
+    expect(prepare({ model: "claude-haiku-4-5" })).toContain(
       "claude-code-20250219"
+    );
+    expect(prepare({ model: "claude-haiku-4-5" })).toContain(
+      CLAUDE_INTERLEAVED_THINKING_BETA_HEADER
     );
     expect(prepare({ model: "claude-opus-5-5" })).not.toContain(
       "fine-grained-tool-streaming-2025-05-14"
@@ -3036,10 +3025,10 @@ describe("proxy contract: claude", () => {
     expect(transformed.tool_choice.name).toBe("web_search");
   });
 
-  test("preserves unrelated custom system prompts", () => {
+  test("keeps OpenCode workarounds in subagent prompts without the primary introduction", () => {
     const requestBody = {
       system:
-        "Custom system prompt\n\n" +
+        "You are a subagent helping with the task.\n\n" +
         "Feedback lives at\n" +
         "  https://github.com/anomalyco/opencode\n\n" +
         "<directories>\n" +
@@ -3065,11 +3054,11 @@ describe("proxy contract: claude", () => {
       {
         type: "text",
         text:
-          "Custom system prompt\n\n" +
+          "You are a subagent helping with the task.\n\n" +
           "Feedback lives at\n" +
-          "  https://github.com/anomalyco/opencode\n\n" +
-          "<directories>\n" +
-          "  src/\n" +
+          "  https://github.com/anomalyco/project\n\n" +
+          "Directories\n" +
+          "src/\n" +
           "</directories>",
       },
     ]);

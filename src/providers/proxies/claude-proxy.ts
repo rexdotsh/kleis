@@ -3,7 +3,6 @@ import type { ClaudeAccountMetadata } from "../metadata";
 import {
   ANTHROPIC_API_BASE_URL,
   CLAUDE_CLI_USER_AGENT,
-  CLAUDE_INTERLEAVED_THINKING_BETA_HEADER,
   CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
   CLAUDE_TOOL_PREFIX,
@@ -22,25 +21,22 @@ const MAX_CLAUDE_SSE_EVENT_BYTES = 4 * 1024 * 1024;
 
 // Anthropic OAuth sessions reject the feedback repo path used in OpenCode's
 // prompt URL and the opening `<directories>` wrapper emitted by OpenCode's
-// system prompt assembly. Only rewrite recognized OpenCode system prompts;
-// unrelated caller text is preserved.
+// system prompt assembly. Apply these workarounds to every system text block:
+// subagent prompts need them even when they do not start with OpenCode's
+// primary-agent introduction.
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/prompt/anthropic.txt
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/system.ts#L32-L72
 const sanitizeClaudeSystemText = (text: string): string =>
-  /^(?:You are OpenCode\b|You are an AI agent running in OpenCode\b)/iu.test(
-    text.trimStart()
-  )
-    ? text
-        .replace(
-          /^(\s*)https:\/\/github\.com\/anomalyco\/opencode$/gim,
-          "$1https://github.com/anomalyco/project"
-        )
-        .replace(
-          /Here is some useful information about the environment you are running in:/g,
-          "Here is useful information about the environment you are running in:"
-        )
-        .replace(/<directories>\n\s*/gi, "Directories\n")
-    : text;
+  text
+    .replace(
+      /^(\s*)https:\/\/github\.com\/anomalyco\/opencode$/gim,
+      "$1https://github.com/anomalyco/project"
+    )
+    .replace(
+      /Here is some useful information about the environment you are running in:/g,
+      "Here is useful information about the environment you are running in:"
+    )
+    .replace(/<directories>\n\s*/gi, "Directories\n");
 
 const fromClaudeToolName = (name: string, prefix: string): string => {
   if (!name.startsWith(prefix)) {
@@ -860,27 +856,12 @@ const transformClaudeResponse = (
   return maybeTransformClaudeJsonResponse(response, toolNames, onTokenUsage);
 };
 
-const mergeBetaHeaders = (
-  headers: Headers,
-  body: unknown,
-  required: readonly string[]
-) => {
+const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {
   const incoming = (headers.get("anthropic-beta") ?? "")
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
-  const model = isObjectRecord(body) ? body.model : null;
-  const thinking = isObjectRecord(body) ? body.thinking : null;
-  const betas = required.filter(
-    (beta) =>
-      beta !== "claude-code-20250219" ||
-      typeof model !== "string" ||
-      !model.toLowerCase().includes("haiku")
-  );
-  if (isObjectRecord(thinking) && thinking.type !== "disabled") {
-    betas.push(CLAUDE_INTERLEAVED_THINKING_BETA_HEADER);
-  }
-  return [...new Set([...betas, ...incoming])].join(",");
+  return [...new Set([...required, ...incoming])].join(",");
 };
 
 type ClaudeProxyPreparationInput = {
@@ -910,12 +891,10 @@ type ClaudeProxyPreparationResult = {
 export const prepareClaudeProxyRequest = (
   input: ClaudeProxyPreparationInput
 ): ClaudeProxyPreparationResult => {
-  const toolPrefix = input.metadata?.toolPrefix ?? CLAUDE_TOOL_PREFIX;
-  const toolNames = createClaudeToolNames(input.bodyJson, toolPrefix);
+  const toolNames = createClaudeToolNames(input.bodyJson, CLAUDE_TOOL_PREFIX);
   const systemIdentity = CLAUDE_SYSTEM_IDENTITY;
   const mergedBetas = mergeBetaHeaders(
     input.headers,
-    input.bodyJson,
     CLAUDE_REQUIRED_BETA_HEADERS
   );
 
