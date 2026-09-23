@@ -2745,6 +2745,16 @@ describe("proxy contract: claude", () => {
   test("merges beta headers and rewrites payload tool names", () => {
     const headers = new Headers({
       "anthropic-beta": `custom-beta,${CLAUDE_REQUIRED_BETA_HEADERS[0]}`,
+      "anthropic-version": "2020-01-01",
+      accept: "text/plain",
+      "content-type": "text/plain",
+      "content-encoding": "gzip",
+      "content-length": "1234",
+      authorization: "Bearer caller-token",
+      "x-api-key": "caller-key",
+      cookie: "session=caller-cookie",
+      "proxy-authorization": "Basic caller-secret",
+      host: "caller.invalid",
     });
     const requestBody = {
       system:
@@ -2786,6 +2796,19 @@ describe("proxy contract: claude", () => {
     };
 
     expect(headers.get("authorization")).toBe("Bearer claude-token");
+    expect(headers.get("anthropic-version")).toBe("2023-06-01");
+    expect(headers.get("accept")).toBe("application/json");
+    expect(headers.get("content-type")).toBe("application/json");
+    for (const name of [
+      "x-api-key",
+      "cookie",
+      "proxy-authorization",
+      "content-encoding",
+      "content-length",
+      "host",
+    ]) {
+      expect(headers.has(name)).toBe(false);
+    }
     expect(headers.get("user-agent")).toBe(CLAUDE_CLI_USER_AGENT);
     expect(headers.get("anthropic-beta")).toBe(
       [...CLAUDE_REQUIRED_BETA_HEADERS, "custom-beta"].join(",")
@@ -2820,6 +2843,22 @@ describe("proxy contract: claude", () => {
     expect(transformed.tools[0]?.name).toBe("mcp_Shell");
     expect(transformed.tool_choice.name).toBe("mcp_Shell");
     expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_Shell");
+  });
+
+  test("keeps Claude Code JSON Accept for streaming Messages requests", () => {
+    const headers = new Headers({ accept: "text/plain" });
+    prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers,
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    expect(headers.get("accept")).toBe("application/json");
+    expect(headers.get("content-type")).toBe("application/json");
+    expect(headers.get("anthropic-version")).toBe("2023-06-01");
   });
 
   test("rewrites repo path and directories in non-OpenCode Claude system prompts", () => {
