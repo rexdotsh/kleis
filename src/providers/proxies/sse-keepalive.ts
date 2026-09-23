@@ -19,7 +19,6 @@ type SseKeepAliveInput = {
   provider: string;
   transport: string;
   getElapsedMs: () => number;
-  canEnqueue?: () => boolean;
   onKeepAlive?: () => void;
   intervalMs?: number;
 };
@@ -30,7 +29,7 @@ export const createSseKeepAlive = (
 ): { clear(): void } => {
   let active = true;
   const timer = setInterval(() => {
-    if (!(active && (input.canEnqueue?.() ?? true))) {
+    if (!active) {
       return;
     }
 

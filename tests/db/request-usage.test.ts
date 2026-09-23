@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Database } from "../../src/db";
@@ -20,7 +21,7 @@ describe("request usage token accounting", () => {
   let databaseDirectory: string;
 
   beforeEach(async () => {
-    databaseDirectory = await mkdtemp("/tmp/opencode/kleis-request-usage-");
+    databaseDirectory = await mkdtemp(join(tmpdir(), "kleis-request-usage-"));
     client = createClient({
       url: `file:${join(databaseDirectory, "test.db")}`,
     });

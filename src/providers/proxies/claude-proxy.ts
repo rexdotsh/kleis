@@ -463,7 +463,6 @@ const maybeTransformClaudeStreamResponse = (
         provider: "claude",
         transport: "sse_transform",
         getElapsedMs: () => Date.now() - startedAt,
-        canEnqueue: () => buffer.length === 0,
         onKeepAlive: () => {
           lastWriteAt = Date.now();
         },

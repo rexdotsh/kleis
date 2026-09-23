@@ -254,7 +254,6 @@ export const createOpenAiSseUsagePassthrough = (
         provider: "openai",
         transport: "sse",
         getElapsedMs: () => Date.now() - startedAt,
-        canEnqueue: () => pendingText.length === 0,
         onKeepAlive: () => {
           lastWriteAt = Date.now();
         },

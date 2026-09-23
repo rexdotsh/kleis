@@ -162,16 +162,9 @@ export const refreshProviderAccountAfterAuthFailure = async (
   if (!account || account.accessToken !== failedAccessToken) {
     return account;
   }
-  const refreshNow = Date.now();
-  if (
-    account.lastRefreshAt !== null &&
-    refreshNow - account.lastRefreshAt < REFRESH_LOCK_LEASE_MS
-  ) {
-    return account;
-  }
 
   const lockToken = crypto.randomUUID();
-  const lockClaimedAt = refreshNow;
+  const lockClaimedAt = Date.now();
   const lockAcquired = await tryAcquireProviderAccountRefreshLock(
     database,
     account.id,

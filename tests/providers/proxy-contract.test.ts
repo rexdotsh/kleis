@@ -911,8 +911,12 @@ describe("proxy contract: codex", () => {
     });
     const sseText = await sseResponse.text();
     expect(sseText).toContain("response.completed");
-    expect(sseText).not.toContain(": kleis-keepalive");
-    expect(JSON.parse(sseText.slice("data: ".length).trim())).toEqual({
+    expect(sseText).toContain(": kleis-keepalive\n\n");
+    const dataEvents = sseText
+      .split("\n\n")
+      .filter((event) => event.startsWith("data: "));
+    expect(dataEvents).toHaveLength(1);
+    expect(JSON.parse(dataEvents[0]?.slice("data: ".length) ?? "")).toEqual({
       type: "response.completed",
     });
 

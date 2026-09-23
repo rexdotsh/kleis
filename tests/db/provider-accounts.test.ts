@@ -112,14 +112,34 @@ describe("provider account enablement", () => {
     expect(refreshCount).toBe(1);
     expect(left?.accessToken).toBe("access-codex-refreshed");
     expect(right?.accessToken).toBe("access-codex-refreshed");
+  });
 
-    const cooldownAccount = await refreshProviderAccountAfterAuthFailure(
+  test("refreshes a rejected token even after a recent ordinary refresh", async () => {
+    await database
+      .update(providerAccounts)
+      .set({ lastRefreshAt: Date.now(), lastRefreshStatus: "success" })
+      .where(eq(providerAccounts.id, "codex-primary"));
+
+    let refreshCount = 0;
+    codexAdapter.refreshAccount = (account, now) => {
+      refreshCount++;
+      return Promise.resolve({
+        accessToken: "access-after-401",
+        refreshToken: account.refreshToken,
+        expiresAt: now + 60_000,
+        accountId: account.accountId,
+        metadata: account.metadata,
+      });
+    };
+
+    const refreshed = await refreshProviderAccountAfterAuthFailure(
       database,
       "codex-primary",
-      "access-codex-refreshed"
+      "access-codex"
     );
+
     expect(refreshCount).toBe(1);
-    expect(cooldownAccount?.accessToken).toBe("access-codex-refreshed");
+    expect(refreshed?.accessToken).toBe("access-after-401");
   });
 
   test("adopts a token already refreshed by another request", async () => {
