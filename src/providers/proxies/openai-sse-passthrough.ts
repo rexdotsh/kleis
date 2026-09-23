@@ -11,6 +11,70 @@ import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 type SseUsageExtractor = (payload: unknown) => TokenUsage | null;
 const MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024;
 
+type ReasoningEventState = {
+  eventNumber: number;
+  active: { id: string; outputIndex: number | null; addedAt: number } | null;
+  overlapLogged: boolean;
+};
+
+const trackReasoningEvents = (
+  payload: Record<string, unknown>,
+  state: ReasoningEventState,
+  onOverlap: (fields: Record<string, number | null>) => void
+): void => {
+  state.eventNumber++;
+  if (payload.type === "response.created") {
+    state.active = null;
+    state.overlapLogged = false;
+    return;
+  }
+  if (
+    payload.type === "response.completed" ||
+    payload.type === "response.incomplete" ||
+    payload.type === "response.failed" ||
+    payload.type === "response.done"
+  ) {
+    state.active = null;
+    return;
+  }
+
+  const item = isObjectRecord(payload.item) ? payload.item : null;
+  const outputIndex = Number.isInteger(payload.output_index)
+    ? (payload.output_index as number)
+    : null;
+  if (payload.type === "response.output_item.done") {
+    if (
+      state.active &&
+      ((typeof item?.id === "string" && item.id === state.active.id) ||
+        (typeof payload.item_id === "string" &&
+          payload.item_id === state.active.id) ||
+        (outputIndex !== null && outputIndex === state.active.outputIndex))
+    ) {
+      state.active = null;
+    }
+    return;
+  }
+  if (
+    payload.type !== "response.output_item.added" ||
+    item?.type !== "reasoning" ||
+    typeof item.id !== "string"
+  ) {
+    return;
+  }
+  if (state.active?.id === item.id) {
+    return;
+  }
+  if (state.active && !state.overlapLogged) {
+    onOverlap({
+      previousOutputIndex: state.active.outputIndex,
+      nextOutputIndex: outputIndex,
+      eventsSincePreviousAdded: state.eventNumber - state.active.addedAt,
+    });
+    state.overlapLogged = true;
+  }
+  state.active = { id: item.id, outputIndex, addedAt: state.eventNumber };
+};
+
 type OpenAiSsePassthroughInput = {
   response: Response;
   extractUsage: SseUsageExtractor;
@@ -127,7 +191,9 @@ const transformSseEvent = (
   },
   extractUsage: SseUsageExtractor,
   onInvalidJson: (input: { bytes: number; lines: number }) => void,
-  onInvalidShape: (issue: OpenAiResponsesEventShapeIssue) => void
+  onInvalidShape: (issue: OpenAiResponsesEventShapeIssue) => void,
+  reasoningState: ReasoningEventState,
+  onReasoningOverlap: (fields: Record<string, number | null>) => void
 ): string => {
   const dataLines = readSseDataLines(chunk);
   if (!dataLines.length) {
@@ -151,6 +217,7 @@ const transformSseEvent = (
   if (shapeIssue) {
     onInvalidShape(shapeIssue);
   }
+  trackReasoningEvents(jsonPayload, reasoningState, onReasoningOverlap);
   const normalized = state.sawTerminal
     ? jsonPayload
     : normalizeOpenAiResponsesEvent(jsonPayload);
@@ -194,6 +261,11 @@ export const createOpenAiSseUsagePassthrough = (
     terminalAnomaly: null as SseTerminalAnomaly | null,
     sawTerminal: false,
   };
+  const reasoningState: ReasoningEventState = {
+    eventNumber: 0,
+    active: null,
+    overlapLogged: false,
+  };
   let pendingText = "";
   let pendingBytes = 0;
   let bytes = 0;
@@ -206,7 +278,7 @@ export const createOpenAiSseUsagePassthrough = (
 
   const logStreamAnomaly = (
     event: string,
-    fields: Record<string, string | number | boolean> = {},
+    fields: Record<string, string | number | boolean | null> = {},
     error?: unknown
   ): void => {
     logWarn(event, {
@@ -243,6 +315,12 @@ export const createOpenAiSseUsagePassthrough = (
       eventType: issue.eventType,
       fields: issue.fields,
     });
+  };
+
+  const reportReasoningOverlap = (
+    fields: Record<string, number | null>
+  ): void => {
+    logStreamAnomaly("openai_sse_upstream_reasoning_overlap", fields);
   };
 
   const stream = new ReadableStream<Uint8Array>({
@@ -298,7 +376,9 @@ export const createOpenAiSseUsagePassthrough = (
                 usageState,
                 input.extractUsage,
                 reportInvalidJson,
-                reportInvalidShape
+                reportInvalidShape,
+                reasoningState,
+                reportReasoningOverlap
               );
               pendingText = framed.slice(0, -suffix.length);
               logStreamAnomaly("openai_sse_truncated_event", {
@@ -356,7 +436,9 @@ export const createOpenAiSseUsagePassthrough = (
               usageState,
               input.extractUsage,
               reportInvalidJson,
-              reportInvalidShape
+              reportInvalidShape,
+              reasoningState,
+              reportReasoningOverlap
             );
             pendingText = pendingText.slice(eventEnd);
             boundary = findSseEventBoundary(pendingText);

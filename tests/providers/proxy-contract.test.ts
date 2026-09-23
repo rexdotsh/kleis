@@ -1038,6 +1038,96 @@ describe("proxy contract: codex", () => {
     expect(warnings.join("\n")).not.toContain(secret);
   });
 
+  test("logs upstream overlapping reasoning items without exposing item IDs", async () => {
+    const events = [
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { id: "private-reasoning-1", type: "reasoning" },
+      },
+      {
+        type: "response.reasoning_summary_text.delta",
+        item_id: "private-reasoning-1",
+        delta: "private reasoning text",
+      },
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { id: "private-reasoning-2", type: "reasoning" },
+      },
+      {
+        type: "response.output_item.added",
+        output_index: 2,
+        item: { id: "private-reasoning-3", type: "reasoning" },
+      },
+    ];
+    const source = createSseResponse(events);
+    source.headers.set("x-request-id", "upstream-request-1");
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    let output: string;
+    try {
+      output = await createOpenAiSseUsagePassthrough({
+        response: source,
+        extractUsage: () => null,
+      }).text();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(output).toBe(await createSseResponse(events).text());
+    expect(warnings).toHaveLength(1);
+    expect(JSON.parse(warnings[0] ?? "{}")).toMatchObject({
+      event: "openai_sse_upstream_reasoning_overlap",
+      requestId: "upstream-request-1",
+      previousOutputIndex: 0,
+      nextOutputIndex: 1,
+      eventsSincePreviousAdded: 2,
+    });
+    expect(warnings[0]).not.toContain("private-reasoning");
+    expect(warnings[0]).not.toContain("private reasoning text");
+  });
+
+  test("does not flag reasoning items closed by their output item done events", async () => {
+    const events = [
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { id: "reasoning-1", type: "reasoning" },
+      },
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { id: "reasoning-1", type: "reasoning" },
+      },
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { id: "reasoning-2", type: "reasoning" },
+      },
+    ];
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const source = createSseResponse(events);
+      expect(
+        await createOpenAiSseUsagePassthrough({
+          response: source,
+          extractUsage: () => null,
+        }).text()
+      ).toBe(await createSseResponse(events).text());
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(warnings).toHaveLength(0);
+  });
+
   test("passes unknown valid SSE events without malformed diagnostics", async () => {
     const event = 'data: {"type":"response.future_event","value":true}\n\n';
     const warnings: string[] = [];
