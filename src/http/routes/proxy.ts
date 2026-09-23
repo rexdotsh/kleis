@@ -285,11 +285,6 @@ const proxyRequest = async (
   const headers = new Headers(context.req.raw.headers);
   removeProxyAuthHeaders(headers);
 
-  let upstreamUrl = "";
-  let responseTransformer: ((response: Response) => Promise<Response>) | null =
-    null;
-  const useCodexSseHeaderTimeout = false;
-
   switch (route.provider) {
     case "codex": {
       const initialCodexAccount = account;
@@ -519,56 +514,6 @@ const proxyRequest = async (
       );
     }
   }
-
-  let upstreamResponse: Response;
-  try {
-    upstreamResponse = await fetchProxyUpstream({
-      url: upstreamUrl,
-      method: context.req.method,
-      headers,
-      body: requestBody,
-      signal: context.req.raw.signal,
-      useCodexSseHeaderTimeout,
-    });
-  } catch (error) {
-    if (context.req.raw.signal.aborted) {
-      // Client disconnects are expected cancellations, not proxy failures.
-      throw error;
-    }
-    logWarn("proxy_upstream_request_failed", {
-      provider: route.provider,
-      endpoint: route.endpoint,
-      elapsedMs: Date.now() - startedAt,
-      aborted: false,
-      ...errorLogFields(error),
-    });
-    usageRecorder.recordImmediate(500);
-    throw error;
-  }
-
-  let responseToClient = upstreamResponse;
-  if (responseTransformer) {
-    try {
-      responseToClient = await responseTransformer(upstreamResponse);
-      // Bun auto-decompresses but keeps Content-Encoding; Anthropic is the main
-      // upstream that returns it, causing ZlibError on clients reading plaintext.
-      responseToClient.headers.delete("content-encoding");
-    } catch (error) {
-      logWarn("proxy_response_transform_failed", {
-        provider: route.provider,
-        endpoint: route.endpoint,
-        status: upstreamResponse.status,
-        elapsedMs: Date.now() - startedAt,
-        ...errorLogFields(error),
-      });
-      usageRecorder.recordImmediate(500);
-      throw error;
-    }
-  }
-
-  usageRecorder.recordFinal(upstreamResponse.status);
-
-  return responseToClient;
 };
 
 const routes = new Hono();

@@ -1240,7 +1240,6 @@ async function reauthorizeAccount(id) {
   target.style.display = "flex";
   $("#oauth-provider").value = account.provider;
   $("#oauth-provider").disabled = true;
-  $("#oauth-copilot-opts").style.display = "none";
   $("#oauth-codex-opts").style.display =
     account.provider === "codex" ? "block" : "none";
   $("#oauth-claude-opts").style.display =
