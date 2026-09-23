@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
 
-import { sendCodexWithAuthReplay } from "../../src/http/codex-auth-replay";
+import { sendWithAuthReplay } from "../../src/http/auth-replay";
 
-describe("Codex auth replay", () => {
+describe("provider auth replay", () => {
   const originalAccount = { id: "account-1", accessToken: "expired-token" };
   const refreshedAccount = { id: "account-1", accessToken: "fresh-token" };
 
   test("refreshes and replays exactly once after a 401", async () => {
     const sentTokens: string[] = [];
     let refreshCount = 0;
-    const result = await sendCodexWithAuthReplay({
+    const result = await sendWithAuthReplay({
       account: originalAccount,
       send: (account) => {
         sentTokens.push(account.accessToken);
@@ -35,7 +35,7 @@ describe("Codex auth replay", () => {
   test("returns a second 401 without another replay", async () => {
     let sendCount = 0;
     let refreshCount = 0;
-    const result = await sendCodexWithAuthReplay({
+    const result = await sendWithAuthReplay({
       account: originalAccount,
       send: () => {
         sendCount++;
@@ -56,7 +56,7 @@ describe("Codex auth replay", () => {
 
   test("never refreshes a successful response", async () => {
     let refreshCount = 0;
-    const result = await sendCodexWithAuthReplay({
+    const result = await sendWithAuthReplay({
       account: originalAccount,
       send: () =>
         Promise.resolve({ response: new Response(null, { status: 200 }) }),
@@ -71,7 +71,7 @@ describe("Codex auth replay", () => {
   });
 
   test("preserves the upstream 401 when refresh fails", async () => {
-    const result = await sendCodexWithAuthReplay({
+    const result = await sendWithAuthReplay({
       account: originalAccount,
       send: () =>
         Promise.resolve({
@@ -88,7 +88,7 @@ describe("Codex auth replay", () => {
 
   test("does not replay when refresh keeps the rejected token", async () => {
     let sendCount = 0;
-    const result = await sendCodexWithAuthReplay({
+    const result = await sendWithAuthReplay({
       account: originalAccount,
       send: () => {
         sendCount++;

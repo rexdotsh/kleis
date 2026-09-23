@@ -73,14 +73,27 @@ describe("OAuth account reauthorization", () => {
       { options: { mode: "max", replaceAccountId: claudeId } },
       Date.now()
     );
-    globalThis.fetch = (() =>
-      Promise.resolve(
+    const authorization = new URL(start.authorizationUrl);
+    expect(authorization.searchParams.get("redirect_uri")).toBe(
+      "https://platform.claude.com/oauth/code/callback"
+    );
+    expect(authorization.searchParams.get("scope")).toContain(
+      "user:sessions:claude_code"
+    );
+    globalThis.fetch = ((url, init) => {
+      expect(url).toBe("https://platform.claude.com/v1/oauth/token");
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        grant_type: "authorization_code",
+        redirect_uri: "https://platform.claude.com/oauth/code/callback",
+      });
+      return Promise.resolve(
         Response.json({
           access_token: "new-claude-access",
           refresh_token: "new-claude-refresh",
           expires_in: 3600,
         })
-      )) as typeof fetch;
+      );
+    }) as typeof fetch;
 
     const replaced = await completeProviderOAuth(
       database,

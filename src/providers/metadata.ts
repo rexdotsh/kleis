@@ -49,7 +49,11 @@ const claudeMetadataSchema = z.strictObject({
   tokenType: z.string().nullable(),
   scope: z.string().nullable(),
   oauthMode: z.enum(["max", "console"]),
-  oauthHost: z.enum(["claude.ai", "console.anthropic.com"]),
+  oauthHost: z.enum([
+    "claude.ai",
+    "console.anthropic.com",
+    "platform.claude.com",
+  ]),
   betaHeaders: z.array(z.string()),
   userAgent: z.string(),
   systemIdentity: z.string(),
