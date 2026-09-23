@@ -47,7 +47,6 @@ type ClaudeTokenResponse = {
   expires_in?: number;
   token_type?: string;
   scope?: string;
-  account?: { uuid?: string };
 };
 
 export class ClaudeOAuthError extends Error {
@@ -205,8 +204,9 @@ const buildTokenResult = (input: {
       Date.now() +
       (input.tokens.expires_in ?? 0) * 1000 -
       CLAUDE_EXPIRY_SKEW_MS,
-    accountId:
-      input.tokens.account?.uuid?.trim() || input.fallbackAccountId || null,
+    // A Claude user UUID is shared across Max/Console and organizations. It
+    // cannot be used as the unique provider account identity in our schema.
+    accountId: input.fallbackAccountId || null,
     metadata,
     label: metadata.oauthMode === "max" ? "claude-max" : "claude-console",
   };

@@ -1,6 +1,7 @@
 import { createClient } from "@libsql/client";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/libsql";
+import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,6 +11,7 @@ import type { Database } from "../../src/db";
 import {
   findProviderAccountById,
   listProviderAccounts,
+  replaceProviderAccountCredentials,
 } from "../../src/db/repositories/provider-accounts";
 import { apiKeys, providerAccounts } from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
@@ -123,6 +125,116 @@ describe("OAuth account reauthorization", () => {
         Date.now()
       )
     ).rejects.toThrow("missing or expired");
+  });
+
+  test("keeps Max and Console logins separate even for the same Claude user", async () => {
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        Response.json({
+          access_token: crypto.randomUUID(),
+          refresh_token: crypto.randomUUID(),
+          expires_in: 3600,
+          account: { uuid: "shared-user" },
+          organization: { uuid: "same-organization" },
+        })
+      )) as typeof fetch;
+
+    for (const mode of ["max", "console"] as const) {
+      const started = await startProviderOAuth(
+        database,
+        "claude",
+        { options: { mode } },
+        Date.now()
+      );
+      await completeProviderOAuth(
+        database,
+        "claude",
+        { state: started.state, code: "auth-code" },
+        Date.now()
+      );
+    }
+
+    const connected = (await listProviderAccounts(database)).filter(
+      (account) => account.provider === "claude" && account.id !== claudeId
+    );
+    expect(connected).toHaveLength(2);
+    expect(
+      connected
+        .map((account) =>
+          account.metadata?.provider === "claude"
+            ? account.metadata.oauthMode
+            : null
+        )
+        .sort()
+    ).toEqual(["console", "max"]);
+    expect(connected.every((account) => account.accountId === null)).toBe(true);
+  });
+
+  test("reauthorizes a Claude row with a legacy user ID without changing its identity", async () => {
+    await database
+      .update(providerAccounts)
+      .set({ accountId: "legacy-user-id" })
+      .where(eq(providerAccounts.id, claudeId));
+    const started = await startProviderOAuth(
+      database,
+      "claude",
+      {
+        options: { mode: "max", replaceAccountId: claudeId },
+      },
+      Date.now()
+    );
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        Response.json({
+          access_token: "new-access",
+          refresh_token: "new-refresh",
+          expires_in: 3600,
+          account: { uuid: "legacy-user-id" },
+        })
+      )) as typeof fetch;
+
+    const reauthorized = await completeProviderOAuth(
+      database,
+      "claude",
+      {
+        state: started.state,
+        code: "auth-code",
+      },
+      Date.now()
+    );
+    expect(reauthorized).toMatchObject({
+      id: claudeId,
+      accountId: "legacy-user-id",
+      refreshToken: "new-refresh",
+    });
+  });
+
+  test("hides tokens in a duplicate-identity reauthorization conflict", async () => {
+    await database.insert(providerAccounts).values({
+      id: "f0301b40-0e10-4788-8887-06c9974ba33f",
+      provider: "claude",
+      accountId: "already-connected",
+      accessToken: "another-access",
+      refreshToken: "another-refresh",
+      expiresAt: Date.now() + 3_600_000,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    await expect(
+      replaceProviderAccountCredentials(database, claudeId, {
+        provider: "claude",
+        accountId: "already-connected",
+        accessToken: "sensitive-new-access",
+        refreshToken: "sensitive-new-refresh",
+        expiresAt: Date.now() + 3_600_000,
+        metadata: null,
+        now: Date.now(),
+      })
+    ).rejects.toThrow("already connected to another account");
+    expect(
+      (await findProviderAccountById(database, claudeId))?.refreshToken
+    ).toBe("old-claude-refresh");
   });
 
   test("replaces the selected Codex account only when the OAuth identity matches", async () => {
