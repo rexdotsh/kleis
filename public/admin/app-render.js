@@ -261,9 +261,11 @@ function renderProviderStatuses() {
 
 function accountCardHtml(account) {
   const disabled = account.enabled === false;
-  const s = disabled
-    ? { label: "disabled", class: "unknown" }
-    : tokenStatus(account.expiresAt);
+  const tokenHealth = tokenStatus(account.expiresAt);
+  const s = disabled ? { label: "disabled", class: "unknown" } : tokenHealth;
+  const needsReauthorization =
+    tokenHealth.class !== "active" ||
+    (account.lastRefreshStatus && account.lastRefreshStatus !== "success");
   const name = account.label || account.accountId || account.id;
   const usage = accountUsageForId(account.id);
   const windowLabel = usageWindowLabel(state.accountUsageWindowMs);
@@ -293,7 +295,7 @@ function accountCardHtml(account) {
 
   const meta = metadataHtml(account.metadata);
 
-  return `<div class="card${disabled ? " card-disabled" : ""}" data-account-id="${account.id}">
+  return `<div class="card${disabled ? " card-disabled" : ""}" data-account-id="${account.id}" role="group" tabindex="0" aria-label="Open usage details for ${escapeHtml(name)}">
     <div class="card-top">
       <div class="card-identity">
         <span class="badge badge-${account.provider}">${account.provider}</span>
@@ -302,10 +304,9 @@ function accountCardHtml(account) {
         ${disabled ? '<span class="badge badge-disabled">disabled</span>' : ""}
       </div>
       <div class="card-actions">
-        <button class="btn btn-ghost btn-sm" data-action="account-detail" data-account-id="${account.id}" type="button" aria-label="Usage details for ${escapeHtml(name)}">details</button>
         ${editBtn}
         ${setPrimaryBtn}
-        ${account.provider === "codex" || account.provider === "claude" ? `<button class="btn btn-ghost btn-sm" data-action="reauthorize-account" data-account-id="${account.id}" type="button">reauthorize</button>` : ""}
+        ${needsReauthorization && (account.provider === "codex" || account.provider === "claude") ? `<button class="btn btn-ghost btn-sm" data-action="reauthorize-account" data-account-id="${account.id}" type="button">reauthorize</button>` : ""}
         <button class="btn btn-ghost btn-sm" data-action="refresh-account" data-account-id="${account.id}" type="button">refresh</button>
         <button class="btn btn-danger btn-sm" data-action="delete-account" data-account-id="${account.id}" type="button">delete</button>
       </div>
@@ -429,14 +430,13 @@ function keyCardHtml(key) {
     ? `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">edit</button><button class="btn btn-danger btn-sm" data-action="delete-key" data-key-id="${key.id}" type="button">delete</button>`
     : `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">edit</button><button class="btn btn-ghost btn-sm" data-action="rotate-key" data-key-id="${key.id}" type="button">rotate</button><button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${key.id}" type="button">revoke</button>`;
 
-  return `<div class="card" data-key-id="${key.id}">
+  return `<div class="card" data-key-id="${key.id}" role="group" tabindex="0" aria-label="Open usage details for ${escapeHtml(key.label || "untitled key")}">
     <div class="card-top">
       <div class="card-identity">
         <span class="card-label">${escapeHtml(key.label || "untitled")}</span>
         <span class="badge badge-${status}">${status}</span>
       </div>
       <div class="card-actions">
-        <button class="btn btn-ghost btn-sm" data-action="key-detail" data-key-id="${key.id}" type="button" aria-label="Usage details for ${escapeHtml(key.label || "untitled key")}">details</button>
         <button class="btn btn-ghost btn-sm" data-action="copy-key" data-key-id="${key.id}" type="button">copy</button>
         ${modelsUrl ? `<button class="btn btn-ghost btn-sm" data-action="copy-models-url" data-key-id="${key.id}" type="button">copy models url</button>` : ""}
         <button class="btn btn-ghost btn-sm" data-action="toggle-key" data-key-id="${key.id}" type="button">${isRevealed ? "hide" : "show"}</button>
