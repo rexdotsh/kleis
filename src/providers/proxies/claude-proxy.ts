@@ -653,8 +653,19 @@ export const prepareClaudeProxyRequest = (
 
   // OAuth sessions require Claude Code identity headers.
   // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L525-L538
+  // Claude Code's Messages client uses the 2023-06-01 API version and accepts
+  // JSON even when `stream: true` requests an SSE response.
+  input.headers.delete("x-api-key");
+  input.headers.delete("cookie");
+  input.headers.delete("proxy-authorization");
+  input.headers.delete("content-encoding");
+  input.headers.delete("content-length");
+  input.headers.delete("host");
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
+  input.headers.set("anthropic-version", "2023-06-01");
   input.headers.set("anthropic-beta", mergedBetas);
+  input.headers.set("accept", "application/json");
+  input.headers.set("content-type", "application/json");
   // Keep existing accounts on the minimum supported Claude Code version even
   // when their persisted metadata still contains an older user agent.
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
