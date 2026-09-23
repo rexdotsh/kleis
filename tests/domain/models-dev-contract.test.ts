@@ -200,7 +200,7 @@ describe("models registry contract", () => {
     expect(kleis.models?.["openai/text-embedding-3-large"]).toBeUndefined();
   });
 
-  test("overrides Codex gpt-5.5 limits to match OpenCode OAuth", () => {
+  test("caps Codex gpt-5.5 context and input without changing output", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/",
@@ -213,11 +213,11 @@ describe("models registry contract", () => {
     expect(kleis.models?.["gpt-5.5"]?.limit).toEqual({
       context: 400_000,
       input: 272_000,
-      output: 128_000,
+      output: 64_000,
     });
   });
 
-  test("overrides Codex gpt-5.6 variant limits to match OpenCode OAuth", () => {
+  test("caps Codex gpt-5.6 variant limits without inventing output", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
       baseOrigin: "https://kleis.example/",
@@ -230,8 +230,75 @@ describe("models registry contract", () => {
     expect(kleis.models?.["gpt-5.6-luna"]?.limit).toEqual({
       context: 400_000,
       input: 272_000,
-      output: 128_000,
     });
+  });
+
+  test("caps GPT-6 Sol and Luna limits only for the Codex proxy", () => {
+    const model = (id: string, output: number) => ({
+      id,
+      name: id,
+      limit: { context: 1_050_000, input: 922_000, output },
+      provider: { api: "https://api.openai.com/v1", npm: "@ai-sdk/openai" },
+    });
+    const registry = buildProxyModelsRegistry({
+      upstreamRegistry: {
+        ...upstreamRegistry,
+        openai: {
+          ...upstreamRegistry.openai,
+          models: {
+            ...upstreamRegistry.openai.models,
+            "gpt-6-sol": model("gpt-6-sol", 128_000),
+            "gpt-6-luna": model("gpt-6-luna", 64_000),
+          },
+        },
+      },
+      baseOrigin: "https://kleis.example/",
+      configuredProviders: ["codex"],
+    });
+    const kleis = registry.kleis as {
+      models?: Record<string, { limit?: unknown }>;
+    };
+    const openai = registry.openai as {
+      models?: Record<string, { limit?: unknown }>;
+    };
+
+    for (const [id, output] of [
+      ["gpt-6-sol", 128_000],
+      ["gpt-6-luna", 64_000],
+    ] as const) {
+      expect(kleis.models?.[id]?.limit).toEqual({
+        context: 400_000,
+        input: 272_000,
+        output,
+      });
+      expect(openai.models?.[id]?.limit).toEqual({
+        context: 1_050_000,
+        input: 922_000,
+        output,
+      });
+    }
+  });
+
+  test("follows OpenCode's current OAuth exclusion of retired GPT-5.4 models", () => {
+    const registry = buildProxyModelsRegistry({
+      upstreamRegistry: {
+        ...upstreamRegistry,
+        openai: {
+          ...upstreamRegistry.openai,
+          models: {
+            ...upstreamRegistry.openai.models,
+            "gpt-5.4": { id: "gpt-5.4" },
+            "gpt-5.4-mini": { id: "gpt-5.4-mini" },
+          },
+        },
+      },
+      baseOrigin: "https://kleis.example/",
+      configuredProviders: ["codex"],
+    });
+    const kleis = registry.kleis as { models?: Record<string, unknown> };
+
+    expect(kleis.models?.["gpt-5.4"]).toBeUndefined();
+    expect(kleis.models?.["gpt-5.4-mini"]).toBeUndefined();
   });
 
   test("appends to existing kleis provider without replacing entries", () => {

@@ -30,41 +30,13 @@ const PROXY_API_KEY_ENV = "KLEIS_API_KEY";
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const MODELS_DEV_CACHE_TTL_MS = 5 * 60 * 1000;
 // Match OpenCode's ChatGPT OAuth model gate.
-// https://github.com/anomalyco/opencode/blob/337fd144d2ba144743368f78d9579a99cce175bd/packages/opencode/src/plugin/openai/codex.ts#L286-L310
+// https://github.com/anomalyco/opencode/blob/68b28bdb98bbe9ca5046e5c8485417c9b9460537/packages/core/src/plugin/provider/openai.ts#L22-L25
 const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
   "gpt-5.3-codex-spark",
-  "gpt-5.4",
-  "gpt-5.4-mini",
   "gpt-5.5",
 ]);
 const CODEX_DISALLOWED_OPENAI_MODEL_IDS = new Set(["gpt-5.5-pro", "gpt-5.6"]);
 const CODEX_DYNAMIC_GPT_VERSION_THRESHOLD = { major: 5, minor: 4 };
-
-// ChatGPT Codex limits are smaller than the public API limits. Match OpenCode
-// OAuth metadata so clients compact before the backend runs out of output room:
-// https://github.com/anomalyco/opencode/blob/400a6f2afab628103f8a41df9b1037d240e79fed/packages/opencode/src/plugin/openai/codex.ts#L299-L309
-const CODEX_MODEL_LIMIT_OVERRIDES: Record<string, JsonObject> = {
-  "gpt-5.5": {
-    context: 400_000,
-    input: 272_000,
-    output: 128_000,
-  },
-  "gpt-5.6-luna": {
-    context: 400_000,
-    input: 272_000,
-    output: 128_000,
-  },
-  "gpt-5.6-sol": {
-    context: 400_000,
-    input: 272_000,
-    output: 128_000,
-  },
-  "gpt-5.6-terra": {
-    context: 400_000,
-    input: 272_000,
-    output: 128_000,
-  },
-};
 
 const modelScopeRouteByCanonicalProvider = new Map<string, ModelScopeRoute>(
   proxyProviderMappings.map((mapping) => [
@@ -320,15 +292,18 @@ const mergeKleisProviderModels = (input: {
             route,
             modelScopes: input.modelScopes,
           }),
-        transformModel: (modelId, model) => {
+        transformModel: (_modelId, model) => {
           if (mapping.internalProvider !== "codex") {
             return;
           }
 
-          const limitOverride = CODEX_MODEL_LIMIT_OVERRIDES[modelId];
-          if (limitOverride) {
-            model.limit = limitOverride;
-          }
+          // Codex subscription limits apply to every eligible GPT model, not
+          // only known IDs. Preserve the model's output limit from models.dev.
+          model.limit = {
+            ...(getObjectProperty(model, "limit") ?? {}),
+            context: 400_000,
+            input: 272_000,
+          };
         },
       })
     );
