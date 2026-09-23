@@ -114,6 +114,43 @@ describe("provider account enablement", () => {
     expect(right?.accessToken).toBe("access-codex-refreshed");
   });
 
+  test("waits for a slow in-flight auth refresh instead of returning the rejected token", async () => {
+    let refreshCount = 0;
+    let startedRefresh: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => {
+      startedRefresh = resolve;
+    });
+    codexAdapter.refreshAccount = async (account, now) => {
+      refreshCount++;
+      startedRefresh?.();
+      await new Promise((resolve) => setTimeout(resolve, 3400));
+      return {
+        accessToken: "access-after-slow-refresh",
+        refreshToken: account.refreshToken,
+        expiresAt: now + 60_000,
+        accountId: account.accountId,
+        metadata: account.metadata,
+      };
+    };
+
+    const first = refreshProviderAccountAfterAuthFailure(
+      database,
+      "codex-primary",
+      "access-codex"
+    );
+    await refreshStarted;
+    const second = refreshProviderAccountAfterAuthFailure(
+      database,
+      "codex-primary",
+      "access-codex"
+    );
+    const [firstAccount, secondAccount] = await Promise.all([first, second]);
+
+    expect(refreshCount).toBe(1);
+    expect(firstAccount?.accessToken).toBe("access-after-slow-refresh");
+    expect(secondAccount?.accessToken).toBe("access-after-slow-refresh");
+  });
+
   test("refreshes a rejected token even after a recent ordinary refresh", async () => {
     await database
       .update(providerAccounts)

@@ -23,6 +23,7 @@ const normalizeTokenField = (value: string): string => value.trim();
 const REFRESH_LOCK_LEASE_MS = 20_000;
 const REFRESH_LOCK_HEARTBEAT_MS = 5000;
 const REFRESH_WAIT_TIMEOUT_MS = 3000;
+const AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS = 30_000;
 const REFRESH_WAIT_POLL_INTERVAL_MS = 150;
 
 const assertExpiresAt = (expiresAt: number, now: number): number => {
@@ -56,9 +57,10 @@ const waitForInFlightRefresh = async (
   database: Database,
   accountId: string,
   now: number,
-  forceRefresh: boolean
+  forceRefresh: boolean,
+  timeoutMs = REFRESH_WAIT_TIMEOUT_MS
 ): Promise<ProviderAccountRecord | null> => {
-  const deadline = Date.now() + REFRESH_WAIT_TIMEOUT_MS;
+  const deadline = Date.now() + timeoutMs;
   let account = await findProviderAccountById(database, accountId);
 
   while (account && Date.now() < deadline) {
@@ -189,7 +191,8 @@ export const refreshProviderAccountAfterAuthFailure = async (
     database,
     account.id,
     Date.now(),
-    true
+    true,
+    AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS
   );
   if (!waited) {
     return null;
