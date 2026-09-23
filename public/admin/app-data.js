@@ -1237,7 +1237,7 @@ async function reauthorizeAccount(id) {
   state.reauthorizeAccountId = id;
   const target = $("#oauth-reauthorize-target");
   $("#oauth-reauthorize-label").textContent =
-    `Reauthorizing ${account.label || account.accountId || account.provider}. Existing settings and API-key scopes stay attached to this account.${account.provider === "claude" && !account.accountId ? " Verify you sign in to the same Claude account; its identity cannot be checked automatically." : ""}`;
+    `Reauthorizing ${account.label || account.accountId || account.provider}. Existing settings and API-key scopes stay attached to this account.${account.provider === "claude" ? " Verify you sign in to the same Claude account and organization; this cannot be checked automatically." : ""}`;
   target.style.display = "flex";
   $("#oauth-provider").value = account.provider;
   $("#oauth-provider").disabled = true;
