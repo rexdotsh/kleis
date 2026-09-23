@@ -1,6 +1,8 @@
 import WebSocket from "ws";
 
 import {
+  CODEX_BETA_FEATURES,
+  CODEX_BETA_FEATURES_HEADER,
   CODEX_RESPONSE_ENDPOINT,
   CODEX_WEBSOCKET_BETA_HEADER,
 } from "../constants";
@@ -14,6 +16,10 @@ import type { TokenUsage } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
+import {
+  normalizeOpenAiResponsesEvent,
+  readOpenAiResponsesEventShapeIssue,
+} from "./openai-responses-event";
 
 const SESSION_SOCKET_TTL_MS = 5 * 60 * 1000;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -24,6 +30,8 @@ const STREAM_FAILURE_RETRIES = 5;
 const MAX_TRACKED_FAILURE_SESSIONS = 1000;
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
+const MAX_RELAY_QUEUE_FRAMES = 8192;
+const MAX_RELAY_QUEUE_BYTES = 4 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 
 type WebSocketEventType = "open" | "message" | "error" | "close";
@@ -718,6 +726,22 @@ const decodeMessageData = async (data: unknown): Promise<string | null> => {
   return null;
 };
 
+const readMessageDataByteLength = (data: unknown): number => {
+  if (typeof data === "string") {
+    return textEncoder.encode(data).byteLength;
+  }
+  if (data instanceof ArrayBuffer) {
+    return data.byteLength;
+  }
+  if (ArrayBuffer.isView(data)) {
+    return data.byteLength;
+  }
+  if (isObjectRecord(data) && typeof data.size === "number") {
+    return Math.max(0, data.size);
+  }
+  return 0;
+};
+
 const readPayloadStatus = (payload: Record<string, unknown>): number => {
   const status = payload.status ?? payload.status_code;
   if (typeof status === "number" && status >= 400 && status <= 599) {
@@ -770,8 +794,6 @@ const readErrorPayloadLogFields = (
   payloadType: String(payload.type),
   errorType: readErrorField(payload, "type") ?? null,
   errorCode: readErrorField(payload, "code") ?? null,
-  errorMessage: readErrorField(payload, "message") ?? null,
-  errorParam: readErrorField(payload, "param") ?? null,
   errorStatus: readErrorField(payload, "status") ?? null,
 });
 
@@ -807,7 +829,9 @@ const isSessionConcurrencyError = (error: unknown): boolean =>
     error.message === "Codex WebSocket session is connecting");
 
 const isUserCancelledStage = (stage: string): boolean =>
-  stage === "request_aborted" || stage === "downstream_cancel";
+  stage === "request_aborted" ||
+  stage === "downstream_cancel" ||
+  stage === "relay_queue_overflow";
 
 const isCacheableFinalEvent = (
   eventType: unknown,
@@ -830,6 +854,7 @@ const buildWebSocketHeaders = (
   nextHeaders.delete("transfer-encoding");
   nextHeaders.delete("upgrade");
   nextHeaders.set("OpenAI-Beta", CODEX_WEBSOCKET_BETA_HEADER);
+  nextHeaders.set(CODEX_BETA_FEATURES_HEADER, CODEX_BETA_FEATURES);
   applyCodexSessionHeaders(nextHeaders, requestId);
   return nextHeaders;
 };
@@ -909,7 +934,12 @@ export const tryProxyCodexWebSocket = async (
   let socketEpoch = 0;
   let messageChain = Promise.resolve();
   let wake: (() => void) | null = null;
-  const queue: Record<string, unknown>[] = [];
+  let bufferedFrameCount = 0;
+  let bufferedFrameBytes = 0;
+  const queue: Array<{
+    payload: Record<string, unknown>;
+    bytes: number;
+  }> = [];
 
   const logStreamAnomaly = (event: string, fields = {}): void => {
     logWarn(event, {
@@ -920,8 +950,11 @@ export const tryProxyCodexWebSocket = async (
       emittedPayload,
       terminal,
       queueLength: queue.length,
+      bufferedFrameCount,
+      bufferedFrameBytes,
       connectionLimitAttempts,
       requestBytes,
+      requestId,
       payloadCount,
       upstreamIdleMs: Date.now() - lastUpstreamEventAt,
       downstreamIdleMs: Date.now() - lastDownstreamWriteAt,
@@ -1157,21 +1190,77 @@ export const tryProxyCodexWebSocket = async (
       });
   };
 
-  const handleMessage = async (event: unknown): Promise<void> => {
+  const releaseBufferedFrame = (frameBytes: number): void => {
+    bufferedFrameCount = Math.max(0, bufferedFrameCount - 1);
+    bufferedFrameBytes = Math.max(0, bufferedFrameBytes - frameBytes);
+  };
+
+  const handleMessage = async (
+    event: unknown,
+    reservedBytes: number
+  ): Promise<{ bytes: number; queued: boolean }> => {
     if (settled) {
-      return;
+      return { bytes: reservedBytes, queued: false };
     }
     const text = await decodeMessageData(
       isObjectRecord(event) ? event.data : null
     );
     if (settled || !text) {
-      return;
+      return { bytes: reservedBytes, queued: false };
     }
 
-    const payload = JSON.parse(text) as unknown;
-    if (!isObjectRecord(payload)) {
-      return;
+    const frameBytes = textEncoder.encode(text).byteLength;
+    bufferedFrameBytes += frameBytes - reservedBytes;
+    if (bufferedFrameBytes > MAX_RELAY_QUEUE_BYTES) {
+      const stage =
+        frameBytes > MAX_RELAY_QUEUE_BYTES
+          ? "relay_frame_too_large"
+          : "relay_queue_overflow";
+      logStreamAnomaly("codex_websocket_queue_overflow", {
+        reason:
+          frameBytes > MAX_RELAY_QUEUE_BYTES ? "frame_too_large" : "bytes",
+        frameBytes,
+        maxQueueFrames: MAX_RELAY_QUEUE_FRAMES,
+        maxQueueBytes: MAX_RELAY_QUEUE_BYTES,
+      });
+      fail(stage, new Error("Codex WebSocket queue overflow"));
+      return { bytes: frameBytes, queued: false };
     }
+
+    let parsedPayload: unknown;
+    try {
+      parsedPayload = JSON.parse(text) as unknown;
+    } catch {
+      logStreamAnomaly("codex_websocket_invalid_frame", {
+        parseCategory: "invalid_json",
+        frameBytes,
+      });
+      fail(
+        "message_parse_failed",
+        new Error("Codex WebSocket frame contains invalid JSON")
+      );
+      return { bytes: frameBytes, queued: false };
+    }
+    if (!isObjectRecord(parsedPayload)) {
+      logStreamAnomaly("codex_websocket_invalid_frame", {
+        parseCategory: "non_object_payload",
+        frameBytes,
+      });
+      return { bytes: frameBytes, queued: false };
+    }
+    if (terminal) {
+      return { bytes: frameBytes, queued: false };
+    }
+    const shapeIssue = readOpenAiResponsesEventShapeIssue(parsedPayload);
+    if (shapeIssue) {
+      logStreamAnomaly("codex_websocket_invalid_frame", {
+        parseCategory: "invalid_field_type",
+        eventType: shapeIssue.eventType,
+        fields: shapeIssue.fields,
+        frameBytes,
+      });
+    }
+    const payload = normalizeOpenAiResponsesEvent(parsedPayload);
     resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
     payloadCount++;
     lastUpstreamEventAt = Date.now();
@@ -1180,7 +1269,7 @@ export const tryProxyCodexWebSocket = async (
       retryConnectionLimit().catch((error: unknown) => {
         fail("connection_limit_retry_failed", error);
       });
-      return;
+      return { bytes: frameBytes, queued: false };
     }
 
     if (isTerminalPayload(payload)) {
@@ -1192,17 +1281,54 @@ export const tryProxyCodexWebSocket = async (
         : null;
     }
     emittedPayload = true;
-    queue.push(payload);
+    queue.push({ payload, bytes: frameBytes });
     if (queue.length === 1) {
       firstPayloadResolve?.(payload);
     }
     wakePull();
+    return { bytes: frameBytes, queued: true };
   };
 
   const onMessage = (event: unknown): void => {
+    if (settled) {
+      return;
+    }
+    const reservedBytes = readMessageDataByteLength(
+      isObjectRecord(event) ? event.data : null
+    );
+    if (
+      bufferedFrameCount + 1 > MAX_RELAY_QUEUE_FRAMES ||
+      bufferedFrameBytes + reservedBytes > MAX_RELAY_QUEUE_BYTES
+    ) {
+      const frameTooLarge = reservedBytes > MAX_RELAY_QUEUE_BYTES;
+      logStreamAnomaly("codex_websocket_queue_overflow", {
+        reason:
+          bufferedFrameCount + 1 > MAX_RELAY_QUEUE_FRAMES
+            ? "frames"
+            : frameTooLarge
+              ? "frame_too_large"
+              : "bytes",
+        frameBytes: reservedBytes,
+        maxQueueFrames: MAX_RELAY_QUEUE_FRAMES,
+        maxQueueBytes: MAX_RELAY_QUEUE_BYTES,
+      });
+      fail(
+        frameTooLarge ? "relay_frame_too_large" : "relay_queue_overflow",
+        new Error("Codex WebSocket queue overflow")
+      );
+      return;
+    }
+    bufferedFrameCount++;
+    bufferedFrameBytes += reservedBytes;
     messageChain = messageChain
-      .then(() => handleMessage(event))
+      .then(async () => {
+        const handled = await handleMessage(event, reservedBytes);
+        if (!handled.queued) {
+          releaseBufferedFrame(handled.bytes);
+        }
+      })
       .catch((error: unknown) => {
+        releaseBufferedFrame(reservedBytes);
         fail("message_parse_failed", error);
       });
   };
@@ -1295,10 +1421,11 @@ export const tryProxyCodexWebSocket = async (
       }
 
       if (queue.length) {
-        const payload = queue.shift();
-        if (payload) {
+        const entry = queue.shift();
+        if (entry) {
+          releaseBufferedFrame(entry.bytes);
           try {
-            processPayload(payload, controller);
+            processPayload(entry.payload, controller);
           } catch (error) {
             fail("downstream_enqueue_failed", error);
             controller.error(error);

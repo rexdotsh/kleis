@@ -23,6 +23,7 @@ const normalizeTokenField = (value: string): string => value.trim();
 const REFRESH_LOCK_LEASE_MS = 20_000;
 const REFRESH_LOCK_HEARTBEAT_MS = 5000;
 const REFRESH_WAIT_TIMEOUT_MS = 3000;
+const AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS = 30_000;
 const REFRESH_WAIT_POLL_INTERVAL_MS = 150;
 
 const assertExpiresAt = (expiresAt: number, now: number): number => {
@@ -56,12 +57,16 @@ const waitForInFlightRefresh = async (
   database: Database,
   accountId: string,
   now: number,
-  forceRefresh: boolean
+  forceRefresh: boolean,
+  timeoutMs = REFRESH_WAIT_TIMEOUT_MS,
+  signal?: AbortSignal
 ): Promise<ProviderAccountRecord | null> => {
-  const deadline = Date.now() + REFRESH_WAIT_TIMEOUT_MS;
+  signal?.throwIfAborted();
+  const deadline = Date.now() + timeoutMs;
   let account = await findProviderAccountById(database, accountId);
 
   while (account && Date.now() < deadline) {
+    signal?.throwIfAborted();
     if (!forceRefresh && account.expiresAt > now) {
       return account;
     }
@@ -71,6 +76,7 @@ const waitForInFlightRefresh = async (
     }
 
     await sleep(REFRESH_WAIT_POLL_INTERVAL_MS);
+    signal?.throwIfAborted();
     account = await findProviderAccountById(database, accountId);
   }
 
@@ -81,12 +87,20 @@ const refreshProviderAccountWithLock = async (
   database: Database,
   accountId: string,
   lockToken: string,
-  forceRefresh: boolean
+  forceRefresh: boolean,
+  failedAccessToken?: string
 ): Promise<ProviderAccountRecord | null> => {
   try {
     const account = await findProviderAccountById(database, accountId);
     if (!account) {
       return null;
+    }
+
+    if (
+      failedAccessToken !== undefined &&
+      account.accessToken !== failedAccessToken
+    ) {
+      return account;
     }
 
     const refreshNow = Date.now();
@@ -143,6 +157,61 @@ const refreshProviderAccountWithLock = async (
       Date.now()
     ).catch(() => undefined);
   }
+};
+
+export const refreshProviderAccountAfterAuthFailure = async (
+  database: Database,
+  accountId: string,
+  failedAccessToken: string,
+  signal?: AbortSignal
+): Promise<ProviderAccountRecord | null> => {
+  signal?.throwIfAborted();
+  const account = await findProviderAccountById(database, accountId);
+  signal?.throwIfAborted();
+  if (!account || account.accessToken !== failedAccessToken) {
+    return account;
+  }
+
+  const lockToken = crypto.randomUUID();
+  const lockClaimedAt = Date.now();
+  const lockAcquired = await tryAcquireProviderAccountRefreshLock(
+    database,
+    account.id,
+    {
+      token: lockToken,
+      now: lockClaimedAt,
+      expiresAt: lockClaimedAt + REFRESH_LOCK_LEASE_MS,
+    }
+  );
+
+  if (lockAcquired) {
+    return refreshProviderAccountWithLock(
+      database,
+      account.id,
+      lockToken,
+      true,
+      failedAccessToken
+    );
+  }
+
+  const waited = await waitForInFlightRefresh(
+    database,
+    account.id,
+    Date.now(),
+    true,
+    AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS,
+    signal
+  );
+  if (!waited) {
+    return null;
+  }
+  if (waited.accessToken !== failedAccessToken) {
+    return waited;
+  }
+
+  throw new Error(
+    "Provider account refresh did not replace the rejected token"
+  );
 };
 
 export const startProviderOAuth = (

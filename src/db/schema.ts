@@ -129,6 +129,9 @@ export const requestUsageBuckets = sqliteTable(
     cacheWriteTokens: integer("cache_write_tokens", { mode: "number" })
       .notNull()
       .default(0),
+    inputTotalTokens: integer("input_total_tokens", { mode: "number" }),
+    reasoningTokens: integer("reasoning_tokens", { mode: "number" }),
+    totalTokens: integer("total_tokens", { mode: "number" }),
     lastRequestAt: integer("last_request_at", { mode: "number" }).notNull(),
   },
   (table) => [

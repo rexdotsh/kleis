@@ -7,6 +7,7 @@ import {
   proxyEndpointRoutes,
   type CanonicalProvider,
   type ProxyEndpoint,
+  type ProxyOperation,
 } from "../providers/proxy-endpoints";
 import { isObjectRecord } from "../utils/object";
 
@@ -15,6 +16,7 @@ export type ProxyRoute = {
   publicProvider: CanonicalProvider;
   provider: Provider;
   endpoint: ProxyEndpoint;
+  operation?: ProxyOperation;
 };
 
 export type ModelScopeRoute = Pick<ProxyRoute, "publicProvider" | "provider">;
@@ -31,6 +33,7 @@ export const proxyRouteTable: readonly ProxyRoute[] = proxyEndpointRoutes.map(
     provider: requireProxyProviderByCanonical(route.publicProvider)
       .internalProvider,
     endpoint: route.endpoint,
+    ...(route.operation ? { operation: route.operation } : {}),
   })
 );
 

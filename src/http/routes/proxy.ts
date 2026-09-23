@@ -6,7 +6,12 @@ import {
   recordRequestUsage,
   recordTokenUsage,
 } from "../../db/repositories/request-usage";
-import { getRoutableProviderAccount } from "../../domain/providers/provider-service";
+import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
+import {
+  getRoutableProviderAccount,
+  refreshProviderAccountAfterAuthFailure,
+} from "../../domain/providers/provider-service";
+import { CODEX_ACCOUNT_ID_HEADER } from "../../providers/constants";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import {
   deriveCodexSessionId,
@@ -22,6 +27,7 @@ import {
 } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
+import { sendCodexWithAuthReplay } from "../codex-auth-replay";
 import {
   parseModelForProxyRoute,
   proxyRouteTable,
@@ -68,6 +74,7 @@ const removeProxyAuthHeaders = (headers: Headers): void => {
   headers.delete("x-api-key");
   headers.delete("host");
   headers.delete("content-length");
+  headers.delete(CODEX_ACCOUNT_ID_HEADER);
 };
 
 const tryParseJsonBody = (bodyText: string | null): unknown | null => {
@@ -88,6 +95,38 @@ const runInBackground = (promise: Promise<unknown>): void => {
 
 type BunFetchRequestInit = RequestInit & {
   timeout?: number | false;
+};
+
+const fetchProxyUpstream = async (input: {
+  url: string;
+  method: string;
+  headers: Headers;
+  body: string;
+  signal: AbortSignal;
+  useCodexSseHeaderTimeout: boolean;
+}): Promise<Response> => {
+  const headerTimeout = input.useCodexSseHeaderTimeout
+    ? createCodexSseHeaderTimeout()
+    : null;
+  const requestInit: BunFetchRequestInit = {
+    method: input.method,
+    headers: input.headers,
+    body: input.body,
+    timeout: false,
+    signal: input.signal,
+  };
+  if (headerTimeout) {
+    requestInit.signal = AbortSignal.any([input.signal, headerTimeout.signal]);
+  }
+
+  try {
+    return await fetch(input.url, requestInit);
+  } catch (error) {
+    const timeoutError = headerTimeout?.error();
+    throw timeoutError && !input.signal.aborted ? timeoutError : error;
+  } finally {
+    headerTimeout?.clear();
+  }
 };
 
 type UsageRecorderInput = {
@@ -250,10 +289,11 @@ const proxyRequest = async (
   let upstreamUrl = "";
   let responseTransformer: ((response: Response) => Promise<Response>) | null =
     null;
-  let useCodexSseHeaderTimeout = false;
+  const useCodexSseHeaderTimeout = false;
 
   switch (route.provider) {
     case "codex": {
+      const initialCodexAccount = account;
       const codexSessionId = readCodexSessionId(requestBodyJson, headers);
       const codexUpstreamSessionId = codexSessionId
         ? await deriveCodexSessionId(
@@ -261,39 +301,120 @@ const proxyRequest = async (
             codexSessionId
           )
         : null;
-      const codexProxy = prepareCodexProxyRequest({
-        headers,
-        accessToken: account.accessToken,
-        accountId: account.accountId,
-        metadata:
-          account.metadata?.provider === "codex" ? account.metadata : null,
-        bodyText: requestBody,
-        bodyJson: requestBodyJson,
-        sessionId: codexUpstreamSessionId,
-        onTokenUsage: usageRecorder.onTokenUsage,
-      });
-      upstreamUrl = codexProxy.upstreamUrl;
-      requestBody = codexProxy.bodyText;
-      responseTransformer = codexProxy.transformResponse;
-      useCodexSseHeaderTimeout =
-        readBooleanField(codexProxy.bodyJson, "stream") === true;
-
-      if (CODEX_WEBSOCKET_ENABLED) {
-        const webSocketResponse = await tryProxyCodexWebSocket({
-          headers,
-          bodyJson: codexProxy.bodyJson,
-          accountKey: `${apiKeyId}:${account.id}`,
-          sessionId: codexSessionId,
-          upstreamSessionId: codexUpstreamSessionId,
+      const baseHeaders = new Headers(headers);
+      const baseRequestBody = requestBody;
+      const sendAttempt = async (
+        attemptAccount: ProviderAccountRecord
+      ): Promise<{
+        response: Response;
+        transformResponse: ((response: Response) => Promise<Response>) | null;
+      }> => {
+        const attemptHeaders = new Headers(baseHeaders);
+        const codexProxy = prepareCodexProxyRequest({
+          ...(route.operation ? { operation: route.operation } : {}),
+          headers: attemptHeaders,
+          accessToken: attemptAccount.accessToken,
+          accountId: attemptAccount.accountId,
+          metadata:
+            attemptAccount.metadata?.provider === "codex"
+              ? attemptAccount.metadata
+              : null,
+          bodyText: baseRequestBody,
+          bodyJson: requestBodyJson,
+          sessionId: codexUpstreamSessionId,
           onTokenUsage: usageRecorder.onTokenUsage,
-          signal: context.req.raw.signal,
         });
-        if (webSocketResponse) {
-          usageRecorder.recordFinal(webSocketResponse.status);
-          return webSocketResponse;
+
+        if (CODEX_WEBSOCKET_ENABLED && route.operation !== "compact") {
+          const webSocketResponse = await tryProxyCodexWebSocket({
+            headers: attemptHeaders,
+            bodyJson: codexProxy.bodyJson,
+            accountKey: `${apiKeyId}:${attemptAccount.id}`,
+            sessionId: codexSessionId,
+            upstreamSessionId: codexUpstreamSessionId,
+            onTokenUsage: usageRecorder.onTokenUsage,
+            signal: context.req.raw.signal,
+          });
+          if (webSocketResponse) {
+            return { response: webSocketResponse, transformResponse: null };
+          }
+        }
+
+        const response = await fetchProxyUpstream({
+          url: codexProxy.upstreamUrl,
+          method: context.req.method,
+          headers: attemptHeaders,
+          body: codexProxy.bodyText,
+          signal: context.req.raw.signal,
+          useCodexSseHeaderTimeout:
+            readBooleanField(codexProxy.bodyJson, "stream") === true,
+        });
+        return { response, transformResponse: codexProxy.transformResponse };
+      };
+
+      const sendWithAuthReplay = () =>
+        sendCodexWithAuthReplay<
+          ProviderAccountRecord,
+          Awaited<ReturnType<typeof sendAttempt>>
+        >({
+          account: initialCodexAccount,
+          signal: context.req.raw.signal,
+          send: sendAttempt,
+          refresh: (accountId, failedAccessToken) =>
+            refreshProviderAccountAfterAuthFailure(
+              db,
+              accountId,
+              failedAccessToken,
+              context.req.raw.signal
+            ),
+        });
+      let result: Awaited<ReturnType<typeof sendWithAuthReplay>>;
+      try {
+        result = await sendWithAuthReplay();
+      } catch (error) {
+        if (context.req.raw.signal.aborted) {
+          throw error;
+        }
+        logWarn("proxy_upstream_request_failed", {
+          provider: route.provider,
+          endpoint: route.endpoint,
+          elapsedMs: Date.now() - startedAt,
+          aborted: false,
+          ...errorLogFields(error),
+        });
+        usageRecorder.recordImmediate(500);
+        throw error;
+      }
+      account = result.account;
+      if (result.refreshFailed) {
+        logWarn("codex_auth_refresh_replay_failed", {
+          accountId: account.id,
+          elapsedMs: Date.now() - startedAt,
+          upstreamStatus: result.attempt.response.status,
+        });
+      }
+      const { attempt } = result;
+
+      let responseToClient = attempt.response;
+      if (attempt.transformResponse) {
+        try {
+          responseToClient = await attempt.transformResponse(attempt.response);
+          responseToClient.headers.delete("content-encoding");
+        } catch (error) {
+          logWarn("proxy_response_transform_failed", {
+            provider: route.provider,
+            endpoint: route.endpoint,
+            status: attempt.response.status,
+            elapsedMs: Date.now() - startedAt,
+            ...errorLogFields(error),
+          });
+          usageRecorder.recordImmediate(500);
+          throw error;
         }
       }
-      break;
+
+      usageRecorder.recordFinal(attempt.response.status);
+      return responseToClient;
     }
 
     case "copilot": {
@@ -345,33 +466,14 @@ const proxyRequest = async (
 
   let upstreamResponse: Response;
   try {
-    const headerTimeout = useCodexSseHeaderTimeout
-      ? createCodexSseHeaderTimeout()
-      : null;
-    const upstreamRequestInit: BunFetchRequestInit = {
+    upstreamResponse = await fetchProxyUpstream({
+      url: upstreamUrl,
       method: context.req.method,
       headers,
       body: requestBody,
-      // Provider streams can pause for minutes while a model is thinking.
-      timeout: false,
       signal: context.req.raw.signal,
-    };
-    if (headerTimeout) {
-      upstreamRequestInit.signal = AbortSignal.any([
-        context.req.raw.signal,
-        headerTimeout.signal,
-      ]);
-    }
-    try {
-      upstreamResponse = await fetch(upstreamUrl, upstreamRequestInit);
-    } catch (error) {
-      const timeoutError = headerTimeout?.error();
-      throw timeoutError && !context.req.raw.signal.aborted
-        ? timeoutError
-        : error;
-    } finally {
-      headerTimeout?.clear();
-    }
+      useCodexSseHeaderTimeout,
+    });
   } catch (error) {
     if (context.req.raw.signal.aborted) {
       // Client disconnects are expected cancellations, not proxy failures.

@@ -272,7 +272,14 @@ function normalizeUsage(rawUsage) {
   const avgLatencyMs = usageNumber(usage.avgLatencyMs);
   const maxLatencyMs = usageNumber(usage.maxLatencyMs);
   const inputTokens = usageNumber(usage.inputTokens);
+  const inputTotalTokens = usageNumber(
+    usage.inputTotalTokens ??
+      inputTokens +
+        usageNumber(usage.cacheReadTokens) +
+        usageNumber(usage.cacheWriteTokens)
+  );
   const outputTokens = usageNumber(usage.outputTokens);
+  const reasoningTokens = usageNumber(usage.reasoningTokens);
   const cacheReadTokens = usageNumber(usage.cacheReadTokens);
   const cacheWriteTokens = usageNumber(usage.cacheWriteTokens);
   const successRate =
@@ -302,11 +309,14 @@ function normalizeUsage(rawUsage) {
     avgLatencyMs,
     maxLatencyMs,
     inputTokens,
+    inputTotalTokens,
     outputTokens,
+    reasoningTokens,
     cacheReadTokens,
     cacheWriteTokens,
-    totalTokens:
-      inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+    totalTokens: usageNumber(
+      usage.totalTokens ?? inputTotalTokens + outputTokens
+    ),
     lastRequestAt:
       typeof usage.lastRequestAt === "number" &&
       Number.isFinite(usage.lastRequestAt)
