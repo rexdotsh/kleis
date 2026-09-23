@@ -2,6 +2,7 @@ import {
   $,
   $$,
   clearPersistedToken,
+  clearReauthorization,
   copyToClipboard,
   createKey,
   deleteAccount,
@@ -21,6 +22,7 @@ import {
   readPersistedToken,
   redeemResetCredit,
   refreshAccount,
+  reauthorizeAccount,
   resolveConfirm,
   revokeKey,
   rotateKey,
@@ -60,6 +62,7 @@ $("#accounts-list").addEventListener("click", (e) => {
     const accountId = button.dataset.accountId;
 
     if (action === "go-connect") {
+      clearReauthorization();
       switchToTab("oauth");
       return;
     }
@@ -67,6 +70,7 @@ $("#accounts-list").addEventListener("click", (e) => {
     if (action === "edit-account") openEditAccountModal(accountId);
     if (action === "set-primary") setPrimary(accountId);
     if (action === "refresh-account") refreshAccount(accountId);
+    if (action === "reauthorize-account") reauthorizeAccount(accountId);
     if (action === "redeem-reset-credit")
       redeemResetCredit(accountId, button.dataset.creditId || null);
     if (action === "delete-account") deleteAccount(accountId);
@@ -208,7 +212,10 @@ $("#btn-copy-setup").addEventListener("click", (e) => {
 });
 
 for (const tab of $$(".tab")) {
-  tab.addEventListener("click", () => switchToTab(tab.dataset.tab));
+  tab.addEventListener("click", () => {
+    if (tab.dataset.tab === "oauth") clearReauthorization();
+    switchToTab(tab.dataset.tab);
+  });
 }
 
 for (const el of $$(".modal-close")) {

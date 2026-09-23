@@ -6,6 +6,7 @@ import {
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
   recordProviderAccountRefreshFailure,
+  replaceProviderAccountCredentials,
   releaseProviderAccountRefreshLock,
   tryAcquireProviderAccountRefreshLock,
   updateProviderAccountTokens,
@@ -214,7 +215,7 @@ export const refreshProviderAccountAfterAuthFailure = async (
   );
 };
 
-export const startProviderOAuth = (
+export const startProviderOAuth = async (
   database: Database,
   provider: Provider,
   input: {
@@ -222,13 +223,48 @@ export const startProviderOAuth = (
   },
   now: number
 ): Promise<ProviderOAuthStartResult> => {
+  const replaceAccountId = input.options?.replaceAccountId;
+  if (replaceAccountId !== undefined) {
+    if (
+      (provider !== "codex" && provider !== "claude") ||
+      typeof replaceAccountId !== "string" ||
+      !/^[0-9a-f-]{36}$/iu.test(replaceAccountId)
+    ) {
+      throw new ProviderReauthorizationTargetError(
+        "Invalid account reauthorization target"
+      );
+    }
+    const target = await findProviderAccountById(database, replaceAccountId);
+    if (!target || target.provider !== provider) {
+      throw new ProviderReauthorizationTargetError(
+        "Provider account to reauthorize was not found"
+      );
+    }
+    if (
+      provider === "claude" &&
+      target.metadata?.provider === "claude" &&
+      target.metadata.oauthMode !==
+        (input.options?.mode === "console" ? "console" : "max")
+    ) {
+      throw new ProviderReauthorizationTargetError(
+        "Claude account OAuth mode does not match"
+      );
+    }
+  }
   const adapter = getProviderAdapter(provider);
-  return adapter.startOAuth({
+  return await adapter.startOAuth({
     database,
     ...(input.options ? { options: input.options } : {}),
     now,
   });
 };
+
+export class ProviderReauthorizationTargetError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderReauthorizationTargetError";
+  }
+}
 
 export const completeProviderOAuth = async (
   database: Database,
@@ -251,6 +287,26 @@ export const completeProviderOAuth = async (
   const refreshToken = normalizeTokenField(tokens.refreshToken);
   if (!accessToken || !refreshToken) {
     throw new Error("Provider OAuth response is missing required tokens");
+  }
+
+  if (tokens.replaceAccountId) {
+    const updated = await replaceProviderAccountCredentials(
+      database,
+      tokens.replaceAccountId,
+      {
+        provider,
+        accountId: tokens.accountId,
+        accessToken,
+        refreshToken,
+        expiresAt: assertExpiresAt(tokens.expiresAt, Date.now()),
+        metadata: tokens.metadata,
+        now: Date.now(),
+      }
+    );
+    if (!updated) {
+      throw new Error("Provider account to reauthorize no longer exists");
+    }
+    return updated;
   }
 
   return upsertProviderAccount(database, {

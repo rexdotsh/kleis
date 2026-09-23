@@ -13,5 +13,5 @@
     "jsxImportSource": "hono/jsx"
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts", "drizzle.config.ts"],
-  "exclude": ["node_modules", "opensrc", "drizzle/migrations"]
+  "exclude": ["node_modules", "drizzle/migrations"]
 }
