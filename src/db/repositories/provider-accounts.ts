@@ -181,9 +181,19 @@ const isProviderEnabledForNewAccount = async (
   return account?.enabled ?? true;
 };
 
-const isUniqueConstraintError = (error: unknown): boolean =>
-  error instanceof Error &&
-  error.message.toLowerCase().includes("unique constraint failed");
+const isUniqueConstraintError = (error: unknown): boolean => {
+  let current = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
+    if (
+      current.message.toLowerCase().includes("unique constraint failed") ||
+      ("code" in current && current.code === "SQLITE_CONSTRAINT_UNIQUE")
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+  return false;
+};
 
 type UpsertProviderAccountInput = {
   provider: Provider;
@@ -210,6 +220,8 @@ const buildProviderAccountUpsertUpdate = (input: {
   refreshToken: input.refreshToken,
   refreshLockToken: null,
   refreshLockExpiresAt: null,
+  lastRefreshAt: input.now,
+  lastRefreshStatus: "success",
   expiresAt: input.expiresAt,
   metadataJson: serializeProviderAccountMetadata(input.metadata),
   updatedAt: input.now,
@@ -363,33 +375,51 @@ export const replaceProviderAccountCredentials = async (
     (existing.metadata?.provider === "codex"
       ? existing.metadata.chatgptAccountId
       : null);
-  if (persistedIdentity && persistedIdentity !== input.accountId) {
+  if (
+    persistedIdentity &&
+    persistedIdentity !== input.accountId &&
+    !(input.provider === "claude" && input.accountId === null)
+  ) {
     throw new ProviderAccountReauthorizationConflict(
       "OAuth account identity does not match the selected account"
     );
   }
 
-  const result = await database
-    .update(providerAccounts)
-    .set({
-      accountId: input.accountId ?? existing.accountId,
-      accessToken: input.accessToken,
-      refreshToken: input.refreshToken,
-      expiresAt: input.expiresAt,
-      metadataJson: serializeProviderAccountMetadata(input.metadata),
-      refreshLockToken: null,
-      refreshLockExpiresAt: null,
-      lastRefreshAt: input.now,
-      lastRefreshStatus: "success",
-      updatedAt: input.now,
-    })
-    .where(
-      and(
-        eq(providerAccounts.id, id),
-        eq(providerAccounts.provider, input.provider),
-        eq(providerAccounts.updatedAt, existing.updatedAt)
-      )
-    );
+  let result: { rowsAffected: number };
+  try {
+    result = await database
+      .update(providerAccounts)
+      .set({
+        accountId: input.accountId ?? existing.accountId,
+        accessToken: input.accessToken,
+        refreshToken: input.refreshToken,
+        expiresAt: input.expiresAt,
+        metadataJson: serializeProviderAccountMetadata(input.metadata),
+        refreshLockToken: null,
+        refreshLockExpiresAt: null,
+        lastRefreshAt: input.now,
+        lastRefreshStatus: "success",
+        updatedAt: input.now,
+      })
+      .where(
+        and(
+          eq(providerAccounts.id, id),
+          eq(providerAccounts.provider, input.provider),
+          eq(providerAccounts.updatedAt, existing.updatedAt)
+        )
+      );
+  } catch (error) {
+    if (isUniqueConstraintError(error)) {
+      throw new ProviderAccountReauthorizationConflict(
+        "OAuth account identity is already connected to another account"
+      );
+    }
+    if (input.provider === "claude") {
+      // libSQL errors may include the token-bearing UPDATE parameters.
+      throw new Error("Unable to replace Claude account credentials");
+    }
+    throw error;
+  }
   if (result.rowsAffected === 0) {
     throw new ProviderAccountReauthorizationConflict(
       "Provider account changed during reauthorization"

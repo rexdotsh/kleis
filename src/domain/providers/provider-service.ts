@@ -131,7 +131,7 @@ const refreshProviderAccountWithLock = async (
         throw new Error("Provider refresh response is missing required tokens");
       }
 
-      const updated = await updateProviderAccountTokens(database, account.id, {
+      const updateInput = {
         accessToken,
         refreshToken,
         expiresAt: assertExpiresAt(tokens.expiresAt, refreshNow),
@@ -141,9 +141,23 @@ const refreshProviderAccountWithLock = async (
         ...(account.provider === "claude"
           ? { expectedRefreshToken: account.refreshToken }
           : {}),
-        lastRefreshStatus: "success",
+        lastRefreshStatus: "success" as const,
         now: refreshNow,
-      });
+      };
+      let updated: ProviderAccountRecord | null;
+      try {
+        updated = await updateProviderAccountTokens(
+          database,
+          account.id,
+          updateInput
+        );
+      } catch (error) {
+        if (account.provider === "claude") {
+          // libSQL errors can include the UPDATE parameters, including tokens.
+          throw new Error("Claude credential update failed");
+        }
+        throw error;
+      }
 
       if (!updated) {
         const current = await findProviderAccountById(database, account.id);

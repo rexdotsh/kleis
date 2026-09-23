@@ -119,6 +119,47 @@ describe("Claude refresh lifecycle", () => {
     ]);
   });
 
+  test("separate legacy rows for one Claude user can both persist rotated tokens", async () => {
+    const secondId = "46ab7a29-6338-4382-83ba-f8508ed59a56";
+    const now = Date.now();
+    await database.insert(providerAccounts).values({
+      id: secondId,
+      provider: "claude",
+      accessToken: "other-access",
+      refreshToken: "other-refresh",
+      expiresAt: now - 1000,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const sent: string[] = [];
+    globalThis.fetch = ((_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { refresh_token: string };
+      sent.push(body.refresh_token);
+      return Promise.resolve(
+        Response.json({
+          access_token: `new-access-${sent.length}`,
+          refresh_token: `new-refresh-${sent.length}`,
+          expires_in: 3600,
+          account: { uuid: "shared-user" },
+        })
+      );
+    }) as typeof fetch;
+
+    await refreshProviderAccount(database, id, Date.now());
+    await refreshProviderAccount(database, secondId, Date.now());
+
+    expect(sent).toEqual(["old-refresh", "other-refresh"]);
+    expect(await findProviderAccountById(database, id)).toMatchObject({
+      accountId: "same-claude-account",
+      refreshToken: "new-refresh-1",
+    });
+    expect(await findProviderAccountById(database, secondId)).toMatchObject({
+      accountId: null,
+      refreshToken: "new-refresh-2",
+      lastRefreshStatus: "success",
+    });
+  });
+
   test("does not re-use an invalid_grant refresh token and allows reauthorization", async () => {
     let calls = 0;
     globalThis.fetch = (() => {

@@ -241,6 +241,31 @@ describe("provider account enablement", () => {
     expect(account?.accessToken).toBe("access-codex-new");
   });
 
+  test("a reconnect clears a previous reauthorization-required refresh status", async () => {
+    await database
+      .update(providerAccounts)
+      .set({
+        accountId: "reconnected-account",
+        lastRefreshAt: Date.now(),
+        lastRefreshStatus: "reauthorize",
+      })
+      .where(eq(providerAccounts.id, "codex-primary"));
+    const renewed = await upsertProviderAccount(database, {
+      provider: "codex",
+      accountId: "reconnected-account",
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+      expiresAt: Date.now() + 3_600_000,
+      metadata: null,
+      now: Date.now(),
+    });
+    expect(renewed).toMatchObject({
+      id: "codex-primary",
+      lastRefreshStatus: "success",
+      accessToken: "new-access",
+    });
+  });
+
   test("disables every account and excludes the provider from discovery and routing", async () => {
     const now = Date.now();
     const status = await setProviderAccountsEnabled(
