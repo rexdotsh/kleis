@@ -70,7 +70,6 @@ $("#accounts-list").addEventListener("click", (e) => {
     }
     if (!accountId) return;
     if (action === "edit-account") openEditAccountModal(accountId);
-    if (action === "account-detail") openAccountDetail(accountId);
     if (action === "set-primary") setPrimary(accountId);
     if (action === "refresh-account") refreshAccount(accountId);
     if (action === "reauthorize-account") reauthorizeAccount(accountId);
@@ -122,7 +121,6 @@ $("#keys-list").addEventListener("click", (e) => {
       return;
     }
     if (action === "edit-key") openEditKeyModal(keyId);
-    if (action === "key-detail") openKeyDetail(keyId);
     if (action === "rotate-key") rotateKey(keyId, button);
     if (action === "revoke-key") revokeKey(keyId);
     if (action === "delete-key") deleteKey(keyId);
@@ -132,6 +130,19 @@ $("#keys-list").addEventListener("click", (e) => {
   const card = e.target.closest(".card[data-key-id]");
   if (card) openKeyDetail(card.dataset.keyId);
 });
+
+for (const [listId, cardSelector, openDetail] of [
+  ["#accounts-list", ".card[data-account-id]", openAccountDetail],
+  ["#keys-list", ".card[data-key-id]", openKeyDetail],
+]) {
+  $(listId).addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const card = event.target.closest(cardSelector);
+    if (!card || event.target !== card) return;
+    event.preventDefault();
+    openDetail(card.dataset.accountId || card.dataset.keyId);
+  });
+}
 
 $("#login-btn").addEventListener("click", handleLogin);
 $("#login-token").addEventListener("keydown", (e) => {
