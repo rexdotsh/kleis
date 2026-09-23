@@ -51,7 +51,6 @@ app.route("/admin", adminApi);
 
 app.use("/openai/v1/*", requireProxyApiKey);
 app.use("/anthropic/v1/*", requireProxyApiKey);
-app.use("/copilot/v1/*", requireProxyApiKey);
 app.route("/", proxyRoutes);
 
 export default {

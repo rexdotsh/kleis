@@ -2,7 +2,7 @@
   <img src="./assets/hero.png" alt="Kleis" width="100%" />
 </p>
 
-OAuth account proxy for [OpenCode](https://github.com/anomalyco/opencode). One base URL for Copilot, Codex, and Claude.
+OAuth account proxy for [OpenCode](https://github.com/anomalyco/opencode). One base URL for Codex and Claude.
 
 > [!NOTE]
 > "Kleis" is named from the idea of a key that can unlock many paths with one handle.
@@ -13,7 +13,7 @@ Re-authenticating OAuth accounts across clients and machines is painful. Kleis s
 
 ## How it works
 
-Each provider has its own proxy adapter because none of them behave the same way. Copilot needs vision/initiator headers derived from message content analysis. Codex rejects certain params and requires instruction injection. Claude needs tool name prefixing, system identity rewriting, beta header merging, and streaming response transformation to strip those prefixes back out.
+Each provider has its own proxy adapter because none of them behave the same way. Codex rejects certain params and requires instruction injection. Claude needs tool name prefixing, system identity rewriting, beta header merging, and streaming response transformation to strip those prefixes back out.
 
 `GET /api.json` serves a models.dev-compatible registry that merges upstream model data with Kleis routing info, so OpenCode auto-discovers everything without manual model config.
 
@@ -27,8 +27,6 @@ There's also minute-bucketed request analytics across both API keys and provider
 |---|---|---|
 | `POST /openai/v1/responses` | Codex | Responses API |
 | `POST /anthropic/v1/messages` | Claude | Messages API |
-| `POST /copilot/v1/chat/completions` | Copilot | Chat Completions |
-| `POST /copilot/v1/responses` | Copilot | Responses API |
 
 ---
 
@@ -62,7 +60,6 @@ Admin panel lives at `http://localhost:3003/admin/`.
 ## OAuth flows
 
 - Codex: browser callback code flow or headless device flow.
-- Copilot: device flow.
 - Claude: authorization code flow (`claude.ai` or `console.anthropic.com` mode).
 
 After connecting accounts, set one primary account per provider.

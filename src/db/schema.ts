@@ -8,7 +8,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
-export const providers = ["copilot", "codex", "claude"] as const;
+export const providers = ["codex", "claude"] as const;
 export type Provider = (typeof providers)[number];
 
 export const providerAccounts = sqliteTable(

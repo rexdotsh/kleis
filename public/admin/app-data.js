@@ -9,7 +9,7 @@ import {
 
 const DEFAULT_KEY_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const ADMIN_TOKEN_STORAGE_KEY = "kleis_admin_token";
-const PROVIDER_ORDER = ["copilot", "codex", "claude"];
+const PROVIDER_ORDER = ["codex", "claude"];
 
 const readPersistedToken = () =>
   localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || "";
@@ -1216,7 +1216,6 @@ function updateOAuthProviderUI() {
   if (state.activeOAuth) return;
   const p = $("#oauth-provider").value;
   clearReauthorization();
-  $("#oauth-copilot-opts").style.display = p === "copilot" ? "block" : "none";
   $("#oauth-codex-opts").style.display = p === "codex" ? "block" : "none";
   $("#oauth-claude-opts").style.display = p === "claude" ? "block" : "none";
 }
@@ -1241,7 +1240,6 @@ async function reauthorizeAccount(id) {
   target.style.display = "flex";
   $("#oauth-provider").value = account.provider;
   $("#oauth-provider").disabled = true;
-  $("#oauth-copilot-opts").style.display = "none";
   $("#oauth-codex-opts").style.display =
     account.provider === "codex" ? "block" : "none";
   $("#oauth-claude-opts").style.display =
@@ -1273,10 +1271,7 @@ async function startOAuth() {
 
   try {
     const body = {};
-    if (provider === "copilot") {
-      const ed = $("#oauth-enterprise-domain").value.trim();
-      if (ed) body.options = { enterpriseDomain: ed };
-    } else if (provider === "codex") {
+    if (provider === "codex") {
       body.options = { mode: $("#oauth-codex-mode").value };
     } else if (provider === "claude") {
       body.options = { mode: $("#oauth-claude-mode").value };
