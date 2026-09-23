@@ -28,6 +28,7 @@ export type ProviderTokenResult = {
   refreshToken: string;
   expiresAt: number;
   accountId: string | null;
+  replaceAccountId?: string;
   metadata: ProviderAccountMetadata | null;
   label?: string | null;
 };

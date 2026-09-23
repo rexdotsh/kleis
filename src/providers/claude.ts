@@ -36,6 +36,7 @@ const CLAUDE_STATE_TTL_MS = 15 * 60 * 1000;
 const claudeStateMetadataSchema = z.strictObject({
   mode: z.enum(["max", "console"]),
   host: z.enum(["claude.ai", "console.anthropic.com"]),
+  replaceAccountId: z.string().uuid().optional(),
 });
 
 type ClaudeTokenResponse = {
@@ -169,6 +170,9 @@ export const claudeAdapter: ProviderAdapter = {
       metadataJson: JSON.stringify({
         mode,
         host,
+        ...(typeof input.options?.replaceAccountId === "string"
+          ? { replaceAccountId: input.options.replaceAccountId }
+          : {}),
       }),
       expiresAt: input.now + CLAUDE_STATE_TTL_MS,
     });
@@ -233,14 +237,19 @@ export const claudeAdapter: ProviderAdapter = {
       verifier: stateRecord.pkceVerifier,
     });
 
-    return buildTokenResult({
-      tokens,
-      now: input.now,
-      mode: stateMetadata.mode,
-      host: stateMetadata.host,
-      existing: null,
-      fallbackRefreshToken: null,
-    });
+    return {
+      ...buildTokenResult({
+        tokens,
+        now: input.now,
+        mode: stateMetadata.mode,
+        host: stateMetadata.host,
+        existing: null,
+        fallbackRefreshToken: null,
+      }),
+      ...(stateMetadata.replaceAccountId
+        ? { replaceAccountId: stateMetadata.replaceAccountId }
+        : {}),
+    };
   },
   async refreshAccount(
     account: ProviderAccountRecord,

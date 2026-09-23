@@ -302,6 +302,7 @@ function accountCardHtml(account) {
       <div class="card-actions">
         ${editBtn}
         ${setPrimaryBtn}
+        ${account.provider === "codex" || account.provider === "claude" ? `<button class="btn btn-ghost btn-sm" data-action="reauthorize-account" data-account-id="${account.id}" type="button">reauthorize</button>` : ""}
         <button class="btn btn-ghost btn-sm" data-action="refresh-account" data-account-id="${account.id}" type="button">refresh</button>
         <button class="btn btn-danger btn-sm" data-action="delete-account" data-account-id="${account.id}" type="button">delete</button>
       </div>

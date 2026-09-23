@@ -45,12 +45,14 @@ const codexOAuthStateMetadataSchema = z.discriminatedUnion("mode", [
   z.strictObject({
     mode: z.literal("browser"),
     redirectUri: z.url(),
+    replaceAccountId: z.string().uuid().optional(),
   }),
   z.strictObject({
     mode: z.literal("headless"),
     deviceAuthId: z.string().min(1),
     userCode: z.string().min(1),
     intervalMs: z.number().int().positive(),
+    replaceAccountId: z.string().uuid().optional(),
   }),
 ]);
 
@@ -430,6 +432,9 @@ export const codexAdapter: ProviderAdapter = {
   ): Promise<ProviderOAuthStartResult> {
     const mode = resolveCodexOAuthMode(input.options);
     const state = generateState();
+    const replaceAccountId = input.options?.replaceAccountId;
+    const replacement =
+      typeof replaceAccountId === "string" ? { replaceAccountId } : {};
 
     if (mode === "headless") {
       const deviceAuth = await requestDeviceAuthorization();
@@ -442,6 +447,7 @@ export const codexAdapter: ProviderAdapter = {
           deviceAuthId: deviceAuth.deviceAuthId,
           userCode: deviceAuth.userCode,
           intervalMs: deviceAuth.intervalMs,
+          ...replacement,
         }),
         expiresAt: input.now + CODEX_OAUTH_STATE_TTL_MS,
       });
@@ -463,6 +469,7 @@ export const codexAdapter: ProviderAdapter = {
       metadataJson: JSON.stringify({
         mode,
         redirectUri,
+        ...replacement,
       }),
       expiresAt: input.now + CODEX_OAUTH_STATE_TTL_MS,
     });
@@ -523,7 +530,12 @@ export const codexAdapter: ProviderAdapter = {
         codeVerifier: deviceAuthorization.codeVerifier,
       });
 
-      return buildFreshOAuthTokenResult(tokens, completedAt);
+      return {
+        ...buildFreshOAuthTokenResult(tokens, completedAt),
+        ...(metadata.replaceAccountId
+          ? { replaceAccountId: metadata.replaceAccountId }
+          : {}),
+      };
     }
 
     const browserCode = input.code;
@@ -561,7 +573,12 @@ export const codexAdapter: ProviderAdapter = {
       codeVerifier: stateRecord.pkceVerifier,
     });
 
-    return buildFreshOAuthTokenResult(tokens, completedAt);
+    return {
+      ...buildFreshOAuthTokenResult(tokens, completedAt),
+      ...(metadata.replaceAccountId
+        ? { replaceAccountId: metadata.replaceAccountId }
+        : {}),
+    };
   },
   async refreshAccount(
     account: ProviderAccountRecord,

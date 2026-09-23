@@ -334,6 +334,70 @@ export const upsertProviderAccount = async (
   });
 };
 
+export class ProviderAccountReauthorizationConflict extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderAccountReauthorizationConflict";
+  }
+}
+
+export const replaceProviderAccountCredentials = async (
+  database: Database,
+  id: string,
+  input: {
+    provider: Provider;
+    accountId: string | null;
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: number;
+    metadata: ProviderAccountMetadata | null;
+    now: number;
+  }
+): Promise<ProviderAccountRecord | null> => {
+  const existing = await findProviderAccountById(database, id);
+  if (!existing || existing.provider !== input.provider) {
+    return null;
+  }
+  const persistedIdentity =
+    existing.accountId ||
+    (existing.metadata?.provider === "codex"
+      ? existing.metadata.chatgptAccountId
+      : null);
+  if (persistedIdentity && persistedIdentity !== input.accountId) {
+    throw new ProviderAccountReauthorizationConflict(
+      "OAuth account identity does not match the selected account"
+    );
+  }
+
+  const result = await database
+    .update(providerAccounts)
+    .set({
+      accountId: input.accountId ?? existing.accountId,
+      accessToken: input.accessToken,
+      refreshToken: input.refreshToken,
+      expiresAt: input.expiresAt,
+      metadataJson: serializeProviderAccountMetadata(input.metadata),
+      refreshLockToken: null,
+      refreshLockExpiresAt: null,
+      lastRefreshAt: input.now,
+      lastRefreshStatus: "success",
+      updatedAt: input.now,
+    })
+    .where(
+      and(
+        eq(providerAccounts.id, id),
+        eq(providerAccounts.provider, input.provider),
+        eq(providerAccounts.updatedAt, existing.updatedAt)
+      )
+    );
+  if (result.rowsAffected === 0) {
+    throw new ProviderAccountReauthorizationConflict(
+      "Provider account changed during reauthorization"
+    );
+  }
+  return findProviderAccountById(database, id);
+};
+
 type UpdateProviderAccountTokensInput = {
   accessToken: string;
   refreshToken: string;

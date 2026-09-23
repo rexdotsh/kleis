@@ -67,6 +67,12 @@ Admin panel lives at `http://localhost:3003/admin/`.
 
 After connecting accounts, set one primary account per provider.
 
+If a Codex or Claude login needs repair, select **reauthorize** on that account
+in the admin panel. Complete the OAuth flow to replace its credentials while
+keeping its account ID, primary setting, and API-key account scopes. Starting
+a new OAuth flow from the Connect tab creates a separate account when the
+provider does not return a stable account identifier.
+
 ---
 
 ## OpenCode configuration

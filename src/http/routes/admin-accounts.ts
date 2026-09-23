@@ -6,6 +6,7 @@ import { db } from "../../db";
 import {
   completeProviderOAuth,
   importProviderAccount,
+  ProviderReauthorizationTargetError,
   refreshProviderAccount,
   startProviderOAuth,
 } from "../../domain/providers/provider-service";
@@ -28,6 +29,7 @@ import {
   setPrimaryProviderAccount,
   type ProviderAccountRecord,
   updateProviderAccountProfile,
+  ProviderAccountReauthorizationConflict,
 } from "../../db/repositories/provider-accounts";
 import { providers } from "../../db/schema";
 import {
@@ -415,15 +417,25 @@ export const adminAccountsRoutes = new Hono()
     async (context) => {
       const { provider } = context.req.valid("param");
       const body = context.req.valid("json");
-      const result = await startProviderOAuth(
-        db,
-        provider,
-        {
-          ...(body.options ? { options: body.options } : {}),
-        },
-        Date.now()
-      );
-      return context.json(result);
+      try {
+        const result = await startProviderOAuth(
+          db,
+          provider,
+          {
+            ...(body.options ? { options: body.options } : {}),
+          },
+          Date.now()
+        );
+        return context.json(result);
+      } catch (error) {
+        if (error instanceof ProviderReauthorizationTargetError) {
+          return context.json(
+            { error: "bad_request", message: error.message },
+            400
+          );
+        }
+        throw error;
+      }
     }
   )
   .post(
@@ -443,17 +455,27 @@ export const adminAccountsRoutes = new Hono()
         );
       }
 
-      const account = await completeProviderOAuth(
-        db,
-        provider,
-        {
-          state: body.state,
-          ...(body.code ? { code: body.code } : {}),
-        },
-        Date.now()
-      );
+      try {
+        const account = await completeProviderOAuth(
+          db,
+          provider,
+          {
+            state: body.state,
+            ...(body.code ? { code: body.code } : {}),
+          },
+          Date.now()
+        );
 
-      return context.json({ account: toAdminAccountView(account) });
+        return context.json({ account: toAdminAccountView(account) });
+      } catch (error) {
+        if (error instanceof ProviderAccountReauthorizationConflict) {
+          return context.json(
+            { error: "conflict", message: error.message },
+            409
+          );
+        }
+        throw error;
+      }
     }
   )
   .post(

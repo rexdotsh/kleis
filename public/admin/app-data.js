@@ -36,6 +36,7 @@ const state = {
   keysLoaded: false,
   showRevokedKeys: false,
   activeOAuth: null,
+  reauthorizeAccountId: null,
   revealedKeyIds: new Set(),
   dashboardWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   dashboardData: null,
@@ -1167,11 +1168,37 @@ async function copyToClipboard(text, btn) {
   }
 }
 
+function clearReauthorization() {
+  state.reauthorizeAccountId = null;
+  $("#oauth-reauthorize-target").style.display = "none";
+}
+
 function updateOAuthProviderUI() {
   const p = $("#oauth-provider").value;
+  clearReauthorization();
   $("#oauth-copilot-opts").style.display = p === "copilot" ? "block" : "none";
   $("#oauth-codex-opts").style.display = p === "codex" ? "block" : "none";
   $("#oauth-claude-opts").style.display = p === "claude" ? "block" : "none";
+}
+
+function reauthorizeAccount(id) {
+  const account = accountById(id);
+  if (!account || !["codex", "claude"].includes(account.provider)) return;
+  state.reauthorizeAccountId = id;
+  const target = $("#oauth-reauthorize-target");
+  target.textContent = `Replacing credentials for ${account.label || account.provider}; account settings and scopes will be kept. Change Provider to cancel.`;
+  target.style.display = "block";
+  $("#oauth-provider").value = account.provider;
+  $("#oauth-copilot-opts").style.display = "none";
+  $("#oauth-codex-opts").style.display =
+    account.provider === "codex" ? "block" : "none";
+  $("#oauth-claude-opts").style.display =
+    account.provider === "claude" ? "block" : "none";
+  if (account.provider === "claude") {
+    $("#oauth-claude-mode").value = account.metadata?.oauthMode || "max";
+  }
+  switchToTab("oauth");
+  toast(`Reauthorizing ${account.label || account.provider}`);
 }
 
 async function startOAuth() {
@@ -1189,6 +1216,17 @@ async function startOAuth() {
       body.options = { mode: $("#oauth-codex-mode").value };
     } else if (provider === "claude") {
       body.options = { mode: $("#oauth-claude-mode").value };
+    }
+
+    if (state.reauthorizeAccountId) {
+      const target = accountById(state.reauthorizeAccountId);
+      if (target?.provider !== provider) {
+        throw new Error("Reauthorization target does not match provider");
+      }
+      body.options = {
+        ...body.options,
+        replaceAccountId: state.reauthorizeAccountId,
+      };
     }
 
     const data = await api(`/admin/accounts/${provider}/oauth/start`, {
@@ -1226,6 +1264,8 @@ async function completeOAuth() {
     });
     toast("Account connected");
     state.activeOAuth = null;
+    state.reauthorizeAccountId = null;
+    $("#oauth-reauthorize-target").style.display = "none";
     $("#oauth-flow-active").style.display = "none";
     $("#oauth-flow-active").innerHTML = "";
     await loadAccounts();
@@ -1358,6 +1398,8 @@ function logout() {
   state.keysLoaded = false;
   state.showRevokedKeys = false;
   state.activeOAuth = null;
+  state.reauthorizeAccountId = null;
+  $("#oauth-reauthorize-target").style.display = "none";
   state.revealedKeyIds.clear();
   state.dashboardWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.dashboardData = null;
@@ -1385,6 +1427,7 @@ export {
   api,
   cacheHitRate,
   clearPersistedToken,
+  clearReauthorization,
   completeOAuth,
   copyToClipboard,
   createKey,
@@ -1414,6 +1457,7 @@ export {
   openEditKeyModal,
   readPersistedToken,
   refreshAccount,
+  reauthorizeAccount,
   redeemResetCredit,
   relativeTime,
   resolveConfirm,
