@@ -53,6 +53,28 @@ export const readModelFromBody = (body: unknown): string | null => {
   return model || null;
 };
 
+export type ProxyRequestBody = {
+  text: string;
+  parsed: unknown | null;
+  model: string | null;
+};
+
+export const readProxyRequestBody = async (
+  request: Request
+): Promise<ProxyRequestBody> => {
+  const text = await request.text();
+  let parsed: unknown | null = null;
+  if (text.trim()) {
+    try {
+      parsed = JSON.parse(text) as unknown;
+    } catch {
+      // The caller reports a missing model for malformed JSON.
+    }
+  }
+
+  return { text, parsed, model: readModelFromBody(parsed) };
+};
+
 export const parseModelForProxyRoute = (
   model: string | null | undefined,
   route: ModelScopeRoute

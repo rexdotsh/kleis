@@ -5,22 +5,9 @@ import { findActiveApiKeyByValue } from "../../db/repositories/api-keys";
 import { parseBearerToken } from "../utils/bearer";
 import {
   isModelInScope,
-  readModelFromBody,
+  readProxyRequestBody,
   resolveProxyRoute,
 } from "../proxy-routing";
-
-const readRequestedModel = async (request: Request): Promise<string | null> => {
-  const bodyText = await request.clone().text();
-  if (!bodyText.trim()) {
-    return null;
-  }
-
-  try {
-    return readModelFromBody(JSON.parse(bodyText) as unknown);
-  } catch {
-    return null;
-  }
-};
 
 export const requireProxyApiKey = createMiddleware(async (context, next) => {
   const token =
@@ -54,7 +41,8 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
 
   let requestedModel: string | null = null;
   if (isProxyRequest) {
-    requestedModel = await readRequestedModel(context.req.raw);
+    const requestBody = await readProxyRequestBody(context.req.raw);
+    requestedModel = requestBody.model;
     if (!requestedModel) {
       return context.json(
         {
@@ -64,6 +52,7 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
         400
       );
     }
+    context.set("proxyRequestBody", requestBody);
   }
 
   if (route && apiKey.providerScopes?.length) {
