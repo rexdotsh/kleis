@@ -177,7 +177,6 @@ const cloneProviderModels = (input: {
   apiUrl: string;
   npm: string;
   modelPrefix?: string;
-  sourceLabel?: string;
   shouldIncludeModel?: (modelId: string) => boolean;
   transformModel?: (modelId: string, model: JsonObject) => void;
 }): JsonObject => {
@@ -205,9 +204,7 @@ const cloneProviderModels = (input: {
     input.transformModel?.(modelId, model);
 
     model.id = proxyModelId;
-    if (input.sourceLabel) {
-      model.name = `${baseName} (${input.sourceLabel})`;
-    }
+    model.name = baseName;
     model.provider = {
       ...providerOverrides,
       api: input.apiUrl,
@@ -284,7 +281,6 @@ const mergeKleisProviderModels = (input: {
         ...(mapping.internalProvider === "codex"
           ? {}
           : { modelPrefix: mapping.canonicalProvider }),
-        sourceLabel: mapping.canonicalProvider,
         shouldIncludeModel: (modelId) =>
           isModelSupportedByProxyProvider(mapping.internalProvider, modelId) &&
           isModelInScope({
