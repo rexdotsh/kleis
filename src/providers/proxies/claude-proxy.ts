@@ -290,15 +290,16 @@ const buildUpstreamUrl = (search: string): string => {
 };
 
 const findSseEventBoundary = (
-  buffer: string
+  buffer: string,
+  startIndex = 0
 ): { index: number; length: number } | null => {
-  const match = /(?:\r\n|\r|\n)(?:\r\n|\r|\n)/u.exec(buffer);
+  const match = /(?:\r\n|\r|\n)(?:\r\n|\r|\n)/u.exec(buffer.slice(startIndex));
   if (!match || match.index === undefined) {
     return null;
   }
 
   return {
-    index: match.index,
+    index: startIndex + match.index,
     length: match[0].length,
   };
 };
@@ -438,6 +439,7 @@ const maybeTransformClaudeStreamResponse = (
   const validationDecoder = new TextDecoder("utf-8", { fatal: true });
   const startedAt = Date.now();
   let buffer = "";
+  let bufferedBytes = 0;
   let bytes = 0;
   let chunks = 0;
   let lastChunkAt = startedAt;
@@ -640,7 +642,9 @@ const maybeTransformClaudeStreamResponse = (
               clearKeepAlive?.();
               return;
             }
-            buffer += decoder.decode();
+            const trailingText = decoder.decode();
+            buffer += trailingText;
+            bufferedBytes += encoder.encode(trailingText).byteLength;
             if (utf8ValidationEnabled) {
               try {
                 validationDecoder.decode();
@@ -649,9 +653,7 @@ const maybeTransformClaudeStreamResponse = (
               }
             }
             const hadTrailingEvent = buffer.trim().length > 0;
-            if (
-              encoder.encode(buffer).byteLength > MAX_CLAUDE_SSE_EVENT_BYTES
-            ) {
+            if (bufferedBytes > MAX_CLAUDE_SSE_EVENT_BYTES) {
               throw new Error(
                 "Claude SSE event exceeds the proxy buffer limit"
               );
@@ -714,14 +716,24 @@ const maybeTransformClaudeStreamResponse = (
               reportInvalidUtf8();
             }
           }
-          buffer += decoder.decode(value, { stream: true });
+          const decoded = decoder.decode(value, { stream: true });
+          const previousBufferLength = buffer.length;
+          buffer += decoded;
+          bufferedBytes += encoder.encode(decoded).byteLength;
 
           let enqueued = false;
-          let boundary = findSseEventBoundary(buffer);
+          // A delimiter is at most four characters, so only its final three
+          // characters can precede the newly appended text.
+          let boundary = findSseEventBoundary(
+            buffer,
+            Math.max(0, previousBufferLength - 3)
+          );
           while (boundary) {
             const chunk = buffer.slice(0, boundary.index + boundary.length);
             buffer = buffer.slice(boundary.index + boundary.length);
-            if (encoder.encode(chunk).byteLength > MAX_CLAUDE_SSE_EVENT_BYTES) {
+            const chunkBytes = encoder.encode(chunk);
+            bufferedBytes -= chunkBytes.byteLength;
+            if (chunkBytes.byteLength > MAX_CLAUDE_SSE_EVENT_BYTES) {
               throw new Error(
                 "Claude SSE event exceeds the proxy buffer limit"
               );
@@ -736,12 +748,11 @@ const maybeTransformClaudeStreamResponse = (
               );
               const invalidTerminal =
                 sawMessageStop && (!sawMessageStart || sawMalformedEvent);
+              const outgoing = invalidTerminal
+                ? 'event: error\ndata: {"type":"error","error":{"type":"api_error","message":"Claude stream contains invalid events"}}\n\n'
+                : transformed;
               controller.enqueue(
-                encoder.encode(
-                  invalidTerminal
-                    ? 'event: error\ndata: {"type":"error","error":{"type":"api_error","message":"Claude stream contains invalid events"}}\n\n'
-                    : transformed
-                )
+                outgoing === chunk ? chunkBytes : encoder.encode(outgoing)
               );
               lastWriteAt = Date.now();
               enqueued = true;
@@ -763,7 +774,7 @@ const maybeTransformClaudeStreamResponse = (
             }
             boundary = findSseEventBoundary(buffer);
           }
-          if (encoder.encode(buffer).byteLength > MAX_CLAUDE_SSE_EVENT_BYTES) {
+          if (bufferedBytes > MAX_CLAUDE_SSE_EVENT_BYTES) {
             throw new Error("Claude SSE event exceeds the proxy buffer limit");
           }
           if (enqueued) {
