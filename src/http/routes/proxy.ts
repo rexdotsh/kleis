@@ -30,7 +30,6 @@ import { sendWithAuthReplay } from "../auth-replay";
 import {
   parseModelForProxyRoute,
   proxyRouteTable,
-  readModelFromBody,
   type ProxyRoute,
 } from "../proxy-routing";
 
@@ -74,18 +73,6 @@ const removeProxyAuthHeaders = (headers: Headers): void => {
   headers.delete("host");
   headers.delete("content-length");
   headers.delete(CODEX_ACCOUNT_ID_HEADER);
-};
-
-const tryParseJsonBody = (bodyText: string | null): unknown | null => {
-  if (!bodyText) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(bodyText) as unknown;
-  } catch {
-    return null;
-  }
 };
 
 const runInBackground = (promise: Promise<unknown>): void => {
@@ -220,9 +207,11 @@ const proxyRequest = async (
   let providerAccountId = MISSING_PROVIDER_ACCOUNT_ID;
 
   const requestUrl = new URL(context.req.url);
-  const requestBodyText = await context.req.text();
-  const parsedRequestBody = tryParseJsonBody(requestBodyText);
-  const requestedModel = readModelFromBody(parsedRequestBody);
+  const {
+    text: requestBodyText,
+    parsed: parsedRequestBody,
+    model: requestedModel,
+  } = context.get("proxyRequestBody");
   const parsedModel = parseModelForProxyRoute(requestedModel, route);
   const usageModel = parsedModel.upstreamModel ?? "";
 

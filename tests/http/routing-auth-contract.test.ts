@@ -5,6 +5,7 @@ import { resolveRequestIdleTimeout } from "../../src/http/utils/request-timeout"
 import {
   modelScopeCandidates,
   parseModelForProxyRoute,
+  readProxyRequestBody,
   resolveProxyRoute,
 } from "../../src/http/proxy-routing";
 
@@ -24,6 +25,31 @@ describe("bearer parsing", () => {
 });
 
 describe("proxy route mapping", () => {
+  test("reads the original proxy body once for authorization and forwarding", async () => {
+    const text = '{ "model": "anthropic/claude-sonnet-4", "messages": [] }';
+    let reads = 0;
+    const request = new Request("https://kleis.example/anthropic/v1/messages", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        pull(controller): void {
+          reads++;
+          controller.enqueue(new TextEncoder().encode(text));
+          controller.close();
+        },
+      }),
+    });
+
+    const body = await readProxyRequestBody(request);
+    expect(reads).toBe(1);
+    expect(request.bodyUsed).toBe(true);
+    expect(body.text).toBe(text);
+    expect(body.model).toBe("anthropic/claude-sonnet-4");
+    expect(body.parsed).toEqual({
+      model: "anthropic/claude-sonnet-4",
+      messages: [],
+    });
+  });
+
   test("maps anthropic messages to claude provider", () => {
     const route = resolveProxyRoute("/anthropic/v1/messages");
     expect(route?.provider).toBe("claude");
