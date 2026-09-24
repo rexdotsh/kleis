@@ -16,15 +16,17 @@ export const ANTHROPIC_API_BASE_URL = "https://api.anthropic.com";
 // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L536
 const CLAUDE_CODE_BETA_HEADER = "claude-code-20250219";
 export const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
-const CLAUDE_INTERLEAVED_THINKING_BETA_HEADER =
+export const CLAUDE_INTERLEAVED_THINKING_BETA_HEADER =
   "interleaved-thinking-2025-05-14";
-const CLAUDE_FINE_GRAINED_TOOL_STREAMING_BETA_HEADER =
-  "fine-grained-tool-streaming-2025-05-14";
+// Claude Code-compatible OAuth transports keep interleaved thinking in their
+// baseline even for requests without a thinking block. Fine-grained tool
+// streaming is intentionally absent: it can expose unvalidated partial tool
+// input JSON to clients expecting complete, validated input.
+// https://github.com/leohenon/pi-anthropic-oauth/blob/64cad1b4cd42d2868b9d62c1a37f778b70c1a015/src/stream.ts#L22-L33
 export const CLAUDE_REQUIRED_BETA_HEADERS = [
   CLAUDE_CODE_BETA_HEADER,
   CLAUDE_OAUTH_BETA_HEADER,
   CLAUDE_INTERLEAVED_THINKING_BETA_HEADER,
-  CLAUDE_FINE_GRAINED_TOOL_STREAMING_BETA_HEADER,
 ] as const;
 // Claude Opus 5.5 requires Claude Code 2.1.280 or newer.
 export const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.280 (external, cli)";

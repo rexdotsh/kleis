@@ -405,6 +405,7 @@ const proxyRequest = async (
       const baseHeaders = new Headers(headers);
       const sendAttempt = async (attemptAccount: ProviderAccountRecord) => {
         const attemptHeaders = new Headers(baseHeaders);
+        let recordStreamingOutcome = false;
         const claudeProxy = prepareClaudeProxyRequest({
           requestUrl,
           headers: attemptHeaders,
@@ -416,16 +417,40 @@ const proxyRequest = async (
               ? attemptAccount.metadata
               : null,
           onTokenUsage: usageRecorder.onTokenUsage,
+          onStreamOutcome: (outcome) => {
+            if (!recordStreamingOutcome) {
+              return;
+            }
+            usageRecorder.recordFinal(
+              outcome === "completed"
+                ? 200
+                : outcome === "cancelled"
+                  ? 499
+                  : outcome === "rate_limited"
+                    ? 429
+                    : outcome === "overloaded"
+                      ? 529
+                      : 502
+            );
+          },
         });
+        const response = await fetchProxyUpstream({
+          url: claudeProxy.upstreamUrl,
+          method: context.req.method,
+          headers: attemptHeaders,
+          body: claudeProxy.bodyText,
+          signal: context.req.raw.signal,
+          useCodexSseHeaderTimeout: false,
+        });
+        recordStreamingOutcome =
+          response.status === 200 &&
+          response.body !== null &&
+          (response.headers.get("content-type") ?? "")
+            .toLowerCase()
+            .includes("text/event-stream");
         return {
-          response: await fetchProxyUpstream({
-            url: claudeProxy.upstreamUrl,
-            method: context.req.method,
-            headers: attemptHeaders,
-            body: claudeProxy.bodyText,
-            signal: context.req.raw.signal,
-            useCodexSseHeaderTimeout: false,
-          }),
+          response,
+          recordStreamingOutcome,
           transformResponse: claudeProxy.transformResponse,
         };
       };
@@ -488,7 +513,9 @@ const proxyRequest = async (
         usageRecorder.recordImmediate(500);
         throw error;
       }
-      usageRecorder.recordFinal(attempt.response.status);
+      if (!attempt.recordStreamingOutcome) {
+        usageRecorder.recordFinal(attempt.response.status);
+      }
       return responseToClient;
     }
 

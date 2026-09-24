@@ -17,10 +17,13 @@ import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
+const MAX_CLAUDE_SSE_EVENT_BYTES = 4 * 1024 * 1024;
+
 // Anthropic OAuth sessions reject the feedback repo path used in OpenCode's
 // prompt URL and the opening `<directories>` wrapper emitted by OpenCode's
-// system prompt assembly. Apply the smallest known working rewrite to all
-// Claude system prompts so primary-agent and subagent requests behave the same.
+// system prompt assembly. Apply these workarounds to every system text block:
+// subagent prompts need them even when they do not start with OpenCode's
+// primary-agent introduction.
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/prompt/anthropic.txt
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/system.ts#L32-L72
 const sanitizeClaudeSystemText = (text: string): string =>
@@ -35,14 +38,6 @@ const sanitizeClaudeSystemText = (text: string): string =>
     )
     .replace(/<directories>\n\s*/gi, "Directories\n");
 
-const toClaudeToolName = (name: string, prefix: string): string => {
-  if (name.startsWith(prefix)) {
-    return name;
-  }
-
-  return `${prefix}${name[0]?.toUpperCase() ?? ""}${name.slice(1)}`;
-};
-
 const fromClaudeToolName = (name: string, prefix: string): string => {
   if (!name.startsWith(prefix)) {
     return name;
@@ -56,21 +51,88 @@ const fromClaudeToolName = (name: string, prefix: string): string => {
   return `${rest[0]?.toLowerCase() ?? ""}${rest.slice(1)}`;
 };
 
-// Request: prefix tool names so they match Claude Code's expected format.
-// Response: strip prefixes back so the client sees its original names.
-// https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L214-L239
-// https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L276-L294
-// pi-mono uses case-normalized Claude Code tool names instead of a prefix:
-// https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L64-L93
-const prefixToolName = (name: string, prefix: string): string =>
-  toClaudeToolName(name, prefix);
+type ClaudeToolNames = {
+  upstream(name: string): string;
+  client(name: string): string;
+};
 
-const stripToolNamePrefix = (name: string, prefix: string): string =>
-  fromClaudeToolName(name, prefix);
+// Reserve already-prefixed names before allocating transformed names so
+// `Shell`, `shell`, and `mcp_Shell` can all round-trip in the same request.
+const createClaudeToolNames = (
+  payload: unknown,
+  prefix: string
+): ClaudeToolNames => {
+  const names: string[] = [];
+  const passthroughNames = new Set<string>();
+  if (isObjectRecord(payload)) {
+    if (Array.isArray(payload.tools)) {
+      for (const tool of payload.tools) {
+        if (isObjectRecord(tool) && typeof tool.name === "string") {
+          names.push(tool.name);
+          if (typeof tool.type === "string" && tool.type !== "custom") {
+            passthroughNames.add(tool.name);
+          }
+        }
+      }
+    }
+    if (
+      isObjectRecord(payload.tool_choice) &&
+      typeof payload.tool_choice.name === "string"
+    ) {
+      names.push(payload.tool_choice.name);
+    }
+    if (Array.isArray(payload.messages)) {
+      for (const message of payload.messages) {
+        if (!isObjectRecord(message) || !Array.isArray(message.content)) {
+          continue;
+        }
+        for (const block of message.content) {
+          if (
+            isObjectRecord(block) &&
+            block.type === "tool_use" &&
+            typeof block.name === "string"
+          ) {
+            names.push(block.name);
+          }
+        }
+      }
+    }
+  }
+
+  const originalToUpstream = new Map<string, string>();
+  const upstreamToOriginal = new Map<string, string>();
+  for (const name of names) {
+    if (name.startsWith(prefix) || passthroughNames.has(name)) {
+      originalToUpstream.set(name, name);
+      upstreamToOriginal.set(name, name);
+    }
+  }
+  for (const name of names) {
+    if (originalToUpstream.has(name)) {
+      continue;
+    }
+    const base =
+      `${prefix}${name[0]?.toUpperCase() ?? ""}${name.slice(1)}`.slice(0, 64);
+    let candidate = base;
+    let suffix = 2;
+    while (upstreamToOriginal.has(candidate)) {
+      const ending = `_${suffix++}`;
+      candidate = `${base.slice(0, 64 - ending.length)}${ending}`;
+    }
+    originalToUpstream.set(name, candidate);
+    upstreamToOriginal.set(candidate, name);
+  }
+
+  return {
+    upstream: (name) => originalToUpstream.get(name) ?? name,
+    client: (name) =>
+      upstreamToOriginal.get(name) ?? fromClaudeToolName(name, prefix),
+  };
+};
 
 const transformClaudeRequestPayload = (
   payload: unknown,
-  toolPrefix: string,
+  toolNames: ClaudeToolNames,
   systemIdentity: string
 ): unknown => {
   if (!isObjectRecord(payload)) {
@@ -96,16 +158,20 @@ const transformClaudeRequestPayload = (
         block.type === "text" &&
         typeof block.text === "string"
       ) {
-        systemBlocks.push({
-          ...block,
-          text: sanitizeClaudeSystemText(block.text),
-        });
+        if (block.text !== systemIdentity) {
+          systemBlocks.push({
+            ...block,
+            text: sanitizeClaudeSystemText(block.text),
+          });
+        }
         continue;
       }
 
       systemBlocks.push(block);
     }
     transformed.system = systemBlocks;
+  } else if (transformed.system == null) {
+    transformed.system = [{ type: "text", text: systemIdentity }];
   }
 
   if (Array.isArray(transformed.tools)) {
@@ -116,7 +182,7 @@ const transformClaudeRequestPayload = (
 
       return {
         ...tool,
-        name: prefixToolName(tool.name, toolPrefix),
+        name: toolNames.upstream(tool.name),
       };
     });
   }
@@ -128,7 +194,7 @@ const transformClaudeRequestPayload = (
   ) {
     transformed.tool_choice = {
       ...transformed.tool_choice,
-      name: prefixToolName(transformed.tool_choice.name, toolPrefix),
+      name: toolNames.upstream(transformed.tool_choice.name),
     };
   }
 
@@ -151,7 +217,7 @@ const transformClaudeRequestPayload = (
 
           return {
             ...block,
-            name: prefixToolName(block.name, toolPrefix),
+            name: toolNames.upstream(block.name),
           };
         }),
       };
@@ -163,28 +229,47 @@ const transformClaudeRequestPayload = (
 
 const transformClaudeResponsePayload = (
   payload: unknown,
-  toolPrefix: string
+  toolNames: ClaudeToolNames
 ): unknown => {
-  if (Array.isArray(payload)) {
-    return payload.map((item) =>
-      transformClaudeResponsePayload(item, toolPrefix)
-    );
-  }
-
   if (!isObjectRecord(payload)) {
     return payload;
   }
 
-  const transformed: JsonObject = {};
-  for (const [key, value] of Object.entries(payload)) {
-    transformed[key] = transformClaudeResponsePayload(value, toolPrefix);
+  if (payload.type === "tool_use" && typeof payload.name === "string") {
+    const name = toolNames.client(payload.name);
+    return name === payload.name ? payload : { ...payload, name };
   }
-
-  if (transformed.type === "tool_use" && typeof transformed.name === "string") {
-    transformed.name = stripToolNamePrefix(transformed.name, toolPrefix);
+  if (
+    payload.type === "content_block_start" &&
+    isObjectRecord(payload.content_block)
+  ) {
+    const contentBlock = transformClaudeResponsePayload(
+      payload.content_block,
+      toolNames
+    );
+    return contentBlock === payload.content_block
+      ? payload
+      : { ...payload, content_block: contentBlock };
   }
-
-  return transformed;
+  if (payload.type === "message_start" && isObjectRecord(payload.message)) {
+    const message = transformClaudeResponsePayload(payload.message, toolNames);
+    return message === payload.message ? payload : { ...payload, message };
+  }
+  if (
+    (payload.type === "message" || payload.type === undefined) &&
+    Array.isArray(payload.content)
+  ) {
+    const originalContent: unknown[] = payload.content;
+    const content = originalContent.map((block) =>
+      isObjectRecord(block) && block.type === "tool_use"
+        ? transformClaudeResponsePayload(block, toolNames)
+        : block
+    );
+    return content.every((block, index) => block === originalContent[index])
+      ? payload
+      : { ...payload, content };
+  }
+  return payload;
 };
 
 const claudeMessagesUpstreamSuffix = requireProxyEndpointRoute({
@@ -199,33 +284,32 @@ const buildUpstreamUrl = (search: string): string => {
     `${claudeMessagesUpstreamSuffix}${search}`,
     ANTHROPIC_API_BASE_URL
   );
-  if (!upstream.searchParams.has("beta")) {
-    upstream.searchParams.set("beta", "true");
-  }
+  upstream.searchParams.set("beta", "true");
 
   return upstream.toString();
 };
 
 const findSseEventBoundary = (
-  buffer: string
+  buffer: string,
+  startIndex = 0
 ): { index: number; length: number } | null => {
-  const match = /\r\n\r\n|\n\n|\n\r\n|\r\n\n/u.exec(buffer);
+  const match = /(?:\r\n|\r|\n)(?:\r\n|\r|\n)/u.exec(buffer.slice(startIndex));
   if (!match || match.index === undefined) {
     return null;
   }
 
   return {
-    index: match.index,
+    index: startIndex + match.index,
     length: match[0].length,
   };
 };
 
 const parseSseEventData = (chunk: string): string | null => {
   const dataLines = chunk
-    .replace(/\r\n/gu, "\n")
+    .replace(/\r\n|\r/gu, "\n")
     .split("\n")
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart());
+    .filter((line) => line === "data" || line.startsWith("data:"))
+    .map((line) => (line === "data" ? "" : line.slice(5).trimStart()));
   if (!dataLines.length) {
     return null;
   }
@@ -264,56 +348,81 @@ const readClaudeErrorLogFields = (
   payloadType: String(payload.type),
   errorType: readClaudeErrorField(payload, "type"),
   errorCode: readClaudeErrorField(payload, "code"),
-  errorMessage: readClaudeErrorField(payload, "message"),
-  errorParam: readClaudeErrorField(payload, "param"),
   errorStatus: readClaudeErrorField(payload, "status"),
 });
 
 const rewriteSseDataLines = (chunk: string, payload: string): string => {
   const boundary = findSseEventBoundary(chunk);
-  const eventTrailer =
-    boundary && boundary.index + boundary.length === chunk.length
-      ? chunk.slice(boundary.index)
-      : "";
-  const chunkBody = eventTrailer ? chunk.slice(0, -eventTrailer.length) : chunk;
-  const rewrittenBody = chunkBody.replace(
-    /((?:^|\r\n|\n))(?:data:.*(?:\r\n|\n)?)+$/u,
-    (_, separator: string) => `${separator}data: ${payload}`
-  );
-
-  if (rewrittenBody === chunkBody) {
+  if (!boundary || boundary.index + boundary.length !== chunk.length) {
     return chunk;
   }
-
-  return `${rewrittenBody}${eventTrailer}`;
+  const body = chunk.slice(0, boundary.index);
+  const trailer = chunk.slice(boundary.index);
+  const newline =
+    /\r\n|\r|\n/u.exec(body)?.[0] ??
+    (trailer.startsWith("\r\n")
+      ? "\r\n"
+      : trailer.startsWith("\r")
+        ? "\r"
+        : "\n");
+  const lines: string[] = [];
+  let replaced = false;
+  for (const line of body.split(/\r\n|\r|\n/u)) {
+    if (line === "data" || line.startsWith("data:")) {
+      if (!replaced) {
+        lines.push(`data: ${payload}`);
+        replaced = true;
+      }
+      continue;
+    }
+    lines.push(line);
+  }
+  return replaced ? `${lines.join(newline)}${trailer}` : chunk;
 };
 
 const transformSseEventChunk = (
   chunk: string,
-  toolPrefix: string,
+  toolNames: ClaudeToolNames,
   readStreamUsage: (payload: unknown) => void,
-  readStreamAnomaly: (payload: unknown) => void
+  readStreamAnomaly: (payload: unknown) => void,
+  onInvalidEvent: () => void
 ): string => {
   const payload = parseSseEventData(chunk);
   if (!payload) {
     return chunk;
   }
 
+  let jsonBody: unknown;
   try {
-    const jsonBody = JSON.parse(payload) as unknown;
-    readStreamUsage(jsonBody);
-    readStreamAnomaly(jsonBody);
-    const transformed = transformClaudeResponsePayload(jsonBody, toolPrefix);
-    return rewriteSseDataLines(chunk, JSON.stringify(transformed));
+    jsonBody = JSON.parse(payload) as unknown;
   } catch {
+    onInvalidEvent();
     return chunk;
   }
+  if (!isObjectRecord(jsonBody)) {
+    onInvalidEvent();
+    return chunk;
+  }
+  readStreamUsage(jsonBody);
+  readStreamAnomaly(jsonBody);
+  if (
+    jsonBody.type !== "content_block_start" &&
+    jsonBody.type !== "message_start" &&
+    jsonBody.type !== "tool_use"
+  ) {
+    return chunk;
+  }
+  const transformed = transformClaudeResponsePayload(jsonBody, toolNames);
+  return transformed === jsonBody
+    ? chunk
+    : rewriteSseDataLines(chunk, JSON.stringify(transformed));
 };
 
 const maybeTransformClaudeStreamResponse = (
   response: Response,
-  toolPrefix: string,
-  onTokenUsage?: ((usage: TokenUsage) => void) | null
+  toolNames: ClaudeToolNames,
+  onTokenUsage?: ((usage: TokenUsage) => void) | null,
+  onStreamOutcome?: (outcome: ClaudeStreamOutcome) => void
 ): Response => {
   if (!response.body) {
     return response;
@@ -327,13 +436,21 @@ const maybeTransformClaudeStreamResponse = (
   const reader = response.body.getReader();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  const validationDecoder = new TextDecoder("utf-8", { fatal: true });
   const startedAt = Date.now();
   let buffer = "";
+  let bufferedBytes = 0;
   let bytes = 0;
   let chunks = 0;
   let lastChunkAt = startedAt;
   let lastWriteAt = startedAt;
   let closed = false;
+  let sawMessageStart = false;
+  let sawMessageStop = false;
+  let sawError = false;
+  let streamErrorOutcome: ClaudeStreamOutcome = "failed";
+  let sawMalformedEvent = false;
+  let utf8ValidationEnabled = true;
   let clearKeepAlive: (() => void) | null = null;
 
   const logStreamAnomaly = (
@@ -359,6 +476,16 @@ const maybeTransformClaudeStreamResponse = (
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
+  };
+
+  const finishStream = (outcome: ClaudeStreamOutcome): void => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    clearKeepAlive?.();
+    onTokenUsage?.(streamUsage);
+    onStreamOutcome?.(outcome);
   };
 
   const readOptionalUsageToken = (
@@ -395,6 +522,7 @@ const maybeTransformClaudeStreamResponse = (
       }
 
       streamUsage.inputTokens = usage.inputTokens;
+      streamUsage.outputTokens = usage.outputTokens;
       streamUsage.cacheReadTokens = usage.cacheReadTokens;
       streamUsage.cacheWriteTokens = usage.cacheWriteTokens;
       return;
@@ -439,7 +567,23 @@ const maybeTransformClaudeStreamResponse = (
       return;
     }
 
+    if (payload.type === "message_start") {
+      sawMessageStart = true;
+      return;
+    }
+    if (payload.type === "message_stop") {
+      sawMessageStop = true;
+      return;
+    }
     if (payload.type === "error") {
+      sawError = true;
+      const error = isObjectRecord(payload.error) ? payload.error : null;
+      streamErrorOutcome =
+        error?.type === "rate_limit_error"
+          ? "rate_limited"
+          : error?.type === "overloaded_error"
+            ? "overloaded"
+            : "failed";
       logStreamAnomaly(
         "claude_sse_error_event",
         readClaudeErrorLogFields(payload)
@@ -455,6 +599,27 @@ const maybeTransformClaudeStreamResponse = (
     if (stopReason === "max_tokens") {
       logStreamAnomaly("claude_sse_max_tokens_stop");
     }
+  };
+
+  const reportInvalidEvent = (): void => {
+    if (sawMalformedEvent) {
+      return;
+    }
+    sawMalformedEvent = true;
+    logStreamAnomaly("claude_sse_invalid_event", {
+      parseCategory: "invalid_json_or_non_object",
+    });
+  };
+
+  const reportInvalidUtf8 = (): void => {
+    if (!utf8ValidationEnabled) {
+      return;
+    }
+    utf8ValidationEnabled = false;
+    sawMalformedEvent = true;
+    logStreamAnomaly("claude_sse_invalid_frame", {
+      parseCategory: "invalid_utf8",
+    });
   };
 
   const stream = new ReadableStream<Uint8Array>({
@@ -477,24 +642,62 @@ const maybeTransformClaudeStreamResponse = (
               clearKeepAlive?.();
               return;
             }
-            buffer += decoder.decode();
+            const trailingText = decoder.decode();
+            buffer += trailingText;
+            bufferedBytes += encoder.encode(trailingText).byteLength;
+            if (utf8ValidationEnabled) {
+              try {
+                validationDecoder.decode();
+              } catch {
+                reportInvalidUtf8();
+              }
+            }
+            const hadTrailingEvent = buffer.trim().length > 0;
+            if (bufferedBytes > MAX_CLAUDE_SSE_EVENT_BYTES) {
+              throw new Error(
+                "Claude SSE event exceeds the proxy buffer limit"
+              );
+            }
             if (buffer) {
               controller.enqueue(
                 encoder.encode(
                   transformSseEventChunk(
                     buffer,
-                    toolPrefix,
+                    toolNames,
                     readStreamUsage,
-                    readStreamAnomaly
+                    readStreamAnomaly,
+                    reportInvalidEvent
                   )
                 )
               );
               lastWriteAt = Date.now();
               buffer = "";
             }
-            onTokenUsage?.(streamUsage);
-            closed = true;
-            clearKeepAlive?.();
+            if (hadTrailingEvent) {
+              logStreamAnomaly("claude_sse_truncated_event");
+            }
+            if (
+              sawMessageStart &&
+              !sawError &&
+              (!sawMessageStop || hadTrailingEvent || sawMalformedEvent)
+            ) {
+              logStreamAnomaly("claude_sse_missing_message_stop");
+              controller.enqueue(
+                encoder.encode(
+                  `${hadTrailingEvent ? "\n\n" : ""}event: error\ndata: {"type":"error","error":{"type":"api_error","message":"Claude stream ended before message_stop"}}\n\n`
+                )
+              );
+            }
+            finishStream(
+              sawError
+                ? streamErrorOutcome
+                : !sawMessageStart ||
+                    !sawMessageStop ||
+                    hadTrailingEvent ||
+                    sawMalformedEvent
+                  ? "failed"
+                  : "completed"
+            );
             controller.close();
             return;
           }
@@ -506,31 +709,73 @@ const maybeTransformClaudeStreamResponse = (
           bytes += value.byteLength;
           chunks++;
           lastChunkAt = Date.now();
-          buffer += decoder.decode(value, { stream: true });
+          if (utf8ValidationEnabled) {
+            try {
+              validationDecoder.decode(value, { stream: true });
+            } catch {
+              reportInvalidUtf8();
+            }
+          }
+          const decoded = decoder.decode(value, { stream: true });
+          const previousBufferLength = buffer.length;
+          buffer += decoded;
+          bufferedBytes += encoder.encode(decoded).byteLength;
 
           let enqueued = false;
-          let boundary = findSseEventBoundary(buffer);
+          // A delimiter is at most four characters, so only its final three
+          // characters can precede the newly appended text.
+          let boundary = findSseEventBoundary(
+            buffer,
+            Math.max(0, previousBufferLength - 3)
+          );
           while (boundary) {
             const chunk = buffer.slice(0, boundary.index + boundary.length);
             buffer = buffer.slice(boundary.index + boundary.length);
+            const chunkBytes = encoder.encode(chunk);
+            bufferedBytes -= chunkBytes.byteLength;
+            if (chunkBytes.byteLength > MAX_CLAUDE_SSE_EVENT_BYTES) {
+              throw new Error(
+                "Claude SSE event exceeds the proxy buffer limit"
+              );
+            }
             try {
+              const transformed = transformSseEventChunk(
+                chunk,
+                toolNames,
+                readStreamUsage,
+                readStreamAnomaly,
+                reportInvalidEvent
+              );
+              const invalidTerminal =
+                sawMessageStop && (!sawMessageStart || sawMalformedEvent);
+              const outgoing = invalidTerminal
+                ? 'event: error\ndata: {"type":"error","error":{"type":"api_error","message":"Claude stream contains invalid events"}}\n\n'
+                : transformed;
               controller.enqueue(
-                encoder.encode(
-                  transformSseEventChunk(
-                    chunk,
-                    toolPrefix,
-                    readStreamUsage,
-                    readStreamAnomaly
-                  )
-                )
+                outgoing === chunk ? chunkBytes : encoder.encode(outgoing)
               );
               lastWriteAt = Date.now();
               enqueued = true;
+              if (sawMessageStop || sawError) {
+                finishStream(
+                  sawMalformedEvent || (sawMessageStop && !sawMessageStart)
+                    ? "failed"
+                    : sawError
+                      ? streamErrorOutcome
+                      : "completed"
+                );
+                reader.cancel().catch(() => undefined);
+                controller.close();
+                return;
+              }
             } catch (error) {
               logStreamAnomaly("claude_sse_enqueue_failed", {}, error);
               throw error;
             }
             boundary = findSseEventBoundary(buffer);
+          }
+          if (bufferedBytes > MAX_CLAUDE_SSE_EVENT_BYTES) {
+            throw new Error("Claude SSE event exceeds the proxy buffer limit");
           }
           if (enqueued) {
             return;
@@ -541,15 +786,14 @@ const maybeTransformClaudeStreamResponse = (
           clearKeepAlive?.();
           return;
         }
-        closed = true;
-        clearKeepAlive?.();
+        finishStream("failed");
         logStreamAnomaly("claude_sse_stream_failed", {}, error);
+        reader.cancel(error).catch(() => undefined);
         controller.error(error);
       }
     },
     cancel(reason): Promise<void> {
-      closed = true;
-      clearKeepAlive?.();
+      finishStream("cancelled");
       return reader.cancel(reason);
     },
   });
@@ -563,7 +807,7 @@ const maybeTransformClaudeStreamResponse = (
 
 const maybeTransformClaudeJsonResponse = async (
   response: Response,
-  toolPrefix: string,
+  toolNames: ClaudeToolNames,
   onTokenUsage?: ((usage: TokenUsage) => void) | null
 ): Promise<Response> => {
   const contentType = response.headers.get("content-type") ?? "";
@@ -583,12 +827,13 @@ const maybeTransformClaudeJsonResponse = async (
     });
   }
 
-  const transformedBody = transformClaudeResponsePayload(jsonBody, toolPrefix);
+  const transformedBody = transformClaudeResponsePayload(jsonBody, toolNames);
   const usage = readAnthropicUsageFromResponse(jsonBody);
   if (usage) {
     onTokenUsage?.(usage);
   }
   const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
   headers.delete("content-length");
   return Response.json(transformedBody, {
     status: response.status,
@@ -599,8 +844,9 @@ const maybeTransformClaudeJsonResponse = async (
 
 const transformClaudeResponse = (
   response: Response,
-  toolPrefix: string,
-  onTokenUsage?: ((usage: TokenUsage) => void) | null
+  toolNames: ClaudeToolNames,
+  onTokenUsage?: ((usage: TokenUsage) => void) | null,
+  onStreamOutcome?: (outcome: ClaudeStreamOutcome) => void
 ): Promise<Response> => {
   if (!response.body) {
     return Promise.resolve(response);
@@ -609,11 +855,16 @@ const transformClaudeResponse = (
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.toLowerCase().includes("text/event-stream")) {
     return Promise.resolve(
-      maybeTransformClaudeStreamResponse(response, toolPrefix, onTokenUsage)
+      maybeTransformClaudeStreamResponse(
+        response,
+        toolNames,
+        onTokenUsage,
+        onStreamOutcome
+      )
     );
   }
 
-  return maybeTransformClaudeJsonResponse(response, toolPrefix, onTokenUsage);
+  return maybeTransformClaudeJsonResponse(response, toolNames, onTokenUsage);
 };
 
 const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {
@@ -632,7 +883,15 @@ type ClaudeProxyPreparationInput = {
   accessToken: string;
   metadata: ClaudeAccountMetadata | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
+  onStreamOutcome?: (outcome: ClaudeStreamOutcome) => void;
 };
+
+type ClaudeStreamOutcome =
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "rate_limited"
+  | "overloaded";
 
 type ClaudeProxyPreparationResult = {
   upstreamUrl: string;
@@ -643,9 +902,8 @@ type ClaudeProxyPreparationResult = {
 export const prepareClaudeProxyRequest = (
   input: ClaudeProxyPreparationInput
 ): ClaudeProxyPreparationResult => {
-  const toolPrefix = input.metadata?.toolPrefix ?? CLAUDE_TOOL_PREFIX;
-  const systemIdentity =
-    input.metadata?.systemIdentity ?? CLAUDE_SYSTEM_IDENTITY;
+  const toolNames = createClaudeToolNames(input.bodyJson, CLAUDE_TOOL_PREFIX);
+  const systemIdentity = CLAUDE_SYSTEM_IDENTITY;
   const mergedBetas = mergeBetaHeaders(
     input.headers,
     CLAUDE_REQUIRED_BETA_HEADERS
@@ -653,8 +911,19 @@ export const prepareClaudeProxyRequest = (
 
   // OAuth sessions require Claude Code identity headers.
   // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L525-L538
+  // Claude Code's Messages client uses the 2023-06-01 API version and accepts
+  // JSON even when `stream: true` requests an SSE response.
+  input.headers.delete("x-api-key");
+  input.headers.delete("cookie");
+  input.headers.delete("proxy-authorization");
+  input.headers.delete("content-encoding");
+  input.headers.delete("content-length");
+  input.headers.delete("host");
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
+  input.headers.set("anthropic-version", "2023-06-01");
   input.headers.set("anthropic-beta", mergedBetas);
+  input.headers.set("accept", "application/json");
+  input.headers.set("content-type", "application/json");
   // Keep existing accounts on the minimum supported Claude Code version even
   // when their persisted metadata still contains an older user agent.
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
@@ -662,7 +931,7 @@ export const prepareClaudeProxyRequest = (
 
   const transformedPayload = transformClaudeRequestPayload(
     input.bodyJson,
-    toolPrefix,
+    toolNames,
     systemIdentity
   );
   const bodyText =
@@ -674,6 +943,11 @@ export const prepareClaudeProxyRequest = (
     upstreamUrl: buildUpstreamUrl(input.requestUrl.search),
     bodyText,
     transformResponse: (response: Response): Promise<Response> =>
-      transformClaudeResponse(response, toolPrefix, input.onTokenUsage),
+      transformClaudeResponse(
+        response,
+        toolNames,
+        input.onTokenUsage,
+        input.onStreamOutcome
+      ),
   };
 };
