@@ -52,6 +52,17 @@ describe("Claude refresh lifecycle", () => {
   });
 
   test("refreshes via Platform and atomically persists the rotated token", async () => {
+    await database.update(providerAccounts).set({
+      metadataJson: JSON.stringify({
+        provider: "claude",
+        oauthMode: "console",
+        oauthHost: "platform.claude.com",
+        systemIdentity: "stale identity",
+        toolPrefix: "mcp_",
+        userAgent: "stale-cli",
+        betaHeaders: ["old-beta"],
+      }),
+    });
     let requestBody: Record<string, unknown> | null = null;
     globalThis.fetch = ((url, init) => {
       expect(url).toBe("https://platform.claude.com/v1/oauth/token");
@@ -82,6 +93,12 @@ describe("Claude refresh lifecycle", () => {
     expect(await findProviderAccountById(database, id)).toMatchObject({
       refreshToken: "new-refresh",
       refreshLockToken: null,
+    });
+    const [stored] = await database.select().from(providerAccounts);
+    expect(JSON.parse(stored?.metadataJson ?? "null")).toEqual({
+      provider: "claude",
+      oauthMode: "console",
+      oauthHost: "platform.claude.com",
     });
   });
 
