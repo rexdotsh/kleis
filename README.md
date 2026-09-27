@@ -81,6 +81,41 @@ OPENCODE_MODELS_URL=https://your-kleis-domain/api/<models-discovery-token>
 KLEIS_API_KEY=your-issued-key
 ```
 
+### OpenCode V2 thinking-only 32k stops
+
+OpenCode V2 2.0.0–2.0.18 can end a Claude turn after 32k thinking tokens
+without an answer. [OpenCode removed the model-derived fallback](https://github.com/anomalyco/opencode/commit/99490f289b)
+before V2's first release; its Anthropic transport then defaults `max_tokens`
+to 32k when a session request does not set a limit. [The upstream fix](https://github.com/anomalyco/opencode/commit/d9987ef9c8)
+sets a model-based limit for primary requests, but landed after the 2.0.18
+release commit. Upgrade to a release that **contains that fix**, not merely
+2.0.18, when one is available.
+
+Until then, an **opt-in OpenCode V2 `context` hook** can set the output limit for
+Kleis Opus 5.5 max-effort turns without changing other callers or Kleis's
+proxy. For example, register this [V2 plugin](https://opencode.ai/v2/docs/build/plugins#model-requests):
+
+```ts
+import { Plugin } from "@opencode/plugin"
+
+export default Plugin.define({
+  id: "kleis-opus-output-limit",
+  async setup(ctx) {
+    await ctx.session.hook("context", (event) => {
+      if (event.model.providerID !== "kleis") return
+      if (event.model.id !== "anthropic/claude-opus-5-5") return
+      if (event.model.variant !== "max") return
+      if (event.options.maxTokens !== undefined) return
+      event.options.maxTokens = 128_000
+    })
+  },
+})
+```
+
+The 128k figure is the model's current advertised output limit; higher limits
+can increase latency and token usage. Remove the hook after upgrading. Kleis
+does not change a caller's explicit `max_tokens` value.
+
 ---
 
 ## Deploying to Vercel
