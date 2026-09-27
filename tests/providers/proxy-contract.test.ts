@@ -3503,7 +3503,7 @@ describe("proxy contract: claude", () => {
     expect(output).toContain('"partial_json":"{\\"name\\":\\"mcp_shell\\""');
   });
 
-  test("emits an SSE error and records partial usage when message_stop is missing", async () => {
+  test("preserves incomplete EOF for client recovery and records partial usage", async () => {
     const outcomes: string[] = [];
     const capture = createUsageCapture();
     const result = prepareClaudeProxyRequest({
@@ -3537,8 +3537,9 @@ describe("proxy contract: claude", () => {
     } finally {
       console.warn = originalWarn;
     }
-    expect(output).toContain("event: error\n");
-    expect(output).toContain("Claude stream ended before message_stop");
+    expect(output).not.toContain("event: error\n");
+    expect(output).toContain('"type":"message_delta"');
+    expect(output).not.toContain('"type":"message_stop"');
     expect(warnings.join("\n")).toContain("claude_sse_missing_message_stop");
     expect(outcomes).toEqual(["failed"]);
     expect(capture.read()).toEqual({

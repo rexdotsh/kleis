@@ -682,11 +682,9 @@ const maybeTransformClaudeStreamResponse = (
               (!sawMessageStop || hadTrailingEvent || sawMalformedEvent)
             ) {
               logStreamAnomaly("claude_sse_missing_message_stop");
-              controller.enqueue(
-                encoder.encode(
-                  `${hadTrailingEvent ? "\n\n" : ""}event: error\ndata: {"type":"error","error":{"type":"api_error","message":"Claude stream ended before message_stop"}}\n\n`
-                )
-              );
+              // Let the caller see the incomplete EOF. OpenCode classifies it
+              // as an interrupted stream and can continue from partial output;
+              // a fabricated API error event would bypass that recovery path.
             }
             finishStream(
               sawError
