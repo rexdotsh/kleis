@@ -11,6 +11,10 @@ import {
   buildProxyModelsRegistry,
   fetchModelsDevRegistry,
 } from "../../domain/models/models-dev";
+import {
+  canForceRefreshModelsRegistry,
+  shouldForceRefreshModelsRegistry,
+} from "../utils/models-refresh";
 import { resolveExternalRequestUrl } from "../utils/request-origin";
 
 const MODELS_ROUTE_PATH = "/api.json";
@@ -26,9 +30,26 @@ type ApiKeyScopes = {
   accountProviderScopes: readonly Provider[] | null;
 };
 
-const shouldForceRefreshModelsRegistry = (requestUrl: URL): boolean => {
-  const refresh = requestUrl.searchParams.get("refresh")?.trim();
-  return refresh === "1" || refresh?.toLowerCase() === "true";
+const rejectUnauthorizedRefresh = (context: Context): Response | null => {
+  if (!shouldForceRefreshModelsRegistry(new URL(context.req.url))) {
+    return null;
+  }
+  if (
+    canForceRefreshModelsRegistry(
+      context.req.header("authorization"),
+      process.env.ADMIN_TOKEN
+    )
+  ) {
+    return null;
+  }
+  context.header("Cache-Control", "no-store");
+  return context.json(
+    {
+      error: "unauthorized",
+      message: "Admin bearer token required to refresh models",
+    },
+    401
+  );
 };
 
 const resolveBaseOriginWithPath = (requestUrl: URL): string => {
@@ -104,6 +125,10 @@ const findApiKeyScopesByToken = async (
 
 export const modelsRoutes = new Hono()
   .get(MODELS_ROUTE_PATH, async (context) => {
+    const unauthorized = rejectUnauthorizedRefresh(context);
+    if (unauthorized) {
+      return unauthorized;
+    }
     const registry = await buildRegistryForRequest(context);
     return context.json(registry, {
       headers: {
@@ -120,6 +145,11 @@ export const modelsRoutes = new Hono()
     const apiKeyScopes = await findApiKeyScopesByToken(modelsToken);
     if (!apiKeyScopes) {
       return context.json(SCOPED_MODELS_NOT_FOUND, 404);
+    }
+
+    const unauthorized = rejectUnauthorizedRefresh(context);
+    if (unauthorized) {
+      return unauthorized;
     }
 
     const registry = await buildRegistryForRequest(context, apiKeyScopes);
