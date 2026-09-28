@@ -20,12 +20,14 @@ import { providerAccounts } from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
 import {
   getRoutableProviderAccount,
+  refreshProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../src/domain/providers/provider-service";
 import { codexAdapter } from "../../src/providers/codex";
 
 describe("provider account enablement", () => {
   const originalCodexRefreshAccount = codexAdapter.refreshAccount;
+  const originalFetch = globalThis.fetch;
   let client: ReturnType<typeof createClient> | undefined;
   let database: Database;
   let databaseDirectory: string;
@@ -76,6 +78,7 @@ describe("provider account enablement", () => {
 
   afterEach(async () => {
     codexAdapter.refreshAccount = originalCodexRefreshAccount;
+    globalThis.fetch = originalFetch;
     client?.close();
     await rm(databaseDirectory, { recursive: true, force: true }).catch(
       () => undefined
@@ -112,6 +115,95 @@ describe("provider account enablement", () => {
     expect(refreshCount).toBe(1);
     expect(left?.accessToken).toBe("access-codex-refreshed");
     expect(right?.accessToken).toBe("access-codex-refreshed");
+  });
+
+  test("bounds the Codex OAuth token refresh request", async () => {
+    const account = await findPrimaryProviderAccount(database, "codex");
+    if (!account) {
+      throw new Error("Codex fixture account was not found");
+    }
+    let signal: AbortSignal | null = null;
+    globalThis.fetch = ((_url, init) => {
+      signal = init?.signal as AbortSignal;
+      return Promise.resolve(
+        Response.json({
+          access_token: "new-access",
+          refresh_token: "new-refresh",
+          expires_in: 3600,
+        })
+      );
+    }) as typeof fetch;
+
+    await codexAdapter.refreshAccount(account, Date.now());
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal?.aborted).toBe(false);
+  });
+
+  test("waits for a slow ordinary Codex refresh instead of returning 502", async () => {
+    await database
+      .update(providerAccounts)
+      .set({ expiresAt: Date.now() - 1000 })
+      .where(eq(providerAccounts.id, "codex-primary"));
+    let refreshCount = 0;
+    let startedRefresh: (() => void) | undefined;
+    const refreshStarted = new Promise<void>((resolve) => {
+      startedRefresh = resolve;
+    });
+    codexAdapter.refreshAccount = async (account, now) => {
+      refreshCount++;
+      startedRefresh?.();
+      await new Promise((resolve) => setTimeout(resolve, 3400));
+      return {
+        accessToken: "access-after-slow-refresh",
+        refreshToken: account.refreshToken,
+        expiresAt: now + 60_000,
+        accountId: account.accountId,
+        metadata: account.metadata,
+      };
+    };
+
+    const first = refreshProviderAccount(database, "codex-primary", Date.now());
+    await refreshStarted;
+    const second = refreshProviderAccount(
+      database,
+      "codex-primary",
+      Date.now()
+    );
+    const [firstAccount, secondAccount] = await Promise.all([first, second]);
+
+    expect(refreshCount).toBe(1);
+    expect(firstAccount?.accessToken).toBe("access-after-slow-refresh");
+    expect(secondAccount?.accessToken).toBe("access-after-slow-refresh");
+  });
+
+  test("cools down Codex refresh failures before calling OAuth again", async () => {
+    let refreshCount = 0;
+    codexAdapter.refreshAccount = () => {
+      refreshCount++;
+      return Promise.reject(new Error("temporary network error"));
+    };
+    await expect(
+      refreshProviderAccount(database, "codex-primary", Date.now(), {
+        force: true,
+      })
+    ).rejects.toThrow("temporary network error");
+    await expect(
+      refreshProviderAccount(database, "codex-primary", Date.now(), {
+        force: true,
+      })
+    ).rejects.toThrow("Codex OAuth refresh is temporarily unavailable");
+    expect(refreshCount).toBe(1);
+
+    await database
+      .update(providerAccounts)
+      .set({ lastRefreshAt: Date.now() - 31_000 })
+      .where(eq(providerAccounts.id, "codex-primary"));
+    await expect(
+      refreshProviderAccount(database, "codex-primary", Date.now(), {
+        force: true,
+      })
+    ).rejects.toThrow("temporary network error");
+    expect(refreshCount).toBe(2);
   });
 
   test("waits for a slow in-flight auth refresh instead of returning the rejected token", async () => {
