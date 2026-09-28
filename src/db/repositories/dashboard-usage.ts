@@ -38,7 +38,9 @@ export const getDashboardUsage = async (
     toNonNegativeInteger(sinceMs - windowMs)
   );
   const bucketSizeMs = computeBucketSizeMs(windowMs);
-  const aggregatedBucket = sql<number>`(${requestUsageBuckets.bucketStart} / ${bucketSizeMs}) * ${bucketSizeMs}`;
+  // libSQL binds the bucket size as a REAL, so division needs an explicit
+  // integer truncation before multiplying back to a bucket boundary.
+  const aggregatedBucket = sql<number>`cast(${requestUsageBuckets.bucketStart} / ${bucketSizeMs} as integer) * ${bucketSizeMs}`;
 
   const currentFilter = gte(requestUsageBuckets.bucketStart, sinceBucket);
   const previousFilter = and(
