@@ -510,13 +510,18 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
     return;
   }
 
-  if (!state.accounts.length) {
+  const selectedIds = new Set(selectedAccountIds || []);
+  const knownIds = new Set(state.accounts.map((account) => account.id));
+  const unavailableIds =
+    mode === "edit"
+      ? Array.from(selectedIds).filter((id) => !knownIds.has(id))
+      : [];
+  if (!state.accounts.length && !unavailableIds.length) {
     container.innerHTML =
       '<div class="scope-empty">No provider accounts connected yet. Leave this empty to keep using each provider\'s primary account once one exists.</div>';
     return;
   }
 
-  const selectedIds = new Set(selectedAccountIds || []);
   const groups = PROVIDER_ORDER.map((provider) => ({
     provider,
     accounts: state.accounts
@@ -528,7 +533,7 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
       ),
   })).filter((group) => group.accounts.length);
 
-  container.innerHTML = groups
+  const availableOptions = groups
     .map(
       ({ provider, accounts }) => `<div class="scope-account-group-header">
           <span class="badge badge-${provider}">${provider}</span>
@@ -555,6 +560,20 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
         </div>`
     )
     .join("");
+  const unavailableOptions = unavailableIds.length
+    ? `<div class="scope-account-group-header">Unavailable account scopes</div>
+       <div class="scope-account-list">
+         ${unavailableIds
+           .map(
+             (id) => `<label class="scope-account-option">
+               <input type="checkbox" value="${escapeHtml(id)}" class="${config.accountSelector.slice(1)}" data-preserved-scope="true" checked>
+               <span class="scope-account-copy">${escapeHtml(shortId(id))} (not in the loaded account list; uncheck to remove this restriction)</span>
+             </label>`
+           )
+           .join("")}
+       </div>`
+    : "";
+  container.innerHTML = `${availableOptions}${unavailableOptions}`;
 }
 
 function syncScopedAccountAvailability(mode) {
@@ -563,6 +582,9 @@ function syncScopedAccountAvailability(mode) {
   const hasProviderFilter = selectedProviders.size > 0;
 
   for (const input of $$(config.accountSelector)) {
+    if (input.dataset.preservedScope === "true") {
+      continue;
+    }
     const provider = input.dataset.provider || "";
     const allowed = !hasProviderFilter || selectedProviders.has(provider);
     input.disabled = !allowed;
