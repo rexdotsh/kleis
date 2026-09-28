@@ -11,7 +11,6 @@ import {
   getRoutableProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../domain/providers/provider-service";
-import { CODEX_ACCOUNT_ID_HEADER } from "../../providers/constants";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import {
   deriveCodexSessionId,
@@ -27,6 +26,7 @@ import {
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 import { sendWithAuthReplay } from "../auth-replay";
+import { createUpstreamProxyHeaders } from "../proxy-headers";
 import {
   parseModelForProxyRoute,
   proxyRouteTable,
@@ -65,14 +65,6 @@ const createCodexSseHeaderTimeout = (): {
     },
     error: () => error,
   };
-};
-
-const removeProxyAuthHeaders = (headers: Headers): void => {
-  headers.delete("authorization");
-  headers.delete("x-api-key");
-  headers.delete("host");
-  headers.delete("content-length");
-  headers.delete(CODEX_ACCOUNT_ID_HEADER);
 };
 
 const runInBackground = (promise: Promise<unknown>): void => {
@@ -271,8 +263,7 @@ const proxyRequest = async (
 
   providerAccountId = account.id;
 
-  const headers = new Headers(context.req.raw.headers);
-  removeProxyAuthHeaders(headers);
+  const headers = createUpstreamProxyHeaders(context.req.raw.headers);
 
   switch (route.provider) {
     case "codex": {
