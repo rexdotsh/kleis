@@ -229,9 +229,10 @@ function formatCompact(n) {
   return String(v);
 }
 
-function cacheHitRate(inputTokens, cacheReadTokens) {
-  const total = inputTokens + cacheReadTokens;
-  return total > 0 ? Math.round((cacheReadTokens / total) * 100) : 0;
+function cacheReadRate(inputTotalTokens, cacheReadTokens) {
+  return inputTotalTokens > 0
+    ? Math.round((cacheReadTokens / inputTotalTokens) * 100)
+    : null;
 }
 
 function formatBucketTime(ts, bucketSizeMs) {
@@ -1505,7 +1506,7 @@ export {
   accountUsageForId,
   activeKeysWithModelsUrl,
   api,
-  cacheHitRate,
+  cacheReadRate,
   clearPersistedToken,
   closeModal,
   clearReauthorization,
