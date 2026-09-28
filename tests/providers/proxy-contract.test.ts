@@ -725,6 +725,43 @@ describe("proxy contract: codex", () => {
     });
   }
 
+  test("retains observed Codex stream usage after downstream cancellation", async () => {
+    const capture = createUsageCapture();
+    const result = prepareCodexUsageRequest(
+      codexStreamingUsageBody,
+      capture.onTokenUsage
+    );
+    const payload = JSON.stringify({
+      type: "response.completed",
+      response: {
+        usage: {
+          input_tokens: 35,
+          output_tokens: 4,
+          input_tokens_details: { cached_tokens: 10 },
+        },
+      },
+    });
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(new TextEncoder().encode(`data: ${payload}\n\n`));
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+    const transformed = await result.transformResponse(sourceResponse);
+    const reader = transformed.body?.getReader();
+    expect((await reader?.read())?.done).toBe(false);
+    await reader?.cancel();
+
+    expect(capture.read()).toEqual({
+      inputTokens: 25,
+      outputTokens: 4,
+      cacheReadTokens: 10,
+      cacheWriteTokens: 0,
+    });
+  });
+
   test("normalizes an unterminated response.done event at EOF", async () => {
     const capture = createUsageCapture();
     const result = prepareCodexUsageRequest(
@@ -3348,6 +3385,71 @@ describe("proxy contract: claude", () => {
       expect(capture.read()).toEqual(testCase.expected);
     });
   }
+
+  test("retains observed Claude input and cache usage after cancellation", async () => {
+    const capture = createUsageCapture();
+    const result = prepareClaudeUsageRequest(capture.onTokenUsage);
+    const event = JSON.stringify({
+      type: "message_start",
+      message: {
+        usage: {
+          input_tokens: 7,
+          cache_read_input_tokens: 100,
+          cache_creation_input_tokens: 5,
+        },
+      },
+    });
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(new TextEncoder().encode(`data: ${event}\n\n`));
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+    const transformed = await result.transformResponse(sourceResponse);
+    const reader = transformed.body?.getReader();
+    expect((await reader?.read())?.done).toBe(false);
+    await reader?.cancel();
+
+    expect(capture.read()).toEqual({
+      inputTokens: 7,
+      outputTokens: 0,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 5,
+    });
+  });
+
+  test("retains observed Claude usage when the upstream stream fails", async () => {
+    const capture = createUsageCapture();
+    const result = prepareClaudeUsageRequest(capture.onTokenUsage);
+    let upstream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          upstream = controller;
+          controller.enqueue(
+            new TextEncoder().encode(
+              'data: {"type":"message_start","message":{"usage":{"input_tokens":3,"cache_read_input_tokens":8}}}\n\n'
+            )
+          );
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+    const transformed = await result.transformResponse(sourceResponse);
+    const reader = transformed.body?.getReader();
+    expect((await reader?.read())?.done).toBe(false);
+    upstream?.error(new Error("upstream interrupted"));
+    await expect(reader?.read()).rejects.toThrow("upstream interrupted");
+
+    expect(capture.read()).toEqual({
+      inputTokens: 3,
+      outputTokens: 0,
+      cacheReadTokens: 8,
+      cacheWriteTokens: 0,
+    });
+  });
 
   test("extracts usage from fragmented streaming events", async () => {
     const capture = createUsageCapture();
