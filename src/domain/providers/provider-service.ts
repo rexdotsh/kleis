@@ -131,11 +131,27 @@ const refreshProviderAccountWithLock = async (
         throw new Error("Provider refresh response is missing required tokens");
       }
 
+      if (
+        account.provider === "codex" &&
+        account.accountId &&
+        tokens.accountId &&
+        account.accountId !== tokens.accountId
+      ) {
+        throw new Error(
+          "Codex account identity changed; reauthorize this account"
+        );
+      }
+
       const updateInput = {
         accessToken,
         refreshToken,
         expiresAt: assertExpiresAt(tokens.expiresAt, refreshNow),
-        accountId: tokens.accountId,
+        // Refresh rotates credentials, not the account's identity. Keeping the
+        // stored ID avoids a uniqueness conflict for legacy imports with a
+        // null ID when another row already owns the ID in the new token.
+        ...(account.provider === "claude"
+          ? { accountId: tokens.accountId }
+          : {}),
         metadata: tokens.metadata,
         refreshLockToken: lockToken,
         ...(account.provider === "claude"
@@ -151,12 +167,11 @@ const refreshProviderAccountWithLock = async (
           account.id,
           updateInput
         );
-      } catch (error) {
-        if (account.provider === "claude") {
-          // libSQL errors can include the UPDATE parameters, including tokens.
-          throw new Error("Claude credential update failed");
-        }
-        throw error;
+      } catch {
+        // libSQL errors can include the UPDATE parameters, including tokens.
+        throw new Error(
+          `${account.provider === "claude" ? "Claude" : "Codex"} credential update failed`
+        );
       }
 
       if (!updated) {

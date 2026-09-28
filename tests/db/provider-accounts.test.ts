@@ -20,6 +20,7 @@ import { providerAccounts } from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
 import {
   getRoutableProviderAccount,
+  refreshProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../src/domain/providers/provider-service";
 import { codexAdapter } from "../../src/providers/codex";
@@ -112,6 +113,115 @@ describe("provider account enablement", () => {
     expect(refreshCount).toBe(1);
     expect(left?.accessToken).toBe("access-codex-refreshed");
     expect(right?.accessToken).toBe("access-codex-refreshed");
+  });
+
+  test("saves rotated Codex tokens when another row owns the discovered account ID", async () => {
+    const now = Date.now();
+    await database.insert(providerAccounts).values({
+      id: "codex-existing",
+      provider: "codex",
+      accountId: "acct-1",
+      isPrimary: false,
+      accessToken: "access-existing",
+      refreshToken: "refresh-existing",
+      expiresAt: now + 60_000,
+      createdAt: now,
+      updatedAt: now,
+    });
+    codexAdapter.refreshAccount = async (_account, refreshedAt) => ({
+      accessToken: "new-access-secret",
+      refreshToken: "new-refresh-secret",
+      expiresAt: refreshedAt + 60_000,
+      accountId: "acct-1",
+      metadata: {
+        provider: "codex",
+        tokenType: null,
+        scope: null,
+        idToken: null,
+        chatgptAccountId: "acct-1",
+        organizationIds: [],
+        email: null,
+      },
+    });
+
+    const refreshed = await refreshProviderAccount(
+      database,
+      "codex-primary",
+      now,
+      { force: true }
+    );
+
+    expect(refreshed?.accountId).toBeNull();
+    expect(refreshed?.accessToken).toBe("new-access-secret");
+    expect(refreshed?.refreshToken).toBe("new-refresh-secret");
+    expect(refreshed?.metadata).toMatchObject({ chatgptAccountId: "acct-1" });
+    expect(refreshed?.lastRefreshStatus).toBe("success");
+    const existing = await database.query.providerAccounts.findFirst({
+      where: eq(providerAccounts.id, "codex-existing"),
+    });
+    expect(existing?.refreshToken).toBe("refresh-existing");
+  });
+
+  test("hides Codex tokens in errors when the credential update fails", async () => {
+    await client?.execute(`CREATE TRIGGER reject_codex_refresh
+      BEFORE UPDATE ON provider_accounts
+      WHEN NEW.access_token = 'new-access-secret'
+      BEGIN SELECT RAISE(ABORT, 'credential write blocked'); END`);
+    codexAdapter.refreshAccount = async (_account, refreshedAt) => ({
+      accessToken: "new-access-secret",
+      refreshToken: "new-refresh-secret",
+      expiresAt: refreshedAt + 60_000,
+      accountId: null,
+      metadata: null,
+    });
+
+    let failure: unknown;
+    try {
+      await refreshProviderAccount(database, "codex-primary", Date.now(), {
+        force: true,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    if (!(failure instanceof Error)) {
+      throw new Error("Expected a Codex credential update failure");
+    }
+    expect(failure.message).toBe("Codex credential update failed");
+    expect(failure.message).not.toContain("new-access-secret");
+    expect(failure.message).not.toContain("new-refresh-secret");
+    const current = await database.query.providerAccounts.findFirst({
+      where: eq(providerAccounts.id, "codex-primary"),
+    });
+    expect(current?.refreshToken).toBe("refresh-codex");
+    expect(current?.lastRefreshStatus).toBe("failed");
+  });
+
+  test("refuses a Codex refresh that changes a known account identity", async () => {
+    await database
+      .update(providerAccounts)
+      .set({ accountId: "original-account" })
+      .where(eq(providerAccounts.id, "codex-primary"));
+    codexAdapter.refreshAccount = async (_account, refreshedAt) => ({
+      accessToken: "different-access-secret",
+      refreshToken: "different-refresh-secret",
+      expiresAt: refreshedAt + 60_000,
+      accountId: "other-account",
+      metadata: null,
+    });
+
+    await expect(
+      refreshProviderAccount(database, "codex-primary", Date.now(), {
+        force: true,
+      })
+    ).rejects.toThrow(
+      "Codex account identity changed; reauthorize this account"
+    );
+    const current = await database.query.providerAccounts.findFirst({
+      where: eq(providerAccounts.id, "codex-primary"),
+    });
+    expect(current?.accountId).toBe("original-account");
+    expect(current?.refreshToken).toBe("refresh-codex");
   });
 
   test("waits for a slow in-flight auth refresh instead of returning the rejected token", async () => {
