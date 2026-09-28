@@ -27,6 +27,7 @@ import {
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 import { sendWithAuthReplay } from "../auth-replay";
+import { stripSensitiveProxyResponseHeaders } from "../proxy-response-headers";
 import {
   parseModelForProxyRoute,
   proxyRouteTable,
@@ -397,7 +398,7 @@ const proxyRequest = async (
       }
 
       usageRecorder.recordFinal(attempt.response.status);
-      return responseToClient;
+      return stripSensitiveProxyResponseHeaders(responseToClient);
     }
 
     case "claude": {
@@ -489,7 +490,7 @@ const proxyRequest = async (
         throw error;
       }
       usageRecorder.recordFinal(attempt.response.status);
-      return responseToClient;
+      return stripSensitiveProxyResponseHeaders(responseToClient);
     }
 
     default: {
