@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { parseBearerToken } from "../../src/http/utils/bearer";
+import { createUpstreamProxyHeaders } from "../../src/http/proxy-headers";
 import { resolveRequestIdleTimeout } from "../../src/http/utils/request-timeout";
 import {
   modelScopeCandidates,
@@ -21,6 +22,59 @@ describe("bearer parsing", () => {
     expect(parseBearerToken("Token abc")).toBeNull();
     expect(parseBearerToken("Bearer")).toBeNull();
     expect(parseBearerToken("Bearer    ")).toBeNull();
+  });
+});
+
+describe("provider-bound proxy headers", () => {
+  test("does not forward client identity, credentials, and proxy metadata", () => {
+    const incoming = new Headers({
+      authorization: "Bearer kleis_test",
+      "x-api-key": "kleis_test",
+      "ChatGPT-Account-Id": "spoofed",
+      host: "kleis.example",
+      "content-length": "123",
+      cookie: "session=private",
+      forwarded: "for=192.0.2.4;host=kleis.example",
+      "x-forwarded-for": "192.0.2.4",
+      "x-forwarded-host": "kleis.example",
+      "x-forwarded-proto": "https",
+      "x-real-ip": "192.0.2.4",
+      "cf-connecting-ip": "192.0.2.4",
+      "x-stainless-lang": "js",
+      "x-stainless-os": "Linux",
+      "anthropic-beta": "prompt-caching-2024-07-31",
+      "anthropic-version": "2023-06-01",
+      "x-opencode-session": "ses_example",
+      "x-session-affinity": "ses_example",
+      "content-type": "application/json",
+    });
+
+    const upstream = createUpstreamProxyHeaders(incoming);
+
+    for (const name of [
+      "authorization",
+      "x-api-key",
+      "ChatGPT-Account-Id",
+      "host",
+      "content-length",
+      "cookie",
+      "forwarded",
+      "x-forwarded-for",
+      "x-forwarded-host",
+      "x-forwarded-proto",
+      "x-real-ip",
+      "cf-connecting-ip",
+      "x-stainless-lang",
+      "x-stainless-os",
+    ]) {
+      expect(upstream.has(name)).toBe(false);
+    }
+    expect(upstream.get("anthropic-beta")).toBe("prompt-caching-2024-07-31");
+    expect(upstream.get("anthropic-version")).toBe("2023-06-01");
+    expect(upstream.get("x-opencode-session")).toBe("ses_example");
+    expect(upstream.get("x-session-affinity")).toBe("ses_example");
+    expect(upstream.get("content-type")).toBe("application/json");
+    expect(incoming.get("authorization")).toBe("Bearer kleis_test");
   });
 });
 
