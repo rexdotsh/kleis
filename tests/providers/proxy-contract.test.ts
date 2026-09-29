@@ -473,7 +473,7 @@ describe("proxy contract: codex", () => {
     expect(headers.get("x-client-request-id")).toBeNull();
   });
 
-  test("preserves Responses output limits and removes completion limits", () => {
+  test("removes output and completion limits the ChatGPT backend rejects", () => {
     const bodyJson = {
       model: "gpt-5-codex",
       instructions: "Keep responses concise",
@@ -502,7 +502,7 @@ describe("proxy contract: codex", () => {
       max_completion_tokens?: number;
       store?: boolean;
     };
-    expect(transformed.max_output_tokens).toBe(4096);
+    expect(transformed.max_output_tokens).toBeUndefined();
     expect(transformed.max_completion_tokens).toBeUndefined();
     expect(transformed.store).toBe(false);
   });

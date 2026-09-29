@@ -85,21 +85,19 @@ export const transformCodexBodyJson = (
   //   https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/llm.ts#L65-L112
   // - Codex-native clients include `instructions` explicitly in the request body.
   //   https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/openai-codex-responses.ts#L286-L291
-  // OpenCode's first-party Codex integration sends `max_output_tokens` through
-  // the Responses protocol. Keep it, while dropping the legacy completions-only
-  // field and forcing stateless Responses storage.
-  const { max_completion_tokens: _maxCompletionTokens, ...body } = bodyJson;
-  const hasCompactionTrigger =
-    Array.isArray(body.input) &&
-    body.input.some(
-      (item) => isObjectRecord(item) && item.type === "compaction_trigger"
-    );
-  const nextBody = hasCompactionTrigger
-    ? (({ max_output_tokens: _maxOutputTokens, ...rest }) => rest)(body)
-    : body;
+  // The ChatGPT backend rejects a requested output limit, so drop it along with
+  // the legacy completions-only field and force stateless Responses storage.
+  // OpenCode strips the same limit for its first-party ChatGPT provider, but
+  // only for requests routed through its own `openai` provider ID:
+  // https://github.com/anomalyco/opencode/blob/d9987ef9c896383eb47b9103f6c93fa772a44b83/packages/core/src/plugin/provider/openai.ts#L311-L317
+  const {
+    max_completion_tokens: _maxCompletionTokens,
+    max_output_tokens: _maxOutputTokens,
+    ...body
+  } = bodyJson;
 
-  const incomingInstructions = trimString(nextBody.instructions);
-  const input = Array.isArray(nextBody.input) ? nextBody.input : [];
+  const incomingInstructions = trimString(body.instructions);
+  const input = Array.isArray(body.input) ? body.input : [];
   const firstInput = input[0];
   const promotedInstructions =
     !incomingInstructions &&
@@ -111,7 +109,7 @@ export const transformCodexBodyJson = (
     incomingInstructions || promotedInstructions || CODEX_DEFAULT_INSTRUCTIONS;
 
   return {
-    ...nextBody,
+    ...body,
     ...(promotedInstructions ? { input: input.slice(1) } : {}),
     instructions,
     store: false,
