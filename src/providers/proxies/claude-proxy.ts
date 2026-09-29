@@ -16,7 +16,6 @@ import {
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
-import { applyOpenCode2018ClaudeOutputHotfix } from "./opencode-2018-claude-output-hotfix";
 
 // Anthropic OAuth sessions reject the feedback repo path used in OpenCode's
 // prompt URL and the opening `<directories>` wrapper emitted by OpenCode's
@@ -661,9 +660,8 @@ export const prepareClaudeProxyRequest = (
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
   input.headers.set("x-app", "cli");
 
-  const hotfixPayload = applyOpenCode2018ClaudeOutputHotfix(input.bodyJson);
   const transformedPayload = transformClaudeRequestPayload(
-    hotfixPayload,
+    input.bodyJson,
     toolPrefix,
     systemIdentity
   );
