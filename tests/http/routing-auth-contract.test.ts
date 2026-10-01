@@ -116,4 +116,16 @@ describe("request idle timeouts", () => {
     expect(resolveRequestIdleTimeout("/api.json")).toBeNull();
     expect(resolveRequestIdleTimeout("/openai/v2/responses")).toBeNull();
   });
+
+  test("keeps headless Codex OAuth completion open for its bounded device poll", () => {
+    expect(
+      resolveRequestIdleTimeout("/admin/accounts/codex/oauth/complete")
+    ).toBe(0);
+    expect(
+      resolveRequestIdleTimeout("/admin/accounts/claude/oauth/complete")
+    ).toBeNull();
+    expect(
+      resolveRequestIdleTimeout("/admin/accounts/codex/oauth/start")
+    ).toBeNull();
+  });
 });
