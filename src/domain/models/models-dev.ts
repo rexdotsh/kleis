@@ -64,6 +64,7 @@ const fetchModelsDevRegistryFromUpstream =
   async (): Promise<ModelsDevRegistry> => {
     const response = await fetch(MODELS_DEV_URL, {
       method: "GET",
+      signal: AbortSignal.timeout(10_000),
       headers: {
         accept: "application/json",
       },
