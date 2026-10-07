@@ -146,13 +146,22 @@ describe("models registry contract", () => {
 
     const kleis = registry.kleis as {
       env?: string[];
-      models?: Record<string, { id?: string; provider?: { api?: string } }>;
+      models?: Record<
+        string,
+        { id?: string; name?: string; provider?: { api?: string } }
+      >;
     };
     expect(kleis.env).toEqual(["KLEIS_API_KEY"]);
     expect(kleis.models?.["gpt-5.3-codex-spark"]?.id).toBe(
       "gpt-5.3-codex-spark"
     );
     expect(kleis.models?.["gpt-5.5"]?.id).toBe("gpt-5.5");
+    expect(kleis.models?.["gpt-5.5"]?.name).toBe("GPT-5.5");
+    expect(kleis.models?.["anthropic/claude-sonnet-4"]).toMatchObject({
+      id: "anthropic/claude-sonnet-4",
+      name: "Claude Sonnet 4",
+      provider: { api: "https://kleis.example/anthropic/v1" },
+    });
     expect(kleis.models?.["gpt-5.5-pro"]).toBeUndefined();
     expect(kleis.models?.["gpt-5.6"]).toBeUndefined();
     expect(kleis.models?.["gpt-5.6-luna"]?.id).toBe("gpt-5.6-luna");
@@ -197,7 +206,7 @@ describe("models registry contract", () => {
   test("caps GPT-6 Sol and Luna limits only for the Codex proxy", () => {
     const model = (id: string, output: number) => ({
       id,
-      name: id,
+      name: id === "gpt-6-sol" ? "GPT-6 Sol" : id,
       limit: { context: 1_050_000, input: 922_000, output },
       provider: { api: "https://api.openai.com/v1", npm: "@ai-sdk/openai" },
     });
@@ -217,7 +226,7 @@ describe("models registry contract", () => {
       configuredProviders: ["codex"],
     });
     const kleis = registry.kleis as {
-      models?: Record<string, { limit?: unknown }>;
+      models?: Record<string, { limit?: unknown; name?: string }>;
     };
     const openai = registry.openai as {
       models?: Record<string, { limit?: unknown }>;
@@ -238,6 +247,7 @@ describe("models registry contract", () => {
         output,
       });
     }
+    expect(kleis.models?.["gpt-6-sol"]?.name).toBe("GPT-6 Sol");
   });
 
   test("follows OpenCode's current OAuth exclusion of retired GPT-5.4 models", () => {
