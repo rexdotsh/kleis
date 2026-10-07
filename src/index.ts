@@ -29,7 +29,7 @@ app.onError((error, context) => {
   return context.json(
     {
       error: "internal_error",
-      message: error.message,
+      message: "Internal server error",
     },
     500
   );
