@@ -261,6 +261,14 @@ export const createOpenAiSseUsagePassthrough = (
     terminalAnomaly: null as SseTerminalAnomaly | null,
     sawTerminal: false,
   };
+  let usageReported = false;
+  const reportUsage = (): void => {
+    if (usageReported || !usageState.latestUsage) {
+      return;
+    }
+    usageReported = true;
+    input.onTokenUsage?.(usageState.latestUsage);
+  };
   const reasoningState: ReasoningEventState = {
     eventNumber: 0,
     active: null,
@@ -389,9 +397,7 @@ export const createOpenAiSseUsagePassthrough = (
             if (pendingText) {
               controller.enqueue(encoder.encode(pendingText));
             }
-            if (usageState.latestUsage) {
-              input.onTokenUsage?.(usageState.latestUsage);
-            }
+            reportUsage();
             if (usageState.terminalAnomaly) {
               logStreamAnomaly(
                 "openai_sse_terminal_anomaly",
@@ -467,6 +473,7 @@ export const createOpenAiSseUsagePassthrough = (
         }
         closed = true;
         clearKeepAlive?.();
+        reportUsage();
         reader.cancel(error).catch(() => undefined);
         logStreamAnomaly("openai_sse_stream_failed", {}, error);
         controller.error(error);
@@ -475,6 +482,7 @@ export const createOpenAiSseUsagePassthrough = (
     cancel(reason): Promise<void> {
       closed = true;
       clearKeepAlive?.();
+      reportUsage();
       return reader.cancel(reason);
     },
   });

@@ -360,6 +360,15 @@ const maybeTransformClaudeStreamResponse = (
     cacheReadTokens: 0,
     cacheWriteTokens: 0,
   };
+  let sawStreamUsage = false;
+  let usageReported = false;
+  const reportStreamUsage = (): void => {
+    if (usageReported || !sawStreamUsage) {
+      return;
+    }
+    usageReported = true;
+    onTokenUsage?.({ ...streamUsage });
+  };
 
   const readOptionalUsageToken = (
     usage: Record<string, unknown>,
@@ -394,6 +403,7 @@ const maybeTransformClaudeStreamResponse = (
         return;
       }
 
+      sawStreamUsage = true;
       streamUsage.inputTokens = usage.inputTokens;
       streamUsage.cacheReadTokens = usage.cacheReadTokens;
       streamUsage.cacheWriteTokens = usage.cacheWriteTokens;
@@ -406,6 +416,7 @@ const maybeTransformClaudeStreamResponse = (
         return;
       }
 
+      sawStreamUsage = true;
       const inputTokens = readOptionalUsageToken(usage, "input_tokens");
       if (inputTokens !== null) {
         streamUsage.inputTokens = inputTokens;
@@ -492,7 +503,7 @@ const maybeTransformClaudeStreamResponse = (
               lastWriteAt = Date.now();
               buffer = "";
             }
-            onTokenUsage?.(streamUsage);
+            reportStreamUsage();
             closed = true;
             clearKeepAlive?.();
             controller.close();
@@ -543,6 +554,7 @@ const maybeTransformClaudeStreamResponse = (
         }
         closed = true;
         clearKeepAlive?.();
+        reportStreamUsage();
         logStreamAnomaly("claude_sse_stream_failed", {}, error);
         controller.error(error);
       }
@@ -550,6 +562,7 @@ const maybeTransformClaudeStreamResponse = (
     cancel(reason): Promise<void> {
       closed = true;
       clearKeepAlive?.();
+      reportStreamUsage();
       return reader.cancel(reason);
     },
   });
