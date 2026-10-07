@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { parseBearerToken } from "../../src/http/utils/bearer";
+import { stripSensitiveProxyResponseHeaders } from "../../src/http/proxy-response-headers";
 import { resolveRequestIdleTimeout } from "../../src/http/utils/request-timeout";
 import {
   modelScopeCandidates,
@@ -21,6 +22,44 @@ describe("bearer parsing", () => {
     expect(parseBearerToken("Token abc")).toBeNull();
     expect(parseBearerToken("Bearer")).toBeNull();
     expect(parseBearerToken("Bearer    ")).toBeNull();
+  });
+});
+
+describe("provider response headers", () => {
+  test("hides upstream account identifiers without changing the streamed body", async () => {
+    const upstream = new Response("data: hello\n\n", {
+      status: 200,
+      headers: {
+        "content-type": "text/event-stream",
+        "anthropic-organization-id": "org_private",
+        "openai-organization": "org_private",
+        "openai-project": "proj_private",
+        "set-cookie": "provider_session=private",
+        "x-request-id": "req_example",
+        "retry-after": "30",
+      },
+    });
+
+    const downstream = stripSensitiveProxyResponseHeaders(upstream);
+
+    expect(downstream.status).toBe(200);
+    for (const name of [
+      "anthropic-organization-id",
+      "openai-organization",
+      "openai-project",
+      "set-cookie",
+    ]) {
+      expect(downstream.headers.has(name)).toBe(false);
+    }
+    expect(downstream.headers.get("x-request-id")).toBe("req_example");
+    expect(downstream.headers.get("retry-after")).toBe("30");
+    expect(downstream.headers.get("content-type")).toContain(
+      "text/event-stream"
+    );
+    expect(await downstream.text()).toBe("data: hello\n\n");
+    expect(upstream.headers.get("anthropic-organization-id")).toBe(
+      "org_private"
+    );
   });
 });
 
