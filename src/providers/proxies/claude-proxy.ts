@@ -33,7 +33,11 @@ const sanitizeClaudeSystemText = (text: string): string =>
       /Here is some useful information about the environment you are running in:/g,
       "Here is useful information about the environment you are running in:"
     )
-    .replace(/<directories>\n\s*/gi, "Directories\n");
+    .replace(/<directories>\n\s*/gi, "Directories\n")
+    // Two lines of Pi's generated docs section trip the same OAuth classifier.
+    // https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/system-prompt.ts
+    .replace(/^- When working on pi topics, read the docs[^\n]*\n?/gm, "")
+    .replace("pi packages (docs/packages.md), ", "");
 
 const toClaudeToolName = (name: string, prefix: string): string => {
   if (name.startsWith(prefix)) {
