@@ -4,13 +4,16 @@ import type { Database } from "../../src/db";
 import type { ProviderAccountRecord } from "../../src/db/repositories/provider-accounts";
 import { listProviderAccountQuotas } from "../../src/domain/providers/provider-account-tracking";
 
-const claudeAccount = (id: string): ProviderAccountRecord => {
+const claudeAccount = (
+  accountId: string | null = null,
+  id: string = crypto.randomUUID()
+): ProviderAccountRecord => {
   const now = Date.now();
   return {
     id,
     provider: "claude",
     label: null,
-    accountId: null,
+    accountId,
     isPrimary: true,
     enabled: true,
     accessToken: "claude-access",
@@ -54,7 +57,7 @@ describe("account quota cache", () => {
         release = resolve;
       });
     }) as unknown as typeof fetch;
-    const account = claudeAccount("quota-concurrent");
+    const account = claudeAccount();
 
     const first = listProviderAccountQuotas(database, [account]);
     const second = listProviderAccountQuotas(database, [account]);
@@ -76,7 +79,7 @@ describe("account quota cache", () => {
         Response.json({ five_hour: { utilization: utilization++ } })
       );
     }) as unknown as typeof fetch;
-    const account = claudeAccount("quota-stale");
+    const account = claudeAccount();
     const startedAt = Date.now();
 
     const initial = await listProviderAccountQuotas(database, [account]);
@@ -95,5 +98,21 @@ describe("account quota cache", () => {
     const refreshed = await listProviderAccountQuotas(database, [account]);
     expect(fiveHourUtilization(refreshed.get(account.id))).toBe(11);
     expect(calls).toBe(2);
+  });
+
+  test("does not reuse a snapshot from a different provider identity", async () => {
+    let utilization = 30;
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        Response.json({ five_hour: { utilization: utilization++ } })
+      )) as unknown as typeof fetch;
+    const original = claudeAccount("identity-one");
+    const replaced = claudeAccount("identity-two", original.id);
+
+    const first = await listProviderAccountQuotas(database, [original]);
+    expect(fiveHourUtilization(first.get(original.id))).toBe(30);
+
+    const second = await listProviderAccountQuotas(database, [replaced]);
+    expect(fiveHourUtilization(second.get(original.id))).toBe(31);
   });
 });

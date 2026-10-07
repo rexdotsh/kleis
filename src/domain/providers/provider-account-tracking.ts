@@ -49,6 +49,7 @@ export type AccountQuota = {
 
 const cache = new Map<string, { expiresAt: number; quota: AccountQuota }>();
 const inFlight = new Map<string, Promise<AccountQuota | null>>();
+const generations = new Map<string, number>();
 
 const isTrackingAccount = (
   account: ProviderAccountRecord
@@ -174,30 +175,49 @@ const toQuota = (
   data,
 });
 
+// Quotas belong to the provider identity, so a row whose OAuth identity changes
+// never reuses another identity's snapshot or pending lookup.
+const quotaKey = (account: TrackingAccount): string =>
+  `${account.id}:${account.accountId ?? ""}`;
+
+const nextGeneration = (key: string): number => {
+  const generation = (generations.get(key) ?? 0) + 1;
+  generations.set(key, generation);
+  return generation;
+};
+
+const invalidateProviderAccountQuota = (account: TrackingAccount): void => {
+  const key = quotaKey(account);
+  cache.delete(key);
+  inFlight.delete(key);
+  nextGeneration(key);
+};
+
 const fetchProviderAccountQuota = async (
   database: Database,
-  stored: TrackingAccount
+  stored: TrackingAccount,
+  key: string,
+  generation: number
 ): Promise<AccountQuota | null> => {
   const now = Date.now();
+  const publish = (quota: AccountQuota, errors: unknown[]): AccountQuota => {
+    // A lookup started later, or an invalidation, owns the cache entry.
+    if (generations.get(key) === generation) {
+      cache.set(key, { expiresAt: now + cacheDuration(errors), quota });
+    }
+    return quota;
+  };
   try {
     const account = await resolveAccount(database, stored);
     if (!account) {
       return null;
     }
     const result = await fetchAccountData(database, account);
-    const quota = toQuota(result.data, result.errors, now);
-    cache.set(account.id, {
-      expiresAt: now + cacheDuration(result.errors),
-      quota,
-    });
-    return quota;
+    return publish(toQuota(result.data, result.errors, now), result.errors);
   } catch (error) {
-    const quota = toQuota({ provider: stored.provider }, [error], now);
-    cache.set(stored.id, {
-      expiresAt: now + cacheDuration([error]),
-      quota,
-    });
-    return quota;
+    return publish(toQuota({ provider: stored.provider }, [error], now), [
+      error,
+    ]);
   }
 };
 
@@ -206,16 +226,22 @@ const loadProviderAccountQuota = (
   stored: TrackingAccount,
   force: boolean
 ): Promise<AccountQuota | null> => {
-  const pending = inFlight.get(stored.id);
+  const key = quotaKey(stored);
+  const pending = inFlight.get(key);
   if (pending && !force) {
     return pending;
   }
-  const request = fetchProviderAccountQuota(database, stored).finally(() => {
-    if (inFlight.get(stored.id) === request) {
-      inFlight.delete(stored.id);
+  const request = fetchProviderAccountQuota(
+    database,
+    stored,
+    key,
+    nextGeneration(key)
+  ).finally(() => {
+    if (inFlight.get(key) === request) {
+      inFlight.delete(key);
     }
   });
-  inFlight.set(stored.id, request);
+  inFlight.set(key, request);
   return request;
 };
 
@@ -226,7 +252,7 @@ const getProviderAccountQuota = (
   stored: TrackingAccount,
   force = false
 ): Promise<AccountQuota | null> => {
-  const cached = cache.get(stored.id);
+  const cached = cache.get(quotaKey(stored));
   if (force || !cached) {
     return loadProviderAccountQuota(database, stored, force);
   }
@@ -340,7 +366,7 @@ export const redeemCodexResetCredit = async (
       })
     );
     await save("completed", result.code, result.windowsReset, null);
-    cache.delete(providerAccountId);
+    invalidateProviderAccountQuota(account);
     if (result.code === "reset" || result.code === "already_redeemed") {
       await getProviderAccountQuota(database, account, true);
     }
