@@ -56,15 +56,18 @@ globalThis.window = { location: { origin: "http://localhost" } } as Window &
 globalThis.localStorage = { getItem: () => null } as unknown as Storage;
 
 const {
+  cacheReadRate,
   cancelOAuthFlow,
   escapeHtml,
   loadAccounts,
   logout,
+  normalizeUsage,
   openEditKeyModal,
   saveKeyEdits,
   startOAuth,
   state,
 } = await import("../../public/admin/app-data.js");
+const { renderDashboard } = await import("../../public/admin/app-render.js");
 
 describe("admin UI request state", () => {
   beforeEach(() => {
@@ -155,6 +158,43 @@ describe("admin UI request state", () => {
     await saveKeyEdits();
 
     expect(patchedBody?.accountScopes).toEqual([accountId]);
+  });
+
+  test("counts cache writes in the cached input denominator", () => {
+    const metrics = normalizeUsage({
+      inputTokens: 20,
+      cacheReadTokens: 70,
+      cacheWriteTokens: 10,
+    });
+    expect(metrics.inputTotalTokens).toBe(100);
+    expect(
+      cacheReadRate(metrics.inputTotalTokens, metrics.cacheReadTokens)
+    ).toBe(70);
+    expect(cacheReadRate(0, 0)).toBeNull();
+  });
+
+  test("renders cached input as a token share, not a request hit rate", () => {
+    const metrics = {
+      requestCount: 1,
+      inputTokens: 20,
+      cacheReadTokens: 70,
+      cacheWriteTokens: 10,
+    };
+    renderDashboard({
+      totals: metrics,
+      byProvider: [{ ...metrics, provider: "claude" }],
+    });
+    const html = element("#dash-content").innerHTML;
+    expect(html).toContain('cached input</div><div class="dash-kpi-value">70%');
+    expect(html).toContain("70% cached input");
+    expect(html).not.toContain("cache hit");
+  });
+
+  test("renders no cached input rate when no usage was captured", () => {
+    renderDashboard({ totals: { requestCount: 1 } });
+    expect(element("#dash-content").innerHTML).toContain(
+      'cached input</div><div class="dash-kpi-value">-'
+    );
   });
 
   test("ignores an older account response after a newer reload", async () => {
