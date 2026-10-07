@@ -1418,9 +1418,30 @@ async function importAccount() {
   }
 }
 
+// Verify against a database-only route: /admin/accounts waits on live provider
+// quota lookups, which made login slow and could fail for unrelated reasons.
 async function verifyToken(token) {
   state.token = token;
-  await api("/admin/accounts");
+  await api("/admin/accounts/providers");
+}
+
+async function restoreSession() {
+  const saved = readPersistedToken();
+  if (!saved) return;
+  $("#login-gate").classList.add("hidden");
+  try {
+    await verifyToken(saved);
+  } catch (e) {
+    // Only a rejected token ends the session; a restart, timeout, or 5xx
+    // must not discard a valid saved token.
+    if (e?.status === 401) {
+      clearPersistedToken();
+      state.token = "";
+      $("#login-gate").classList.remove("hidden");
+      return;
+    }
+  }
+  enterApp();
 }
 
 async function handleLogin() {
@@ -1437,8 +1458,11 @@ async function handleLogin() {
     await verifyToken(token);
     persistToken(token);
     enterApp();
-  } catch {
-    $("#login-error").textContent = "Invalid admin token";
+  } catch (e) {
+    $("#login-error").textContent =
+      e?.status === 401
+        ? "Invalid admin token"
+        : `Could not reach Kleis: ${e?.message || "request failed"}`;
     clearPersistedToken();
     state.token = "";
   } finally {
@@ -1544,6 +1568,7 @@ export {
   redeemResetCredit,
   relativeTime,
   resolveConfirm,
+  restoreSession,
   revokeKey,
   rotateKey,
   saveAccountEdits,

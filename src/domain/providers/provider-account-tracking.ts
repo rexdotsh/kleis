@@ -48,6 +48,8 @@ export type AccountQuota = {
 };
 
 const cache = new Map<string, { expiresAt: number; quota: AccountQuota }>();
+const inFlight = new Map<string, Promise<AccountQuota | null>>();
+const generations = new Map<string, number>();
 
 const isTrackingAccount = (
   account: ProviderAccountRecord
@@ -173,36 +175,91 @@ const toQuota = (
   data,
 });
 
-const getProviderAccountQuota = async (
+// Quotas belong to the provider identity, so a row whose OAuth identity changes
+// never reuses another identity's snapshot or pending lookup.
+const quotaKey = (account: TrackingAccount): string =>
+  `${account.id}:${account.accountId ?? ""}`;
+
+const nextGeneration = (key: string): number => {
+  const generation = (generations.get(key) ?? 0) + 1;
+  generations.set(key, generation);
+  return generation;
+};
+
+const invalidateProviderAccountQuota = (account: TrackingAccount): void => {
+  const key = quotaKey(account);
+  cache.delete(key);
+  inFlight.delete(key);
+  nextGeneration(key);
+};
+
+const fetchProviderAccountQuota = async (
   database: Database,
   stored: TrackingAccount,
-  force = false
+  key: string,
+  generation: number
 ): Promise<AccountQuota | null> => {
-  const cached = cache.get(stored.id);
-  if (!force && cached && cached.expiresAt > Date.now()) {
-    return cached.quota;
-  }
   const now = Date.now();
+  const publish = (quota: AccountQuota, errors: unknown[]): AccountQuota => {
+    // A lookup started later, or an invalidation, owns the cache entry.
+    if (generations.get(key) === generation) {
+      cache.set(key, { expiresAt: now + cacheDuration(errors), quota });
+    }
+    return quota;
+  };
   try {
     const account = await resolveAccount(database, stored);
     if (!account) {
       return null;
     }
     const result = await fetchAccountData(database, account);
-    const quota = toQuota(result.data, result.errors, now);
-    cache.set(account.id, {
-      expiresAt: now + cacheDuration(result.errors),
-      quota,
-    });
-    return quota;
+    return publish(toQuota(result.data, result.errors, now), result.errors);
   } catch (error) {
-    const quota = toQuota({ provider: stored.provider }, [error], now);
-    cache.set(stored.id, {
-      expiresAt: now + cacheDuration([error]),
-      quota,
-    });
-    return quota;
+    return publish(toQuota({ provider: stored.provider }, [error], now), [
+      error,
+    ]);
   }
+};
+
+const loadProviderAccountQuota = (
+  database: Database,
+  stored: TrackingAccount,
+  force: boolean
+): Promise<AccountQuota | null> => {
+  const key = quotaKey(stored);
+  const pending = inFlight.get(key);
+  if (pending && !force) {
+    return pending;
+  }
+  const request = fetchProviderAccountQuota(
+    database,
+    stored,
+    key,
+    nextGeneration(key)
+  ).finally(() => {
+    if (inFlight.get(key) === request) {
+      inFlight.delete(key);
+    }
+  });
+  inFlight.set(key, request);
+  return request;
+};
+
+// Live quota lookups take seconds, so an expired snapshot is returned at once
+// and refreshed in the background. The UI shows when each snapshot was synced.
+const getProviderAccountQuota = (
+  database: Database,
+  stored: TrackingAccount,
+  force = false
+): Promise<AccountQuota | null> => {
+  const cached = cache.get(quotaKey(stored));
+  if (force || !cached) {
+    return loadProviderAccountQuota(database, stored, force);
+  }
+  if (cached.expiresAt <= Date.now()) {
+    loadProviderAccountQuota(database, stored, false).catch(() => undefined);
+  }
+  return Promise.resolve(cached.quota);
 };
 
 export const listProviderAccountQuotas = async (
@@ -309,7 +366,7 @@ export const redeemCodexResetCredit = async (
       })
     );
     await save("completed", result.code, result.windowsReset, null);
-    cache.delete(providerAccountId);
+    invalidateProviderAccountQuota(account);
     if (result.code === "reset" || result.code === "already_redeemed") {
       await getProviderAccountQuota(database, account, true);
     }

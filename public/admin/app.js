@@ -1,7 +1,6 @@
 import {
   $,
   $$,
-  clearPersistedToken,
   clearReauthorization,
   closeModal,
   cancelOAuthFlow,
@@ -9,7 +8,6 @@ import {
   createKey,
   deleteAccount,
   deleteKey,
-  enterApp,
   handleLogin,
   importAccount,
   keyById,
@@ -21,11 +19,11 @@ import {
   openCreateKeyModal,
   openEditAccountModal,
   openEditKeyModal,
-  readPersistedToken,
   redeemResetCredit,
   refreshAccount,
   reauthorizeAccount,
   resolveConfirm,
+  restoreSession,
   revokeKey,
   rotateKey,
   saveAccountEdits,
@@ -41,7 +39,6 @@ import {
   toast,
   toggleProvider,
   updateOAuthProviderUI,
-  verifyToken,
 } from "./app-data.js";
 import {
   openAccountDetail,
@@ -302,15 +299,4 @@ document.addEventListener("keydown", (e) => {
   for (const m of $$(".modal-backdrop.open")) closeModal(m);
 });
 
-(async () => {
-  const saved = readPersistedToken();
-  if (!saved) return;
-  $("#login-gate").classList.add("hidden");
-  try {
-    await verifyToken(saved);
-    enterApp();
-  } catch {
-    clearPersistedToken();
-    $("#login-gate").classList.remove("hidden");
-  }
-})();
+restoreSession();
