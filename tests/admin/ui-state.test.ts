@@ -51,7 +51,7 @@ globalThis.window = { location: { origin: "http://localhost" } } as Window &
   typeof globalThis;
 globalThis.localStorage = { getItem: () => null } as unknown as Storage;
 
-const { cancelOAuthFlow, loadAccounts, logout, startOAuth, state } =
+const { cancelOAuthFlow, escapeHtml, loadAccounts, logout, startOAuth, state } =
   await import("../../public/admin/app-data.js");
 
 describe("admin UI request state", () => {
@@ -74,6 +74,16 @@ describe("admin UI request state", () => {
     globalThis.document = originalDocument;
     globalThis.window = originalWindow;
     globalThis.localStorage = originalLocalStorage;
+  });
+
+  test("escapes quotes and HTML syntax inside both text and attributes", () => {
+    expect(escapeHtml(`A&B <tag> "quoted" 'single'`)).toBe(
+      "A&amp;B &lt;tag&gt; &quot;quoted&quot; &#39;single&#39;"
+    );
+    expect(escapeHtml('" onmouseover="alert(1)')).toBe(
+      "&quot; onmouseover=&quot;alert(1)"
+    );
+    expect(escapeHtml("&quot;")).toBe("&amp;quot;");
   });
 
   test("ignores an older account response after a newer reload", async () => {
