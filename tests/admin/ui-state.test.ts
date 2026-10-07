@@ -6,6 +6,7 @@ type FakeElement = {
   innerHTML: string;
   textContent: string;
   checked: boolean;
+  dataset: Record<string, string>;
   style: { display: string };
   classList: {
     contains: (name: string) => boolean;
@@ -13,6 +14,7 @@ type FakeElement = {
     remove: (name: string) => void;
   };
   querySelector: () => null;
+  appendChild: () => void;
 };
 
 const elements = new Map<string, FakeElement>();
@@ -25,6 +27,7 @@ const element = (selector: string) => {
       innerHTML: "",
       textContent: "",
       checked: false,
+      dataset: {},
       style: { display: "none" },
       classList: {
         contains: () => false,
@@ -32,6 +35,7 @@ const element = (selector: string) => {
         remove: () => undefined,
       },
       querySelector: () => null,
+      appendChild: () => undefined,
     };
     elements.set(selector, current);
   }
@@ -51,8 +55,16 @@ globalThis.window = { location: { origin: "http://localhost" } } as Window &
   typeof globalThis;
 globalThis.localStorage = { getItem: () => null } as unknown as Storage;
 
-const { cancelOAuthFlow, escapeHtml, loadAccounts, logout, startOAuth, state } =
-  await import("../../public/admin/app-data.js");
+const {
+  cancelOAuthFlow,
+  escapeHtml,
+  loadAccounts,
+  logout,
+  openEditKeyModal,
+  saveKeyEdits,
+  startOAuth,
+  state,
+} = await import("../../public/admin/app-data.js");
 
 describe("admin UI request state", () => {
   beforeEach(() => {
@@ -84,6 +96,65 @@ describe("admin UI request state", () => {
       "&quot; onmouseover=&quot;alert(1)"
     );
     expect(escapeHtml("&quot;")).toBe("&amp;quot;");
+  });
+
+  test("editing a key preserves an account scope missing from the loaded list", async () => {
+    const keyId = "key-scoped";
+    const accountId = "missing-account";
+    const key = {
+      id: keyId,
+      label: "scoped key",
+      providerScopes: null,
+      accountScopes: [accountId],
+      modelScopes: null,
+      expiresAt: null,
+    };
+    state.keysById = new Map([[keyId, key]]);
+    state.accounts = [];
+    const preservedInput = {
+      value: accountId,
+      checked: true,
+      dataset: { preservedScope: "true" },
+    };
+    globalThis.document = {
+      querySelector: element,
+      querySelectorAll: (selector: string) =>
+        selector === ".edit-key-scope-account" ? [preservedInput] : [],
+      createElement: () => ({
+        textContent: "",
+        get innerHTML() {
+          return this.textContent;
+        },
+        classList: { add: () => undefined },
+        remove: () => undefined,
+      }),
+    } as unknown as Document;
+
+    openEditKeyModal(keyId);
+    expect(element("#edit-key-account-scopes").innerHTML).toContain(
+      'value="missing-account" class="edit-key-scope-account" data-preserved-scope="true" checked'
+    );
+    expect(preservedInput.checked).toBe(true);
+
+    let patchedBody: { accountScopes?: string[] | null } | undefined;
+    globalThis.fetch = ((url: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(url);
+      if (path === `/admin/keys/${keyId}`) {
+        patchedBody = JSON.parse(String(init?.body));
+        return Promise.resolve(Response.json({ key }));
+      }
+      if (path === "/admin/keys") {
+        return Promise.resolve(Response.json({ keys: [] }));
+      }
+      if (path.startsWith("/admin/keys/usage?")) {
+        return Promise.resolve(Response.json({ usage: [] }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`));
+    }) as typeof fetch;
+    element("#edit-key-label").value = "renamed";
+    await saveKeyEdits();
+
+    expect(patchedBody?.accountScopes).toEqual([accountId]);
   });
 
   test("ignores an older account response after a newer reload", async () => {
