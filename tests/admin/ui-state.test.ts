@@ -99,6 +99,8 @@ describe("admin UI request state", () => {
       "&quot; onmouseover=&quot;alert(1)"
     );
     expect(escapeHtml("&quot;")).toBe("&amp;quot;");
+    expect(escapeHtml(null)).toBe("");
+    expect(escapeHtml(undefined)).toBe("");
   });
 
   test("editing a key preserves an account scope missing from the loaded list", async () => {
