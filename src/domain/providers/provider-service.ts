@@ -25,10 +25,11 @@ const normalizeTokenField = (value: string): string => value.trim();
 
 const REFRESH_LOCK_LEASE_MS = 45_000;
 const REFRESH_LOCK_HEARTBEAT_MS = 5000;
-const REFRESH_WAIT_TIMEOUT_MS = 3000;
+const REFRESH_WAIT_TIMEOUT_MS = 20_000;
 const AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS = 30_000;
 const CLAUDE_REFRESH_WAIT_TIMEOUT_MS = 30_000;
 const CLAUDE_TRANSIENT_REFRESH_COOLDOWN_MS = 30_000;
+const CODEX_REFRESH_FAILURE_COOLDOWN_MS = 30_000;
 const REFRESH_WAIT_POLL_INTERVAL_MS = 150;
 
 const assertExpiresAt = (expiresAt: number, now: number): number => {
@@ -103,6 +104,8 @@ const refreshProviderAccountWithLock = async (
 
     if (account.provider === "claude") {
       assertClaudeRefreshAllowed(account);
+    } else {
+      assertCodexRefreshAllowed(account);
     }
 
     if (
@@ -229,6 +232,8 @@ export const refreshProviderAccountAfterAuthFailure = async (
   }
   if (account.provider === "claude") {
     assertClaudeRefreshAllowed(account);
+  } else {
+    assertCodexRefreshAllowed(account);
   }
 
   const lockToken = crypto.randomUUID();
@@ -338,6 +343,16 @@ const assertClaudeRefreshAllowed = (account: ProviderAccountRecord): void => {
   }
 };
 
+const assertCodexRefreshAllowed = (account: ProviderAccountRecord): void => {
+  if (
+    account.lastRefreshStatus === "failed" &&
+    account.lastRefreshAt !== null &&
+    Date.now() - account.lastRefreshAt < CODEX_REFRESH_FAILURE_COOLDOWN_MS
+  ) {
+    throw new Error("Codex OAuth refresh is temporarily unavailable");
+  }
+};
+
 export const completeProviderOAuth = async (
   database: Database,
   provider: Provider,
@@ -441,6 +456,8 @@ export const refreshProviderAccount = async (
   }
   if (account.provider === "claude") {
     assertClaudeRefreshAllowed(account);
+  } else {
+    assertCodexRefreshAllowed(account);
   }
 
   const lockToken = crypto.randomUUID();
@@ -497,6 +514,8 @@ export const refreshProviderAccount = async (
   }
   if (account.provider === "claude") {
     assertClaudeRefreshAllowed(waited);
+  } else {
+    assertCodexRefreshAllowed(waited);
   }
 
   const retryLockToken = crypto.randomUUID();
