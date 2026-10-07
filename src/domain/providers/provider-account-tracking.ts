@@ -48,6 +48,7 @@ export type AccountQuota = {
 };
 
 const cache = new Map<string, { expiresAt: number; quota: AccountQuota }>();
+const inFlight = new Map<string, Promise<AccountQuota | null>>();
 
 const isTrackingAccount = (
   account: ProviderAccountRecord
@@ -173,15 +174,10 @@ const toQuota = (
   data,
 });
 
-const getProviderAccountQuota = async (
+const fetchProviderAccountQuota = async (
   database: Database,
-  stored: TrackingAccount,
-  force = false
+  stored: TrackingAccount
 ): Promise<AccountQuota | null> => {
-  const cached = cache.get(stored.id);
-  if (!force && cached && cached.expiresAt > Date.now()) {
-    return cached.quota;
-  }
   const now = Date.now();
   try {
     const account = await resolveAccount(database, stored);
@@ -203,6 +199,41 @@ const getProviderAccountQuota = async (
     });
     return quota;
   }
+};
+
+const loadProviderAccountQuota = (
+  database: Database,
+  stored: TrackingAccount,
+  force: boolean
+): Promise<AccountQuota | null> => {
+  const pending = inFlight.get(stored.id);
+  if (pending && !force) {
+    return pending;
+  }
+  const request = fetchProviderAccountQuota(database, stored).finally(() => {
+    if (inFlight.get(stored.id) === request) {
+      inFlight.delete(stored.id);
+    }
+  });
+  inFlight.set(stored.id, request);
+  return request;
+};
+
+// Live quota lookups take seconds, so an expired snapshot is returned at once
+// and refreshed in the background. The UI shows when each snapshot was synced.
+const getProviderAccountQuota = (
+  database: Database,
+  stored: TrackingAccount,
+  force = false
+): Promise<AccountQuota | null> => {
+  const cached = cache.get(stored.id);
+  if (force || !cached) {
+    return loadProviderAccountQuota(database, stored, force);
+  }
+  if (cached.expiresAt <= Date.now()) {
+    loadProviderAccountQuota(database, stored, false).catch(() => undefined);
+  }
+  return Promise.resolve(cached.quota);
 };
 
 export const listProviderAccountQuotas = async (
