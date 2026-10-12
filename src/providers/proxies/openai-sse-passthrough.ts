@@ -134,7 +134,9 @@ const tryParseJson = (value: string): unknown | null => {
 const findSseEventBoundary = (
   buffer: string
 ): { index: number; length: number } | null => {
-  const match = /(?:\r\n|\r|\n)(?:\r\n|\r|\n)/u.exec(buffer);
+  // A CRLF is one line ending, not two. The single-CR and single-LF cases
+  // must not backtrack into the two halves of a CRLF pair.
+  const match = /(?:\r\n|\r(?!\n)|(?<!\r)\n){2}/u.exec(buffer);
   if (!match || match.index === undefined) {
     return null;
   }

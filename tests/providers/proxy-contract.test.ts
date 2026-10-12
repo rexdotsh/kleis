@@ -725,6 +725,35 @@ describe("proxy contract: codex", () => {
     });
   }
 
+  test("keeps CRLF event and data lines together when normalizing response.done", async () => {
+    const capture = createUsageCapture();
+    const result = prepareCodexUsageRequest(
+      codexStreamingUsageBody,
+      capture.onTokenUsage
+    );
+    const payload = JSON.stringify({
+      type: "response.done",
+      response: {
+        status: "completed",
+        usage: { input_tokens: 20, output_tokens: 3 },
+      },
+    });
+    const transformed = await result.transformResponse(
+      new Response(`event: response.done\r\ndata: ${payload}\r\n\r\n`, {
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+    const text = await transformed.text();
+
+    expect(text).toContain("event: response.completed\r\n");
+    expect(text).toContain('"type":"response.completed"');
+    expect(text).not.toContain("event: response.done");
+    expect(capture.read()).toMatchObject({
+      inputTokens: 20,
+      outputTokens: 3,
+    });
+  });
+
   test("normalizes an unterminated response.done event at EOF", async () => {
     const capture = createUsageCapture();
     const result = prepareCodexUsageRequest(
