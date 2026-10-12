@@ -1,3 +1,24 @@
+x-app: &app
+  image: ${KLEIS_APP_IMAGE:?set KLEIS_APP_IMAGE}
+  env_file:
+    - path: .env
+      required: false
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 15m
+  healthcheck:
+    test:
+      [
+        "CMD",
+        "bun",
+        "-e",
+        "fetch('http://127.0.0.1:3003/healthz').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))",
+      ]
+    interval: 30s
+    timeout: 5s
+    retries: 5
+    start_period: 10s
+
 services:
   migrate:
     image: ${KLEIS_MIGRATE_IMAGE:?set KLEIS_MIGRATE_IMAGE}
@@ -6,25 +27,14 @@ services:
         required: false
     restart: "no"
 
-  app:
-    image: ${KLEIS_APP_IMAGE:?set KLEIS_APP_IMAGE}
-    container_name: kleis-app
-    env_file:
-      - path: .env
-        required: false
-    init: true
+  app-blue:
+    <<: *app
+    container_name: kleis-blue
     ports:
       - "127.0.0.1:3003:3003"
-    restart: unless-stopped
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "bun",
-          "-e",
-          "fetch('http://127.0.0.1:3003/healthz').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1))",
-        ]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
+
+  app-green:
+    <<: *app
+    container_name: kleis-green
+    ports:
+      - "127.0.0.1:3004:3003"

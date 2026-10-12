@@ -1,0 +1,27 @@
+(kleis_upstreams) {
+	to 127.0.0.1:3004 127.0.0.1:3003
+	lb_policy first
+	lb_try_duration 30s
+	lb_try_interval 250ms
+	health_uri /healthz
+	health_interval 2s
+	health_timeout 2s
+}
+
+kleis.rex.wf {
+	@streaming path /openai/v1/* /anthropic/v1/* /copilot/v1/*
+
+	handle @streaming {
+		reverse_proxy {
+			import kleis_upstreams
+			flush_interval 100ms
+		}
+	}
+
+	handle {
+		encode zstd gzip
+		reverse_proxy {
+			import kleis_upstreams
+		}
+	}
+}

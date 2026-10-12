@@ -52,7 +52,7 @@ jobs:
     environment: production
     concurrency:
       group: production-deploy
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -143,13 +143,5 @@ jobs:
           printf '%s\n' "$GHCR_TOKEN" | ssh "$DEPLOY_USER@$DEPLOY_HOST" "docker login ghcr.io -u '$GHCR_USERNAME' --password-stdin"
           ssh "$DEPLOY_USER@$DEPLOY_HOST" "mkdir -p '$DEPLOY_PATH'"
           cat docker-compose.deploy.yml | ssh "$DEPLOY_USER@$DEPLOY_HOST" "cat > '$DEPLOY_PATH/docker-compose.deploy.yml'"
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" <<EOF
-          set -e
-          cd "$DEPLOY_PATH"
-          export KLEIS_APP_IMAGE="$APP_IMAGE"
-          export KLEIS_MIGRATE_IMAGE="$MIGRATE_IMAGE"
-          docker compose -f docker-compose.deploy.yml pull
-          docker compose -f docker-compose.deploy.yml run --rm --interactive=false migrate
-          docker compose -f docker-compose.deploy.yml up -d app
-          docker image prune -af
-          EOF
+          cat scripts/deploy-release.sh | ssh "$DEPLOY_USER@$DEPLOY_HOST" "cat > '$DEPLOY_PATH/deploy-release.sh' && chmod +x '$DEPLOY_PATH/deploy-release.sh'"
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "cd '$DEPLOY_PATH' && KLEIS_APP_IMAGE='$APP_IMAGE' KLEIS_MIGRATE_IMAGE='$MIGRATE_IMAGE' ./deploy-release.sh"
