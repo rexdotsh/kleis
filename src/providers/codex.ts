@@ -331,6 +331,7 @@ const refreshCodexTokens = async (
 ): Promise<CodexTokenResponse> => {
   const response = await fetch(CODEX_TOKEN_URL, {
     method: "POST",
+    signal: AbortSignal.timeout(15_000),
     headers: {
       "Content-Type": "application/x-www-form-urlencoded",
     },
