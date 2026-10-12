@@ -173,6 +173,29 @@ const isModelSupportedByProxyProvider = (
   );
 };
 
+// OpenCode turns models.dev experimental modes into separate `<model>-<mode>`
+// models and disables pro reasoning mode for ChatGPT OAuth accounts.
+// https://github.com/anomalyco/opencode/blob/4617210822/packages/core/src/plugin/provider/openai.ts#L279-L282
+const removeProReasoningModes = (model: JsonObject): void => {
+  const modes = getObjectProperty(
+    getObjectProperty(model, "experimental"),
+    "modes"
+  );
+  if (!modes) {
+    return;
+  }
+
+  for (const [mode, options] of Object.entries(modes)) {
+    const body = getObjectProperty(
+      getObjectProperty(options, "provider"),
+      "body"
+    );
+    if (getObjectProperty(body, "reasoning")?.mode === "pro") {
+      delete modes[mode];
+    }
+  }
+};
+
 const cloneProviderModels = (input: {
   sourceModels: Record<string, unknown>;
   apiUrl: string;
@@ -301,6 +324,7 @@ const mergeKleisProviderModels = (input: {
             context: 400_000,
             input: 272_000,
           };
+          removeProReasoningModes(model);
         },
       })
     );
