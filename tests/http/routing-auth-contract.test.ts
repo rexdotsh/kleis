@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { createUpstreamProxyHeaders } from "../../src/http/proxy-headers";
 import { parseBearerToken } from "../../src/http/utils/bearer";
 import {
   canForceRefreshModelsRegistry,
@@ -57,6 +58,59 @@ describe("models registry refresh authorization", () => {
     expect(
       canForceRefreshModelsRegistry("Bearer admin-secret", "admin-secret")
     ).toBe(true);
+  });
+});
+
+describe("provider-bound proxy headers", () => {
+  test("drops Kleis credentials, client IPs and proxy metadata", () => {
+    const incoming = new Headers({
+      authorization: "Bearer kleis_test",
+      "x-api-key": "kleis_test",
+      "ChatGPT-Account-Id": "spoofed",
+      host: "kleis.example",
+      "content-length": "123",
+      cookie: "session=private",
+      forwarded: "for=192.0.2.4;host=kleis.example",
+      via: "1.1 Caddy",
+      "x-forwarded-for": "192.0.2.4",
+      "x-forwarded-host": "kleis.example",
+      "x-forwarded-proto": "https",
+      "x-real-ip": "192.0.2.4",
+      "cf-connecting-ip": "192.0.2.4",
+      "x-stainless-lang": "js",
+      "anthropic-beta": "prompt-caching-2024-07-31",
+      "anthropic-version": "2023-06-01",
+      "x-opencode-session": "ses_example",
+      "x-session-affinity": "ses_example",
+      "content-type": "application/json",
+    });
+
+    const upstream = createUpstreamProxyHeaders(incoming);
+
+    for (const name of [
+      "authorization",
+      "x-api-key",
+      "ChatGPT-Account-Id",
+      "host",
+      "content-length",
+      "cookie",
+      "forwarded",
+      "via",
+      "x-forwarded-for",
+      "x-forwarded-host",
+      "x-forwarded-proto",
+      "x-real-ip",
+      "cf-connecting-ip",
+    ]) {
+      expect(upstream.has(name)).toBe(false);
+    }
+    expect(upstream.get("x-stainless-lang")).toBe("js");
+    expect(upstream.get("anthropic-beta")).toBe("prompt-caching-2024-07-31");
+    expect(upstream.get("anthropic-version")).toBe("2023-06-01");
+    expect(upstream.get("x-opencode-session")).toBe("ses_example");
+    expect(upstream.get("x-session-affinity")).toBe("ses_example");
+    expect(upstream.get("content-type")).toBe("application/json");
+    expect(incoming.get("authorization")).toBe("Bearer kleis_test");
   });
 });
 
