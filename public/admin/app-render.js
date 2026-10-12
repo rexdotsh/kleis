@@ -141,7 +141,7 @@ function codexLimitsBody(account, data) {
       ? `credit expires ${relativeTime(expiry)}`
       : "credit does not expire";
     const title = `${credit.description || "Consume a reset credit to restore limits"} \u00b7 ${expiryLabel}`;
-    return `<button class="btn btn-credit btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" data-credit-id="${escapeHtml(credit.id)}" type="button" title="${escapeHtml(title)}">${escapeHtml((credit.title || "restore limits").toLowerCase())}</button>`;
+    return `<button class="btn btn-credit btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" data-credit-id="${escapeHtml(credit.id)}" type="button" title="${escapeHtml(title)}">${escapeHtml(credit.title || "Restore limits")}</button>`;
   });
   if (!actions.length && typeof available === "number" && available > 0) {
     actions.push(
@@ -245,7 +245,7 @@ function providerStatusItemHtml(status) {
       data-provider="${provider}"
       data-enabled="${enabled ? "false" : "true"}"
       type="button"
-    >${enabled ? "disable" : "enable"}</button>
+    >${enabled ? "Disable" : "Enable"}</button>
   </div>`;
 }
 
@@ -274,8 +274,8 @@ function accountCardHtml(account) {
 
   const setPrimaryBtn = account.isPrimary
     ? ""
-    : `<button class="btn btn-ghost btn-sm" data-action="set-primary" data-account-id="${account.id}" type="button">set primary</button>`;
-  const editBtn = `<button class="btn btn-ghost btn-sm" data-action="edit-account" data-account-id="${account.id}" type="button">edit</button>`;
+    : `<button class="btn btn-ghost btn-sm" data-action="set-primary" data-account-id="${account.id}" type="button">Set primary</button>`;
+  const editBtn = `<button class="btn btn-ghost btn-sm" data-action="edit-account" data-account-id="${account.id}" type="button">Edit</button>`;
 
   const identityParts = [];
   if (account.accountId && account.accountId !== name) {
@@ -315,9 +315,9 @@ function accountCardHtml(account) {
       <div class="card-actions">
         ${editBtn}
         ${setPrimaryBtn}
-        ${needsReauthorization && (account.provider === "codex" || account.provider === "claude") ? `<button class="btn btn-ghost btn-sm" data-action="reauthorize-account" data-account-id="${account.id}" type="button">reauthorize</button>` : ""}
-        <button class="btn btn-ghost btn-sm" data-action="refresh-account" data-account-id="${account.id}" type="button">refresh</button>
-        <button class="btn btn-danger btn-sm" data-action="delete-account" data-account-id="${account.id}" type="button">delete</button>
+        ${needsReauthorization && (account.provider === "codex" || account.provider === "claude") ? `<button class="btn btn-ghost btn-sm" data-action="reauthorize-account" data-account-id="${account.id}" type="button">Reauthorize</button>` : ""}
+        <button class="btn btn-ghost btn-sm" data-action="refresh-account" data-account-id="${account.id}" type="button">Refresh</button>
+        <button class="btn btn-danger btn-sm" data-action="delete-account" data-account-id="${account.id}" type="button">Delete</button>
       </div>
     </div>
     <div class="card-status">
@@ -436,8 +436,8 @@ function keyCardHtml(key) {
   }
 
   const actionButtons = revoked
-    ? `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">edit</button><button class="btn btn-danger btn-sm" data-action="delete-key" data-key-id="${key.id}" type="button">delete</button>`
-    : `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">edit</button><button class="btn btn-ghost btn-sm" data-action="rotate-key" data-key-id="${key.id}" type="button">rotate</button><button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${key.id}" type="button">revoke</button>`;
+    ? `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">Edit</button><button class="btn btn-danger btn-sm" data-action="delete-key" data-key-id="${key.id}" type="button">Delete</button>`
+    : `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">Edit</button><button class="btn btn-ghost btn-sm" data-action="rotate-key" data-key-id="${key.id}" type="button">Rotate</button><button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${key.id}" type="button">Revoke</button>`;
 
   return `<div class="card" data-key-id="${key.id}" role="group" tabindex="0" aria-label="Open usage details for ${escapeHtml(key.label || "untitled key")}">
     <div class="card-top">
@@ -446,9 +446,9 @@ function keyCardHtml(key) {
         <span class="badge badge-${status}">${status}</span>
       </div>
       <div class="card-actions">
-        <button class="btn btn-ghost btn-sm" data-action="copy-key" data-key-id="${key.id}" type="button">copy</button>
-        ${modelsUrl ? `<button class="btn btn-ghost btn-sm" data-action="copy-models-url" data-key-id="${key.id}" type="button">copy models url</button>` : ""}
-        <button class="btn btn-ghost btn-sm" data-action="toggle-key" data-key-id="${key.id}" type="button">${isRevealed ? "hide" : "show"}</button>
+        <button class="btn btn-ghost btn-sm" data-action="copy-key" data-key-id="${key.id}" type="button">Copy</button>
+        ${modelsUrl ? `<button class="btn btn-ghost btn-sm" data-action="copy-models-url" data-key-id="${key.id}" type="button">Copy models URL</button>` : ""}
+        <button class="btn btn-ghost btn-sm" data-action="toggle-key" data-key-id="${key.id}" type="button">${isRevealed ? "Hide" : "Show"}</button>
         ${actionButtons}
       </div>
     </div>
@@ -622,7 +622,7 @@ function renderAccountDetailBody(data) {
   return [
     renderDetailStats(totals),
     renderUsageTable("by API key", data.apiKeys, [
-      ["api key", (k) => apiKeyDisplayHtml(k.apiKeyId)],
+      ["API key", (k) => apiKeyDisplayHtml(k.apiKeyId)],
     ]),
     renderUsageTable(
       "by provider / endpoint",
@@ -665,8 +665,8 @@ async function openAccountDetail(accountId) {
   const account = accountById(accountId);
   const label = account?.label || account?.accountId || accountId;
   const title = account
-    ? `${account.provider} account: ${label}`
-    : `account: ${label}`;
+    ? `${account.provider === "claude" ? "Claude" : "Codex"} account · ${label}`
+    : `Account · ${label}`;
 
   await openUsageDetailModal({
     title,
@@ -728,7 +728,7 @@ function showKeyReveal(fullKey) {
   const btn = document.createElement("button");
   btn.className = "btn btn-ghost btn-sm";
   btn.type = "button";
-  btn.textContent = "copy";
+  btn.textContent = "Copy";
   btn.addEventListener("click", () => copyToClipboard(fullKey, btn));
   reveal.append(btn);
   $("#keys-list").prepend(reveal);

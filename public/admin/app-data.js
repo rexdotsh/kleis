@@ -114,7 +114,7 @@ function toast(message, type = "success") {
 
 let confirmResolve = null;
 
-function showConfirm(title, message, actionLabel = "confirm", extrasHtml = "") {
+function showConfirm(title, message, actionLabel = "Confirm", extrasHtml = "") {
   if (confirmResolve) resolveConfirm(false);
   return new Promise((resolve) => {
     confirmResolve = resolve;
@@ -777,7 +777,7 @@ async function setPrimary(id) {
   const confirmed = await showConfirm(
     "Set Primary Account",
     `Set "${name}" as the primary ${account?.provider || ""} account? Requests will be routed to this account.`,
-    "set primary"
+    "Set primary"
   );
   if (!confirmed) return;
 
@@ -795,7 +795,7 @@ async function toggleProvider(provider, enabled) {
     const confirmed = await showConfirm(
       "Disable Provider",
       `Disable ${provider}? All ${provider} accounts will stop receiving proxy traffic and its models will disappear from model registries. You can re-enable it at any time.`,
-      "disable"
+      "Disable"
     );
     if (!confirmed) return;
   }
@@ -829,7 +829,7 @@ async function deleteAccount(id) {
   const confirmed = await showConfirm(
     "Delete Account",
     `Delete "${name}"? This will remove all stored tokens for this account. This cannot be undone.`,
-    "delete"
+    "Delete"
   );
   if (!confirmed) return;
 
@@ -858,7 +858,7 @@ async function refreshAccount(id) {
     toast(e.message, "error");
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "refresh";
+      btn.textContent = "Refresh";
     }
   }
 }
@@ -968,7 +968,7 @@ async function saveAccountEdits() {
 
   const previousLabel = saveButton.textContent;
   saveButton.disabled = true;
-  saveButton.innerHTML = '<span class="spinner"></span> saving...';
+  saveButton.innerHTML = '<span class="spinner"></span> Saving…';
   try {
     await api(`/admin/accounts/${accountId}`, {
       method: "PATCH",
@@ -1014,7 +1014,7 @@ async function createKey() {
   };
 
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> creating...';
+  btn.innerHTML = '<span class="spinner"></span> Creating…';
   try {
     const data = await api("/admin/keys", {
       method: "POST",
@@ -1028,7 +1028,7 @@ async function createKey() {
     toast(e.message, "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "create";
+    btn.textContent = "Create";
   }
 }
 
@@ -1093,7 +1093,7 @@ async function saveKeyEdits() {
 
   const previousLabel = saveButton.textContent;
   saveButton.disabled = true;
-  saveButton.innerHTML = '<span class="spinner"></span> saving...';
+  saveButton.innerHTML = '<span class="spinner"></span> Saving…';
   try {
     await api(`/admin/keys/${keyId}`, {
       method: "PATCH",
@@ -1123,7 +1123,7 @@ async function rotateKey(id, button) {
   const confirmed = await showConfirm(
     "Rotate API Key",
     `Create a new key with the same settings as "${label}".`,
-    "rotate",
+    "Rotate",
     '<label class="scope-check" style="margin-top:14px;margin-bottom:0"><input id="rotate-revoke-old" type="checkbox"> revoke old key after rotate</label>'
   );
   if (!confirmed) return;
@@ -1174,7 +1174,7 @@ async function rotateKey(id, button) {
     }
   } finally {
     button.disabled = false;
-    button.textContent = previousText || "rotate";
+    button.textContent = previousText || "Rotate";
   }
 }
 
@@ -1184,7 +1184,7 @@ async function revokeKey(id) {
   const confirmed = await showConfirm(
     "Revoke API Key",
     `Revoke "${label}"? Any clients using this key will stop working immediately. This cannot be undone.`,
-    "revoke"
+    "Revoke"
   );
   if (!confirmed) return;
 
@@ -1203,7 +1203,7 @@ async function deleteKey(id) {
   const confirmed = await showConfirm(
     "Delete Revoked API Key",
     `Delete "${label}" permanently? This removes the key and its usage history. This cannot be undone.`,
-    "delete"
+    "Delete"
   );
   if (!confirmed) return;
 
@@ -1221,7 +1221,7 @@ async function copyToClipboard(text, btn) {
   try {
     await navigator.clipboard.writeText(text);
     const original = btn.textContent;
-    btn.textContent = "copied";
+    btn.textContent = "Copied";
     setTimeout(() => {
       btn.textContent = original;
     }, 2000);
@@ -1255,7 +1255,7 @@ async function reauthorizeAccount(id) {
     const confirmed = await showConfirm(
       "Replace active OAuth flow?",
       "The current authorization code will no longer work in this form.",
-      "start over"
+      "Start over"
     );
     if (!confirmed) return;
     cancelOAuthFlow();
@@ -1295,7 +1295,7 @@ async function startOAuth() {
   const provider = $("#oauth-provider").value;
   const btn = $("#btn-oauth-start");
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> starting...';
+  btn.innerHTML = '<span class="spinner"></span> Starting…';
 
   try {
     const body = {};
@@ -1351,7 +1351,7 @@ async function completeOAuth() {
   const requestSeq = state.oauthRequestSeq;
   const btn = $("#btn-oauth-complete");
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> completing...';
+  btn.innerHTML = '<span class="spinner"></span> Completing…';
 
   try {
     const body = { state: state.activeOAuth.state };
@@ -1419,7 +1419,7 @@ async function importAccount() {
 
   const btn = $("#btn-import-account");
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> importing...';
+  btn.innerHTML = '<span class="spinner"></span> Importing…';
   try {
     await api(`/admin/accounts/${provider}/import`, {
       method: "POST",
@@ -1442,7 +1442,7 @@ async function importAccount() {
     toast(e.message, "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "import account";
+    btn.textContent = "Import account";
   }
 }
 
@@ -1495,7 +1495,7 @@ async function handleLogin() {
     state.token = "";
   } finally {
     btn.disabled = false;
-    btn.textContent = "authenticate";
+    btn.textContent = "Sign in";
   }
 }
 

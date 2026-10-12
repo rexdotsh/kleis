@@ -13,7 +13,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-      href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Lexend:wght@300;400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     >
     <link rel="stylesheet" href="./styles.css">
@@ -22,17 +22,17 @@
     <div id="login-gate">
       <div class="login-box">
         <div class="login-logo">kleis</div>
-        <div class="login-sub">admin console</div>
+        <div class="login-sub">Admin</div>
         <div class="login-form">
           <input
             id="login-token"
             type="password"
-            placeholder="admin token"
+            placeholder="Admin token"
             autocomplete="off"
             spellcheck="false"
           >
           <button id="login-btn" class="btn btn-primary" type="button">
-            authenticate
+            Sign in
           </button>
         </div>
         <div id="login-error" class="login-error" role="alert"></div>
@@ -44,29 +44,25 @@
     <div id="app">
       <header class="header">
         <div class="shell header-inner">
-          <div class="header-left">
-            <span class="header-brand">kleis</span>
-            <span class="header-tag">admin</span>
-          </div>
+          <span class="header-brand">kleis</span>
+          <nav class="tabs" role="tablist" aria-label="Admin sections">
+            <button class="tab active" data-tab="usage" type="button">
+              Usage
+            </button>
+            <button class="tab" data-tab="accounts" type="button">
+              Accounts
+            </button>
+            <button class="tab" data-tab="keys" type="button">Keys</button>
+            <button class="tab" data-tab="oauth" type="button">Connect</button>
+          </nav>
           <button id="btn-logout" class="btn btn-ghost btn-sm" type="button">
-            logout
+            Log out
           </button>
         </div>
       </header>
 
       <div class="shell">
-        <nav class="tabs fade-in" role="tablist" aria-label="Admin sections">
-          <button class="tab active" data-tab="usage" type="button">
-            usage
-          </button>
-          <button class="tab" data-tab="accounts" type="button">
-            accounts
-          </button>
-          <button class="tab" data-tab="keys" type="button">api keys</button>
-          <button class="tab" data-tab="oauth" type="button">connect</button>
-        </nav>
-
-        <div id="panel-usage" class="tab-panel active fade-in-delay">
+        <div id="panel-usage" class="tab-panel active">
           <div class="dash-controls">
             <div><span class="section-title">Usage</span></div>
             <div class="section-actions">
@@ -112,17 +108,17 @@
                 class="btn btn-ghost btn-sm"
                 type="button"
               >
-                refresh
+                Refresh
               </button>
             </div>
           </div>
           <div id="dash-content"></div>
         </div>
 
-        <div id="panel-accounts" class="tab-panel fade-in-delay">
+        <div id="panel-accounts" class="tab-panel">
           <div class="section-header">
             <div>
-              <span class="section-title">Provider Accounts</span>
+              <span class="section-title">Accounts</span>
               <span id="accounts-count" class="section-count"></span>
             </div>
             <div class="section-actions">
@@ -168,7 +164,7 @@
                 class="btn btn-ghost btn-sm"
                 type="button"
               >
-                refresh
+                Refresh
               </button>
             </div>
           </div>
@@ -179,7 +175,7 @@
         <div id="panel-keys" class="tab-panel">
           <div class="section-header">
             <div>
-              <span class="section-title">API Keys</span>
+              <span class="section-title">API keys</span>
               <span id="keys-count" class="section-count"></span>
             </div>
             <div class="dash-window-selector" id="keys-window-selector">
@@ -223,7 +219,7 @@
           <div class="section-toolbar">
             <label class="toggle-inline">
               <input id="toggle-show-revoked-keys" type="checkbox">
-              show revoked
+              Show revoked
             </label>
             <div class="section-actions">
               <button
@@ -231,21 +227,21 @@
                 class="btn btn-ghost btn-sm"
                 type="button"
               >
-                opencode setup
+                OpenCode setup
               </button>
               <button
                 id="btn-refresh-keys"
                 class="btn btn-ghost btn-sm"
                 type="button"
               >
-                refresh
+                Refresh
               </button>
               <button
                 id="btn-create-key"
                 class="btn btn-primary btn-sm"
                 type="button"
               >
-                + new key
+                New key
               </button>
             </div>
           </div>
@@ -255,12 +251,12 @@
 
         <div id="panel-oauth" class="tab-panel">
           <div class="section-header">
-            <span class="section-title">Connect Provider</span>
+            <span class="section-title">Connect a provider</span>
           </div>
 
-          <div class="card">
+          <div class="connect-form">
             <div class="field-hint" style="margin-bottom:14px">
-              OAuth flow (recommended)
+              OAuth (recommended)
             </div>
             <div class="field">
               <label class="field-label" for="oauth-provider">Provider</label>
@@ -271,7 +267,7 @@
             </div>
             <div id="oauth-codex-opts" class="field" style="display:none">
               <label class="field-label" for="oauth-codex-mode">
-                OAuth Mode
+                OAuth mode
               </label>
               <select id="oauth-codex-mode" class="field-input">
                 <option value="browser">Browser callback code</option>
@@ -283,7 +279,7 @@
             </div>
             <div id="oauth-claude-opts" class="field" style="display:none">
               <label class="field-label" for="oauth-claude-mode">
-                OAuth Mode
+                OAuth mode
               </label>
               <select id="oauth-claude-mode" class="field-input">
                 <option value="max">Max (claude.ai)</option>
@@ -301,18 +297,18 @@
                 class="btn btn-ghost btn-sm"
                 type="button"
               >
-                cancel reauthorization
+                Cancel reauthorization
               </button>
             </div>
             <button id="btn-oauth-start" class="btn btn-primary" type="button">
-              start oauth flow
+              Start OAuth flow
             </button>
           </div>
 
           <div id="oauth-flow-active" style="display:none"></div>
 
           <details class="collapsible">
-            <summary>Manual token import</summary>
+            <summary>Import tokens manually</summary>
             <div class="collapsible-body">
               <div class="field">
                 <label class="field-label" for="import-provider">
@@ -325,7 +321,7 @@
               </div>
               <div class="field">
                 <label class="field-label" for="import-access-token">
-                  Access Token
+                  Access token
                 </label>
                 <input
                   id="import-access-token"
@@ -338,7 +334,7 @@
               </div>
               <div class="field">
                 <label class="field-label" for="import-refresh-token">
-                  Refresh Token
+                  Refresh token
                 </label>
                 <input
                   id="import-refresh-token"
@@ -351,7 +347,7 @@
               </div>
               <div class="field">
                 <label class="field-label" for="import-expires-at">
-                  Expires At (unix seconds or ms)
+                  Expires at (unix seconds or ms)
                 </label>
                 <input
                   id="import-expires-at"
@@ -387,7 +383,7 @@
               </div>
               <div class="field">
                 <label class="field-label" for="import-metadata">
-                  Metadata JSON (optional)
+                  Metadata (JSON, optional)
                 </label>
                 <textarea
                   id="import-metadata"
@@ -403,7 +399,7 @@
                 class="btn btn-primary"
                 type="button"
               >
-                import account
+                Import account
               </button>
             </div>
           </details>
@@ -418,7 +414,7 @@
         aria-modal="true"
         aria-labelledby="create-key-title"
       >
-        <div class="modal-title" id="create-key-title">Create API Key</div>
+        <div class="modal-title" id="create-key-title">Create API key</div>
         <div class="field">
           <label class="field-label" for="key-label">Label</label>
           <input
@@ -430,23 +426,23 @@
           >
         </div>
         <div class="field">
-          <label class="field-label">Provider Scopes</label>
+          <label class="field-label">Providers</label>
           <div class="field-hint" style="margin-bottom:8px">
             Leave empty for all providers.
           </div>
           <div class="scope-grid">
             <label class="scope-check">
               <input type="checkbox" value="codex" class="key-scope-provider">
-              codex
+              Codex
             </label>
             <label class="scope-check">
               <input type="checkbox" value="claude" class="key-scope-provider">
-              claude
+              Claude
             </label>
           </div>
         </div>
         <div class="field">
-          <label class="field-label">Account Scopes</label>
+          <label class="field-label">Accounts</label>
           <div class="field-hint" style="margin-bottom:10px">
             Optional. Leave empty to use each provider's primary account. Pick
             up to one account per provider to pin requests, even if that account
@@ -455,9 +451,7 @@
           <div id="key-account-scopes" class="scope-account-groups"></div>
         </div>
         <div class="field">
-          <label class="field-label" for="key-model-scopes">
-            Model Scopes
-          </label>
+          <label class="field-label" for="key-model-scopes"> Models </label>
           <textarea
             id="key-model-scopes"
             class="field-input field-input-compact"
@@ -470,14 +464,14 @@
         </div>
         <div class="modal-footer">
           <button class="btn btn-ghost modal-close" type="button">
-            cancel
+            Cancel
           </button>
           <button
             id="btn-modal-create-key"
             class="btn btn-primary"
             type="button"
           >
-            create
+            Create
           </button>
         </div>
       </div>
@@ -490,7 +484,7 @@
         aria-modal="true"
         aria-labelledby="edit-account-title"
       >
-        <div class="modal-title" id="edit-account-title">Edit Account</div>
+        <div class="modal-title" id="edit-account-title">Edit account</div>
         <div class="field">
           <label class="field-label" for="edit-account-label">Label</label>
           <input
@@ -516,7 +510,7 @@
         </div>
         <div class="field">
           <label class="field-label" for="edit-account-metadata">
-            Profile Metadata JSON
+            Profile metadata (JSON)
           </label>
           <textarea
             id="edit-account-metadata"
@@ -529,14 +523,14 @@
         </div>
         <div class="modal-footer">
           <button class="btn btn-ghost modal-close" type="button">
-            cancel
+            Cancel
           </button>
           <button
             id="btn-modal-save-account"
             class="btn btn-primary"
             type="button"
           >
-            save
+            Save
           </button>
         </div>
       </div>
@@ -549,7 +543,7 @@
         aria-modal="true"
         aria-labelledby="edit-key-title"
       >
-        <div class="modal-title" id="edit-key-title">Edit API Key</div>
+        <div class="modal-title" id="edit-key-title">Edit API key</div>
         <div class="field">
           <label class="field-label" for="edit-key-label">Label</label>
           <input
@@ -561,7 +555,7 @@
           >
         </div>
         <div class="field">
-          <label class="field-label">Provider Scopes</label>
+          <label class="field-label">Providers</label>
           <div class="field-hint" style="margin-bottom:8px">
             Leave empty for all providers.
           </div>
@@ -572,7 +566,7 @@
                 value="codex"
                 class="edit-key-scope-provider"
               >
-              codex
+              Codex
             </label>
             <label class="scope-check">
               <input
@@ -580,12 +574,12 @@
                 value="claude"
                 class="edit-key-scope-provider"
               >
-              claude
+              Claude
             </label>
           </div>
         </div>
         <div class="field">
-          <label class="field-label">Account Scopes</label>
+          <label class="field-label">Accounts</label>
           <div class="field-hint" style="margin-bottom:10px">
             Optional. Leave empty to follow the provider primary account. Pick
             up to one account per provider to pin requests.
@@ -594,7 +588,7 @@
         </div>
         <div class="field">
           <label class="field-label" for="edit-key-model-scopes">
-            Model Scopes
+            Models
           </label>
           <textarea
             id="edit-key-model-scopes"
@@ -608,7 +602,7 @@
         </div>
         <div class="field">
           <label class="field-label" for="edit-key-expires-at">
-            Expires At (unix seconds or ms)
+            Expires at (unix seconds or ms)
           </label>
           <input
             id="edit-key-expires-at"
@@ -622,10 +616,10 @@
         </div>
         <div class="modal-footer">
           <button class="btn btn-ghost modal-close" type="button">
-            cancel
+            Cancel
           </button>
           <button id="btn-modal-save-key" class="btn btn-primary" type="button">
-            save
+            Save
           </button>
         </div>
       </div>
@@ -644,10 +638,10 @@
         <div id="confirm-extras"></div>
         <div class="modal-footer">
           <button class="btn btn-ghost" id="btn-confirm-cancel" type="button">
-            cancel
+            Cancel
           </button>
           <button class="btn btn-danger" id="btn-confirm-action" type="button">
-            confirm
+            Confirm
           </button>
         </div>
       </div>
@@ -670,7 +664,7 @@
             style="margin-bottom:0"
           ></div>
           <button class="btn btn-ghost btn-sm modal-close" type="button">
-            close
+            Close
           </button>
         </div>
         <div id="key-detail-body">
@@ -696,18 +690,18 @@
             OpenCode setup
           </div>
           <button class="btn btn-ghost btn-sm modal-close" type="button">
-            close
+            Close
           </button>
         </div>
         <div class="field" style="margin-bottom:10px">
-          <label class="field-label" for="setup-key-select">API Key</label>
+          <label class="field-label" for="setup-key-select">API key</label>
           <select id="setup-key-select" class="field-input"></select>
         </div>
         <pre id="setup-snippet" class="snippet-block"></pre>
         <div class="modal-footer">
-          <button class="btn btn-ghost modal-close" type="button">close</button>
+          <button class="btn btn-ghost modal-close" type="button">Close</button>
           <button id="btn-copy-setup" class="btn btn-primary" type="button">
-            copy snippet
+            Copy snippet
           </button>
         </div>
       </div>
