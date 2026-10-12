@@ -6,12 +6,14 @@ import type { Provider } from "../db/schema";
 // will persist the normalized shape without requiring a database migration.
 const codexMetadataSchema = z.object({
   provider: z.literal("codex"),
+  scope: z.string().nullable().default(null),
   chatgptAccountId: z.string().nullable(),
   email: z.string().nullable(),
 });
 
 const claudeMetadataSchema = z.object({
   provider: z.literal("claude"),
+  scope: z.string().nullable().default(null),
   oauthMode: z.enum(["max", "console"]),
   oauthHost: z.enum([
     "claude.ai",
@@ -39,6 +41,7 @@ const buildDefaultProviderAccountMetadata = (
   if (provider === "codex") {
     return {
       provider,
+      scope: null,
       chatgptAccountId: accountId,
       email: null,
     };
@@ -46,6 +49,7 @@ const buildDefaultProviderAccountMetadata = (
 
   return {
     provider,
+    scope: null,
     oauthMode: "max",
     oauthHost: "claude.ai",
   };

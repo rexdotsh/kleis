@@ -8,7 +8,7 @@ import {
 } from "../../src/providers/metadata";
 
 describe("provider account metadata persistence", () => {
-  test("strips legacy Claude wire configuration but keeps refresh mode", () => {
+  test("strips legacy Claude wire configuration but keeps scope and refresh mode", () => {
     const legacy = {
       provider: "claude",
       tokenType: "Bearer",
@@ -22,6 +22,7 @@ describe("provider account metadata persistence", () => {
     };
     const expected = {
       provider: "claude",
+      scope: "user:inference",
       oauthMode: "console",
       oauthHost: "platform.claude.com",
     };
@@ -56,6 +57,7 @@ describe("provider account metadata persistence", () => {
     };
     const expected = {
       provider: "codex",
+      scope: "openid offline_access",
       chatgptAccountId: "acct-1",
       email: "user@example.com",
     };

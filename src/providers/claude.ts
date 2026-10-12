@@ -39,6 +39,7 @@ type ClaudeTokenResponse = {
   access_token?: string;
   refresh_token?: string;
   expires_in?: number;
+  scope?: string;
 };
 
 export class ClaudeOAuthError extends Error {
@@ -149,10 +150,12 @@ const refreshClaudeTokens = async (
 };
 
 const buildClaudeMetadata = (input: {
+  scope: string | null;
   mode: "max" | "console";
   host: "claude.ai" | "console.anthropic.com" | "platform.claude.com";
 }): ClaudeAccountMetadata => ({
   provider: "claude",
+  scope: input.scope,
   oauthMode: input.mode,
   oauthHost: input.host,
 });
@@ -161,6 +164,7 @@ const buildTokenResult = (input: {
   tokens: ClaudeTokenResponse;
   mode: "max" | "console";
   host: "claude.ai" | "console.anthropic.com" | "platform.claude.com";
+  fallbackScope?: string | null;
   fallbackRefreshToken: string | null;
   fallbackAccountId?: string | null;
 }): ProviderTokenResult => {
@@ -170,6 +174,7 @@ const buildTokenResult = (input: {
   }
 
   const metadata = buildClaudeMetadata({
+    scope: input.tokens.scope ?? input.fallbackScope ?? null,
     mode: input.mode,
     host: input.host,
   });
@@ -301,6 +306,7 @@ export const claudeAdapter: ProviderAdapter = {
       tokens,
       mode: existing?.oauthMode ?? "max",
       host: existing?.oauthHost ?? "claude.ai",
+      fallbackScope: existing?.scope ?? null,
       fallbackRefreshToken: account.refreshToken,
       fallbackAccountId: account.accountId,
     });

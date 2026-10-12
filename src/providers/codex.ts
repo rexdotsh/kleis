@@ -62,6 +62,7 @@ type CodexTokenResponse = {
   access_token?: string;
   refresh_token?: string;
   expires_in?: number;
+  scope?: string;
   id_token?: string;
 };
 
@@ -362,6 +363,7 @@ const buildCodexMetadata = (input: {
     null;
   return {
     provider: "codex",
+    scope: input.tokens.scope ?? input.existing?.scope ?? null,
     chatgptAccountId,
     email: claims?.email ?? input.existing?.email ?? null,
   };

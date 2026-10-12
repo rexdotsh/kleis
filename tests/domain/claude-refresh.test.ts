@@ -97,6 +97,7 @@ describe("Claude refresh lifecycle", () => {
     const [stored] = await database.select().from(providerAccounts);
     expect(JSON.parse(stored?.metadataJson ?? "null")).toEqual({
       provider: "claude",
+      scope: null,
       oauthMode: "console",
       oauthHost: "platform.claude.com",
     });
