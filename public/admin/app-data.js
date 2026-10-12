@@ -227,6 +227,8 @@ function formatCount(value) {
 
 function formatCompact(n) {
   const v = usageNumber(n);
+  if (v >= 1_000_000_000_000) return `${(v / 1_000_000_000_000).toFixed(2)}T`;
+  if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(2)}B`;
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 1000) return `${(v / 1000).toFixed(1)}K`;
   return String(v);
