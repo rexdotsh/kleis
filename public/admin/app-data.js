@@ -192,16 +192,6 @@ function relativeTime(ts) {
   });
 }
 
-function expiryCountdown(expiresAt) {
-  if (!expiresAt) return "unknown";
-  const seconds = Math.floor((expiresAt - Date.now()) / 1000);
-  if (seconds <= 0) return "expired";
-  if (seconds < 60) return `${seconds}s left`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m left`;
-  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h left`;
-  return `${Math.floor(seconds / 86_400)}d left`;
-}
-
 function tokenStatus(expiresAt) {
   if (!expiresAt) return { label: "unknown", class: "unknown" };
   return expiresAt > Date.now()
@@ -451,11 +441,13 @@ const checkedValues = (selector) =>
 const KEY_SCOPE_FORMS = {
   create: {
     providerSelector: ".key-scope-provider",
+    pinSelector: ".key-account-pin",
     accountSelector: ".key-scope-account",
     accountContainer: "#key-account-scopes",
   },
   edit: {
     providerSelector: ".edit-key-scope-provider",
+    pinSelector: ".edit-key-account-pin",
     accountSelector: ".edit-key-scope-account",
     accountContainer: "#edit-key-account-scopes",
   },
@@ -463,8 +455,11 @@ const KEY_SCOPE_FORMS = {
 
 const shortId = (value) =>
   value && value.length > 14
-    ? `${value.slice(0, 8)}...${value.slice(-4)}`
+    ? `${value.slice(0, 8)}\u2026${value.slice(-4)}`
     : value || "";
+
+const accountLabel = (account) =>
+  account.label || account.accountId || shortId(account.id);
 
 function renderAccountScopeOptions(mode, selectedAccountIds = []) {
   const container = $(KEY_SCOPE_FORMS[mode].accountContainer);
@@ -482,82 +477,71 @@ function accountScopeOptionsHtml(mode, selectedAccountIds = []) {
       ? Array.from(selectedIds).filter((id) => !knownIds.has(id))
       : [];
   if (!state.accounts.length && !unavailableIds.length) {
-    return '<div class="scope-empty">No provider accounts connected yet. Leave this empty to keep using each provider\'s primary account once one exists.</div>';
+    return '<p class="field-hint">No accounts connected yet, so requests use each provider\u2019s primary account once one exists.</p>';
   }
 
-  const groups = PROVIDER_ORDER.map((provider) => ({
-    provider,
-    accounts: state.accounts
+  const pins = PROVIDER_ORDER.map((provider) => {
+    const accounts = state.accounts
       .filter((account) => account.provider === provider)
       .sort(
         (left, right) =>
           Number(right.isPrimary) - Number(left.isPrimary) ||
-          right.createdAt - left.createdAt
-      ),
-  })).filter((group) => group.accounts.length);
-
-  const availableOptions = groups
+          left.createdAt - right.createdAt
+      );
+    if (!accounts.length) return "";
+    const primary = accounts.find((account) => account.isPrimary);
+    const options = accounts
+      .map(
+        (account) =>
+          `<option value="${account.id}"${selectedIds.has(account.id) ? " selected" : ""}>${escapeHtml(accountLabel(account))}${account.enabled === false ? " (disabled)" : ""}</option>`
+      )
+      .join("");
+    return `<div class="pin-row" data-provider="${provider}">
+        <span class="pin-provider">${providerLabel(provider)}</span>
+        <select class="field-input ${config.pinSelector.slice(1)}" data-provider="${provider}" aria-label="${providerLabel(provider)} account">
+          <option value="">Primary account${primary ? ` (${escapeHtml(accountLabel(primary))})` : ""}</option>
+          ${options}
+        </select>
+      </div>`;
+  }).join("");
+  const preserved = unavailableIds
     .map(
-      ({ provider, accounts }) => `<div class="scope-account-group-header">
-          <span class="cap">${providerLabel(provider)}</span>
-        </div>
-        <div class="scope-account-list">
-          ${accounts
-            .map(
-              (account) => `<label class="scope-account-option">
-                <input
-                  type="checkbox"
-                  value="${account.id}"
-                  class="${config.accountSelector.slice(1)}"
-                  data-provider="${account.provider}"
-                  ${selectedIds.has(account.id) ? "checked" : ""}
-                >
-                <span class="scope-account-copy">
-                  <span class="scope-account-name">${escapeHtml(account.label || account.accountId || shortId(account.id))}</span>
-                  ${account.isPrimary ? '<span class="tag">Primary</span>' : ""}
-                  <span class="scope-account-meta">${escapeHtml([shortId(account.id), account.enabled === false ? "disabled" : "", account.expiresAt ? expiryCountdown(account.expiresAt) : ""].filter(Boolean).join(" · "))}</span>
-                </span>
-              </label>`
-            )
-            .join("")}
-        </div>`
+      (id) =>
+        `<label class="scope-check"><input type="checkbox" value="${escapeHtml(id)}" class="${config.accountSelector.slice(1)}" data-preserved-scope="true" checked> Keep the pin to ${escapeHtml(shortId(id))}, which is not in the loaded account list</label>`
     )
     .join("");
-  const unavailableOptions = unavailableIds.length
-    ? `<div class="scope-account-group-header">Unavailable account scopes</div>
-       <div class="scope-account-list">
-         ${unavailableIds
-           .map(
-             (id) => `<label class="scope-account-option">
-               <input type="checkbox" value="${escapeHtml(id)}" class="${config.accountSelector.slice(1)}" data-preserved-scope="true" checked>
-               <span class="scope-account-copy">${escapeHtml(shortId(id))} (not in the loaded account list; uncheck to remove this restriction)</span>
-             </label>`
-           )
-           .join("")}
-       </div>`
-    : "";
-  return `${availableOptions}${unavailableOptions}`;
+  return `${pins}${preserved}`;
+}
+
+function selectedProviderScopes(mode) {
+  return checkedValues(KEY_SCOPE_FORMS[mode].providerSelector).filter(
+    (value) => value !== "all"
+  );
+}
+
+function selectedAccountScopes(mode) {
+  const config = KEY_SCOPE_FORMS[mode];
+  const pinned = Array.from($$(config.pinSelector))
+    .filter((select) => select.value && !select.closest(".pin-row")?.hidden)
+    .map((select) => select.value);
+  return [...pinned, ...checkedValues(config.accountSelector)];
 }
 
 function syncScopedAccountAvailability(mode) {
   const config = KEY_SCOPE_FORMS[mode];
-  const selectedProviders = new Set(checkedValues(config.providerSelector));
-  const hasProviderFilter = selectedProviders.size > 0;
-
-  for (const input of $$(config.accountSelector)) {
-    if (input.dataset.preservedScope === "true") {
-      continue;
-    }
-    const provider = input.dataset.provider || "";
-    const allowed = !hasProviderFilter || selectedProviders.has(provider);
-    input.disabled = !allowed;
-    if (!allowed) {
-      input.checked = false;
-    }
-    input
-      .closest(".scope-account-option")
-      ?.classList.toggle("disabled", !allowed);
+  const providers = new Set(selectedProviderScopes(mode));
+  for (const select of $$(config.pinSelector)) {
+    const allowed = !providers.size || providers.has(select.dataset.provider);
+    const row = select.closest(".pin-row");
+    if (row) row.hidden = !allowed;
+    if (!allowed) select.value = "";
   }
+}
+
+function dateInputValue(timestamp) {
+  const date = new Date(timestamp);
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 function parseOptionalJsonObject(raw, fieldLabel) {
@@ -973,8 +957,8 @@ async function createKey() {
   const btn = $("#btn-submit-key");
   if (btn.disabled) return;
   const label = trimmedOrNull($("#key-label").value);
-  const providerScopes = checkedValues(".key-scope-provider");
-  const accountScopes = checkedValues(".key-scope-account");
+  const providerScopes = selectedProviderScopes("create");
+  const accountScopes = selectedAccountScopes("create");
   const modelScopes = parseCommaSeparatedList($("#key-model-scopes").value);
   const body = {
     ...(label ? { label } : {}),
@@ -1031,8 +1015,8 @@ async function saveKeyEdits() {
   }
 
   const label = trimmedOrNull($("#edit-key-label").value);
-  const providerScopes = checkedValues(".edit-key-scope-provider");
-  const accountScopes = checkedValues(".edit-key-scope-account");
+  const providerScopes = selectedProviderScopes("edit");
+  const accountScopes = selectedAccountScopes("edit");
   const modelScopes = parseCommaSeparatedList(
     $("#edit-key-model-scopes").value
   );
@@ -1044,14 +1028,14 @@ async function saveKeyEdits() {
     modelScopes: modelScopes.length ? modelScopes : null,
   };
 
-  const expiresAtRaw = $("#edit-key-expires-at").value.trim();
-  const originalExpiresAt =
-    existing.expiresAt == null ? "" : String(existing.expiresAt);
-  if (expiresAtRaw !== originalExpiresAt) {
-    if (expiresAtRaw) {
-      const parsedExpiresAt = Number(expiresAtRaw);
-      if (!Number.isFinite(parsedExpiresAt) || parsedExpiresAt <= 0) {
-        toast("Expires at must be a valid unix timestamp", "error");
+  const expiresDate = $("#edit-key-expires-at").value.trim();
+  const originalDate =
+    existing.expiresAt == null ? "" : dateInputValue(existing.expiresAt);
+  if (expiresDate !== originalDate) {
+    if (expiresDate) {
+      const parsedExpiresAt = new Date(`${expiresDate}T23:59:59`).getTime();
+      if (!Number.isFinite(parsedExpiresAt)) {
+        toast("Pick a valid expiry date", "error");
         return;
       }
       body.expiresAt = parsedExpiresAt;
@@ -1578,6 +1562,7 @@ export {
   completeOAuth,
   copyToClipboard,
   createKey,
+  dateInputValue,
   deleteAccount,
   deleteKey,
   enterApp,

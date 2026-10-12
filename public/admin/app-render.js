@@ -11,6 +11,7 @@ import {
   formatCompact,
   formatCount,
   formatMetadataForInput,
+  dateInputValue,
   hasUsageMetrics,
   isKeyActive,
   keyById,
@@ -442,28 +443,94 @@ function accountFact(account) {
   ]);
 }
 
+function formRow(label, description, control, forId = "") {
+  const title = forId
+    ? `<label for="${forId}">${label}</label>`
+    : `<span>${label}</span>`;
+  return `<div class="form-row"><div class="form-row-label">${title}${description ? `<p>${description}</p>` : ""}</div><div class="form-row-control">${control}</div></div>`;
+}
+
+function formFoot(primaryButton, cancelAction) {
+  return `<div class="form-foot"><div></div><div class="form-foot-buttons">${primaryButton}<button class="btn btn-ghost btn-sm" data-action="${cancelAction}" type="button">Cancel</button></div></div>`;
+}
+
 function accountEditHtml(account) {
   return `<div class="detail inline-form" data-form="account:${account.id}" data-detail-for="${account.id}">
-    <div class="form-grid">
-      <div class="field">
-        <label class="field-label" for="edit-account-label">Label</label>
-        <input id="edit-account-label" class="field-input" type="text" maxlength="160" placeholder="my-main-account" autocomplete="off" value="${escapeHtml(account.label || "")}">
-      </div>
-      <div class="field">
-        <label class="field-label" for="edit-account-account-id">Account ID</label>
-        <input id="edit-account-account-id" class="field-input mono" type="text" maxlength="200" placeholder="provider-specific account id" autocomplete="off" value="${escapeHtml(account.accountId || "")}">
-        <p class="field-hint">Leave empty to clear.</p>
-      </div>
-      <div class="field span-2">
-        <label class="field-label" for="edit-account-metadata">Metadata (JSON)</label>
-        <textarea id="edit-account-metadata" class="field-input" rows="6" placeholder='{"chatgptAccountId":"org_123"}'>${escapeHtml(formatMetadataForInput(account.metadata))}</textarea>
-        <p class="field-hint">Must be a JSON object. Leave empty to clear.</p>
-      </div>
+    <div class="form-rows">
+      ${formRow(
+        "Label",
+        "Shown in lists and usage.",
+        `<input id="edit-account-label" class="field-input" type="text" maxlength="160" placeholder="${escapeHtml(account.metadata?.email || "my-main-account")}" autocomplete="off" value="${escapeHtml(account.label || "")}">`,
+        "edit-account-label"
+      )}
+      ${formRow(
+        "Account ID",
+        "The provider\u2019s account ID. Leave empty to clear.",
+        `<input id="edit-account-account-id" class="field-input mono" type="text" maxlength="200" placeholder="None" autocomplete="off" value="${escapeHtml(account.accountId || "")}">`,
+        "edit-account-account-id"
+      )}
+      ${formRow(
+        "Metadata",
+        "Provider settings stored with the account.",
+        `<details class="json-edit"><summary>Show JSON</summary><textarea id="edit-account-metadata" class="field-input" rows="7" aria-label="Metadata JSON" placeholder='{"chatgptAccountId":"org_123"}'>${escapeHtml(formatMetadataForInput(account.metadata))}</textarea><p class="field-hint">Must be a JSON object. Leave empty to clear.</p></details>`
+      )}
     </div>
-    <div class="actions">
-      <button id="btn-save-account" class="btn btn-primary btn-sm" data-action="save-account" data-account-id="${account.id}" type="button">Save</button>
-      <button class="btn btn-ghost btn-sm" data-action="cancel-edit-account" data-account-id="${account.id}" type="button">Cancel</button>
-    </div>
+    ${formFoot(`<button id="btn-save-account" class="btn btn-primary btn-sm" data-action="save-account" data-account-id="${account.id}" type="button">Save</button>`, "cancel-edit-account")}
+  </div>`;
+}
+
+function keyFormHtml(mode, key = null) {
+  const create = mode === "create";
+  const prefix = create ? "key-" : "edit-key-";
+  const providerClass = create
+    ? "key-scope-provider"
+    : "edit-key-scope-provider";
+  const scopes = key?.providerScopes || [];
+  const selectedProvider = scopes.length === 1 ? scopes[0] : "all";
+  const providerChoice = `<div class="seg seg-choice" role="radiogroup" aria-label="Providers">${[
+    ["all", "All providers"],
+    ...PROVIDERS.map((provider) => [provider, providerName(provider)]),
+  ]
+    .map(
+      ([value, label]) =>
+        `<label><input type="radio" name="${prefix}providers" value="${value}" class="${providerClass}"${value === selectedProvider ? " checked" : ""}><span>${label}</span></label>`
+    )
+    .join("")}</div>`;
+  const rows = [
+    formRow(
+      "Label",
+      "Shown in lists and usage.",
+      `<input id="${prefix}label" class="field-input" type="text" maxlength="120" placeholder="my-laptop" autocomplete="off" value="${escapeHtml(key?.label || "")}">`,
+      `${prefix}label`
+    ),
+    formRow("Providers", "Which providers this key can use.", providerChoice),
+    formRow(
+      "Account",
+      "Requests use each provider\u2019s primary account unless you pin one.",
+      `<div id="${prefix}account-scopes" class="pins">${accountScopeOptionsHtml(mode, key?.accountScopes || [])}</div>`
+    ),
+    formRow(
+      "Models",
+      "Comma separated. Leave empty to allow every model.",
+      `<input id="${prefix}model-scopes" class="field-input mono" type="text" placeholder="All models" autocomplete="off" spellcheck="false" value="${escapeHtml(key?.modelScopes?.join(", ") || "")}">`,
+      `${prefix}model-scopes`
+    ),
+    create
+      ? ""
+      : formRow(
+          "Expires",
+          "Leave empty for a key that never expires.",
+          `<input id="edit-key-expires-at" class="field-input field-date" type="date" value="${key.expiresAt ? dateInputValue(key.expiresAt) : ""}">`,
+          "edit-key-expires-at"
+        ),
+  ];
+  const submit = create
+    ? '<button id="btn-submit-key" class="btn btn-primary btn-sm" data-action="submit-key" type="button">Create key</button>'
+    : `<button id="btn-save-key" class="btn btn-primary btn-sm" data-action="save-key" data-key-id="${key.id}" type="button">Save</button>`;
+  return `<div class="${create ? "create-form" : "detail"} inline-form" data-form="${create ? "create-key" : `edit-key:${key.id}`}"${key ? ` data-detail-for="${key.id}"` : ""}>
+    ${create ? '<div class="form-title">New API key</div>' : ""}
+    <div class="form-rows">${rows.join("")}</div>
+    ${formFoot(submit, create ? "cancel-create-key" : "cancel-edit-key")}
   </div>`;
 }
 
@@ -788,54 +855,6 @@ function keyDetailHtml(key) {
   </div>`;
 }
 
-function keyFormHtml(mode, key = null) {
-  const create = mode === "create";
-  const prefix = create ? "key-" : "edit-key-";
-  const providers = new Set(key?.providerScopes || []);
-  const providerClass = create
-    ? "key-scope-provider"
-    : "edit-key-scope-provider";
-  const expiresField = create
-    ? ""
-    : `<div class="field">
-        <label class="field-label" for="edit-key-expires-at">Expires at</label>
-        <input id="edit-key-expires-at" class="field-input mono" type="number" placeholder="Never" value="${key.expiresAt ?? ""}">
-        <p class="field-hint">Unix seconds or milliseconds. Clear to remove the expiry.</p>
-      </div>`;
-  return `<div class="${create ? "create-form" : "detail"} inline-form" data-form="${create ? "create-key" : `edit-key:${key.id}`}"${key ? ` data-detail-for="${key.id}"` : ""}>
-    ${create ? '<div class="form-title">New API key</div>' : ""}
-    <div class="form-grid">
-      <div class="field">
-        <label class="field-label" for="${prefix}label">Label</label>
-        <input id="${prefix}label" class="field-input" type="text" maxlength="120" placeholder="my-laptop" autocomplete="off" value="${escapeHtml(key?.label || "")}">
-      </div>
-      <div class="field">
-        <span class="field-label">Providers</span>
-        <div class="scope-grid">${PROVIDERS.map(
-          (provider) =>
-            `<label class="scope-check"><input type="checkbox" value="${provider}" class="${providerClass}"${providers.has(provider) ? " checked" : ""}>${providerName(provider)}</label>`
-        ).join("")}</div>
-        <p class="field-hint">Leave both unchecked to allow every provider.</p>
-      </div>
-      <div class="field span-2">
-        <span class="field-label">Pin accounts</span>
-        <div id="${prefix}account-scopes" class="scope-account-groups">${accountScopeOptionsHtml(mode, key?.accountScopes || [])}</div>
-        <p class="field-hint">Optional. Up to one per provider; otherwise requests use the provider\u2019s primary account.</p>
-      </div>
-      <div class="field">
-        <label class="field-label" for="${prefix}model-scopes">Models</label>
-        <textarea id="${prefix}model-scopes" class="field-input field-input-compact" rows="2" placeholder="gpt-5.6-luna, anthropic/claude-sonnet-4-5">${escapeHtml(key?.modelScopes?.join(", ") || "")}</textarea>
-        <p class="field-hint">Comma or newline separated. Leave empty to allow all.</p>
-      </div>
-      ${expiresField}
-    </div>
-    <div class="actions">
-      <button id="${create ? "btn-submit-key" : "btn-save-key"}" class="btn btn-primary btn-sm" data-action="${create ? "submit-key" : "save-key"}"${key ? ` data-key-id="${key.id}"` : ""} type="button">${create ? "Create key" : "Save"}</button>
-      <button class="btn btn-ghost btn-sm" data-action="${create ? "cancel-create-key" : "cancel-edit-key"}" type="button">Cancel</button>
-    </div>
-  </div>`;
-}
-
 function keyRowHtml(key) {
   const revoked = Boolean(key.revokedAt);
   const active = isKeyActive(key);
@@ -1067,8 +1086,14 @@ function apiKeyDisplayHtml(apiKeyId) {
 
 /* Inline forms survive list re-renders */
 
-const fieldKey = (input) =>
-  input.type === "checkbox" ? `${input.className}:${input.value}` : input.id;
+function fieldKey(input) {
+  if (input.type === "checkbox" || input.type === "radio") {
+    return `${input.name || input.className}:${input.value}`;
+  }
+  return input.id || `${input.className}:${input.dataset.provider ?? ""}`;
+}
+
+const isChoice = (input) => input.type === "checkbox" || input.type === "radio";
 
 function renderPreservingForm(container, html) {
   const form = container.querySelector?.(".inline-form");
@@ -1079,20 +1104,23 @@ function renderPreservingForm(container, html) {
           ? fieldKey(document.activeElement)
           : null,
         fields: new Map(
-          Array.from(form.querySelectorAll("input, textarea"), (input) => [
-            fieldKey(input),
-            input.type === "checkbox" ? input.checked : input.value,
-          ])
+          Array.from(
+            form.querySelectorAll("input, textarea, select"),
+            (input) => [
+              fieldKey(input),
+              isChoice(input) ? input.checked : input.value,
+            ]
+          )
         ),
       }
     : null;
   container.innerHTML = html;
   const next = saved && container.querySelector(".inline-form");
   if (!next || next.dataset.form !== saved.id) return;
-  for (const input of next.querySelectorAll("input, textarea")) {
+  for (const input of next.querySelectorAll("input, textarea, select")) {
     const key = fieldKey(input);
     if (saved.fields.has(key)) {
-      if (input.type === "checkbox") input.checked = saved.fields.get(key);
+      if (isChoice(input)) input.checked = saved.fields.get(key);
       else input.value = saved.fields.get(key);
     }
     if (key === saved.focus) input.focus();

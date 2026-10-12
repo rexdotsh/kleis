@@ -330,20 +330,11 @@ $("#keys-list").addEventListener("click", (event) => {
 });
 
 $("#keys-list").addEventListener("change", (event) => {
-  for (const [accountClass, providerClass, mode] of [
-    [".key-scope-account", ".key-scope-provider", "create"],
-    [".edit-key-scope-account", ".edit-key-scope-provider", "edit"],
-  ]) {
-    if (event.target.matches(accountClass) && event.target.checked) {
-      for (const input of $$(
-        `${accountClass}[data-provider="${event.target.dataset.provider}"]`
-      )) {
-        if (input !== event.target) input.checked = false;
-      }
-    }
-    if (event.target.matches(`${providerClass}, ${accountClass}`)) {
-      syncScopedAccountAvailability(mode);
-    }
+  if (event.target.matches(".key-scope-provider")) {
+    syncScopedAccountAvailability("create");
+  }
+  if (event.target.matches(".edit-key-scope-provider")) {
+    syncScopedAccountAvailability("edit");
   }
 });
 
