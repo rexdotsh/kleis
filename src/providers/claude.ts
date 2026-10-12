@@ -5,12 +5,6 @@ import {
   createOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
-import {
-  CLAUDE_CLI_USER_AGENT,
-  CLAUDE_REQUIRED_BETA_HEADERS,
-  CLAUDE_SYSTEM_IDENTITY,
-  CLAUDE_TOOL_PREFIX,
-} from "./constants";
 import type { ClaudeAccountMetadata } from "./metadata";
 import {
   generatePkce,
@@ -45,8 +39,6 @@ type ClaudeTokenResponse = {
   access_token?: string;
   refresh_token?: string;
   expires_in?: number;
-  token_type?: string;
-  scope?: string;
 };
 
 export class ClaudeOAuthError extends Error {
@@ -157,27 +149,18 @@ const refreshClaudeTokens = async (
 };
 
 const buildClaudeMetadata = (input: {
-  tokens: ClaudeTokenResponse;
   mode: "max" | "console";
   host: "claude.ai" | "console.anthropic.com" | "platform.claude.com";
-  existing: ClaudeAccountMetadata | null;
 }): ClaudeAccountMetadata => ({
   provider: "claude",
-  tokenType: input.tokens.token_type ?? input.existing?.tokenType ?? null,
-  scope: input.tokens.scope ?? input.existing?.scope ?? null,
   oauthMode: input.mode,
   oauthHost: input.host,
-  betaHeaders: [...CLAUDE_REQUIRED_BETA_HEADERS],
-  userAgent: CLAUDE_CLI_USER_AGENT,
-  systemIdentity: CLAUDE_SYSTEM_IDENTITY,
-  toolPrefix: CLAUDE_TOOL_PREFIX,
 });
 
 const buildTokenResult = (input: {
   tokens: ClaudeTokenResponse;
   mode: "max" | "console";
   host: "claude.ai" | "console.anthropic.com" | "platform.claude.com";
-  existing: ClaudeAccountMetadata | null;
   fallbackRefreshToken: string | null;
   fallbackAccountId?: string | null;
 }): ProviderTokenResult => {
@@ -187,10 +170,8 @@ const buildTokenResult = (input: {
   }
 
   const metadata = buildClaudeMetadata({
-    tokens: input.tokens,
     mode: input.mode,
     host: input.host,
-    existing: input.existing,
   });
   const refreshToken = input.tokens.refresh_token ?? input.fallbackRefreshToken;
   if (!refreshToken) {
@@ -301,7 +282,6 @@ export const claudeAdapter: ProviderAdapter = {
         tokens,
         mode: stateMetadata.mode,
         host: stateMetadata.host,
-        existing: null,
         fallbackRefreshToken: null,
       }),
       ...(stateMetadata.replaceAccountId
@@ -321,7 +301,6 @@ export const claudeAdapter: ProviderAdapter = {
       tokens,
       mode: existing?.oauthMode ?? "max",
       host: existing?.oauthHost ?? "claude.ai",
-      existing,
       fallbackRefreshToken: account.refreshToken,
       fallbackAccountId: account.accountId,
     });

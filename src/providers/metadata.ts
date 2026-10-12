@@ -2,44 +2,22 @@ import { z } from "zod";
 
 import type { Provider } from "../db/schema";
 
-import {
-  CLAUDE_CLI_USER_AGENT,
-  CLAUDE_REQUIRED_BETA_HEADERS,
-  CLAUDE_SYSTEM_IDENTITY,
-  CLAUDE_TOOL_PREFIX,
-} from "./constants";
-
-const codexMetadataSchema = z.strictObject({
+// Strip legacy, unused fields when reading/importing metadata. OAuth refresh
+// will persist the normalized shape without requiring a database migration.
+const codexMetadataSchema = z.object({
   provider: z.literal("codex"),
-  tokenType: z.string().nullable(),
-  scope: z.string().nullable(),
-  idToken: z.string().nullable(),
   chatgptAccountId: z.string().nullable(),
-  organizationIds: z.array(z.string()),
   email: z.string().nullable(),
-  requestProfile: z
-    .strictObject({
-      originator: z.string().optional(),
-      accountIdHeader: z.string().optional(),
-      endpoint: z.string().optional(),
-    })
-    .optional(),
 });
 
-const claudeMetadataSchema = z.strictObject({
+const claudeMetadataSchema = z.object({
   provider: z.literal("claude"),
-  tokenType: z.string().nullable(),
-  scope: z.string().nullable(),
   oauthMode: z.enum(["max", "console"]),
   oauthHost: z.enum([
     "claude.ai",
     "console.anthropic.com",
     "platform.claude.com",
   ]),
-  betaHeaders: z.array(z.string()),
-  userAgent: z.string(),
-  systemIdentity: z.string(),
-  toolPrefix: z.literal(CLAUDE_TOOL_PREFIX),
 });
 
 export const providerAccountMetadataSchema = z.discriminatedUnion("provider", [
@@ -61,25 +39,15 @@ const buildDefaultProviderAccountMetadata = (
   if (provider === "codex") {
     return {
       provider,
-      tokenType: null,
-      scope: null,
-      idToken: null,
       chatgptAccountId: accountId,
-      organizationIds: [],
       email: null,
     };
   }
 
   return {
     provider,
-    tokenType: null,
-    scope: null,
     oauthMode: "max",
     oauthHost: "claude.ai",
-    betaHeaders: [...CLAUDE_REQUIRED_BETA_HEADERS],
-    userAgent: CLAUDE_CLI_USER_AGENT,
-    systemIdentity: CLAUDE_SYSTEM_IDENTITY,
-    toolPrefix: CLAUDE_TOOL_PREFIX,
   };
 };
 
@@ -154,5 +122,5 @@ export const serializeProviderAccountMetadata = (
     return null;
   }
 
-  return JSON.stringify(metadata);
+  return JSON.stringify(providerAccountMetadataSchema.parse(metadata));
 };
