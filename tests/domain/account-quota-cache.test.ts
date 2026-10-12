@@ -115,4 +115,19 @@ describe("account quota cache", () => {
     const second = await listProviderAccountQuotas(database, [replaced]);
     expect(fiveHourUtilization(second.get(original.id))).toBe(31);
   });
+
+  test("reports the HTTP status of a failed usage sync", async () => {
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        Response.json({ error: "forbidden" }, { status: 403 })
+      )) as unknown as typeof fetch;
+    const account = claudeAccount();
+
+    const quotas = await listProviderAccountQuotas(database, [account]);
+
+    expect(quotas.get(account.id)).toMatchObject({
+      fetchedAt: null,
+      errorStatus: 403,
+    });
+  });
 });

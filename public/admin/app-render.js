@@ -264,7 +264,9 @@ function accountCardHtml(account) {
   const s = disabled ? { label: "disabled", class: "unknown" } : tokenHealth;
   const needsReauthorization =
     tokenHealth.class !== "active" ||
-    (account.lastRefreshStatus && account.lastRefreshStatus !== "success");
+    (account.lastRefreshStatus && account.lastRefreshStatus !== "success") ||
+    account.quota?.errorStatus === 401 ||
+    account.quota?.errorStatus === 403;
   const name = account.label || account.accountId || account.id;
   const usage = accountUsageForId(account.id);
   const windowLabel = usageWindowLabel(state.accountUsageWindowMs);
