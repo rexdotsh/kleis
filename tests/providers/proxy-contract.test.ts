@@ -286,11 +286,7 @@ describe("proxy contract: codex", () => {
     const bodyText = JSON.stringify(bodyJson);
     const metadata: CodexAccountMetadata = {
       provider: "codex",
-      tokenType: null,
-      scope: null,
-      idToken: null,
       chatgptAccountId: "acct-meta",
-      organizationIds: [],
       email: null,
     };
 
@@ -355,11 +351,7 @@ describe("proxy contract: codex", () => {
       accountId: "   ",
       metadata: {
         provider: "codex",
-        tokenType: null,
-        scope: null,
-        idToken: null,
         chatgptAccountId: " ",
-        organizationIds: [],
         email: null,
       },
       bodyText: JSON.stringify(codexUsageBody),
@@ -2785,14 +2777,8 @@ describe("proxy contract: codex", () => {
 describe("proxy contract: claude", () => {
   const legacyClaudeMetadata: ClaudeAccountMetadata = {
     provider: "claude",
-    tokenType: null,
-    scope: null,
     oauthMode: "max",
     oauthHost: "claude.ai",
-    betaHeaders: [...CLAUDE_REQUIRED_BETA_HEADERS],
-    userAgent: "claude-cli/2.1.251 (external, cli)",
-    systemIdentity: CLAUDE_SYSTEM_IDENTITY,
-    toolPrefix: "mcp_",
   };
 
   const prepareClaudeUsageRequest = (
@@ -3046,6 +3032,33 @@ describe("proxy contract: claude", () => {
     expect(transformed.system[1]?.text).toContain("Directories");
     expect(transformed.system[1]?.text).toContain("src/");
     expect(transformed.system[1]?.text).toContain("</directories>");
+  });
+
+  test("ignores Claude wire configuration left in legacy account metadata", () => {
+    const requestBody = {
+      system: "Custom system prompt",
+      tools: [{ name: "shell" }],
+    };
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(requestBody),
+      bodyJson: requestBody,
+      accessToken: "claude-token",
+      metadata: {
+        ...legacyClaudeMetadata,
+        systemIdentity: "stale identity",
+        toolPrefix: "stale_",
+      } as ClaudeAccountMetadata,
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      system: Array<{ type: string; text: string }>;
+      tools: Array<{ name: string }>;
+    };
+
+    expect(transformed.system[0]?.text).toBe(CLAUDE_SYSTEM_IDENTITY);
+    expect(transformed.tools[0]?.name).toBe("mcp_Shell");
   });
 
   test("preserves unrelated xml tags while rewriting the known blocked patterns", () => {

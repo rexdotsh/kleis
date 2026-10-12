@@ -62,7 +62,6 @@ type CodexTokenResponse = {
   access_token?: string;
   refresh_token?: string;
   expires_in?: number;
-  token_type?: string;
   scope?: string;
   id_token?: string;
 };
@@ -362,19 +361,10 @@ const buildCodexMetadata = (input: {
     input.fallbackAccountId ??
     input.existing?.chatgptAccountId ??
     null;
-  const organizationIds =
-    claims?.organizations?.map((organization) => organization.id) ?? [];
-
   return {
     provider: "codex",
-    tokenType: input.tokens.token_type ?? input.existing?.tokenType ?? null,
     scope: input.tokens.scope ?? input.existing?.scope ?? null,
-    idToken: input.tokens.id_token ?? input.existing?.idToken ?? null,
     chatgptAccountId,
-    organizationIds:
-      organizationIds.length > 0
-        ? organizationIds
-        : (input.existing?.organizationIds ?? []),
     email: claims?.email ?? input.existing?.email ?? null,
   };
 };
