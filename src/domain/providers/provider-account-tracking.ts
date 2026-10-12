@@ -44,6 +44,7 @@ type TrackingData = CodexTrackingData | ClaudeTrackingData;
 export type AccountQuota = {
   fetchedAt: number | null;
   error: string | null;
+  errorStatus: number | null;
   data: TrackingData;
 };
 
@@ -172,6 +173,8 @@ const toQuota = (
 ): AccountQuota => ({
   fetchedAt: errors.length ? null : now,
   error: errors.length ? errors.map(errorMessage).join("; ") : null,
+  errorStatus:
+    errors.map(errorStatus).find((status) => status !== null) ?? null,
   data,
 });
 
