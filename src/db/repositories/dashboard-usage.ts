@@ -63,6 +63,7 @@ export const getDashboardUsage = async (
     modelRows,
     keyRows,
     bucketRows,
+    previousBucketRows,
   ] = await Promise.all([
     database.select(fullSelect).from(requestUsageBuckets).where(currentFilter),
     database.select(fullSelect).from(requestUsageBuckets).where(previousFilter),
@@ -137,6 +138,16 @@ export const getDashboardUsage = async (
       .groupBy(aggregatedBucket)
       .orderBy(desc(aggregatedBucket))
       .limit(DASHBOARD_BUCKET_LIMIT),
+    database
+      .select({
+        bucketStart: aggregatedBucket,
+        requestCount: sql<number>`sum(${requestUsageBuckets.requestCount})`,
+      })
+      .from(requestUsageBuckets)
+      .where(previousFilter)
+      .groupBy(aggregatedBucket)
+      .orderBy(desc(aggregatedBucket))
+      .limit(DASHBOARD_BUCKET_LIMIT),
   ]);
 
   const totals = emptyUsageTotals();
@@ -172,6 +183,12 @@ export const getDashboardUsage = async (
     byModel: mapModelUsageRows(modelRows),
     byKey,
     buckets: mapUsageBucketRows(bucketRows),
+    previousBuckets: previousBucketRows
+      .map((row) => ({
+        bucketStart: toNonNegativeInteger(row.bucketStart),
+        requestCount: toNonNegativeInteger(row.requestCount),
+      }))
+      .reverse(),
     bucketSizeMs,
   };
 };

@@ -35,6 +35,10 @@ const state = {
   keyUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   keysLoaded: false,
   showRevokedKeys: false,
+  keyFilter: "",
+  accountFilter: "",
+  expandedAccountId: null,
+  showAllReauthorize: false,
   activeOAuth: null,
   reauthorizeAccountId: null,
   oauthRequestSeq: 0,
@@ -171,7 +175,7 @@ function tokenStatus(expiresAt) {
 }
 
 function maskKey(k) {
-  return k.length <= 12 ? k : `${k.slice(0, 8)}...${k.slice(-4)}`;
+  return k.length <= 14 ? k : `${k.slice(0, 9)}\u2026${k.slice(-4)}`;
 }
 
 function keyById(keyId) {
@@ -211,7 +215,9 @@ function usageForKey(keyId) {
 }
 
 function usageWindowLabel(windowMs) {
-  if (windowMs % 86_400_000 === 0) return `${windowMs / 86_400_000}d`;
+  if (windowMs % 86_400_000 === 0 && windowMs > 86_400_000) {
+    return `${windowMs / 86_400_000}d`;
+  }
   if (windowMs % 3_600_000 === 0) return `${windowMs / 3_600_000}h`;
   if (windowMs % 60_000 === 0) return `${windowMs / 60_000}m`;
   return `${Math.floor(windowMs / 1000)}s`;
@@ -238,22 +244,6 @@ function cacheReadRate(inputTotalTokens, cacheReadTokens) {
   return inputTotalTokens > 0
     ? Math.round((cacheReadTokens / inputTotalTokens) * 100)
     : null;
-}
-
-function formatBucketTime(ts, bucketSizeMs) {
-  const d = new Date(ts);
-  if (bucketSizeMs >= 86_400_000) {
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  }
-  if (bucketSizeMs >= 3_600_000) {
-    return d.toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  }
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function syncDashboardWindowButtons() {
@@ -360,43 +350,6 @@ function hasUsageMetrics(metrics) {
   );
 }
 
-function usageMetaParts(
-  usage,
-  { windowLabel = null, includeMaxLatency = false } = {}
-) {
-  if (!usage) return [];
-  const metrics = normalizeUsage(usage);
-  const meta = (text, color) =>
-    `<span class="card-meta-item"${color ? ` style="color:${color}"` : ""}>${text}</span>`;
-  return [
-    metrics.requestCount &&
-      meta(
-        `${formatCount(metrics.requestCount)} reqs${windowLabel ? ` (${windowLabel})` : ""}`
-      ),
-    metrics.successRate !== null && meta(`${metrics.successRate}% success`),
-    metrics.proxyErrorCount &&
-      meta(`${formatCount(metrics.proxyErrorCount)} proxy fail`, "var(--red)"),
-    metrics.upstreamErrorCount &&
-      meta(
-        `${formatCount(metrics.upstreamErrorCount)} upstream fail`,
-        "var(--text-secondary)"
-      ),
-    metrics.unclassifiedFailureCount &&
-      meta(
-        `${formatCount(metrics.unclassifiedFailureCount)} other fail`,
-        "var(--text-secondary)"
-      ),
-    metrics.rateLimitCount &&
-      meta(`${formatCount(metrics.rateLimitCount)} 429`, "var(--amber)"),
-    metrics.avgLatencyMs && meta(`${formatCount(metrics.avgLatencyMs)}ms avg`),
-    includeMaxLatency &&
-      metrics.maxLatencyMs &&
-      meta(`${formatCount(metrics.maxLatencyMs)}ms max`),
-    metrics.lastRequestAt &&
-      meta(`last req ${escapeHtml(relativeTime(metrics.lastRequestAt))}`),
-  ].filter(Boolean);
-}
-
 function usageMapFromList(items, idField) {
   const map = new Map();
   if (!Array.isArray(items)) return map;
@@ -415,7 +368,14 @@ function switchToTab(name) {
   }
   for (const p of $$(".tab-panel"))
     p.classList.toggle("active", p.id === `panel-${name}`);
+  for (const control of $$(".top-ctl")) {
+    control.hidden = control.dataset.for !== name;
+  }
   history.replaceState(null, "", `#${name}`);
+  // The chart is sized to its container, which has no width while hidden.
+  if (name === "usage" && state.dashboardData && !state.dashboardLoading) {
+    renderDashboard(state.dashboardData);
+  }
 }
 
 function showLoading(containerId) {
@@ -424,35 +384,6 @@ function showLoading(containerId) {
     el.innerHTML =
       '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
   }
-}
-
-const METADATA_HIDDEN_KEYS = new Set([
-  "provider",
-  "idToken",
-  "betaHeaders",
-  "userAgent",
-  "systemIdentity",
-  "toolPrefix",
-  "requestProfile",
-  "tokenType",
-  "scope",
-]);
-
-function metadataHtml(metadata) {
-  if (!metadata || typeof metadata !== "object") return "";
-  const entries = Object.entries(metadata).filter(([k, v]) => {
-    if (METADATA_HIDDEN_KEYS.has(k)) return false;
-    if (v === null || v === undefined || v === "") return false;
-    if (Array.isArray(v) && !v.length) return false;
-    return true;
-  });
-  if (!entries.length) return "";
-  return entries
-    .map(([k, v]) => {
-      const display = Array.isArray(v) ? v.join(", ") : String(v);
-      return `<span class="card-meta-item"><span class="text-muted">${escapeHtml(k)}:</span> ${escapeHtml(display)}</span>`;
-    })
-    .join("");
 }
 
 function formatMetadataForInput(metadata) {
@@ -665,7 +596,7 @@ async function loadDashboard() {
     if (requestSeq !== state.dashboardRequestSeq) return;
     state.dashboardData = null;
     const message = e instanceof Error ? e.message : "Failed to load usage";
-    el.innerHTML = `<div class="dash-empty text-error">${escapeHtml(message)}</div>`;
+    el.innerHTML = `<div class="empty-state"><p class="err">${escapeHtml(message)}</p></div>`;
   } finally {
     if (requestSeq === state.dashboardRequestSeq) {
       state.dashboardLoading = false;
@@ -718,9 +649,8 @@ async function loadAccounts() {
     state.accountsById = new Map();
     state.accountUsageById = new Map();
     state.providerStatuses = [];
-    $("#providers-status").innerHTML = "";
     $("#accounts-list").innerHTML =
-      `<div class="empty-state"><div class="empty-state-text text-error">${escapeHtml(e.message)}</div></div>`;
+      `<div class="empty-state"><p class="err">${escapeHtml(e.message)}</p></div>`;
     toast(e.message, "error");
   }
 }
@@ -765,8 +695,9 @@ async function loadKeys() {
     state.keysById = new Map();
     state.keyUsageById = new Map();
     state.keysLoaded = true;
+    $("#keys-foot").innerHTML = "";
     $("#keys-list").innerHTML =
-      `<div class="empty-state"><div class="empty-state-text text-error">${escapeHtml(e.message)}</div></div>`;
+      `<div class="empty-state"><p class="err">${escapeHtml(e.message)}</p></div>`;
     toast(e.message, "error");
   }
 }
@@ -775,9 +706,9 @@ async function setPrimary(id) {
   const account = accountById(id);
   const name = account?.label || account?.accountId || id;
   const confirmed = await showConfirm(
-    "Set Primary Account",
-    `Set "${name}" as the primary ${account?.provider || ""} account? Requests will be routed to this account.`,
-    "Set primary"
+    "Make primary account?",
+    `Route ${providerLabel(account?.provider)} requests to "${name}" unless a key pins another account.`,
+    "Make primary"
   );
   if (!confirmed) return;
 
@@ -793,8 +724,8 @@ async function setPrimary(id) {
 async function toggleProvider(provider, enabled) {
   if (!enabled) {
     const confirmed = await showConfirm(
-      "Disable Provider",
-      `Disable ${provider}? All ${provider} accounts will stop receiving proxy traffic and its models will disappear from model registries. You can re-enable it at any time.`,
+      `Disable ${providerLabel(provider)}?`,
+      `All ${providerLabel(provider)} accounts stop receiving proxy traffic and its models disappear from model registries. You can re-enable it at any time.`,
       "Disable"
     );
     if (!confirmed) return;
@@ -803,23 +734,17 @@ async function toggleProvider(provider, enabled) {
   const btn = document.querySelector(
     `[data-action="toggle-provider"][data-provider="${provider}"]`
   );
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>';
-  }
+  if (btn) btn.disabled = true;
   try {
     await api(`/admin/accounts/providers/${provider}`, {
       method: "PATCH",
       body: JSON.stringify({ enabled }),
     });
-    toast(enabled ? `${provider} enabled` : `${provider} disabled`);
+    toast(`${providerLabel(provider)} ${enabled ? "enabled" : "disabled"}`);
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = enabled ? "enable" : "disable";
-    }
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -827,15 +752,15 @@ async function deleteAccount(id) {
   const account = accountById(id);
   const name = account?.label || account?.accountId || id;
   const confirmed = await showConfirm(
-    "Delete Account",
-    `Delete "${name}"? This will remove all stored tokens for this account. This cannot be undone.`,
-    "Delete"
+    "Remove account?",
+    `Remove "${name}" and its stored tokens. This cannot be undone.`,
+    "Remove"
   );
   if (!confirmed) return;
 
   try {
     await api(`/admin/accounts/${id}`, { method: "DELETE" });
-    toast("Account deleted");
+    toast("Account removed");
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
@@ -846,9 +771,10 @@ async function refreshAccount(id) {
   const btn = document.querySelector(
     `[data-action="refresh-account"][data-account-id="${id}"]`
   );
+  const label = btn?.textContent;
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>';
+    btn.innerHTML = '<span class="spinner"></span> Refreshing\u2026';
   }
   try {
     await api(`/admin/accounts/${id}/refresh`, { method: "POST" });
@@ -858,7 +784,7 @@ async function refreshAccount(id) {
     toast(e.message, "error");
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "Refresh";
+      btn.textContent = label || "Refresh token";
     }
   }
 }
@@ -897,11 +823,11 @@ async function redeemResetCredit(accountId, creditId) {
   const redemptionKey = `${accountId}:${creditId || "auto"}`;
   const existingRequestId = state.pendingResetRedemptions.get(redemptionKey);
   const confirmed = await showConfirm(
-    "Reset Codex Limits",
+    "Reset Codex limits?",
     existingRequestId
       ? `Retry the pending reset for "${label}" with the same idempotency key?`
       : `Consume a reset credit for "${label}"? This changes the upstream Codex account quota.`,
-    existingRequestId ? "retry reset" : "use credit"
+    existingRequestId ? "Retry reset" : "Use credit"
   );
   if (!confirmed) return;
 
@@ -938,7 +864,8 @@ function openEditAccountModal(id) {
     return;
   }
 
-  $("#edit-account-title").textContent = `Edit ${account.provider} Account`;
+  $("#edit-account-title").textContent =
+    `Edit ${providerLabel(account.provider)} account`;
   $("#edit-account-label").value = account.label || "";
   $("#edit-account-account-id").value = account.accountId || "";
   $("#edit-account-metadata").value = formatMetadataForInput(account.metadata);
@@ -986,7 +913,7 @@ async function saveAccountEdits() {
     toast(e.message, "error");
   } finally {
     saveButton.disabled = false;
-    saveButton.textContent = previousLabel || "save";
+    saveButton.textContent = previousLabel || "Save";
   }
 }
 
@@ -1082,7 +1009,7 @@ async function saveKeyEdits() {
     if (expiresAtRaw) {
       const parsedExpiresAt = Number(expiresAtRaw);
       if (!Number.isFinite(parsedExpiresAt) || parsedExpiresAt <= 0) {
-        toast("Expires At must be a valid unix timestamp", "error");
+        toast("Expires at must be a valid unix timestamp", "error");
         return;
       }
       body.expiresAt = parsedExpiresAt;
@@ -1108,7 +1035,7 @@ async function saveKeyEdits() {
     toast(e.message, "error");
   } finally {
     saveButton.disabled = false;
-    saveButton.textContent = previousLabel || "save";
+    saveButton.textContent = previousLabel || "Save";
   }
 }
 
@@ -1121,10 +1048,10 @@ async function rotateKey(id, button) {
 
   const label = existing.label || maskKey(existing.key);
   const confirmed = await showConfirm(
-    "Rotate API Key",
+    "Rotate API key?",
     `Create a new key with the same settings as "${label}".`,
     "Rotate",
-    '<label class="scope-check" style="margin-top:14px;margin-bottom:0"><input id="rotate-revoke-old" type="checkbox"> revoke old key after rotate</label>'
+    '<label class="scope-check confirm-check"><input id="rotate-revoke-old" type="checkbox"> Revoke the old key afterwards</label>'
   );
   if (!confirmed) return;
 
@@ -1144,9 +1071,11 @@ async function rotateKey(id, button) {
     payload.expiresAt = existing.expiresAt;
   }
 
-  const previousText = button.textContent;
-  button.disabled = true;
-  button.innerHTML = '<span class="spinner"></span>';
+  const previousText = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner"></span>';
+  }
   const revokeOld = $("#rotate-revoke-old")?.checked ?? false;
   let keyCreated = false;
   try {
@@ -1173,8 +1102,10 @@ async function rotateKey(id, button) {
       toast(e.message, "error");
     }
   } finally {
-    button.disabled = false;
-    button.textContent = previousText || "Rotate";
+    if (button) {
+      button.disabled = false;
+      button.textContent = previousText || "Rotate";
+    }
   }
 }
 
@@ -1182,8 +1113,8 @@ async function revokeKey(id) {
   const key = keyById(id);
   const label = key?.label || maskKey(key?.key || id);
   const confirmed = await showConfirm(
-    "Revoke API Key",
-    `Revoke "${label}"? Any clients using this key will stop working immediately. This cannot be undone.`,
+    "Revoke API key?",
+    `Clients using "${label}" stop working immediately. This cannot be undone.`,
     "Revoke"
   );
   if (!confirmed) return;
@@ -1201,8 +1132,8 @@ async function deleteKey(id) {
   const key = keyById(id);
   const label = key?.label || maskKey(key?.key || id);
   const confirmed = await showConfirm(
-    "Delete Revoked API Key",
-    `Delete "${label}" permanently? This removes the key and its usage history. This cannot be undone.`,
+    "Delete revoked key?",
+    `Delete "${label}" and its usage history permanently. This cannot be undone.`,
     "Delete"
   );
   if (!confirmed) return;
@@ -1217,9 +1148,13 @@ async function deleteKey(id) {
   }
 }
 
-async function copyToClipboard(text, btn) {
+async function copyToClipboard(text, btn, confirmation = "Copied") {
   try {
     await navigator.clipboard.writeText(text);
+    if (!btn?.isConnected) {
+      toast(confirmation);
+      return;
+    }
     const original = btn.textContent;
     btn.textContent = "Copied";
     setTimeout(() => {
@@ -1227,6 +1162,22 @@ async function copyToClipboard(text, btn) {
     }, 2000);
   } catch {
     toast("Failed to copy", "error");
+  }
+}
+
+function providerLabel(provider) {
+  return { codex: "Codex", claude: "Claude" }[provider] || provider || "";
+}
+
+function syncConnectControls() {
+  for (const group of $$(".seg[data-select]")) {
+    const select = $(`#${group.dataset.select}`);
+    for (const option of group.querySelectorAll("button")) {
+      const selected = option.dataset.value === select.value;
+      option.classList.toggle("on", selected);
+      option.setAttribute("aria-checked", String(selected));
+      option.disabled = select.disabled;
+    }
   }
 }
 
@@ -1238,6 +1189,7 @@ function clearReauthorization() {
   $("#oauth-codex-mode").disabled = false;
   $("#oauth-claude-mode").disabled = false;
   $("#btn-oauth-clear-target").disabled = false;
+  syncConnectControls();
 }
 
 function updateOAuthProviderUI() {
@@ -1264,7 +1216,7 @@ async function reauthorizeAccount(id) {
   state.reauthorizeAccountId = id;
   const target = $("#oauth-reauthorize-target");
   $("#oauth-reauthorize-label").textContent =
-    `Reauthorizing ${account.label || account.accountId || account.provider}. Existing settings and API-key scopes stay attached to this account.${account.provider === "claude" ? " Verify you sign in to the same Claude account and organization; this cannot be checked automatically." : ""}`;
+    `Reauthorizing ${account.label || account.accountId || providerLabel(account.provider)}. Its settings and API-key scopes stay attached.${account.provider === "claude" ? " Sign in to the same Claude account and organization; Kleis cannot check this for you." : ""}`;
   target.style.display = "flex";
   $("#oauth-provider").value = account.provider;
   $("#oauth-provider").disabled = true;
@@ -1276,6 +1228,7 @@ async function reauthorizeAccount(id) {
     $("#oauth-claude-mode").value = account.metadata?.oauthMode || "max";
     $("#oauth-claude-mode").disabled = true;
   }
+  syncConnectControls();
   switchToTab("oauth");
   toast(`Reauthorizing ${account.label || account.provider}`);
 }
@@ -1286,6 +1239,7 @@ function cancelOAuthFlow() {
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
   $("#btn-oauth-start").disabled = false;
+  $("#btn-oauth-start").style.display = "";
   clearReauthorization();
 }
 
@@ -1333,15 +1287,15 @@ async function startOAuth() {
     $("#oauth-codex-mode").disabled = true;
     $("#oauth-claude-mode").disabled = true;
     $("#btn-oauth-clear-target").disabled = true;
+    syncConnectControls();
     renderOAuthFlow(data, provider);
-    toast("OAuth flow started");
   } catch (e) {
     if (requestSeq !== state.oauthRequestSeq) return;
     toast(e.message, "error");
   } finally {
     if (requestSeq === state.oauthRequestSeq) {
       btn.disabled = Boolean(state.activeOAuth);
-      btn.innerHTML = "start oauth flow";
+      btn.textContent = "Continue";
     }
   }
 }
@@ -1350,8 +1304,9 @@ async function completeOAuth() {
   if (!state.activeOAuth) return;
   const requestSeq = state.oauthRequestSeq;
   const btn = $("#btn-oauth-complete");
+  const label = btn.textContent;
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Completing…';
+  btn.innerHTML = '<span class="spinner"></span> Connecting…';
 
   try {
     const body = { state: state.activeOAuth.state };
@@ -1378,7 +1333,7 @@ async function completeOAuth() {
     error.textContent = `${e.message}. If this code was consumed or the flow expired, cancel and start over.`;
     error.hidden = false;
     btn.disabled = false;
-    btn.innerHTML = "complete flow";
+    btn.textContent = label;
   }
 }
 
@@ -1400,7 +1355,7 @@ async function importAccount() {
     ? Number(expiresAtRaw)
     : Date.now() + 60 * 60 * 1000;
   if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
-    toast("Expires At must be a valid unix timestamp", "error");
+    toast("Expires at must be a valid unix timestamp", "error");
     return;
   }
 
@@ -1531,6 +1486,10 @@ function logout() {
   state.keyUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.keysLoaded = false;
   state.showRevokedKeys = false;
+  state.keyFilter = "";
+  state.accountFilter = "";
+  state.expandedAccountId = null;
+  state.showAllReauthorize = false;
   state.activeOAuth = null;
   state.reauthorizeAccountId = null;
   state.revealedKeyIds.clear();
@@ -1539,13 +1498,15 @@ function logout() {
   state.dashboardLoading = false;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
-  $("#providers-status").innerHTML = "";
   $("#dash-content").innerHTML = "";
+  $("#attention").innerHTML = "";
+  $("#key-reveal").innerHTML = "";
+  $("#accounts-filter").value = "";
+  $("#keys-filter").value = "";
   syncDashboardWindowButtons();
   syncAccountWindowButtons();
   $("#login-gate").classList.remove("hidden");
   $("#app").classList.remove("visible");
-  $("#toggle-show-revoked-keys").checked = false;
   $("#login-token").value = "";
   $("#login-error").textContent = "";
 }
@@ -1569,8 +1530,6 @@ export {
   deleteKey,
   enterApp,
   escapeHtml,
-  expiryCountdown,
-  formatBucketTime,
   formatCompact,
   formatCount,
   handleLogin,
@@ -1583,7 +1542,6 @@ export {
   loadKeys,
   logout,
   maskKey,
-  metadataHtml,
   modelsUrlForKey,
   normalizeUsage,
   openCreateKeyModal,
@@ -1605,6 +1563,7 @@ export {
   startOAuth,
   state,
   switchToTab,
+  syncConnectControls,
   syncAccountWindowButtons,
   syncDashboardWindowButtons,
   syncScopedAccountAvailability,
@@ -1613,7 +1572,6 @@ export {
   tokenStatus,
   updateOAuthProviderUI,
   usageForKey,
-  usageMetaParts,
   usageWindowLabel,
   verifyToken,
   syncKeyWindowButtons,
