@@ -151,12 +151,11 @@ const refreshProviderAccountWithLock = async (
           account.id,
           updateInput
         );
-      } catch (error) {
-        if (account.provider === "claude") {
-          // libSQL errors can include the UPDATE parameters, including tokens.
-          throw new Error("Claude credential update failed");
-        }
-        throw error;
+      } catch {
+        // libSQL errors can include the UPDATE parameters, including tokens.
+        throw new Error(
+          `${account.provider === "claude" ? "Claude" : "Codex"} credential update failed`
+        );
       }
 
       if (!updated) {

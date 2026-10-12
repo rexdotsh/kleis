@@ -20,6 +20,7 @@ import { providerAccounts } from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
 import {
   getRoutableProviderAccount,
+  refreshProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../src/domain/providers/provider-service";
 import { codexAdapter } from "../../src/providers/codex";
@@ -112,6 +113,41 @@ describe("provider account enablement", () => {
     expect(refreshCount).toBe(1);
     expect(left?.accessToken).toBe("access-codex-refreshed");
     expect(right?.accessToken).toBe("access-codex-refreshed");
+  });
+
+  test("hides Codex tokens in errors when the credential update fails", async () => {
+    await client?.execute(`CREATE TRIGGER reject_codex_refresh
+      BEFORE UPDATE ON provider_accounts
+      WHEN NEW.access_token = 'new-access-secret'
+      BEGIN SELECT RAISE(ABORT, 'credential write blocked'); END`);
+    codexAdapter.refreshAccount = async (_account, refreshedAt) => ({
+      accessToken: "new-access-secret",
+      refreshToken: "new-refresh-secret",
+      expiresAt: refreshedAt + 60_000,
+      accountId: null,
+      metadata: null,
+    });
+
+    let failure: unknown;
+    try {
+      await refreshProviderAccount(database, "codex-primary", Date.now(), {
+        force: true,
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    if (!(failure instanceof Error)) {
+      throw new Error("Expected a Codex credential update failure");
+    }
+    expect(failure.message).toBe("Codex credential update failed");
+    expect(failure.message).not.toContain("new-access-secret");
+    expect(failure.message).not.toContain("new-refresh-secret");
+    const current = await database.query.providerAccounts.findFirst({
+      where: eq(providerAccounts.id, "codex-primary"),
+    });
+    expect(current?.refreshToken).toBe("refresh-codex");
+    expect(current?.lastRefreshStatus).toBe("failed");
   });
 
   test("waits for a slow in-flight auth refresh instead of returning the rejected token", async () => {
