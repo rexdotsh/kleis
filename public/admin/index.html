@@ -315,16 +315,12 @@
             <h2>API keys</h2>
             <span id="keys-count" class="muted"></span>
             <div class="right">
-              <button id="btn-open-setup" class="btn btn-ghost" type="button">
-                OpenCode setup
-              </button>
               <button id="btn-create-key" class="btn btn-primary" type="button">
                 New key
                 <span class="kbd" aria-hidden="true">N</span>
               </button>
             </div>
           </div>
-          <div id="key-reveal"></div>
           <div id="keys-list" class="list"></div>
           <div id="keys-foot" class="list-foot"></div>
         </section>
@@ -562,287 +558,33 @@
 
     <div id="menu" class="menu" role="menu" hidden></div>
 
-    <div id="modal-create-key" class="modal-backdrop">
-      <div
-        class="modal modal-wide"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="create-key-title"
-      >
-        <div class="modal-title" id="create-key-title">Create API key</div>
-        <div class="field">
-          <label class="field-label" for="key-label">Label</label>
-          <input
-            id="key-label"
-            class="field-input"
-            type="text"
-            maxlength="120"
-            placeholder="my-laptop"
-          >
-        </div>
-        <div class="field">
-          <label class="field-label">Providers</label>
-          <div class="field-hint">Leave empty for all providers.</div>
-          <div class="scope-grid">
-            <label class="scope-check">
-              <input type="checkbox" value="codex" class="key-scope-provider">
-              Codex
-            </label>
-            <label class="scope-check">
-              <input type="checkbox" value="claude" class="key-scope-provider">
-              Claude
-            </label>
-          </div>
-        </div>
-        <div class="field">
-          <label class="field-label">Accounts</label>
-          <div class="field-hint">
-            Optional. Leave empty to use each provider's primary account. Pick
-            up to one account per provider to pin requests, even if that account
-            is not primary.
-          </div>
-          <div id="key-account-scopes" class="scope-account-groups"></div>
-        </div>
-        <div class="field">
-          <label class="field-label" for="key-model-scopes"> Models </label>
-          <textarea
-            id="key-model-scopes"
-            class="field-input field-input-compact"
-            placeholder="gpt-5.6-luna, anthropic/claude-sonnet-4-5"
-            rows="2"
-          ></textarea>
-          <div class="field-hint">
-            Comma or newline separated. Leave empty for all.
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost modal-close" type="button">
-            Cancel
-          </button>
-          <button
-            id="btn-modal-create-key"
-            class="btn btn-primary"
-            type="button"
-          >
-            Create
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div id="modal-edit-account" class="modal-backdrop">
-      <div
-        class="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="edit-account-title"
-      >
-        <div class="modal-title" id="edit-account-title">Edit account</div>
-        <div class="field">
-          <label class="field-label" for="edit-account-label">Label</label>
-          <input
-            id="edit-account-label"
-            class="field-input"
-            type="text"
-            maxlength="160"
-            placeholder="my-main-account"
-          >
-        </div>
-        <div class="field">
-          <label class="field-label" for="edit-account-account-id">
-            Account ID
-          </label>
-          <input
-            id="edit-account-account-id"
-            class="field-input"
-            type="text"
-            maxlength="200"
-            placeholder="provider-specific account id"
-          >
-          <div class="field-hint">Leave empty to clear.</div>
-        </div>
-        <div class="field">
-          <label class="field-label" for="edit-account-metadata">
-            Profile metadata (JSON)
-          </label>
-          <textarea
-            id="edit-account-metadata"
-            class="field-input"
-            placeholder='{"chatgptAccountId":"org_123"}'
-          ></textarea>
-          <div class="field-hint">
-            Must be a JSON object. Leave empty to clear metadata.
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost modal-close" type="button">
-            Cancel
-          </button>
-          <button
-            id="btn-modal-save-account"
-            class="btn btn-primary"
-            type="button"
-          >
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div id="modal-edit-key" class="modal-backdrop">
-      <div
-        class="modal modal-wide"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="edit-key-title"
-      >
-        <div class="modal-title" id="edit-key-title">Edit API key</div>
-        <div class="field">
-          <label class="field-label" for="edit-key-label">Label</label>
-          <input
-            id="edit-key-label"
-            class="field-input"
-            type="text"
-            maxlength="120"
-            placeholder="my-laptop"
-          >
-        </div>
-        <div class="field">
-          <label class="field-label">Providers</label>
-          <div class="field-hint">Leave empty for all providers.</div>
-          <div class="scope-grid">
-            <label class="scope-check">
-              <input
-                type="checkbox"
-                value="codex"
-                class="edit-key-scope-provider"
-              >
-              Codex
-            </label>
-            <label class="scope-check">
-              <input
-                type="checkbox"
-                value="claude"
-                class="edit-key-scope-provider"
-              >
-              Claude
-            </label>
-          </div>
-        </div>
-        <div class="field">
-          <label class="field-label">Accounts</label>
-          <div class="field-hint">
-            Optional. Leave empty to follow the provider primary account. Pick
-            up to one account per provider to pin requests.
-          </div>
-          <div id="edit-key-account-scopes" class="scope-account-groups"></div>
-        </div>
-        <div class="field">
-          <label class="field-label" for="edit-key-model-scopes">
-            Models
-          </label>
-          <textarea
-            id="edit-key-model-scopes"
-            class="field-input field-input-compact"
-            placeholder="gpt-5.6-luna, anthropic/claude-sonnet-4-5"
-            rows="2"
-          ></textarea>
-          <div class="field-hint">
-            Comma or newline separated. Leave empty for all.
-          </div>
-        </div>
-        <div class="field">
-          <label class="field-label" for="edit-key-expires-at">
-            Expires at (unix seconds or ms)
-          </label>
-          <input
-            id="edit-key-expires-at"
-            class="field-input"
-            type="number"
-            placeholder="1767225600000"
-          >
-          <div class="field-hint">
-            Leave unchanged to keep existing value. Clear to remove expiration.
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost modal-close" type="button">
-            Cancel
-          </button>
-          <button id="btn-modal-save-key" class="btn btn-primary" type="button">
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div id="modal-confirm" class="modal-backdrop">
-      <div
-        class="modal modal-sm"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="confirm-title"
-        aria-describedby="confirm-message"
-      >
-        <div class="modal-title" id="confirm-title"></div>
-        <div class="modal-body" id="confirm-message"></div>
-        <div id="confirm-extras"></div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost" id="btn-confirm-cancel" type="button">
-            Cancel
-          </button>
-          <button class="btn btn-danger" id="btn-confirm-action" type="button">
-            Confirm
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div id="modal-key-detail" class="modal-backdrop">
-      <div
-        class="modal modal-xl"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="key-detail-title"
-      >
-        <div class="modal-head">
-          <div class="modal-title" id="key-detail-title"></div>
-          <button class="btn btn-ghost btn-sm modal-close" type="button">
-            Close
-          </button>
-        </div>
-        <div id="key-detail-body">
-          <div class="loading-indicator">
-            <span class="spinner spinner-lg"></span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div id="modal-opencode-setup" class="modal-backdrop">
-      <div
-        class="modal modal-wide"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="setup-title"
-      >
-        <div class="modal-head">
-          <div class="modal-title" id="setup-title">OpenCode setup</div>
-          <button class="btn btn-ghost btn-sm modal-close" type="button">
-            Close
-          </button>
-        </div>
-        <div class="field">
-          <label class="field-label" for="setup-key-select">API key</label>
-          <select id="setup-key-select" class="field-input"></select>
-        </div>
-        <pre id="setup-snippet" class="snippet-block"></pre>
-        <div class="modal-footer">
-          <button class="btn btn-ghost modal-close" type="button">Close</button>
-          <button id="btn-copy-setup" class="btn btn-primary" type="button">
-            Copy snippet
-          </button>
-        </div>
+    <div
+      id="confirm"
+      class="popover"
+      role="alertdialog"
+      aria-labelledby="confirm-title"
+      aria-describedby="confirm-message"
+      tabindex="-1"
+      hidden
+    >
+      <p id="confirm-title" class="popover-title"></p>
+      <p id="confirm-message" class="popover-text"></p>
+      <div id="confirm-extras"></div>
+      <div class="popover-actions">
+        <button
+          id="btn-confirm-cancel"
+          class="btn btn-ghost btn-sm"
+          type="button"
+        >
+          Cancel
+        </button>
+        <button
+          id="btn-confirm-action"
+          class="btn btn-danger btn-sm"
+          type="button"
+        >
+          Confirm
+        </button>
       </div>
     </div>
 

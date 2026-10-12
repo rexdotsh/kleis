@@ -1,9 +1,11 @@
 import {
   $,
   $$,
+  cancelCreateKey,
+  cancelEditAccount,
+  cancelEditKey,
   cancelOAuthFlow,
   clearReauthorization,
-  closeModal,
   copyToClipboard,
   createKey,
   deleteAccount,
@@ -16,9 +18,6 @@ import {
   loadKeys,
   logout,
   modelsUrlForKey,
-  openCreateKeyModal,
-  openEditAccountModal,
-  openEditKeyModal,
   reauthorizeAccount,
   redeemResetCredit,
   refreshAccount,
@@ -28,7 +27,11 @@ import {
   rotateKey,
   saveAccountEdits,
   saveKeyEdits,
+  setConfirmAnchor,
   setPrimary,
+  startCreateKey,
+  startEditAccount,
+  startEditKey,
   startOAuth,
   state,
   switchToTab,
@@ -43,9 +46,6 @@ import {
 } from "./app-data.js";
 import {
   menuHtml,
-  openAccountDetail,
-  openKeyDetail,
-  openSetupModal,
   renderAccounts,
   renderDashboard,
   renderKeys,
@@ -53,8 +53,9 @@ import {
 } from "./app-render.js";
 
 const accountActions = {
-  "account-usage": (id) => openAccountDetail(id),
-  "edit-account": (id) => openEditAccountModal(id),
+  "edit-account": (id) => startEditAccount(id),
+  "save-account": () => saveAccountEdits(),
+  "cancel-edit-account": () => cancelEditAccount(),
   "set-primary": (id) => setPrimary(id),
   "refresh-account": (id) => refreshAccount(id),
   "reauthorize-account": (id) => reauthorizeAccount(id),
@@ -77,42 +78,80 @@ const keyActions = {
       toast("Scoped models URL unavailable", "error");
     }
   },
+  "copy-snippet": (id, button) => {
+    const key = keyById(id);
+    if (key) copyToClipboard(setupSnippet(key), button, "Snippet copied");
+  },
   "toggle-key": (id) => {
-    if (state.revealedKeyIds.has(id)) state.revealedKeyIds.delete(id);
-    else state.revealedKeyIds.add(id);
+    if (state.revealedKeyIds.has(id)) {
+      state.revealedKeyIds.delete(id);
+    } else {
+      state.revealedKeyIds.add(id);
+      state.expandedKeyId = id;
+    }
     renderKeys();
   },
-  "key-usage": (id) => openKeyDetail(id),
-  "edit-key": (id) => openEditKeyModal(id),
+  "edit-key": (id) => startEditKey(id),
+  "save-key": () => saveKeyEdits(),
+  "cancel-edit-key": () => cancelEditKey(),
+  "open-create-key": () => startCreateKey(),
+  "submit-key": () => createKey(),
+  "cancel-create-key": () => cancelCreateKey(),
   "rotate-key": (id, button) => rotateKey(id, button),
   "revoke-key": (id) => revokeKey(id),
   "delete-key": (id) => deleteKey(id),
 };
 
 const activeTab = () => $(".tab.active")?.dataset.tab;
-const rowFor = (accountId) =>
-  $(`#accounts-list .row[data-account-id="${accountId}"]`);
+const accountRow = (id) => $(`#accounts-list .row[data-account-id="${id}"]`);
+const keyRow = (id) => $(`#keys-list .row[data-key-id="${id}"]`);
 
-function setExpandedAccount(accountId) {
-  state.expandedAccountId = accountId;
+function setExpandedAccount(id) {
+  state.expandedAccountId = id;
+  if (state.editingAccountId !== id) state.editingAccountId = null;
   renderAccounts();
 }
 
-function toggleAccount(accountId) {
-  setExpandedAccount(state.expandedAccountId === accountId ? null : accountId);
-  rowFor(accountId)?.focus({ preventScroll: true });
+function setExpandedKey(id) {
+  state.expandedKeyId = id;
+  if (state.editingKeyId !== id) state.editingKeyId = null;
+  renderKeys();
 }
 
-function showAccount(accountId) {
+function toggleAccount(id) {
+  setExpandedAccount(state.expandedAccountId === id ? null : id);
+  accountRow(id)?.focus({ preventScroll: true });
+}
+
+function toggleKey(id) {
+  setExpandedKey(state.expandedKeyId === id ? null : id);
+  keyRow(id)?.focus({ preventScroll: true });
+}
+
+function reveal(row) {
+  row?.scrollIntoView({ block: "center" });
+  row?.focus({ preventScroll: true });
+}
+
+function showAccount(id) {
   if (state.accountFilter) {
     state.accountFilter = "";
     $("#accounts-filter").value = "";
   }
   switchToTab("accounts");
-  setExpandedAccount(accountId);
-  const row = rowFor(accountId);
-  row?.scrollIntoView({ block: "center" });
-  row?.focus({ preventScroll: true });
+  setExpandedAccount(id);
+  reveal(accountRow(id));
+}
+
+function showKey(id) {
+  if (!keyById(id)) return;
+  if (state.keyFilter) {
+    state.keyFilter = "";
+    $("#keys-filter").value = "";
+  }
+  switchToTab("keys");
+  setExpandedKey(id);
+  reveal(keyRow(id));
 }
 
 let menuAnchor = null;
@@ -164,10 +203,20 @@ function openMenu(anchor) {
   menu.querySelector(".menu-item")?.focus();
 }
 
+document.addEventListener(
+  "click",
+  (event) => {
+    const button = event.target.closest("button");
+    if (button && !button.closest("#confirm, #menu")) setConfirmAnchor(button);
+  },
+  true
+);
+
 $("#menu").addEventListener("click", (event) => {
   const item = event.target.closest(".menu-item");
   if (!item) return;
   const kind = $("#menu").dataset.kind;
+  setConfirmAnchor(menuAnchor);
   closeMenu({ restoreFocus: true });
   if (kind === "account") {
     accountActions[item.dataset.action]?.(item.dataset.accountId, null);
@@ -219,8 +268,14 @@ document.addEventListener("pointerdown", (event) => {
   ) {
     closeMenu();
   }
+  if (!($("#confirm").hidden || event.target.closest("#confirm"))) {
+    resolveConfirm(false);
+  }
 });
 window.addEventListener("scroll", () => closeMenu(), { passive: true });
+
+$("#btn-confirm-cancel").addEventListener("click", () => resolveConfirm(false));
+$("#btn-confirm-action").addEventListener("click", () => resolveConfirm(true));
 
 $("#accounts-list").addEventListener("click", (event) => {
   const menuButton = event.target.closest("[data-menu]");
@@ -252,20 +307,57 @@ $("#keys-list").addEventListener("click", (event) => {
   }
   const button = event.target.closest("button[data-action]");
   if (button) {
-    if (button.dataset.action === "open-create-key") openCreateKeyModal();
-    else keyActions[button.dataset.action]?.(button.dataset.keyId, button);
+    keyActions[button.dataset.action]?.(button.dataset.keyId, button);
     return;
   }
+  if (event.target.closest(".detail, .inline-form")) return;
   const row = event.target.closest(".row[data-key-id]");
-  if (row) openKeyDetail(row.dataset.keyId);
+  if (row) toggleKey(row.dataset.keyId);
+});
+
+$("#keys-list").addEventListener("change", (event) => {
+  for (const [accountClass, providerClass, mode] of [
+    [".key-scope-account", ".key-scope-provider", "create"],
+    [".edit-key-scope-account", ".edit-key-scope-provider", "edit"],
+  ]) {
+    if (event.target.matches(accountClass) && event.target.checked) {
+      for (const input of $$(
+        `${accountClass}[data-provider="${event.target.dataset.provider}"]`
+      )) {
+        if (input !== event.target) input.checked = false;
+      }
+    }
+    if (event.target.matches(`${providerClass}, ${accountClass}`)) {
+      syncScopedAccountAvailability(mode);
+    }
+  }
 });
 
 for (const [listId, open] of [
   ["#accounts-list", (row) => toggleAccount(row.dataset.accountId)],
-  ["#keys-list", (row) => openKeyDetail(row.dataset.keyId)],
+  ["#keys-list", (row) => toggleKey(row.dataset.keyId)],
   ["#attention", (row) => showAccount(row.dataset.accountId)],
+  ["#dash-content", (row) => showKey(row.dataset.keyId)],
 ]) {
   $(listId).addEventListener("keydown", (event) => {
+    const form = event.target.closest(".inline-form");
+    if (form) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        form.querySelector('[data-action^="cancel"]')?.click();
+      } else if (
+        event.key === "Enter" &&
+        (event.metaKey ||
+          event.ctrlKey ||
+          (event.target.tagName === "INPUT" &&
+            event.target.type !== "checkbox"))
+      ) {
+        event.preventDefault();
+        form.querySelector(".btn-primary")?.click();
+      }
+      return;
+    }
     if (event.key !== "Enter" && event.key !== " ") return;
     const row = event.target.closest(".row[tabindex]");
     if (!row || event.target !== row) return;
@@ -280,7 +372,12 @@ $("#attention").addEventListener("click", (event) => {
 });
 
 $("#dash-content").addEventListener("click", (event) => {
-  if (event.target.closest('[data-action="go-keys"]')) switchToTab("keys");
+  if (event.target.closest('[data-action="go-keys"]')) {
+    switchToTab("keys");
+    return;
+  }
+  const row = event.target.closest(".row[data-key-id]");
+  if (row) showKey(row.dataset.keyId);
 });
 
 $("#keys-foot").addEventListener("click", (event) => {
@@ -331,6 +428,9 @@ $("#btn-logout").addEventListener("click", logout);
 $("#btn-refresh-accounts").addEventListener("click", loadAccounts);
 $("#btn-refresh-keys").addEventListener("click", loadKeys);
 $("#btn-refresh-dash").addEventListener("click", loadDashboard);
+$("#btn-create-key").addEventListener("click", startCreateKey);
+$("#btn-oauth-start").addEventListener("click", startOAuth);
+$("#btn-import-account").addEventListener("click", importAccount);
 
 for (const [selector, field, sync, load] of [
   [
@@ -358,36 +458,6 @@ for (const [selector, field, sync, load] of [
   });
 }
 
-$("#btn-create-key").addEventListener("click", openCreateKeyModal);
-$("#btn-open-setup").addEventListener("click", openSetupModal);
-$("#btn-modal-create-key").addEventListener("click", createKey);
-$("#btn-modal-save-account").addEventListener("click", saveAccountEdits);
-$("#btn-modal-save-key").addEventListener("click", saveKeyEdits);
-$("#btn-oauth-start").addEventListener("click", startOAuth);
-$("#btn-import-account").addEventListener("click", importAccount);
-
-for (const [sel, acct, prov, mode] of [
-  ["#modal-create-key", ".key-scope-account", ".key-scope-provider", "create"],
-  [
-    "#modal-edit-key",
-    ".edit-key-scope-account",
-    ".edit-key-scope-provider",
-    "edit",
-  ],
-]) {
-  $(sel).addEventListener("change", (e) => {
-    if (e.target.matches(acct) && e.target.checked) {
-      for (const input of $$(
-        `${acct}[data-provider="${e.target.dataset.provider}"]`
-      )) {
-        if (input !== e.target) input.checked = false;
-      }
-    }
-    if (e.target.matches(`${prov}, ${acct}`))
-      syncScopedAccountAvailability(mode);
-  });
-}
-
 for (const group of $$(".seg[data-select]")) {
   group.addEventListener("click", (event) => {
     const option = event.target.closest("button[data-value]");
@@ -409,16 +479,6 @@ $("#btn-oauth-clear-target").addEventListener("click", () => {
 });
 updateOAuthProviderUI();
 
-$("#setup-key-select").addEventListener("change", (e) => {
-  const key = keyById(e.target.value);
-  $("#setup-snippet").textContent = setupSnippet(key);
-});
-
-$("#btn-copy-setup").addEventListener("click", (e) => {
-  const key = keyById($("#setup-key-select").value);
-  copyToClipboard(setupSnippet(key), e.currentTarget);
-});
-
 for (const tab of $$(".tab")) {
   tab.id = `tab-${tab.dataset.tab}`;
   tab.setAttribute("role", "tab");
@@ -428,6 +488,7 @@ for (const tab of $$(".tab")) {
   panel.setAttribute("aria-labelledby", tab.id);
   tab.addEventListener("click", () => {
     closeMenu();
+    resolveConfirm(false);
     switchToTab(tab.dataset.tab);
   });
 }
@@ -450,6 +511,7 @@ $(".tabs").addEventListener("keydown", (event) => {
 let chartWidth = 0;
 window.addEventListener("resize", () => {
   closeMenu();
+  resolveConfirm(false);
   const width = $("#dash-content").clientWidth;
   if (
     width &&
@@ -462,19 +524,6 @@ window.addEventListener("resize", () => {
     renderDashboard(state.dashboardData);
   }
 });
-
-for (const el of $$(".modal-close")) {
-  el.addEventListener("click", () => closeModal(el.closest(".modal-backdrop")));
-}
-for (const backdrop of $$(".modal-backdrop")) {
-  backdrop.addEventListener("click", (e) => {
-    if (e.target !== backdrop) return;
-    if (backdrop.id === "modal-confirm") resolveConfirm(false);
-    else closeModal(backdrop);
-  });
-}
-$("#btn-confirm-cancel").addEventListener("click", () => resolveConfirm(false));
-$("#btn-confirm-action").addEventListener("click", () => resolveConfirm(true));
 
 const isTyping = (target) =>
   target instanceof HTMLElement &&
@@ -492,53 +541,38 @@ function handleShortcut(event) {
     return true;
   }
   if (event.key.toLowerCase() === "n" && tab === "keys") {
-    openCreateKeyModal();
+    startCreateKey();
     return true;
   }
   return false;
 }
 
-document.addEventListener("keydown", (e) => {
-  const modal = $(".modal-backdrop.open");
-  if (e.key === "Tab" && modal) {
-    const focusable = Array.from(
-      modal.querySelectorAll(
-        "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]"
-      )
-    );
-    const first = focusable[0];
-    const last = focusable.at(-1);
-    if (first && !modal.contains(document.activeElement)) {
-      e.preventDefault();
-      first.focus();
-    } else if (
-      first &&
-      ((e.shiftKey && document.activeElement === first) ||
-        (!e.shiftKey && document.activeElement === last))
-    ) {
-      e.preventDefault();
-      (e.shiftKey ? last : first).focus();
-    }
-    return;
-  }
-  if (!modal && handleShortcut(e)) {
-    e.preventDefault();
-    return;
-  }
-  if (e.key !== "Escape") return;
-  if ($("#modal-confirm").classList.contains("open")) {
+function handleEscape() {
+  if (!$("#confirm").hidden) {
     resolveConfirm(false);
     return;
   }
-  if (modal) {
-    for (const m of $$(".modal-backdrop.open")) closeModal(m);
+  const tab = activeTab();
+  if (tab === "accounts") {
+    const id = state.expandedAccountId;
+    if (state.editingAccountId) cancelEditAccount();
+    else if (id) setExpandedAccount(null);
+    if (id) accountRow(id)?.focus();
+  } else if (tab === "keys") {
+    const id = state.expandedKeyId;
+    if (state.creatingKey) cancelCreateKey();
+    else if (state.editingKeyId) cancelEditKey();
+    else if (id) setExpandedKey(null);
+    if (id) keyRow(id)?.focus();
+  }
+}
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    handleEscape();
     return;
   }
-  if (state.expandedAccountId && activeTab() === "accounts") {
-    const accountId = state.expandedAccountId;
-    setExpandedAccount(null);
-    rowFor(accountId)?.focus();
-  }
+  if (handleShortcut(event)) event.preventDefault();
 });
 
 restoreSession();

@@ -4,7 +4,7 @@ import {
   renderDashboard,
   renderKeys,
   renderOAuthFlow,
-  showKeyReveal,
+  renderUsageSlot,
 } from "./app-render.js";
 
 const DEFAULT_KEY_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -39,6 +39,11 @@ const state = {
   accountFilter: "",
   expandedAccountId: null,
   showAllReauthorize: false,
+  expandedKeyId: null,
+  editingKeyId: null,
+  editingAccountId: null,
+  creatingKey: false,
+  usageDetails: new Map(),
   activeOAuth: null,
   reauthorizeAccountId: null,
   oauthRequestSeq: 0,
@@ -55,20 +60,6 @@ const state = {
 const APP_ORIGIN = window.location.origin;
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
-const modalPreviousFocus = new WeakMap();
-
-function openModal(modal, focusSelector = "button, input, select") {
-  modalPreviousFocus.set(modal, document.activeElement);
-  modal.classList.add("open");
-  modal.querySelector(focusSelector)?.focus();
-}
-
-function closeModal(modal) {
-  modal.classList.remove("open");
-  modalPreviousFocus.get(modal)?.focus?.();
-  modalPreviousFocus.delete(modal);
-}
-
 function escapeHtml(str) {
   return String(str ?? "")
     .replaceAll("&", "&amp;")
@@ -117,25 +108,68 @@ function toast(message, type = "success") {
 }
 
 let confirmResolve = null;
+let confirmAnchor = null;
+let confirmReturnFocus = null;
 
-function showConfirm(title, message, actionLabel = "Confirm", extrasHtml = "") {
+function setConfirmAnchor(element) {
+  confirmAnchor = element;
+}
+
+function positionPopover(popover, anchor) {
+  const width = popover.offsetWidth;
+  const height = popover.offsetHeight;
+  const rect = anchor?.isConnected ? anchor.getBoundingClientRect() : null;
+  if (!rect?.width) {
+    popover.style.left = `${Math.max(8, (innerWidth - width) / 2) + scrollX}px`;
+    popover.style.top = `${innerHeight * 0.2 + scrollY}px`;
+    return;
+  }
+  const left =
+    rect.left + width <= innerWidth - 8
+      ? rect.left
+      : Math.max(8, rect.right - width);
+  const below = rect.bottom + 6;
+  const top =
+    below + height > innerHeight - 8
+      ? Math.max(8, rect.top - height - 6)
+      : below;
+  popover.style.left = `${left + scrollX}px`;
+  popover.style.top = `${top + scrollY}px`;
+}
+
+function showConfirm(
+  title,
+  message,
+  actionLabel = "Confirm",
+  { extrasHtml = "", danger = false } = {}
+) {
   if (confirmResolve) resolveConfirm(false);
   return new Promise((resolve) => {
     confirmResolve = resolve;
+    const popover = $("#confirm");
     $("#confirm-title").textContent = title;
     $("#confirm-message").textContent = message;
     $("#confirm-extras").innerHTML = extrasHtml;
-    $("#btn-confirm-action").textContent = actionLabel;
-    openModal($("#modal-confirm"), "#btn-confirm-cancel");
+    const action = $("#btn-confirm-action");
+    action.textContent = actionLabel;
+    action.className = `btn btn-sm ${danger ? "btn-danger" : "btn-primary"}`;
+    confirmReturnFocus = confirmAnchor;
+    popover.hidden = false;
+    positionPopover(popover, confirmAnchor);
+    popover.focus();
   });
 }
 
 function resolveConfirm(value) {
+  const popover = $("#confirm");
+  const wasOpen = popover.hidden === false;
+  popover.hidden = true;
   if (confirmResolve) {
     confirmResolve(value);
     confirmResolve = null;
   }
-  closeModal($("#modal-confirm"));
+  if (wasOpen && confirmReturnFocus?.isConnected) confirmReturnFocus.focus();
+  confirmReturnFocus = null;
 }
 
 function relativeTime(ts) {
@@ -413,22 +447,13 @@ const checkedValues = (selector) =>
     .filter((input) => input.checked)
     .map((input) => input.value);
 
-function setCheckedValues(selector, values) {
-  const allowed = new Set(values || []);
-  for (const input of $$(selector)) {
-    input.checked = allowed.has(input.value);
-  }
-}
-
-const KEY_SCOPE_MODAL_CONFIG = {
+const KEY_SCOPE_FORMS = {
   create: {
-    modalSelector: "#modal-create-key",
     providerSelector: ".key-scope-provider",
     accountSelector: ".key-scope-account",
     accountContainer: "#key-account-scopes",
   },
   edit: {
-    modalSelector: "#modal-edit-key",
     providerSelector: ".edit-key-scope-provider",
     accountSelector: ".edit-key-scope-account",
     accountContainer: "#edit-key-account-scopes",
@@ -441,12 +466,14 @@ const shortId = (value) =>
     : value || "";
 
 function renderAccountScopeOptions(mode, selectedAccountIds = []) {
-  const config = KEY_SCOPE_MODAL_CONFIG[mode];
-  const container = $(config.accountContainer);
-  if (!container) {
-    return;
+  const container = $(KEY_SCOPE_FORMS[mode].accountContainer);
+  if (container) {
+    container.innerHTML = accountScopeOptionsHtml(mode, selectedAccountIds);
   }
+}
 
+function accountScopeOptionsHtml(mode, selectedAccountIds = []) {
+  const config = KEY_SCOPE_FORMS[mode];
   const selectedIds = new Set(selectedAccountIds || []);
   const knownIds = new Set(state.accounts.map((account) => account.id));
   const unavailableIds =
@@ -454,9 +481,7 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
       ? Array.from(selectedIds).filter((id) => !knownIds.has(id))
       : [];
   if (!state.accounts.length && !unavailableIds.length) {
-    container.innerHTML =
-      '<div class="scope-empty">No provider accounts connected yet. Leave this empty to keep using each provider\'s primary account once one exists.</div>';
-    return;
+    return '<div class="scope-empty">No provider accounts connected yet. Leave this empty to keep using each provider\'s primary account once one exists.</div>';
   }
 
   const groups = PROVIDER_ORDER.map((provider) => ({
@@ -473,7 +498,7 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
   const availableOptions = groups
     .map(
       ({ provider, accounts }) => `<div class="scope-account-group-header">
-          <span class="badge badge-${provider}">${provider}</span>
+          <span class="cap">${providerLabel(provider)}</span>
         </div>
         <div class="scope-account-list">
           ${accounts
@@ -488,7 +513,7 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
                 >
                 <span class="scope-account-copy">
                   <span class="scope-account-name">${escapeHtml(account.label || account.accountId || shortId(account.id))}</span>
-                  ${account.isPrimary ? '<span class="badge badge-primary">primary</span>' : ""}
+                  ${account.isPrimary ? '<span class="tag">Primary</span>' : ""}
                   <span class="scope-account-meta">${escapeHtml([shortId(account.id), account.enabled === false ? "disabled" : "", account.expiresAt ? expiryCountdown(account.expiresAt) : ""].filter(Boolean).join(" · "))}</span>
                 </span>
               </label>`
@@ -510,11 +535,11 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
            .join("")}
        </div>`
     : "";
-  container.innerHTML = `${availableOptions}${unavailableOptions}`;
+  return `${availableOptions}${unavailableOptions}`;
 }
 
 function syncScopedAccountAvailability(mode) {
-  const config = KEY_SCOPE_MODAL_CONFIG[mode];
+  const config = KEY_SCOPE_FORMS[mode];
   const selectedProviders = new Set(checkedValues(config.providerSelector));
   const hasProviderFilter = selectedProviders.size > 0;
 
@@ -534,17 +559,6 @@ function syncScopedAccountAvailability(mode) {
   }
 }
 
-function refreshOpenKeyScopeModal(mode) {
-  const config = KEY_SCOPE_MODAL_CONFIG[mode];
-  if (!$(config.modalSelector).classList.contains("open")) {
-    return;
-  }
-
-  const selectedAccountScopes = checkedValues(config.accountSelector);
-  renderAccountScopeOptions(mode, selectedAccountScopes);
-  syncScopedAccountAvailability(mode);
-}
-
 function parseOptionalJsonObject(raw, fieldLabel) {
   if (!raw) {
     return null;
@@ -562,10 +576,6 @@ function parseOptionalJsonObject(raw, fieldLabel) {
   }
 
   return parsed;
-}
-
-function activeKeysWithModelsUrl() {
-  return state.keys.filter((k) => isKeyActive(k) && modelsUrlForKey(k));
 }
 
 async function loadDashboard() {
@@ -605,8 +615,36 @@ async function loadDashboard() {
   }
 }
 
+function clearUsageDetails(kind) {
+  for (const key of state.usageDetails.keys()) {
+    if (key.startsWith(`${kind}:`)) state.usageDetails.delete(key);
+  }
+}
+
+async function requestUsageDetail(kind, id) {
+  const windowMs =
+    kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
+  const cacheKey = `${kind}:${id}:${windowMs}`;
+  if (state.usageDetails.has(cacheKey)) return;
+  state.usageDetails.set(cacheKey, { status: "loading" });
+  const token = state.token;
+  let entry;
+  try {
+    const data = await api(
+      `/admin/${kind === "account" ? "accounts" : "keys"}/${id}/usage?windowMs=${windowMs}`
+    );
+    entry = { status: "ready", data };
+  } catch (e) {
+    entry = { status: "error", error: e.message };
+  }
+  if (token !== state.token || !state.usageDetails.has(cacheKey)) return;
+  state.usageDetails.set(cacheKey, entry);
+  renderUsageSlot(kind, id);
+}
+
 async function loadAccounts() {
   const requestSeq = ++state.accountsRequestSeq;
+  clearUsageDetails("account");
   if (!state.accounts.length) showLoading("accounts-list");
   try {
     const [accountsResult, usageResult] = await Promise.allSettled([
@@ -636,9 +674,6 @@ async function loadAccounts() {
 
     syncAccountWindowButtons();
 
-    refreshOpenKeyScopeModal("create");
-    refreshOpenKeyScopeModal("edit");
-
     renderAccounts();
     if (state.keysLoaded) {
       renderKeys();
@@ -657,6 +692,7 @@ async function loadAccounts() {
 
 async function loadKeys() {
   const requestSeq = ++state.keysRequestSeq;
+  clearUsageDetails("key");
   if (!state.keysLoaded) showLoading("keys-list");
   try {
     const [keysResult, usageResult] = await Promise.allSettled([
@@ -726,7 +762,8 @@ async function toggleProvider(provider, enabled) {
     const confirmed = await showConfirm(
       `Disable ${providerLabel(provider)}?`,
       `All ${providerLabel(provider)} accounts stop receiving proxy traffic and its models disappear from model registries. You can re-enable it at any time.`,
-      "Disable"
+      "Disable",
+      { danger: true }
     );
     if (!confirmed) return;
   }
@@ -754,7 +791,8 @@ async function deleteAccount(id) {
   const confirmed = await showConfirm(
     "Remove account?",
     `Remove "${name}" and its stored tokens. This cannot be undone.`,
-    "Remove"
+    "Remove",
+    { danger: true }
   );
   if (!confirmed) return;
 
@@ -822,11 +860,15 @@ async function redeemResetCredit(accountId, creditId) {
   const label = account?.label || account?.accountId || accountId;
   const redemptionKey = `${accountId}:${creditId || "auto"}`;
   const existingRequestId = state.pendingResetRedemptions.get(redemptionKey);
+  const credit = account?.quota?.data?.resetCredits?.credits?.find(
+    (entry) => entry.id === creditId
+  );
+  const creditName = credit?.title ? `"${credit.title}"` : "a reset credit";
   const confirmed = await showConfirm(
     "Reset Codex limits?",
     existingRequestId
       ? `Retry the pending reset for "${label}" with the same idempotency key?`
-      : `Consume a reset credit for "${label}"? This changes the upstream Codex account quota.`,
+      : `Use ${creditName} on "${label}"? Its Codex rate limits reset upstream right away.`,
     existingRequestId ? "Retry reset" : "Use credit"
   );
   if (!confirmed) return;
@@ -857,25 +899,25 @@ async function redeemResetCredit(accountId, creditId) {
   }
 }
 
-function openEditAccountModal(id) {
-  const account = accountById(id);
-  if (!account) {
+function startEditAccount(id) {
+  if (!accountById(id)) {
     toast("Account was not found", "error");
     return;
   }
+  state.expandedAccountId = id;
+  state.editingAccountId = id;
+  renderAccounts();
+  $("#edit-account-label")?.focus?.();
+}
 
-  $("#edit-account-title").textContent =
-    `Edit ${providerLabel(account.provider)} account`;
-  $("#edit-account-label").value = account.label || "";
-  $("#edit-account-account-id").value = account.accountId || "";
-  $("#edit-account-metadata").value = formatMetadataForInput(account.metadata);
-  $("#btn-modal-save-account").dataset.accountId = account.id;
-  openModal($("#modal-edit-account"), "#edit-account-label");
+function cancelEditAccount() {
+  state.editingAccountId = null;
+  renderAccounts();
 }
 
 async function saveAccountEdits() {
-  const saveButton = $("#btn-modal-save-account");
-  const accountId = saveButton?.dataset.accountId;
+  const saveButton = $("#btn-save-account");
+  const accountId = state.editingAccountId;
   if (!accountId) {
     toast("Account was not found", "error");
     return;
@@ -905,29 +947,29 @@ async function saveAccountEdits() {
         metadata,
       }),
     });
-    closeModal($("#modal-edit-account"));
-    saveButton.dataset.accountId = "";
-    toast("Account profile updated");
+    state.editingAccountId = null;
+    toast("Account updated");
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
-  } finally {
     saveButton.disabled = false;
     saveButton.textContent = previousLabel || "Save";
   }
 }
 
-function openCreateKeyModal() {
-  $("#key-label").value = "";
-  $("#key-model-scopes").value = "";
-  for (const cb of $$(".key-scope-provider")) cb.checked = false;
-  renderAccountScopeOptions("create");
-  syncScopedAccountAvailability("create");
-  openModal($("#modal-create-key"), "#key-label");
+function startCreateKey() {
+  state.creatingKey = true;
+  renderKeys();
+  $("#key-label")?.focus?.();
+}
+
+function cancelCreateKey() {
+  state.creatingKey = false;
+  renderKeys();
 }
 
 async function createKey() {
-  const btn = $("#btn-modal-create-key");
+  const btn = $("#btn-submit-key");
   if (btn.disabled) return;
   const label = trimmedOrNull($("#key-label").value);
   const providerScopes = checkedValues(".key-scope-provider");
@@ -947,44 +989,42 @@ async function createKey() {
       method: "POST",
       body: JSON.stringify(body),
     });
-    closeModal($("#modal-create-key"));
+    state.creatingKey = false;
+    state.expandedKeyId = data.key.id;
+    state.revealedKeyIds.add(data.key.id);
     toast("API key created");
-    showKeyReveal(data.key.key);
     await loadKeys();
   } catch (e) {
     toast(e.message, "error");
-  } finally {
     btn.disabled = false;
-    btn.textContent = "Create";
+    btn.textContent = "Create key";
   }
 }
 
-function openEditKeyModal(id) {
+function startEditKey(id) {
   const key = keyById(id);
   if (!key) {
     toast("API key was not found", "error");
     return;
   }
-
-  $("#edit-key-label").value = key.label || "";
-  $("#edit-key-model-scopes").value = key.modelScopes?.join(", ") || "";
-  $("#edit-key-expires-at").value =
-    key.expiresAt === null ? "" : String(key.expiresAt);
-  setCheckedValues(".edit-key-scope-provider", key.providerScopes);
+  state.expandedKeyId = id;
+  state.editingKeyId = id;
+  renderKeys();
   renderAccountScopeOptions("edit", key.accountScopes);
   syncScopedAccountAvailability("edit");
+  $("#edit-key-label")?.focus?.();
+}
 
-  const saveButton = $("#btn-modal-save-key");
-  saveButton.dataset.keyId = key.id;
-  saveButton.dataset.originalExpiresAt =
-    key.expiresAt === null ? "" : String(key.expiresAt);
-  openModal($("#modal-edit-key"), "#edit-key-label");
+function cancelEditKey() {
+  state.editingKeyId = null;
+  renderKeys();
 }
 
 async function saveKeyEdits() {
-  const saveButton = $("#btn-modal-save-key");
-  const keyId = saveButton?.dataset.keyId;
-  if (!keyId) {
+  const saveButton = $("#btn-save-key");
+  const keyId = state.editingKeyId;
+  const existing = keyById(keyId);
+  if (!existing) {
     toast("API key was not found", "error");
     return;
   }
@@ -1004,7 +1044,8 @@ async function saveKeyEdits() {
   };
 
   const expiresAtRaw = $("#edit-key-expires-at").value.trim();
-  const originalExpiresAt = saveButton.dataset.originalExpiresAt || "";
+  const originalExpiresAt =
+    existing.expiresAt == null ? "" : String(existing.expiresAt);
   if (expiresAtRaw !== originalExpiresAt) {
     if (expiresAtRaw) {
       const parsedExpiresAt = Number(expiresAtRaw);
@@ -1026,14 +1067,11 @@ async function saveKeyEdits() {
       method: "PATCH",
       body: JSON.stringify(body),
     });
-    closeModal($("#modal-edit-key"));
-    saveButton.dataset.keyId = "";
-    saveButton.dataset.originalExpiresAt = "";
+    state.editingKeyId = null;
     toast("API key updated");
     await loadKeys();
   } catch (e) {
     toast(e.message, "error");
-  } finally {
     saveButton.disabled = false;
     saveButton.textContent = previousLabel || "Save";
   }
@@ -1051,7 +1089,10 @@ async function rotateKey(id, button) {
     "Rotate API key?",
     `Create a new key with the same settings as "${label}".`,
     "Rotate",
-    '<label class="scope-check confirm-check"><input id="rotate-revoke-old" type="checkbox"> Revoke the old key afterwards</label>'
+    {
+      extrasHtml:
+        '<label class="scope-check confirm-check"><input id="rotate-revoke-old" type="checkbox"> Revoke the old key afterwards</label>',
+    }
   );
   if (!confirmed) return;
 
@@ -1083,8 +1124,9 @@ async function rotateKey(id, button) {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    showKeyReveal(data.key.key);
     keyCreated = true;
+    state.expandedKeyId = data.key.id;
+    state.revealedKeyIds.add(data.key.id);
     if (revokeOld) {
       await api(`/admin/keys/${id}/revoke`, { method: "POST" });
     }
@@ -1115,7 +1157,8 @@ async function revokeKey(id) {
   const confirmed = await showConfirm(
     "Revoke API key?",
     `Clients using "${label}" stop working immediately. This cannot be undone.`,
-    "Revoke"
+    "Revoke",
+    { danger: true }
   );
   if (!confirmed) return;
 
@@ -1134,7 +1177,8 @@ async function deleteKey(id) {
   const confirmed = await showConfirm(
     "Delete revoked key?",
     `Delete "${label}" and its usage history permanently. This cannot be undone.`,
-    "Delete"
+    "Delete",
+    { danger: true }
   );
   if (!confirmed) return;
 
@@ -1490,6 +1534,11 @@ function logout() {
   state.accountFilter = "";
   state.expandedAccountId = null;
   state.showAllReauthorize = false;
+  state.expandedKeyId = null;
+  state.editingKeyId = null;
+  state.editingAccountId = null;
+  state.creatingKey = false;
+  state.usageDetails = new Map();
   state.activeOAuth = null;
   state.reauthorizeAccountId = null;
   state.revealedKeyIds.clear();
@@ -1500,7 +1549,6 @@ function logout() {
   $("#oauth-flow-active").innerHTML = "";
   $("#dash-content").innerHTML = "";
   $("#attention").innerHTML = "";
-  $("#key-reveal").innerHTML = "";
   $("#accounts-filter").value = "";
   $("#keys-filter").value = "";
   syncDashboardWindowButtons();
@@ -1515,14 +1563,16 @@ export {
   $,
   $$,
   accountById,
+  accountScopeOptionsHtml,
   accountUsageForId,
-  activeKeysWithModelsUrl,
   api,
   cacheReadRate,
-  clearPersistedToken,
-  closeModal,
-  clearReauthorization,
+  cancelCreateKey,
+  cancelEditAccount,
+  cancelEditKey,
   cancelOAuthFlow,
+  clearPersistedToken,
+  clearReauthorization,
   completeOAuth,
   copyToClipboard,
   createKey,
@@ -1532,6 +1582,7 @@ export {
   escapeHtml,
   formatCompact,
   formatCount,
+  formatMetadataForInput,
   handleLogin,
   hasUsageMetrics,
   importAccount,
@@ -1544,28 +1595,30 @@ export {
   maskKey,
   modelsUrlForKey,
   normalizeUsage,
-  openCreateKeyModal,
-  openModal,
-  openEditAccountModal,
-  openEditKeyModal,
   readPersistedToken,
-  refreshAccount,
   reauthorizeAccount,
   redeemResetCredit,
+  refreshAccount,
   relativeTime,
+  requestUsageDetail,
   resolveConfirm,
   restoreSession,
   revokeKey,
   rotateKey,
   saveAccountEdits,
   saveKeyEdits,
+  setConfirmAnchor,
   setPrimary,
+  startCreateKey,
+  startEditAccount,
+  startEditKey,
   startOAuth,
   state,
   switchToTab,
-  syncConnectControls,
   syncAccountWindowButtons,
+  syncConnectControls,
   syncDashboardWindowButtons,
+  syncKeyWindowButtons,
   syncScopedAccountAvailability,
   toast,
   toggleProvider,
@@ -1574,5 +1627,4 @@ export {
   usageForKey,
   usageWindowLabel,
   verifyToken,
-  syncKeyWindowButtons,
 };

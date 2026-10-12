@@ -62,7 +62,7 @@ const {
   loadAccounts,
   logout,
   normalizeUsage,
-  openEditKeyModal,
+  startEditKey,
   saveKeyEdits,
   startOAuth,
   state,
@@ -135,7 +135,7 @@ describe("admin UI request state", () => {
       }),
     } as unknown as Document;
 
-    openEditKeyModal(keyId);
+    startEditKey(keyId);
     expect(element("#edit-key-account-scopes").innerHTML).toContain(
       'value="missing-account" class="edit-key-scope-account" data-preserved-scope="true" checked'
     );
