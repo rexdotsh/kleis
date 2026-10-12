@@ -11,6 +11,7 @@ import { cronRoutes } from "./http/routes/cron";
 import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
 import { proxyRoutes } from "./http/routes/proxy";
+import { installGracefulShutdown, trackServer } from "./http/graceful-shutdown";
 import { resolveRequestIdleTimeout } from "./http/utils/request-timeout";
 
 const app = new Hono();
@@ -53,10 +54,13 @@ app.use("/openai/v1/*", requireProxyApiKey);
 app.use("/anthropic/v1/*", requireProxyApiKey);
 app.route("/", proxyRoutes);
 
+installGracefulShutdown();
+
 export default {
   idleTimeout: 255,
   port: Number(process.env.PORT ?? 3003),
   fetch(request: Request, server: Bun.Server<unknown>) {
+    trackServer(server);
     const requestIdleTimeout = resolveRequestIdleTimeout(
       new URL(request.url).pathname
     );

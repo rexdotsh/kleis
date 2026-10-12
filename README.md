@@ -83,6 +83,20 @@ KLEIS_API_KEY=your-issued-key
 
 ---
 
+## Self-hosted deploys
+
+Pushes to `main` build an image and run `scripts/deploy-release.sh` on the host
+over SSH. Releases alternate between two containers, `kleis-blue`
+(`127.0.0.1:3003`) and `kleis-green` (`127.0.0.1:3004`), and Caddy proxies to
+whichever is healthy (`deploy/Caddyfile`).
+
+A new release must pass `/healthz` before it gets traffic; if it never does,
+the current release keeps serving. The old release then fails its health check,
+stops accepting connections, and exits once its in-flight streams finish (up to
+14 minutes), so deploys don't cut off running requests.
+
+---
+
 ## Deploying to Vercel
 
 Set `ADMIN_TOKEN`, `CRON_SECRET`, `TURSO_CONNECTION_URL`, and `TURSO_AUTH_TOKEN` in your Vercel project, then deploy. Migrations run on build. Bun runtime.
