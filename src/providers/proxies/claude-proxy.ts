@@ -34,10 +34,7 @@ const sanitizeClaudeSystemText = (text: string): string =>
       "Here is useful information about the environment you are running in:"
     )
     .replace(/<directories>\n\s*/gi, "Directories\n")
-    // Anthropic also bills OAuth requests as third-party extra usage when Pi's
-    // docs section contains these two phrases; dropping one word from each is
-    // enough.
-    // https://github.com/earendil-works/pi/blob/main/packages/coding-agent/src/core/system-prompt.ts
+    // Pi docs phrases that make Anthropic bill OAuth as third-party usage.
     .replace("follow .md cross-references", "follow cross-references")
     .replace("pi packages (docs/packages.md)", "packages (docs/packages.md)");
 
