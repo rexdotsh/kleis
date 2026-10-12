@@ -5,7 +5,6 @@ x-app: &app
       required: false
   init: true
   restart: unless-stopped
-  # Long enough for in-flight model streams to finish while draining.
   stop_grace_period: 15m
   healthcheck:
     test:
@@ -28,9 +27,6 @@ services:
         required: false
     restart: "no"
 
-  # Blue/green pair: scripts/deploy-release.sh starts the idle one, waits for
-  # it to pass health checks, then drains the other. Caddy proxies to both
-  # ports and only routes to healthy ones.
   app-blue:
     <<: *app
     container_name: kleis-blue

@@ -1,49 +1,47 @@
 import { describe, expect, test } from "bun:test";
 
-import { drainServer, isDraining } from "../../src/http/graceful-shutdown";
-import { healthRoutes } from "../../src/http/routes/health";
+import { createGracefulShutdown } from "../../src/http/graceful-shutdown";
+import { createHealthRoutes } from "../../src/http/routes/health";
 
 describe("graceful shutdown", () => {
   test("fails health checks, then waits for in-flight requests before stopping", async () => {
-    expect((await healthRoutes.request("/healthz")).status).toBe(200);
+    const shutdown = createGracefulShutdown();
+    const health = createHealthRoutes(shutdown.isDraining);
+    expect((await health.request("/healthz")).status).toBe(200);
 
     const events: string[] = [];
     let finishInFlight: (() => void) | undefined;
     const inFlight = new Promise<void>((resolve) => {
       finishInFlight = resolve;
     });
-    const drained = drainServer({
-      server: {
-        stop: async () => {
-          events.push("stop");
-          await inFlight;
-          events.push("in-flight finished");
-        },
+    shutdown.trackServer({
+      stop: async () => {
+        events.push("stop");
+        await inFlight;
+        events.push("in-flight finished");
       },
-      graceMs: 10,
-      timeoutMs: 5000,
     });
+    const drained = shutdown.drain({ graceMs: 10, timeoutMs: 5000 });
 
-    expect(isDraining()).toBe(true);
-    const health = await healthRoutes.request("/healthz");
-    expect(health.status).toBe(503);
-    expect(await health.json()).toMatchObject({ ok: false, draining: true });
+    const draining = await health.request("/healthz");
+    expect(draining.status).toBe(503);
+    expect(await draining.json()).toMatchObject({ ok: false, draining: true });
     expect(events).toEqual([]);
 
     await Bun.sleep(30);
     expect(events).toEqual(["stop"]);
+    expect(shutdown.drain({ graceMs: 0, timeoutMs: 0 })).toBe(drained);
     finishInFlight?.();
     expect(await drained).toBe("drained");
     expect(events).toEqual(["stop", "in-flight finished"]);
   });
 
   test("gives up waiting after the drain timeout", async () => {
-    const outcome = await drainServer({
-      server: { stop: () => new Promise<void>(() => undefined) },
-      graceMs: 0,
-      timeoutMs: 20,
-    });
+    const shutdown = createGracefulShutdown();
+    shutdown.trackServer({ stop: () => new Promise<void>(() => undefined) });
 
-    expect(outcome).toBe("timed_out");
+    expect(await shutdown.drain({ graceMs: 0, timeoutMs: 20 })).toBe(
+      "timed_out"
+    );
   });
 });

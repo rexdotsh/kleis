@@ -52,8 +52,6 @@ jobs:
     environment: production
     concurrency:
       group: production-deploy
-      # Queue instead of cancelling: a release cancelled mid-switch would
-      # leave both slots running.
       cancel-in-progress: false
     permissions:
       contents: read

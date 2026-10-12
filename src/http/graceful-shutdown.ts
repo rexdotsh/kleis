@@ -1,62 +1,60 @@
 import { logWarn } from "../utils/log";
 
-// Must exceed the reverse proxy's active health-check interval so it stops
-// routing new requests here before this process stops accepting connections.
-const DEFAULT_DRAIN_GRACE_MS = 6000;
-// Must stay below the container's stop grace period (15m in compose).
-const DEFAULT_DRAIN_TIMEOUT_MS = 14 * 60 * 1000;
-// Usage rows are written in the background after a response finishes.
+// Longer than Caddy's 2s health-check interval.
+const DRAIN_GRACE_MS = 6000;
+const DRAIN_TIMEOUT_MS = 14 * 60 * 1000;
 const EXIT_FLUSH_DELAY_MS = 3000;
 
-let draining = false;
-let trackedServer: Bun.Server<unknown> | null = null;
+type StoppableServer = Pick<Bun.Server<unknown>, "stop">;
+type DrainOutcome = "drained" | "timed_out";
 
 const readDurationMs = (name: string, fallback: number): number => {
   const value = Number(process.env[name]);
   return Number.isFinite(value) && value >= 0 ? value : fallback;
 };
 
-export const isDraining = (): boolean => draining;
+export const createGracefulShutdown = () => {
+  let draining: Promise<DrainOutcome> | null = null;
+  let server: StoppableServer | null = null;
 
-export const trackServer = (server: Bun.Server<unknown>): void => {
-  trackedServer ??= server;
+  const drain = (input: {
+    graceMs: number;
+    timeoutMs: number;
+  }): Promise<DrainOutcome> => {
+    draining ??= (async () => {
+      if (!server) {
+        return "drained" as const;
+      }
+      await Bun.sleep(input.graceMs);
+      return await Promise.race([
+        server.stop().then(() => "drained" as const),
+        Bun.sleep(input.timeoutMs).then(() => "timed_out" as const),
+      ]);
+    })();
+    return draining;
+  };
+
+  return {
+    isDraining: (): boolean => draining !== null,
+    trackServer: (value: StoppableServer): void => {
+      server ??= value;
+    },
+    drain,
+    install: (): void => {
+      process.on("SIGTERM", async () => {
+        if (draining) {
+          return;
+        }
+        const graceMs = readDurationMs("DRAIN_GRACE_MS", DRAIN_GRACE_MS);
+        const timeoutMs = readDurationMs("DRAIN_TIMEOUT_MS", DRAIN_TIMEOUT_MS);
+        logWarn("server_draining", { graceMs, timeoutMs });
+        const outcome = await drain({ graceMs, timeoutMs });
+        logWarn("server_drained", { outcome });
+        await Bun.sleep(EXIT_FLUSH_DELAY_MS);
+        process.exit(0);
+      });
+    },
+  };
 };
 
-export const drainServer = async (input: {
-  server: Pick<Bun.Server<unknown>, "stop"> | null;
-  graceMs: number;
-  timeoutMs: number;
-}): Promise<"drained" | "timed_out"> => {
-  draining = true;
-  if (!input.server) {
-    return "drained";
-  }
-
-  await Bun.sleep(input.graceMs);
-  // Without `true`, stop() refuses new connections and resolves once
-  // in-flight requests, including long SSE streams, have finished.
-  const stopped = input.server.stop().then(() => "drained" as const);
-  return await Promise.race([
-    stopped,
-    Bun.sleep(input.timeoutMs).then(() => "timed_out" as const),
-  ]);
-};
-
-export const installGracefulShutdown = (): void => {
-  process.once("SIGTERM", async () => {
-    const graceMs = readDurationMs("DRAIN_GRACE_MS", DEFAULT_DRAIN_GRACE_MS);
-    const timeoutMs = readDurationMs(
-      "DRAIN_TIMEOUT_MS",
-      DEFAULT_DRAIN_TIMEOUT_MS
-    );
-    logWarn("server_draining", { graceMs, timeoutMs });
-    const outcome = await drainServer({
-      server: trackedServer,
-      graceMs,
-      timeoutMs,
-    });
-    logWarn("server_drained", { outcome });
-    await Bun.sleep(EXIT_FLUSH_DELAY_MS);
-    process.exit(0);
-  });
-};
+export const gracefulShutdown = createGracefulShutdown();
