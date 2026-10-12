@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import { parseBearerToken } from "../../src/http/utils/bearer";
+import {
+  canForceRefreshModelsRegistry,
+  shouldForceRefreshModelsRegistry,
+} from "../../src/http/utils/models-refresh";
 import { resolveRequestIdleTimeout } from "../../src/http/utils/request-timeout";
 import {
   modelScopeCandidates,
@@ -21,6 +25,38 @@ describe("bearer parsing", () => {
     expect(parseBearerToken("Token abc")).toBeNull();
     expect(parseBearerToken("Bearer")).toBeNull();
     expect(parseBearerToken("Bearer    ")).toBeNull();
+  });
+});
+
+describe("models registry refresh authorization", () => {
+  test("requires an admin token only for explicit refreshes", () => {
+    expect(
+      shouldForceRefreshModelsRegistry(
+        new URL("https://kleis.example/api.json")
+      )
+    ).toBe(false);
+    expect(
+      shouldForceRefreshModelsRegistry(
+        new URL("https://kleis.example/api.json?refresh=1")
+      )
+    ).toBe(true);
+    expect(
+      shouldForceRefreshModelsRegistry(
+        new URL("https://kleis.example/api/token/api.json?refresh=TRUE")
+      )
+    ).toBe(true);
+    expect(canForceRefreshModelsRegistry(undefined, "admin-secret")).toBe(
+      false
+    );
+    expect(canForceRefreshModelsRegistry("Bearer wrong", "admin-secret")).toBe(
+      false
+    );
+    expect(
+      canForceRefreshModelsRegistry("Bearer admin-secret", undefined)
+    ).toBe(false);
+    expect(
+      canForceRefreshModelsRegistry("Bearer admin-secret", "admin-secret")
+    ).toBe(true);
   });
 });
 
@@ -115,5 +151,17 @@ describe("request idle timeouts", () => {
     expect(resolveRequestIdleTimeout("/admin")).toBeNull();
     expect(resolveRequestIdleTimeout("/api.json")).toBeNull();
     expect(resolveRequestIdleTimeout("/openai/v2/responses")).toBeNull();
+  });
+
+  test("keeps headless Codex OAuth completion open for its bounded device poll", () => {
+    expect(
+      resolveRequestIdleTimeout("/admin/accounts/codex/oauth/complete")
+    ).toBe(0);
+    expect(
+      resolveRequestIdleTimeout("/admin/accounts/claude/oauth/complete")
+    ).toBeNull();
+    expect(
+      resolveRequestIdleTimeout("/admin/accounts/codex/oauth/start")
+    ).toBeNull();
   });
 });

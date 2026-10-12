@@ -4,7 +4,7 @@ import {
   accountUsageForId,
   activeKeysWithModelsUrl,
   api,
-  cacheHitRate,
+  cacheReadRate,
   cancelOAuthFlow,
   completeOAuth,
   copyToClipboard,
@@ -770,8 +770,8 @@ function dashDeltaHtml(value, inverted) {
 }
 
 function renderDashKpis(m, pm) {
-  const cr = cacheHitRate(m.inputTokens, m.cacheReadTokens);
-  const prevCr = cacheHitRate(pm.inputTokens, pm.cacheReadTokens);
+  const cr = cacheReadRate(m.inputTotalTokens, m.cacheReadTokens);
+  const prevCr = cacheReadRate(pm.inputTotalTokens, pm.cacheReadTokens);
 
   const kpis = [
     {
@@ -793,9 +793,9 @@ function renderDashKpis(m, pm) {
       accent: "var(--amber)",
     },
     {
-      label: "cache hit",
-      value: `${cr}%`,
-      delta: dashDelta(cr, prevCr),
+      label: "cached input",
+      value: cr === null ? "-" : `${cr}%`,
+      delta: cr === null || prevCr === null ? null : dashDelta(cr, prevCr),
       accent: "var(--amber)",
     },
     {
@@ -919,7 +919,7 @@ function renderProviderBreakdown(providers, totalMetrics) {
       : 0;
     const barPct = pct > 0 ? Math.max(pct, 2) : 0;
     const tokTotal = pm.totalTokens;
-    const cr = cacheHitRate(pm.inputTokens, pm.cacheReadTokens);
+    const cr = cacheReadRate(pm.inputTotalTokens, pm.cacheReadTokens);
     html += `<div class="dash-provider-row">
       <div class="dash-provider-info">
         <span class="badge badge-${p.provider}">${p.provider}</span>
@@ -930,7 +930,7 @@ function renderProviderBreakdown(providers, totalMetrics) {
       </div>
       <span class="dash-provider-stat">${formatCount(pm.requestCount)} reqs</span>
       <span class="dash-provider-stat">${formatCompact(tokTotal)} tok</span>
-      <span class="dash-provider-stat">${cr}% cache</span>
+      <span class="dash-provider-stat">${cr === null ? "-" : `${cr}%`} cached input</span>
     </div>`;
   }
   html += "</div>";

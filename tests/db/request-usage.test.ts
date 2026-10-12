@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Database } from "../../src/db";
+import { getDashboardUsage } from "../../src/db/repositories/dashboard-usage";
 import {
   listApiKeyUsageSummaries,
   recordRequestUsage,
@@ -109,5 +110,45 @@ describe("request usage token accounting", () => {
       reasoningTokens: 0,
       totalTokens: 22,
     });
+  });
+
+  test("groups minute rows before applying the dashboard chart limit", async () => {
+    const anchor = Date.parse("2026-09-25T12:00:00Z");
+    await database.insert(requestUsageBuckets).values(
+      Array.from({ length: 240 }, (_, index) => ({
+        bucketStart: anchor - index * 60_000,
+        apiKeyId: "chart-key",
+        providerAccountId: "codex-account",
+        provider: "codex" as const,
+        endpoint: "responses",
+        model: "gpt-6-sol",
+        requestCount: 1,
+        successCount: 1,
+        inputTokens: 2,
+        cacheReadTokens: 3,
+        lastRequestAt: anchor - index * 60_000,
+      }))
+    );
+
+    const dashboard = await getDashboardUsage(
+      database,
+      anchor - 86_400_000,
+      86_400_000
+    );
+
+    expect(dashboard.bucketSizeMs).toBe(900_000);
+    expect(dashboard.buckets).toHaveLength(17);
+    expect(
+      dashboard.buckets.every(
+        (bucket) => bucket.bucketStart % dashboard.bucketSizeMs === 0
+      )
+    ).toBe(true);
+    expect(dashboard.totals.requestCount).toBe(240);
+    expect(
+      dashboard.buckets.reduce((sum, bucket) => sum + bucket.requestCount, 0)
+    ).toBe(240);
+    expect(
+      dashboard.buckets.reduce((sum, bucket) => sum + bucket.cacheReadTokens, 0)
+    ).toBe(720);
   });
 });
