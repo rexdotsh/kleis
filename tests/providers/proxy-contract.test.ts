@@ -2874,6 +2874,212 @@ describe("proxy contract: claude", () => {
     expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_Shell");
   });
 
+  test("keeps the Claude Messages OAuth endpoint fixed despite caller query flags", () => {
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL(
+        "https://kleis.local/v1/messages?beta=false&beta=false&trace=1"
+      ),
+      headers: new Headers(),
+      bodyText: "{}",
+      bodyJson: {},
+      accessToken: "claude-token",
+      metadata: null,
+    });
+    const upstream = new URL(result.upstreamUrl);
+    expect(upstream.origin).toBe("https://api.anthropic.com");
+    expect(upstream.pathname).toBe("/v1/messages");
+    expect(upstream.searchParams.getAll("beta")).toEqual(["true"]);
+    expect(upstream.searchParams.get("trace")).toBe("1");
+  });
+
+  test("adds the OAuth identity without a system field and avoids duplicate identity", () => {
+    const makeBody = (bodyJson: Record<string, unknown>) =>
+      JSON.parse(
+        prepareClaudeProxyRequest({
+          requestUrl: new URL("https://kleis.local/v1/messages"),
+          headers: new Headers(),
+          bodyText: JSON.stringify(bodyJson),
+          bodyJson,
+          accessToken: "claude-token",
+          metadata: null,
+        }).bodyText
+      ) as { system: Array<{ type: string; text: string }> };
+
+    expect(makeBody({ messages: [] }).system).toEqual([
+      { type: "text", text: CLAUDE_SYSTEM_IDENTITY },
+    ]);
+    expect(makeBody({ system: null, messages: [] }).system).toEqual([
+      { type: "text", text: CLAUDE_SYSTEM_IDENTITY },
+    ]);
+    expect(makeBody({ system: CLAUDE_SYSTEM_IDENTITY }).system).toEqual([
+      { type: "text", text: CLAUDE_SYSTEM_IDENTITY },
+    ]);
+    expect(
+      makeBody({
+        system: [
+          { type: "text", text: CLAUDE_SYSTEM_IDENTITY },
+          { type: "text", text: "Custom system prompt" },
+        ],
+      }).system
+    ).toEqual([
+      { type: "text", text: CLAUDE_SYSTEM_IDENTITY },
+      { type: "text", text: "Custom system prompt" },
+    ]);
+  });
+
+  test("round-trips colliding and already-prefixed tool names", async () => {
+    const bodyJson = {
+      tools: ["Shell", "shell", "mcp_Shell"].map((name) => ({ name })),
+      tool_choice: { type: "tool", name: "shell" },
+      messages: [
+        {
+          role: "assistant",
+          content: [
+            { type: "tool_use", name: "Shell", id: "tool-1", input: {} },
+            { type: "tool_use", name: "shell", id: "tool-2", input: {} },
+            { type: "tool_use", name: "mcp_Shell", id: "tool-3", input: {} },
+          ],
+        },
+      ],
+    };
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+    const transformed = JSON.parse(result.bodyText) as {
+      tools: Array<{ name: string }>;
+      tool_choice: { name: string };
+      messages: Array<{ content: Array<{ name: string }> }>;
+    };
+    const names = transformed.tools.map((tool) => tool.name);
+    expect(new Set(names).size).toBe(3);
+    expect(names[2]).toBe("mcp_Shell");
+    expect(transformed.tool_choice.name).toBe(names[1]);
+    expect(transformed.messages[0]?.content.map((block) => block.name)).toEqual(
+      names
+    );
+
+    const jsonResponse = await result.transformResponse(
+      Response.json({
+        content: names.map((name) => ({
+          type: "tool_use",
+          name,
+          input: { value: { type: "tool_use", name: "mcp_Shell" } },
+        })),
+      })
+    );
+    const restored = (await jsonResponse.json()) as {
+      content: Array<{ name: string; input: { value: { name: string } } }>;
+    };
+    expect(restored.content.map((block) => block.name)).toEqual([
+      "Shell",
+      "shell",
+      "mcp_Shell",
+    ]);
+    expect(restored.content[0]?.input.value.name).toBe("mcp_Shell");
+
+    const stream = createSseResponse(
+      names.map((name) => ({
+        type: "content_block_start",
+        content_block: { type: "tool_use", name, id: "tool-4", input: {} },
+      }))
+    );
+    const response = await result.transformResponse(stream);
+    expect(
+      (await response.text()).match(/"name":"(?:Shell|shell|mcp_Shell)"/gu)
+    ).toEqual(['"name":"Shell"', '"name":"shell"', '"name":"mcp_Shell"']);
+  });
+
+  test("keeps prefixed tool names within the Anthropic length limit", async () => {
+    const longLower = "a".repeat(70);
+    const longUpper = `A${"a".repeat(69)}`;
+    const bodyJson = {
+      tools: [{ name: longLower }, { name: longUpper }],
+    };
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+    const names = (
+      JSON.parse(result.bodyText) as { tools: Array<{ name: string }> }
+    ).tools.map((tool) => tool.name);
+    expect(names).toEqual([
+      `mcp_A${"a".repeat(59)}`,
+      `mcp_A${"a".repeat(57)}_2`,
+    ]);
+
+    const response = await result.transformResponse(
+      Response.json({
+        content: names.map((name) => ({ type: "tool_use", name, input: {} })),
+      })
+    );
+    const restored = (await response.json()) as {
+      content: Array<{ name: string }>;
+    };
+    expect(restored.content.map((block) => block.name)).toEqual([
+      longLower,
+      longUpper,
+    ]);
+  });
+
+  test("preserves Anthropic server tools and their tool choice names", () => {
+    const bodyJson = {
+      tools: [
+        { type: "web_search_20250305", name: "web_search", max_uses: 2 },
+        { type: "custom", name: "browser", input_schema: { type: "object" } },
+        { name: "shell", input_schema: { type: "object" } },
+      ],
+      tool_choice: { type: "tool", name: "web_search" },
+    };
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(bodyJson),
+      bodyJson,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+    const transformed = JSON.parse(result.bodyText) as {
+      tools: Array<{ name: string }>;
+      tool_choice: { name: string };
+    };
+    expect(transformed.tools.map((tool) => tool.name)).toEqual([
+      "web_search",
+      "mcp_Browser",
+      "mcp_Shell",
+    ]);
+    expect(transformed.tool_choice.name).toBe("web_search");
+  });
+
+  test("leaves unknown SSE events and partial tool JSON untouched", async () => {
+    const result = prepareClaudeUsageRequest();
+    const original =
+      'event: future_event\ndata: { "type": "future_event", "payload": "safe" }\n\n' +
+      'event: future_event\ndata: {"type":"future_event","payload":{"type":"tool_use","name":"mcp_shell"}}\n\n' +
+      'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"mcp_shell"}}\n\n' +
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"name\\":\\"mcp_shell\\""}}\n\n';
+    const response = await result.transformResponse(
+      new Response(original, {
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+
+    expect(await response.text()).toBe(
+      original.replace(
+        '"content_block":{"type":"tool_use","name":"mcp_shell"}',
+        '"content_block":{"type":"tool_use","name":"shell"}'
+      )
+    );
+  });
+
   test("rewrites repo path and directories in non-OpenCode Claude system prompts", () => {
     const requestBody = {
       system:
