@@ -5,6 +5,8 @@ const serveAdminIndex = serveStatic({
   path: "./public/admin/index.html",
   onFound: (_path, context) => {
     context.header("Cache-Control", "no-store");
+    context.header("Content-Security-Policy", "frame-ancestors 'none'");
+    context.header("X-Frame-Options", "DENY");
   },
 });
 
