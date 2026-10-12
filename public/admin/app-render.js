@@ -294,7 +294,15 @@ function accountCardHtml(account) {
 
   const usageParts = usageMetaParts(usage, { windowLabel });
 
-  const meta = metadataHtml(account.metadata);
+  const meta = metadataHtml(
+    Object.fromEntries(
+      Object.entries(account.metadata ?? {}).filter(
+        ([key, value]) =>
+          !(key === "chatgptAccountId" && value === account.accountId) &&
+          !(key === "email" && value === name)
+      )
+    )
+  );
 
   return `<div class="card${disabled ? " card-disabled" : ""}" data-account-id="${account.id}" role="group" tabindex="0" aria-label="Open usage details for ${escapeHtml(name)}">
     <div class="card-top">
@@ -930,9 +938,11 @@ function renderProviderBreakdown(providers, totalMetrics) {
       <div class="dash-provider-track">
         <div class="dash-provider-fill" style="width:${barPct}%;background:var(--${p.provider})"></div>
       </div>
-      <span class="dash-provider-stat">${formatCount(pm.requestCount)} reqs</span>
-      <span class="dash-provider-stat">${formatCompact(tokTotal)} tok</span>
-      <span class="dash-provider-stat">${cr === null ? "-" : `${cr}%`} cached input</span>
+      <span class="dash-provider-stats">
+        <span class="dash-provider-stat">${formatCount(pm.requestCount)} reqs</span>
+        <span class="dash-provider-stat">${formatCompact(tokTotal)} tok</span>
+        <span class="dash-provider-stat">${cr === null ? "-" : `${cr}%`} cached input</span>
+      </span>
     </div>`;
   }
   html += "</div>";

@@ -1167,23 +1167,64 @@ select.field-input {
   .shell {
     padding: 0 16px;
   }
+  .header {
+    padding: 14px 0;
+    margin-bottom: 12px;
+  }
   .header-tag {
     display: none;
   }
+  .tabs {
+    margin-bottom: 20px;
+  }
   .tab {
-    padding: 10px 12px;
+    flex: 1;
+    padding: 10px 4px;
     font-size: 11px;
+    text-align: center;
+  }
+  .card {
+    padding: 16px;
   }
   .card-top {
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
   }
   .card-actions {
-    align-self: flex-start;
+    align-self: stretch;
     flex-wrap: wrap;
   }
+  .card-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    min-height: 32px;
+  }
   .card-meta {
-    gap: 8px;
+    gap: 6px 12px;
+  }
+  .card-meta-item {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .provider-status-row {
+    flex-direction: column;
+  }
+  .provider-status-item {
+    display: flex;
+  }
+  .provider-status-item .btn {
+    margin-left: auto;
+  }
+  .section-toolbar {
+    flex-wrap: wrap;
+  }
+  .section-actions {
+    width: 100%;
+  }
+  .section-actions .btn {
+    flex: 1 1 0;
+    justify-content: center;
+    min-height: 32px;
   }
   .limit-label {
     max-width: 88px;
@@ -1427,6 +1468,9 @@ select.field-input {
   border-radius: 3px;
   transition: width 300ms ease;
 }
+.dash-provider-stats {
+  display: contents;
+}
 .dash-provider-stat {
   font-size: 11px;
   color: var(--text-secondary);
@@ -1460,8 +1504,12 @@ select.field-input {
   .dash-provider-grid {
     grid-template-columns: 100px 1fr;
   }
-  .dash-provider-stat {
-    display: none;
+  .dash-provider-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    grid-column: 2;
+    margin-top: 8px;
   }
 }
 @media (max-width: 640px) {
@@ -1470,6 +1518,27 @@ select.field-input {
   }
   .dash-kpi-row {
     grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .dash-kpi-row > .dash-kpi:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+  .dash-kpi,
+  .dash-card {
+    padding: 14px;
+  }
+  .dash-legend {
+    flex-wrap: wrap;
+    gap: 6px 14px;
+  }
+  .dash-legend-item {
+    white-space: nowrap;
+  }
+  .dash-card .detail-table th:first-child,
+  .dash-card .detail-table td:first-child {
+    position: sticky;
+    left: 0;
+    background: var(--bg-surface);
   }
   .dash-controls {
     flex-direction: column;
