@@ -3616,6 +3616,493 @@ describe("proxy contract: claude", () => {
     );
   });
 
+  test("treats CRLF as one line ending when pairs are split across reads", async () => {
+    const outcomes: string[] = [];
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+      onStreamOutcome: (outcome) => outcomes.push(outcome),
+    });
+    const original =
+      'event: message_start\r\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\r\n\r\n' +
+      'event: content_block_start\r\ndata: {"type":"content_block_start","index":0,\r\ndata: "content_block":{"type":"tool_use","name":"mcp_shell"}}\r\n\r\n' +
+      'event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n';
+    const encoder = new TextEncoder();
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    let output: string;
+    try {
+      const response = await result.transformResponse(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller): void {
+              // End every read on a CR so each CRLF pair is split.
+              for (const part of original.split(/(?<=\r)/u)) {
+                controller.enqueue(encoder.encode(part));
+              }
+              controller.close();
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } }
+        )
+      );
+      output = await response.text();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(output).toBe(
+      'event: message_start\r\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\r\n\r\n' +
+        'event: content_block_start\r\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"shell"}}\r\n\r\n' +
+        'event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n'
+    );
+    expect(warnings).toEqual([]);
+    expect(outcomes).toEqual(["completed"]);
+  });
+
+  test("rewrites CR-only tool events while leaving partial tool JSON untouched", async () => {
+    const outcomes: string[] = [];
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+      onStreamOutcome: (outcome) => outcomes.push(outcome),
+    });
+    const original =
+      'event: message_start\rdata: {"type":"message_start","message":{}}\r\r' +
+      'event: content_block_start\rdata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_shell"}}\r\r' +
+      'event: content_block_delta\rdata: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\\"name\\":\\"mcp_shell\\""}}\r\r' +
+      'event: message_stop\rdata: {"type":"message_stop"}\r\r';
+    const response = await result.transformResponse(
+      new Response(original, {
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+
+    expect(await response.text()).toBe(
+      original.replace(
+        '"content_block":{"type":"tool_use","name":"mcp_shell"}',
+        '"content_block":{"type":"tool_use","name":"shell"}'
+      )
+    );
+    expect(outcomes).toEqual(["completed"]);
+  });
+
+  test("accepts bare data field lines in Claude SSE events", async () => {
+    const result = prepareClaudeUsageRequest();
+    const response = await result.transformResponse(
+      new Response(
+        'event: content_block_start\ndata\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_shell"}}\n\n',
+        { headers: { "content-type": "text/event-stream" } }
+      )
+    );
+
+    expect(await response.text()).toBe(
+      'event: content_block_start\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\n\n'
+    );
+  });
+
+  test("preserves incomplete EOF for client recovery and records partial usage", async () => {
+    const outcomes: string[] = [];
+    const capture = createUsageCapture();
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+      onTokenUsage: capture.onTokenUsage,
+      onStreamOutcome: (outcome) => outcomes.push(outcome),
+    });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    let output: string;
+    try {
+      output = await (
+        await result.transformResponse(
+          createSseResponse([
+            {
+              type: "message_start",
+              message: { usage: { input_tokens: 10, output_tokens: 1 } },
+            },
+            { type: "message_delta", usage: { output_tokens: 4 } },
+          ])
+        )
+      ).text();
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(output).not.toContain("event: error\n");
+    expect(output).toContain('"type":"message_delta"');
+    expect(output).not.toContain('"type":"message_stop"');
+    expect(warnings.join("\n")).toContain("claude_sse_missing_message_stop");
+    expect(outcomes).toEqual(["failed"]);
+    expect(capture.read()).toEqual({
+      inputTokens: 10,
+      outputTokens: 4,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  test("flushes partial usage and outcome once when a Claude stream is cancelled", async () => {
+    const outcomes: string[] = [];
+    const usages: TokenUsage[] = [];
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+      onTokenUsage: (usage) => usages.push({ ...usage }),
+      onStreamOutcome: (outcome) => outcomes.push(outcome),
+    });
+    const response = await result.transformResponse(
+      createSseResponse([
+        {
+          type: "message_start",
+          message: { usage: { input_tokens: 8, output_tokens: 2 } },
+        },
+      ])
+    );
+    const reader = response.body?.getReader();
+    await reader?.read();
+    await reader?.cancel();
+    expect(outcomes).toEqual(["cancelled"]);
+    expect(usages).toEqual([
+      {
+        inputTokens: 8,
+        outputTokens: 2,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    ]);
+  });
+
+  test("reports usage and outcome once when the upstream Claude stream fails", async () => {
+    const outcomes: string[] = [];
+    const usages: TokenUsage[] = [];
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+      onTokenUsage: (usage) => usages.push({ ...usage }),
+      onStreamOutcome: (outcome) => outcomes.push(outcome),
+    });
+    let upstream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const response = await result.transformResponse(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller): void {
+            upstream = controller;
+            controller.enqueue(
+              new TextEncoder().encode(
+                'data: {"type":"message_start","message":{"usage":{"input_tokens":5}}}\n\n'
+              )
+            );
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } }
+      )
+    );
+    const reader = response.body?.getReader();
+    expect((await reader?.read())?.done).toBe(false);
+    upstream?.error(new Error("upstream interrupted"));
+    const originalWarn = console.warn;
+    console.warn = (): void => undefined;
+    try {
+      await expect(reader?.read()).rejects.toThrow("upstream interrupted");
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(outcomes).toEqual(["failed"]);
+    expect(usages).toEqual([
+      {
+        inputTokens: 5,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
+    ]);
+  });
+
+  test("treats message_stop as the single successful stream terminal", async () => {
+    const outcomes: string[] = [];
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+      onStreamOutcome: (outcome) => outcomes.push(outcome),
+    });
+    let cancelledUpstream = false;
+    const response = await result.transformResponse(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller): void {
+            controller.enqueue(
+              new TextEncoder().encode(
+                'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":1}}}\n\n' +
+                  'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+              )
+            );
+          },
+          cancel(): void {
+            cancelledUpstream = true;
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } }
+      )
+    );
+    expect(await response.text()).not.toContain("event: error");
+    expect(outcomes).toEqual(["completed"]);
+    expect(cancelledUpstream).toBe(true);
+  });
+
+  test("keeps an upstream SSE error without adding a second terminal error", async () => {
+    const outcomes: string[] = [];
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+      onStreamOutcome: (outcome) => outcomes.push(outcome),
+    });
+    const originalWarn = console.warn;
+    console.warn = (): void => undefined;
+    try {
+      const response = await result.transformResponse(
+        createSseResponse([
+          { type: "message_start", message: { usage: { input_tokens: 1 } } },
+          { type: "error", error: { type: "overloaded_error" } },
+        ])
+      );
+      expect((await response.text()).match(/"type":"error"/gu)).toHaveLength(1);
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(outcomes).toEqual(["overloaded"]);
+  });
+
+  test("classifies in-stream rate limits and rejects a stop without a start", async () => {
+    const outcomes: string[] = [];
+    const prepare = () =>
+      prepareClaudeProxyRequest({
+        requestUrl: new URL("https://kleis.local/v1/messages"),
+        headers: new Headers(),
+        bodyText: '{"stream":true}',
+        bodyJson: { stream: true },
+        accessToken: "claude-token",
+        metadata: null,
+        onStreamOutcome: (outcome) => outcomes.push(outcome),
+      });
+    const originalWarn = console.warn;
+    console.warn = (): void => undefined;
+    try {
+      const limited = await prepare().transformResponse(
+        createSseResponse([
+          { type: "message_start", message: {} },
+          { type: "error", error: { type: "rate_limit_error" } },
+        ])
+      );
+      expect(await limited.text()).toContain('"type":"rate_limit_error"');
+      const missingStart = await prepare().transformResponse(
+        createSseResponse([{ type: "message_stop" }])
+      );
+      const output = await missingStart.text();
+      expect(output).not.toContain('"type":"message_stop"');
+      expect(output).toContain("event: error");
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(outcomes).toEqual(["rate_limited", "failed"]);
+  });
+
+  test("flags a malformed Claude SSE event without logging its contents", async () => {
+    const outcomes: string[] = [];
+    const secret = "private tool input";
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+      onStreamOutcome: (outcome) => outcomes.push(outcome),
+    });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const response = await result.transformResponse(
+        new Response(
+          `event: message_start\ndata: {"type":"message_start"}\n\n` +
+            `event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"${secret}"}\n\n` +
+            `event: message_stop\ndata: {"type":"message_stop"}\n\n`,
+          { headers: { "content-type": "text/event-stream" } }
+        )
+      );
+      expect(await response.text()).toContain(secret);
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(outcomes).toEqual(["failed"]);
+    expect(warnings.join("\n")).toContain("claude_sse_invalid_event");
+    expect(warnings.join("\n")).not.toContain(secret);
+  });
+
+  test("completes a stream whose text deltas and message_stop skip parsing", async () => {
+    const outcomes: string[] = [];
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+      onStreamOutcome: (outcome) => outcomes.push(outcome),
+    });
+    const stream =
+      'event: message_start\ndata: {"type":"message_start","message":{}}\n\n' +
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n' +
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+    const response = await result.transformResponse(
+      new Response(stream, {
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+
+    expect(await response.text()).toBe(stream);
+    expect(outcomes).toEqual(["completed"]);
+  });
+
+  test("keeps split UTF-8 and tool JSON deltas intact", async () => {
+    const result = prepareClaudeUsageRequest();
+    const original =
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"🙂"}}\n\n';
+    const encoded = new TextEncoder().encode(original);
+    const index = encoded.indexOf(0xf0);
+    const response = await result.transformResponse(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller): void {
+            controller.enqueue(encoded.slice(0, index + 2));
+            controller.enqueue(encoded.slice(index + 2));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } }
+      )
+    );
+    expect(await response.text()).toBe(original);
+  });
+
+  test("classifies invalid Claude SSE UTF-8 without logging the frame", async () => {
+    const outcomes: string[] = [];
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+      onStreamOutcome: (outcome) => outcomes.push(outcome),
+    });
+    const encoder = new TextEncoder();
+    const prefix = encoder.encode(
+      'event: message_start\ndata: {"type":"message_start"}\n\n' +
+        'event: content_block_delta\ndata: {"type":"content_block_delta","text":"'
+    );
+    const suffix = encoder.encode(
+      '"}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n'
+    );
+    const bytes = new Uint8Array(prefix.length + 2 + suffix.length);
+    bytes.set(prefix);
+    bytes.set([0xc3, 0x28], prefix.length);
+    bytes.set(suffix, prefix.length + 2);
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    try {
+      const response = await result.transformResponse(
+        new Response(bytes, {
+          headers: { "content-type": "text/event-stream" },
+        })
+      );
+      await response.text();
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(outcomes).toEqual(["failed"]);
+    expect(warnings.join("\n")).toContain("claude_sse_invalid_frame");
+    expect(warnings.join("\n")).not.toContain("content_block_delta");
+  });
+
+  test("bounds incomplete Claude SSE events and cancels the upstream reader", async () => {
+    let cancelled = false;
+    const outcomes: string[] = [];
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: '{"stream":true}',
+      bodyJson: { stream: true },
+      accessToken: "claude-token",
+      metadata: null,
+      onStreamOutcome: (outcome) => outcomes.push(outcome),
+    });
+    const response = await result.transformResponse(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller): void {
+            controller.enqueue(
+              new TextEncoder().encode(`data: ${"x".repeat(4 * 1024 * 1024)}`)
+            );
+          },
+          cancel(): void {
+            cancelled = true;
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } }
+      )
+    );
+    const originalWarn = console.warn;
+    console.warn = (): void => undefined;
+    try {
+      await expect(response.text()).rejects.toThrow("buffer limit");
+    } finally {
+      console.warn = originalWarn;
+    }
+    await waitFor(() => cancelled);
+    expect(outcomes).toEqual(["failed"]);
+  });
+
   const claudeStreamUsageCases = [
     {
       name: "extracts usage from claude streaming message events",

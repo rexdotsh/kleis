@@ -11,7 +11,10 @@ import {
   getRoutableProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../domain/providers/provider-service";
-import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
+import {
+  type ClaudeStreamOutcome,
+  prepareClaudeProxyRequest,
+} from "../../providers/proxies/claude-proxy";
 import {
   deriveCodexSessionId,
   prepareCodexProxyRequest,
@@ -40,6 +43,15 @@ const proxyErrorResponse = (message: string, type = "proxy_error") => ({
     type,
   },
 });
+
+// 499 marks a client-closed request; 529 is Anthropic's overloaded status.
+const CLAUDE_STREAM_OUTCOME_STATUS: Record<ClaudeStreamOutcome, number> = {
+  completed: 200,
+  cancelled: 499,
+  rate_limited: 429,
+  overloaded: 529,
+  failed: 502,
+};
 
 const CODEX_SSE_HEADER_TIMEOUT_MS = 5 * 60 * 1000;
 const CODEX_WEBSOCKET_ENABLED =
@@ -397,6 +409,9 @@ const proxyRequest = async (
       const baseHeaders = new Headers(headers);
       const sendAttempt = async (attemptAccount: ProviderAccountRecord) => {
         const attemptHeaders = new Headers(baseHeaders);
+        // A streaming 200 is recorded when the stream ends, with a status
+        // derived from its terminal outcome instead of the response status.
+        let recordStreamingOutcome = false;
         const claudeProxy = prepareClaudeProxyRequest({
           requestUrl,
           headers: attemptHeaders,
@@ -408,16 +423,29 @@ const proxyRequest = async (
               ? attemptAccount.metadata
               : null,
           onTokenUsage: usageRecorder.onTokenUsage,
+          onStreamOutcome: (outcome) => {
+            if (recordStreamingOutcome) {
+              usageRecorder.recordFinal(CLAUDE_STREAM_OUTCOME_STATUS[outcome]);
+            }
+          },
         });
+        const response = await fetchProxyUpstream({
+          url: claudeProxy.upstreamUrl,
+          method: context.req.method,
+          headers: attemptHeaders,
+          body: claudeProxy.bodyText,
+          signal: context.req.raw.signal,
+          useCodexSseHeaderTimeout: false,
+        });
+        recordStreamingOutcome =
+          response.status === 200 &&
+          response.body !== null &&
+          (response.headers.get("content-type") ?? "")
+            .toLowerCase()
+            .includes("text/event-stream");
         return {
-          response: await fetchProxyUpstream({
-            url: claudeProxy.upstreamUrl,
-            method: context.req.method,
-            headers: attemptHeaders,
-            body: claudeProxy.bodyText,
-            signal: context.req.raw.signal,
-            useCodexSseHeaderTimeout: false,
-          }),
+          response,
+          recordStreamingOutcome,
           transformResponse: claudeProxy.transformResponse,
         };
       };
@@ -480,7 +508,9 @@ const proxyRequest = async (
         usageRecorder.recordImmediate(500);
         throw error;
       }
-      usageRecorder.recordFinal(attempt.response.status);
+      if (!attempt.recordStreamingOutcome) {
+        usageRecorder.recordFinal(attempt.response.status);
+      }
       return responseToClient;
     }
 

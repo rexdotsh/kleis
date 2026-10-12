@@ -17,6 +17,8 @@ import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
+const MAX_CLAUDE_SSE_EVENT_BYTES = 4 * 1024 * 1024;
+
 // Anthropic OAuth sessions reject the feedback repo path used in OpenCode's
 // prompt URL and the opening `<directories>` wrapper emitted by OpenCode's
 // system prompt assembly. Apply the smallest known working rewrite to all
@@ -347,26 +349,59 @@ const buildUpstreamUrl = (search: string): string => {
   return upstream.toString();
 };
 
+const isSseLineEndingChar = (char: string | undefined): boolean =>
+  char === "\r" || char === "\n";
+
+// An event ends at a blank line: two line endings, where a CRLF is one line
+// ending, not two. The single-CR and single-LF cases must not match the halves
+// of a CRLF pair. The pair is matched only at the start of each CR/LF run (the
+// scan backs up to the start of a run that `startIndex` falls inside), which
+// keeps a lookbehind-heavy regex off large event bodies. Before the end of the
+// stream, a boundary whose last character is a CR at the end of the buffer is
+// not accepted: the next read may start with its LF.
 const findSseEventBoundary = (
-  buffer: string
+  buffer: string,
+  startIndex = 0,
+  endOfStream = true
 ): { index: number; length: number } | null => {
-  const match = /\r\n\r\n|\n\n|\n\r\n|\r\n\n/u.exec(buffer);
-  if (!match || match.index === undefined) {
-    return null;
+  let scanFrom = startIndex;
+  while (scanFrom > 0 && isSseLineEndingChar(buffer[scanFrom - 1])) {
+    scanFrom--;
   }
 
-  return {
-    index: match.index,
-    length: match[0].length,
-  };
+  const lineEndingRuns = /[\r\n]+/gu;
+  lineEndingRuns.lastIndex = scanFrom;
+  for (
+    let run = lineEndingRuns.exec(buffer);
+    run;
+    run = lineEndingRuns.exec(buffer)
+  ) {
+    const pair = /^(?:\r\n|\r(?!\n)|(?<!\r)\n){2}/u.exec(run[0]);
+    if (!pair) {
+      continue;
+    }
+
+    const length = pair[0].length;
+    if (
+      !endOfStream &&
+      run.index + length === buffer.length &&
+      pair[0].endsWith("\r")
+    ) {
+      return null;
+    }
+
+    return { index: run.index, length };
+  }
+
+  return null;
 };
 
 const parseSseEventData = (chunk: string): string | null => {
   const dataLines = chunk
-    .replace(/\r\n/gu, "\n")
+    .replace(/\r\n|\r/gu, "\n")
     .split("\n")
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart());
+    .filter((line) => line === "data" || line.startsWith("data:"))
+    .map((line) => (line === "data" ? "" : line.slice(5).trimStart()));
   if (!dataLines.length) {
     return null;
   }
@@ -410,23 +445,35 @@ const readClaudeErrorLogFields = (
   errorStatus: readClaudeErrorField(payload, "status"),
 });
 
+// Replace all data lines of a complete event with one line carrying `payload`,
+// keeping other fields in place and the event's own line endings. Truncated
+// events (no terminating blank line) are forwarded unchanged.
 const rewriteSseDataLines = (chunk: string, payload: string): string => {
   const boundary = findSseEventBoundary(chunk);
-  const eventTrailer =
-    boundary && boundary.index + boundary.length === chunk.length
-      ? chunk.slice(boundary.index)
-      : "";
-  const chunkBody = eventTrailer ? chunk.slice(0, -eventTrailer.length) : chunk;
-  const rewrittenBody = chunkBody.replace(
-    /((?:^|\r\n|\n))(?:data:.*(?:\r\n|\n)?)+$/u,
-    (_, separator: string) => `${separator}data: ${payload}`
-  );
-
-  if (rewrittenBody === chunkBody) {
+  if (!boundary || boundary.index + boundary.length !== chunk.length) {
     return chunk;
   }
 
-  return `${rewrittenBody}${eventTrailer}`;
+  const body = chunk.slice(0, boundary.index);
+  const trailer = chunk.slice(boundary.index);
+  const newline =
+    /\r\n|\r|\n/u.exec(body)?.[0] ??
+    /^(?:\r\n|\r|\n)/u.exec(trailer)?.[0] ??
+    "\n";
+  const lines: string[] = [];
+  let replaced = false;
+  for (const line of body.split(/\r\n|\r|\n/u)) {
+    if (line === "data" || line.startsWith("data:")) {
+      if (!replaced) {
+        lines.push(`data: ${payload}`);
+        replaced = true;
+      }
+      continue;
+    }
+    lines.push(line);
+  }
+
+  return replaced ? `${lines.join(newline)}${trailer}` : chunk;
 };
 
 // Events that never carry usage, errors or tool names. Text deltas make up
@@ -456,7 +503,8 @@ const transformSseEventChunk = (
   chunk: string,
   toolNames: ClaudeToolNames,
   readStreamUsage: (payload: unknown) => void,
-  readStreamAnomaly: (payload: unknown) => void
+  readStreamAnomaly: (payload: unknown) => void,
+  onInvalidEvent: () => void
 ): string => {
   const eventName = readSseEventName(chunk);
   if (
@@ -464,6 +512,10 @@ const transformSseEventChunk = (
     CLAUDE_PASSTHROUGH_EVENTS.has(eventName) &&
     !chunk.includes('"tool_use"')
   ) {
+    // message_stop carries nothing else, but it still ends the stream.
+    if (eventName === "message_stop") {
+      readStreamAnomaly({ type: "message_stop" });
+    }
     return chunk;
   }
 
@@ -472,23 +524,46 @@ const transformSseEventChunk = (
     return chunk;
   }
 
+  let jsonBody: unknown;
   try {
-    const jsonBody = JSON.parse(payload) as unknown;
-    readStreamUsage(jsonBody);
-    readStreamAnomaly(jsonBody);
-    const transformed = transformClaudeResponsePayload(jsonBody, toolNames);
-    return transformed === jsonBody
-      ? chunk
-      : rewriteSseDataLines(chunk, JSON.stringify(transformed));
+    jsonBody = JSON.parse(payload) as unknown;
   } catch {
+    onInvalidEvent();
     return chunk;
   }
+  if (!isObjectRecord(jsonBody)) {
+    onInvalidEvent();
+    return chunk;
+  }
+
+  readStreamUsage(jsonBody);
+  readStreamAnomaly(jsonBody);
+  const transformed = transformClaudeResponsePayload(jsonBody, toolNames);
+  return transformed === jsonBody
+    ? chunk
+    : rewriteSseDataLines(chunk, JSON.stringify(transformed));
 };
+
+const INVALID_STREAM_ERROR_EVENT = `event: error\ndata: ${JSON.stringify({
+  type: "error",
+  error: {
+    type: "api_error",
+    message: "Claude stream contains invalid events",
+  },
+})}\n\n`;
+
+export type ClaudeStreamOutcome =
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "rate_limited"
+  | "overloaded";
 
 const maybeTransformClaudeStreamResponse = (
   response: Response,
   toolNames: ClaudeToolNames,
-  onTokenUsage?: ((usage: TokenUsage) => void) | null
+  onTokenUsage?: ((usage: TokenUsage) => void) | null,
+  onStreamOutcome?: ((outcome: ClaudeStreamOutcome) => void) | null
 ): Response => {
   if (!response.body) {
     return response;
@@ -502,13 +577,21 @@ const maybeTransformClaudeStreamResponse = (
   const reader = response.body.getReader();
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  const validationDecoder = new TextDecoder("utf-8", { fatal: true });
   const startedAt = Date.now();
   let buffer = "";
+  let bufferedBytes = 0;
   let bytes = 0;
   let chunks = 0;
   let lastChunkAt = startedAt;
   let lastWriteAt = startedAt;
   let closed = false;
+  let sawMessageStart = false;
+  let sawMessageStop = false;
+  let sawError = false;
+  let errorOutcome: ClaudeStreamOutcome = "failed";
+  let sawMalformedEvent = false;
+  let utf8ValidationEnabled = true;
   let clearKeepAlive: (() => void) | null = null;
 
   const logStreamAnomaly = (
@@ -543,6 +626,18 @@ const maybeTransformClaudeStreamResponse = (
     }
     usageReported = true;
     onTokenUsage?.({ ...streamUsage });
+  };
+
+  // Usage is reported before the outcome so the outcome's request record can
+  // include the observed tokens.
+  const finishStream = (outcome: ClaudeStreamOutcome): void => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    clearKeepAlive?.();
+    reportStreamUsage();
+    onStreamOutcome?.(outcome);
   };
 
   const readOptionalUsageToken = (
@@ -580,6 +675,7 @@ const maybeTransformClaudeStreamResponse = (
 
       sawStreamUsage = true;
       streamUsage.inputTokens = usage.inputTokens;
+      streamUsage.outputTokens = usage.outputTokens;
       streamUsage.cacheReadTokens = usage.cacheReadTokens;
       streamUsage.cacheWriteTokens = usage.cacheWriteTokens;
       return;
@@ -625,7 +721,24 @@ const maybeTransformClaudeStreamResponse = (
       return;
     }
 
+    if (payload.type === "message_start") {
+      sawMessageStart = true;
+      return;
+    }
+
+    if (payload.type === "message_stop") {
+      sawMessageStop = true;
+      return;
+    }
+
     if (payload.type === "error") {
+      sawError = true;
+      const error = isObjectRecord(payload.error) ? payload.error : null;
+      if (error?.type === "rate_limit_error") {
+        errorOutcome = "rate_limited";
+      } else if (error?.type === "overloaded_error") {
+        errorOutcome = "overloaded";
+      }
       logStreamAnomaly(
         "claude_sse_error_event",
         readClaudeErrorLogFields(payload)
@@ -641,6 +754,143 @@ const maybeTransformClaudeStreamResponse = (
     if (stopReason === "max_tokens") {
       logStreamAnomaly("claude_sse_max_tokens_stop");
     }
+  };
+
+  const reportInvalidEvent = (): void => {
+    if (sawMalformedEvent) {
+      return;
+    }
+    sawMalformedEvent = true;
+    logStreamAnomaly("claude_sse_invalid_event", {
+      parseCategory: "invalid_json_or_non_object",
+    });
+  };
+
+  const validateUtf8 = (value?: Uint8Array): void => {
+    if (!utf8ValidationEnabled) {
+      return;
+    }
+    try {
+      validationDecoder.decode(value, { stream: value !== undefined });
+    } catch {
+      utf8ValidationEnabled = false;
+      sawMalformedEvent = true;
+      logStreamAnomaly("claude_sse_invalid_frame", {
+        parseCategory: "invalid_utf8",
+      });
+    }
+  };
+
+  const appendText = (text: string): void => {
+    buffer += text;
+    bufferedBytes += encoder.encode(text).byteLength;
+  };
+
+  const assertBufferWithinLimit = (byteLength: number): void => {
+    if (byteLength > MAX_CLAUDE_SSE_EVENT_BYTES) {
+      throw new Error("Claude SSE event exceeds the proxy buffer limit");
+    }
+  };
+
+  // Forward every complete buffered event. Returns "closed" once a terminal
+  // event (message_stop or error) has been forwarded and the stream closed.
+  const drainEvents = (
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    startIndex: number,
+    endOfStream: boolean
+  ): "closed" | "enqueued" | "pending" => {
+    let enqueued = false;
+    let boundary = findSseEventBoundary(buffer, startIndex, endOfStream);
+    while (boundary) {
+      const end = boundary.index + boundary.length;
+      const chunk = buffer.slice(0, end);
+      buffer = buffer.slice(end);
+      const chunkBytes = encoder.encode(chunk);
+      bufferedBytes -= chunkBytes.byteLength;
+      assertBufferWithinLimit(chunkBytes.byteLength);
+
+      const transformed = transformSseEventChunk(
+        chunk,
+        toolNames,
+        readStreamUsage,
+        readStreamAnomaly,
+        reportInvalidEvent
+      );
+      // A message_stop after malformed data, or without a message_start, must
+      // not look like a clean completion to the client.
+      const invalidTerminal =
+        sawMessageStop && (!sawMessageStart || sawMalformedEvent);
+      const outgoing = invalidTerminal
+        ? INVALID_STREAM_ERROR_EVENT
+        : transformed;
+      try {
+        controller.enqueue(
+          outgoing === chunk ? chunkBytes : encoder.encode(outgoing)
+        );
+      } catch (error) {
+        logStreamAnomaly("claude_sse_enqueue_failed", {}, error);
+        throw error;
+      }
+      lastWriteAt = Date.now();
+      enqueued = true;
+
+      if (sawMessageStop || sawError) {
+        finishStream(
+          sawMalformedEvent || (sawMessageStop && !sawMessageStart)
+            ? "failed"
+            : sawError
+              ? errorOutcome
+              : "completed"
+        );
+        reader.cancel().catch(() => undefined);
+        controller.close();
+        return "closed";
+      }
+      boundary = findSseEventBoundary(buffer, 0, endOfStream);
+    }
+
+    return enqueued ? "enqueued" : "pending";
+  };
+
+  const finishAtEof = (
+    controller: ReadableStreamDefaultController<Uint8Array>
+  ): void => {
+    // Any remaining event has no terminating blank line, so SSE clients will
+    // discard it. Forward it anyway and classify the stream as incomplete.
+    const hadTrailingEvent = buffer.trim().length > 0;
+    assertBufferWithinLimit(bufferedBytes);
+    if (buffer) {
+      controller.enqueue(
+        encoder.encode(
+          transformSseEventChunk(
+            buffer,
+            toolNames,
+            readStreamUsage,
+            readStreamAnomaly,
+            reportInvalidEvent
+          )
+        )
+      );
+      lastWriteAt = Date.now();
+      buffer = "";
+      bufferedBytes = 0;
+    }
+    if (hadTrailingEvent) {
+      logStreamAnomaly("claude_sse_truncated_event");
+    }
+
+    const incomplete =
+      !(sawMessageStart && sawMessageStop) ||
+      hadTrailingEvent ||
+      sawMalformedEvent;
+    if (sawMessageStart && !sawError && incomplete) {
+      // Let the client see the incomplete EOF. OpenCode classifies it as an
+      // interrupted stream and can continue from partial output; a fabricated
+      // API error event would bypass that recovery path.
+      logStreamAnomaly("claude_sse_missing_message_stop");
+    }
+    finishStream(sawError ? errorOutcome : incomplete ? "failed" : "completed");
+    controller.close();
   };
 
   const stream = new ReadableStream<Uint8Array>({
@@ -663,25 +913,11 @@ const maybeTransformClaudeStreamResponse = (
               clearKeepAlive?.();
               return;
             }
-            buffer += decoder.decode();
-            if (buffer) {
-              controller.enqueue(
-                encoder.encode(
-                  transformSseEventChunk(
-                    buffer,
-                    toolNames,
-                    readStreamUsage,
-                    readStreamAnomaly
-                  )
-                )
-              );
-              lastWriteAt = Date.now();
-              buffer = "";
+            appendText(decoder.decode());
+            validateUtf8();
+            if (drainEvents(controller, 0, true) !== "closed") {
+              finishAtEof(controller);
             }
-            reportStreamUsage();
-            closed = true;
-            clearKeepAlive?.();
-            controller.close();
             return;
           }
 
@@ -692,33 +928,22 @@ const maybeTransformClaudeStreamResponse = (
           bytes += value.byteLength;
           chunks++;
           lastChunkAt = Date.now();
-          buffer += decoder.decode(value, { stream: true });
+          validateUtf8(value);
+          const previousBufferLength = buffer.length;
+          appendText(decoder.decode(value, { stream: true }));
 
-          let enqueued = false;
-          let boundary = findSseEventBoundary(buffer);
-          while (boundary) {
-            const chunk = buffer.slice(0, boundary.index + boundary.length);
-            buffer = buffer.slice(boundary.index + boundary.length);
-            try {
-              controller.enqueue(
-                encoder.encode(
-                  transformSseEventChunk(
-                    chunk,
-                    toolNames,
-                    readStreamUsage,
-                    readStreamAnomaly
-                  )
-                )
-              );
-              lastWriteAt = Date.now();
-              enqueued = true;
-            } catch (error) {
-              logStreamAnomaly("claude_sse_enqueue_failed", {}, error);
-              throw error;
-            }
-            boundary = findSseEventBoundary(buffer);
+          // A boundary is at most four characters, so one completed by the
+          // new text starts at most three characters before it.
+          const drained = drainEvents(
+            controller,
+            Math.max(0, previousBufferLength - 3),
+            false
+          );
+          if (drained === "closed") {
+            return;
           }
-          if (enqueued) {
+          assertBufferWithinLimit(bufferedBytes);
+          if (drained === "enqueued") {
             return;
           }
         }
@@ -727,17 +952,14 @@ const maybeTransformClaudeStreamResponse = (
           clearKeepAlive?.();
           return;
         }
-        closed = true;
-        clearKeepAlive?.();
-        reportStreamUsage();
+        finishStream("failed");
         logStreamAnomaly("claude_sse_stream_failed", {}, error);
+        reader.cancel(error).catch(() => undefined);
         controller.error(error);
       }
     },
     cancel(reason): Promise<void> {
-      closed = true;
-      clearKeepAlive?.();
-      reportStreamUsage();
+      finishStream("cancelled");
       return reader.cancel(reason);
     },
   });
@@ -795,7 +1017,8 @@ const maybeTransformClaudeJsonResponse = async (
 const transformClaudeResponse = (
   response: Response,
   toolNames: ClaudeToolNames,
-  onTokenUsage?: ((usage: TokenUsage) => void) | null
+  onTokenUsage?: ((usage: TokenUsage) => void) | null,
+  onStreamOutcome?: ((outcome: ClaudeStreamOutcome) => void) | null
 ): Promise<Response> => {
   if (!response.body) {
     return Promise.resolve(response);
@@ -804,7 +1027,12 @@ const transformClaudeResponse = (
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.toLowerCase().includes("text/event-stream")) {
     return Promise.resolve(
-      maybeTransformClaudeStreamResponse(response, toolNames, onTokenUsage)
+      maybeTransformClaudeStreamResponse(
+        response,
+        toolNames,
+        onTokenUsage,
+        onStreamOutcome
+      )
     );
   }
 
@@ -827,6 +1055,8 @@ type ClaudeProxyPreparationInput = {
   accessToken: string;
   metadata: ClaudeAccountMetadata | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
+  // Called once with the terminal outcome of a streaming (SSE) response.
+  onStreamOutcome?: ((outcome: ClaudeStreamOutcome) => void) | null;
 };
 
 type ClaudeProxyPreparationResult = {
@@ -869,6 +1099,11 @@ export const prepareClaudeProxyRequest = (
     upstreamUrl: buildUpstreamUrl(input.requestUrl.search),
     bodyText,
     transformResponse: (response: Response): Promise<Response> =>
-      transformClaudeResponse(response, toolNames, input.onTokenUsage),
+      transformClaudeResponse(
+        response,
+        toolNames,
+        input.onTokenUsage,
+        input.onStreamOutcome
+      ),
   };
 };
