@@ -2861,6 +2861,32 @@ describe("proxy contract: claude", () => {
     ]);
   });
 
+  test("rewrites the Pi docs phrases that trip the Claude OAuth classifier", () => {
+    const requestBody = {
+      system:
+        "- When asked about: themes (docs/themes.md), pi packages (docs/packages.md), MCP servers (docs/mcp.md)\n" +
+        "- When working on pi topics, read the docs and examples, and follow .md cross-references before implementing",
+    };
+
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(requestBody),
+      bodyJson: requestBody,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    const transformed = JSON.parse(result.bodyText) as {
+      system: Array<{ type: string; text: string }>;
+    };
+
+    expect(transformed.system[1]?.text).toBe(
+      "- When asked about: themes (docs/themes.md), packages (docs/packages.md), MCP servers (docs/mcp.md)\n" +
+        "- When working on pi topics, read the docs and examples, and follow cross-references before implementing"
+    );
+  });
+
   test("rewrites the feedback repo path in OpenCode system prompts", () => {
     const requestBody = {
       system:
