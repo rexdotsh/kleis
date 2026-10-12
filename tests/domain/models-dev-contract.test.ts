@@ -250,6 +250,47 @@ describe("models registry contract", () => {
     expect(kleis.models?.["gpt-6-sol"]?.name).toBe("GPT-6 Sol");
   });
 
+  test("hides pro reasoning modes from Codex models like OpenCode's ChatGPT OAuth", () => {
+    const modes = {
+      fast: { provider: { body: { service_tier: "priority" } } },
+      pro: { provider: { body: { reasoning: { mode: "pro" } } } },
+      ultrafast: { provider: { body: { service_tier: "ultrafast" } } },
+    };
+    const registry = buildProxyModelsRegistry({
+      upstreamRegistry: {
+        ...upstreamRegistry,
+        openai: {
+          ...upstreamRegistry.openai,
+          models: {
+            ...upstreamRegistry.openai.models,
+            "gpt-6.1-sol": {
+              id: "gpt-6.1-sol",
+              name: "GPT-6.1 Sol",
+              limit: { context: 1_050_000, input: 922_000, output: 128_000 },
+              experimental: { modes },
+            },
+          },
+        },
+      },
+      baseOrigin: "https://kleis.example/",
+      configuredProviders: ["codex"],
+    });
+    const modeNames = (provider: unknown) =>
+      Object.keys(
+        (
+          provider as {
+            models: Record<
+              string,
+              { experimental?: { modes?: Record<string, unknown> } }
+            >;
+          }
+        ).models["gpt-6.1-sol"]?.experimental?.modes ?? {}
+      );
+
+    expect(modeNames(registry.kleis)).toEqual(["fast", "ultrafast"]);
+    expect(modeNames(registry.openai)).toEqual(["fast", "pro", "ultrafast"]);
+  });
+
   test("follows OpenCode's current OAuth exclusion of retired GPT-5.4 models", () => {
     const registry = buildProxyModelsRegistry({
       upstreamRegistry: {
