@@ -62,6 +62,8 @@ function quotaTimestamp(value) {
   return null;
 }
 
+const hasTraffic = (usage) => normalizeUsage(usage).requestCount > 0;
+
 function failedCount(metrics) {
   return (
     metrics.proxyErrorCount +
@@ -482,7 +484,7 @@ function accountDetailHtml(account) {
       usageFact(accountUsageForId(account.id), state.accountUsageWindowMs),
       accountFact(account),
     ].join("")}</div>
-    <div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>
+    ${hasTraffic(accountUsageForId(account.id)) ? `<div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>` : ""}
     <div class="actions">
       ${needsReauthorization(account) && supportsOAuth ? button("Reauthorize", "reauthorize-account", "btn btn-primary btn-sm") : ""}
       ${button("Refresh token", "refresh-account")}
@@ -528,12 +530,12 @@ function renderAccounts() {
 
   if (!accounts.length) {
     $("#accounts-list").innerHTML =
-      '<div class="empty-state"><p>No accounts connected yet.</p><button class="btn btn-primary" type="button" data-action="go-connect">Connect an account</button></div>';
+      '<div class="empty-state"><p>No accounts connected yet.</p><button class="btn btn-primary btn-sm" type="button" data-action="go-connect">Connect an account</button></div>';
     return;
   }
   if (!matches.length) {
     $("#accounts-list").innerHTML =
-      `<div class="empty-state"><p>No accounts match \u201c${escapeHtml(state.accountFilter.trim())}\u201d.</p></div>`;
+      `<div class="empty-state"><p>No accounts match \u201c${escapeHtml(state.accountFilter.trim())}\u201d.</p><button class="link small" type="button" data-action="clear-filter">Clear filter</button></div>`;
     return;
   }
 
@@ -564,7 +566,11 @@ function renderAccounts() {
     `<div class="row thead t-acc"><span>Account</span><span class="num d">Tightest limit</span><span class="num d">Token expires</span><span class="num">Requests ${escapeHtml(usageWindowLabel(state.accountUsageWindowMs))}</span><span></span></div>${groups}`
   );
   const expanded = state.expandedAccountId;
-  if (expanded && expanded !== state.editingAccountId) {
+  if (
+    expanded &&
+    expanded !== state.editingAccountId &&
+    hasTraffic(accountUsageForId(expanded))
+  ) {
     requestUsageDetail("account", expanded);
   }
 }
@@ -746,9 +752,17 @@ function keyDetailHtml(key) {
   const keyLine = revealed
     ? `<div class="key-line"><code>${escapeHtml(key.key)}</code>${button("Copy", "copy-key")}${button("Hide", "toggle-key")}</div>`
     : "";
+  const snippetOpen = state.openSnippets.has(key.id);
   const snippet =
     active && modelsUrlForKey(key)
-      ? `<div class="snippet"><div class="sh"><h2>Use with OpenCode</h2><div class="right"><button class="link small" type="button" data-action="copy-snippet" data-key-id="${key.id}">Copy</button></div></div><pre class="snippet-block">${escapeHtml(setupSnippet(key, { maskKey: !revealed }))}</pre></div>`
+      ? `<div class="snippet${snippetOpen ? " open" : ""}">
+          <div class="snippet-head">
+            <button class="snippet-toggle" type="button" data-action="toggle-snippet" data-key-id="${key.id}" aria-expanded="${snippetOpen}">${icon("chev")}Use with OpenCode</button>
+            <button class="link small" type="button" data-action="copy-models-url" data-key-id="${key.id}">Copy URL</button>
+            <button class="link small" type="button" data-action="copy-snippet" data-key-id="${key.id}">Copy snippet</button>
+          </div>
+          <pre class="snippet-block">${escapeHtml(setupSnippet(key, { maskKey: !revealed }))}</pre>
+        </div>`
       : "";
   const actions = revoked
     ? [
@@ -758,9 +772,6 @@ function keyDetailHtml(key) {
     : [
         button("Copy key", "copy-key"),
         button(revealed ? "Hide key" : "Show key", "toggle-key"),
-        active && modelsUrlForKey(key)
-          ? button("Copy models URL", "copy-models-url")
-          : "",
         button("Edit", "edit-key"),
         button("Rotate", "rotate-key"),
         button("Revoke", "revoke-key", "btn btn-ghost btn-sm btn-remove"),
@@ -768,10 +779,11 @@ function keyDetailHtml(key) {
   return `<div class="detail" data-detail-for="${key.id}">
     ${keyLine}
     <div class="facts">${keyFacts(key)}</div>
-    <div class="usage-grid">
-      <div class="usage-slot" data-usage-for="key:${key.id}">${usageSlotHtml("key", key.id)}</div>
-      ${snippet}
-    </div>
+    ${
+      hasTraffic(usageForKey(key.id)) || snippet
+        ? `<div class="usage-grid">${hasTraffic(usageForKey(key.id)) ? `<div class="usage-slot" data-usage-for="key:${key.id}">${usageSlotHtml("key", key.id)}</div>` : ""}${snippet}</div>`
+        : ""
+    }
     <div class="actions">${actions.join("")}<div class="right"><span>Collapse <span class="kbd">esc</span></span></div></div>
   </div>`;
 }
@@ -911,20 +923,25 @@ function renderKeys() {
   if (!keys.length) {
     body = createForm
       ? ""
-      : '<div class="empty-state"><p>No API keys yet.</p><button class="btn btn-primary" type="button" data-action="open-create-key">Create a key</button></div>';
+      : '<div class="empty-state"><p>No API keys yet.</p><button class="btn btn-primary btn-sm" type="button" data-action="open-create-key">Create a key</button></div>';
   } else if (visible.length) {
     body = `<div class="row thead t-key"><span>Label</span><span class="d">Key</span><span class="d">Scope</span><span class="num">Requests ${escapeHtml(usageWindowLabel(state.keyUsageWindowMs))}</span><span class="num d">Last used</span><span></span></div>${visible.map(keyRowHtml).join("")}`;
   } else {
     body = filter
-      ? `<div class="empty-state"><p>No keys match \u201c${escapeHtml(state.keyFilter.trim())}\u201d.</p></div>`
-      : '<div class="empty-state"><p>No active API keys.</p></div>';
+      ? `<div class="empty-state"><p>No keys match \u201c${escapeHtml(state.keyFilter.trim())}\u201d.</p><button class="link small" type="button" data-action="clear-filter">Clear filter</button></div>`
+      : '<div class="empty-state"><p>No active API keys.</p><button class="btn btn-primary btn-sm" type="button" data-action="open-create-key">Create a key</button></div>';
   }
 
   renderPreservingForm($("#keys-list"), `${createForm}${body}`);
   if (state.creatingKey) syncScopedAccountAvailability("create");
   if (state.editingKeyId) syncScopedAccountAvailability("edit");
   const expanded = state.expandedKeyId;
-  if (expanded && expanded !== state.editingKeyId && visibleIds.has(expanded)) {
+  if (
+    expanded &&
+    expanded !== state.editingKeyId &&
+    visibleIds.has(expanded) &&
+    hasTraffic(usageForKey(expanded))
+  ) {
     requestUsageDetail("key", expanded);
   }
 }
@@ -995,9 +1012,7 @@ function usageSlotHtml(kind, id) {
     return `<p class="usage-note err">${escapeHtml(entry.error)}</p>`;
   }
   const { data } = entry;
-  if (!data.totals?.requestCount) {
-    return `<p class="usage-note muted">No requests in the last ${escapeHtml(usageWindowLabel(windowMs))}.</p>`;
-  }
+  if (!data.totals?.requestCount) return "";
   return [
     kind === "account" ? keyListHtml(data.apiKeys, data.totals) : "",
     modelListHtml(data.models),

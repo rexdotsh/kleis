@@ -43,6 +43,7 @@ const state = {
   editingKeyId: null,
   editingAccountId: null,
   creatingKey: false,
+  openSnippets: new Set(),
   usageDetails: new Map(),
   activeOAuth: null,
   reauthorizeAccountId: null,
@@ -1538,6 +1539,7 @@ function logout() {
   state.editingKeyId = null;
   state.editingAccountId = null;
   state.creatingKey = false;
+  state.openSnippets.clear();
   state.usageDetails = new Map();
   state.activeOAuth = null;
   state.reauthorizeAccountId = null;

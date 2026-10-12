@@ -62,6 +62,8 @@ const accountActions = {
   "redeem-reset-credit": (id, button) =>
     redeemResetCredit(id, button?.dataset.creditId || null),
   "delete-account": (id) => deleteAccount(id),
+  "clear-filter": () =>
+    clearFilter("#accounts-filter", "accountFilter", renderAccounts),
 };
 
 const keyActions = {
@@ -91,6 +93,11 @@ const keyActions = {
     }
     renderKeys();
   },
+  "toggle-snippet": (id) => {
+    if (state.openSnippets.has(id)) state.openSnippets.delete(id);
+    else state.openSnippets.add(id);
+    renderKeys();
+  },
   "edit-key": (id) => startEditKey(id),
   "save-key": () => saveKeyEdits(),
   "cancel-edit-key": () => cancelEditKey(),
@@ -100,9 +107,16 @@ const keyActions = {
   "rotate-key": (id, button) => rotateKey(id, button),
   "revoke-key": (id) => revokeKey(id),
   "delete-key": (id) => deleteKey(id),
+  "clear-filter": () => clearFilter("#keys-filter", "keyFilter", renderKeys),
 };
 
 const activeTab = () => $(".tab.active")?.dataset.tab;
+
+function clearFilter(inputId, field, render) {
+  $(inputId).value = "";
+  state[field] = "";
+  render();
+}
 const accountRow = (id) => $(`#accounts-list .row[data-account-id="${id}"]`);
 const keyRow = (id) => $(`#keys-list .row[data-key-id="${id}"]`);
 

@@ -190,6 +190,9 @@ code,
   width: 320px;
 }
 .login-logo {
+  display: flex;
+  gap: 8px;
+  align-items: center;
   font-size: 16px;
   font-weight: 500;
   letter-spacing: -0.01em;
@@ -447,7 +450,7 @@ code,
 }
 .seg button:is(.active, .on) {
   color: var(--text);
-  background: var(--surface);
+  background: #1d1d20;
 }
 .seg button:disabled {
   opacity: 0.5;
@@ -604,12 +607,19 @@ button.row:hover {
 }
 
 .empty-state {
-  padding: 48px 20px;
-  text-align: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 56px;
+  padding: 12px 0;
   color: var(--muted);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
-.empty-state .btn {
-  margin-top: 16px;
+.list > .empty-state {
+  padding: 12px;
 }
 .loading-indicator {
   display: flex;
@@ -1396,15 +1406,34 @@ input[type="checkbox"]:disabled {
 .t-bykey {
   grid-template-columns: minmax(0, 1fr) 96px 56px 56px 64px;
 }
-.snippet .sh {
-  min-height: 16px;
+.usage-slot:empty {
+  display: none;
+}
+.snippet-head {
+  display: flex;
+  gap: 16px;
+  align-items: center;
   margin-bottom: 4px;
 }
-.snippet .sh h2 {
+.snippet-toggle {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  margin-right: auto;
+  padding: 0;
   font-size: 12px;
-  font-weight: 400;
   line-height: 16px;
   color: var(--muted);
+  background: none;
+  border: 0;
+  pointer-events: none;
+}
+.snippet-toggle svg {
+  display: none;
+  transition: transform 120ms ease;
+}
+.snippet.open .snippet-toggle svg {
+  transform: rotate(90deg);
 }
 .snippet-block {
   padding: 12px;
@@ -1548,6 +1577,12 @@ input[type="checkbox"]:disabled {
     padding-top: 16px;
     padding-bottom: 40px;
   }
+  #attention:not(:empty) {
+    margin-bottom: 24px;
+  }
+  .list > .empty-state {
+    padding: 12px 16px;
+  }
   .tabs {
     width: calc(100% + 32px);
     margin: 0 -16px;
@@ -1634,6 +1669,9 @@ input[type="checkbox"]:disabled {
   .actions .right {
     display: none;
   }
+  .actions {
+    gap: 0;
+  }
   .key-full {
     padding: 8px 16px;
   }
@@ -1675,6 +1713,56 @@ input[type="checkbox"]:disabled {
   }
   .form-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding: 0 0 12px;
+  }
+  .fact {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    column-gap: 12px;
+    padding: 8px 0;
+    border-top: 1px solid var(--line);
+  }
+  .fact:first-child {
+    border-top: 0;
+  }
+  .fact-label {
+    grid-row: 1 / span 4;
+    font-size: 13px;
+    line-height: 20px;
+  }
+  .fact > :not(.fact-label) {
+    grid-column: 2;
+  }
+  .fact-value {
+    margin: 0;
+    font-size: 13px;
+    line-height: 20px;
+  }
+  .fact .bar {
+    margin: 6px 0 2px;
+  }
+  .snippet-toggle {
+    min-height: 32px;
+    font-size: 13px;
+    pointer-events: auto;
+  }
+  .snippet-toggle svg {
+    display: block;
+  }
+  .snippet:not(.open) .snippet-block {
+    display: none;
+  }
+  .snippet {
+    margin: 0 -16px;
+    padding: 4px 16px;
+    border-top: 1px solid var(--line);
+  }
+  .snippet.open {
+    padding-bottom: 16px;
   }
   .create-form {
     padding: 16px;
