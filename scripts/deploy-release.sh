@@ -33,8 +33,8 @@ retire_legacy() {
     fi
     sleep 2
   done
-  docker stop -t 10 "$LEGACY_CONTAINER" >/dev/null
-  docker rm "$LEGACY_CONTAINER" >/dev/null
+  docker stop -t 10 "$LEGACY_CONTAINER" >/dev/null 2>&1 || true
+  docker rm "$LEGACY_CONTAINER" >/dev/null 2>&1 || true
 }
 
 if [ "${1:-}" = "retire-legacy" ]; then
