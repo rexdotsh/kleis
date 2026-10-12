@@ -33,7 +33,10 @@ const sanitizeClaudeSystemText = (text: string): string =>
       /Here is some useful information about the environment you are running in:/g,
       "Here is useful information about the environment you are running in:"
     )
-    .replace(/<directories>\n\s*/gi, "Directories\n");
+    .replace(/<directories>\n\s*/gi, "Directories\n")
+    // Pi docs phrases that make Anthropic bill OAuth as third-party usage.
+    .replace("follow .md cross-references", "follow cross-references")
+    .replace("pi packages (docs/packages.md)", "packages (docs/packages.md)");
 
 const toClaudeToolName = (name: string, prefix: string): string => {
   if (name.startsWith(prefix)) {
