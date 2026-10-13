@@ -783,17 +783,10 @@ export type ProviderStatus = {
   enabledAccountCount: number;
 };
 
-export const listProviderStatuses = async (
-  database: Database
-): Promise<ProviderStatus[]> => {
-  const rows = await database
-    .select({
-      provider: providerAccounts.provider,
-      enabled: providerAccounts.enabled,
-    })
-    .from(providerAccounts);
-
-  return providers.map((provider) => {
+export const summarizeProviderStatuses = (
+  rows: readonly { provider: Provider; enabled: boolean }[]
+): ProviderStatus[] =>
+  providers.map((provider) => {
     const accounts = rows.filter((row) => row.provider === provider);
     const enabledAccountCount = accounts.filter((row) => row.enabled).length;
     return {
@@ -803,7 +796,18 @@ export const listProviderStatuses = async (
       enabledAccountCount,
     };
   });
-};
+
+export const listProviderStatuses = async (
+  database: Database
+): Promise<ProviderStatus[]> =>
+  summarizeProviderStatuses(
+    await database
+      .select({
+        provider: providerAccounts.provider,
+        enabled: providerAccounts.enabled,
+      })
+      .from(providerAccounts)
+  );
 
 export const setProviderAccountsEnabled = withInvalidation(
   async (

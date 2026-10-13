@@ -24,6 +24,10 @@ function clearPersistedToken() {
 
 const state = {
   token: readPersistedToken(),
+  sessionActive: false,
+  dashboardAbort: null,
+  accountUsageRequestSeq: 0,
+  keyUsageRequestSeq: 0,
   accounts: [],
   accountsById: new Map(),
   providerStatuses: [],
@@ -75,6 +79,10 @@ async function api(path, options = {}) {
   headers.set("Content-Type", "application/json");
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
   const res = await fetch(path, { ...options, headers });
+  if (res.status === 401 && state.sessionActive) {
+    logout();
+    $("#login-error").textContent = "Your session ended. Sign in again.";
+  }
   const text = await res.text();
   let body;
   try {
@@ -186,10 +194,7 @@ function relativeTime(ts) {
     const hours = Math.floor(abs / 3_600_000);
     return d >= 0 ? `in ${hours}h` : `${hours}h ago`;
   }
-  return new Date(ts).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-  });
+  return formatShortDate(ts);
 }
 
 function tokenStatus(expiresAt) {
@@ -252,8 +257,18 @@ function usageNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+const countFormat = new Intl.NumberFormat("en-US");
+const shortDateFormat = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+});
+
 function formatCount(value) {
-  return usageNumber(value).toLocaleString("en-US");
+  return countFormat.format(usageNumber(value));
+}
+
+function formatShortDate(timestamp) {
+  return shortDateFormat.format(timestamp);
 }
 
 function formatCompact(n) {
@@ -570,12 +585,17 @@ async function loadDashboard() {
 
   state.dashboardRequestSeq = requestSeq;
   state.dashboardLoading = true;
+  state.dashboardAbort?.abort();
+  const controller = new AbortController();
+  state.dashboardAbort = controller;
   if (refreshButton) refreshButton.disabled = true;
-  el.innerHTML = DETAIL_LOADING_HTML;
+  if (state.dashboardData) el.classList.add("is-loading");
+  else el.innerHTML = DETAIL_LOADING_HTML;
 
   try {
     const data = await api(
-      `/admin/usage/dashboard?windowMs=${state.dashboardWindowMs}`
+      `/admin/usage/dashboard?windowMs=${state.dashboardWindowMs}`,
+      { signal: controller.signal }
     );
 
     if (requestSeq !== state.dashboardRequestSeq) return;
@@ -595,6 +615,7 @@ async function loadDashboard() {
   } finally {
     if (requestSeq === state.dashboardRequestSeq) {
       state.dashboardLoading = false;
+      el.classList.remove("is-loading");
       if (refreshButton) refreshButton.disabled = false;
     }
   }
@@ -663,6 +684,7 @@ async function loadAccounts() {
     if (state.keysLoaded) {
       renderKeys();
     }
+    loadMissingQuotas(requestSeq);
   } catch (e) {
     if (requestSeq !== state.accountsRequestSeq) return;
     state.accounts = [];
@@ -671,6 +693,73 @@ async function loadAccounts() {
     state.providerStatuses = [];
     $("#accounts-list").innerHTML =
       `<div class="empty-state"><p class="err">${escapeHtml(e.message)}</p></div>`;
+    toast(e.message, "error");
+  }
+}
+
+// /admin/accounts returns cached limit snapshots without waiting on providers;
+// accounts without one yet (after a deploy, or a new account) fill in here.
+async function loadMissingQuotas(requestSeq) {
+  const missing = state.accounts.some(
+    (account) =>
+      (account.provider === "codex" || account.provider === "claude") &&
+      !account.quota
+  );
+  if (!missing) return;
+  try {
+    const { quotas } = await api("/admin/accounts/quotas");
+    if (requestSeq !== state.accountsRequestSeq) return;
+    let changed = false;
+    for (const account of state.accounts) {
+      const quota = quotas?.[account.id];
+      if (quota) {
+        account.quota = quota;
+        changed = true;
+      }
+    }
+    if (changed) renderAccounts();
+  } catch (e) {
+    if (requestSeq !== state.accountsRequestSeq) return;
+    toast(`Failed to load account limits: ${e.message}`, "error");
+  }
+}
+
+async function loadAccountUsage() {
+  const requestSeq = ++state.accountUsageRequestSeq;
+  clearUsageDetails("account");
+  try {
+    const usage = await api(
+      `/admin/accounts/usage?windowMs=${state.accountUsageWindowMs}`
+    );
+    if (requestSeq !== state.accountUsageRequestSeq) return;
+    if (typeof usage.windowMs === "number") {
+      state.accountUsageWindowMs = usage.windowMs;
+      syncAccountWindowButtons();
+    }
+    state.accountUsageById = usageMapFromList(usage.usage, "providerAccountId");
+    renderAccounts();
+  } catch (e) {
+    if (requestSeq !== state.accountUsageRequestSeq) return;
+    toast(e.message, "error");
+  }
+}
+
+async function loadKeyUsage() {
+  const requestSeq = ++state.keyUsageRequestSeq;
+  clearUsageDetails("key");
+  try {
+    const usage = await api(
+      `/admin/keys/usage?windowMs=${state.keyUsageWindowMs}`
+    );
+    if (requestSeq !== state.keyUsageRequestSeq) return;
+    if (typeof usage.windowMs === "number") {
+      state.keyUsageWindowMs = usage.windowMs;
+      syncKeyWindowButtons();
+    }
+    state.keyUsageById = usageMapFromList(usage.usage, "apiKeyId");
+    renderKeys();
+  } catch (e) {
+    if (requestSeq !== state.keyUsageRequestSeq) return;
     toast(e.message, "error");
   }
 }
@@ -1354,8 +1443,8 @@ async function completeOAuth() {
       state.reauthorizeAccountId ? "Account reauthorized" : "Account connected"
     );
     cancelOAuthFlow();
-    await loadAccounts();
     switchToTab("accounts");
+    await loadAccounts();
   } catch (e) {
     if (requestSeq !== state.oauthRequestSeq) return;
     const error = $("#oauth-flow-error");
@@ -1420,8 +1509,8 @@ async function importAccount() {
     ]) {
       $(`#${id}`).value = "";
     }
-    await loadAccounts();
     switchToTab("accounts");
+    await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
   } finally {
@@ -1430,30 +1519,20 @@ async function importAccount() {
   }
 }
 
-// Verify against a database-only route: /admin/accounts waits on live provider
-// quota lookups, which made login slow and could fail for unrelated reasons.
 async function verifyToken(token) {
   state.token = token;
-  await api("/admin/accounts/providers");
+  await api("/admin/session");
 }
 
+// A saved token opens the app at once; the check runs alongside the data
+// requests. Only a rejected token ends the session (api() handles the 401);
+// a restart, timeout or 5xx keeps the saved token.
 async function restoreSession() {
   const saved = readPersistedToken();
   if (!saved) return;
-  $("#login-gate").classList.add("hidden");
-  try {
-    await verifyToken(saved);
-  } catch (e) {
-    // Only a rejected token ends the session; a restart, timeout, or 5xx
-    // must not discard a valid saved token.
-    if (e?.status === 401) {
-      clearPersistedToken();
-      state.token = "";
-      $("#login-gate").classList.remove("hidden");
-      return;
-    }
-  }
+  state.token = saved;
   enterApp();
+  await api("/admin/session").catch(() => undefined);
 }
 
 async function handleLogin() {
@@ -1484,6 +1563,7 @@ async function handleLogin() {
 }
 
 function enterApp() {
+  state.sessionActive = true;
   $("#login-gate").classList.add("hidden");
   $("#app").classList.add("visible");
   const hash = location.hash.slice(1);
@@ -1497,6 +1577,8 @@ function enterApp() {
 }
 
 function logout() {
+  state.sessionActive = false;
+  state.dashboardAbort?.abort();
   state.dashboardRequestSeq++;
   state.accountsRequestSeq++;
   state.keysRequestSeq++;
@@ -1570,14 +1652,17 @@ export {
   formatCompact,
   formatCount,
   formatMetadataForInput,
+  formatShortDate,
   handleLogin,
   hasUsageMetrics,
   importAccount,
   isKeyActive,
   keyById,
   loadAccounts,
+  loadAccountUsage,
   loadDashboard,
   loadKeys,
+  loadKeyUsage,
   logout,
   maskKey,
   modelsUrlForKey,

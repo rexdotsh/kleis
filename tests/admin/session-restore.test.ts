@@ -84,7 +84,7 @@ const respondToVerification = (status: number): string[] => {
   globals.fetch = (url: RequestInfo | URL) => {
     const path = String(url);
     requested.push(path);
-    if (path === "/admin/accounts/providers") {
+    if (path === "/admin/session") {
       return Promise.resolve(Response.json({ message: "nope" }, { status }));
     }
     // Leave dashboard data requests pending; only session handling is tested.
@@ -109,7 +109,7 @@ describe("admin session restore", () => {
 
     await restoreSession();
 
-    expect(requested[0]).toBe("/admin/accounts/providers");
+    expect(requested).toContain("/admin/session");
     expect(removedTokens).toBe(0);
     expect(element("#login-gate").classes.has("hidden")).toBe(true);
     expect(element("#app").classes.has("visible")).toBe(true);

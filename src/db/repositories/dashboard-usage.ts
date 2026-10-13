@@ -64,7 +64,7 @@ export const getDashboardUsage = async (
     keyRows,
     bucketRows,
     previousBucketRows,
-  ] = await Promise.all([
+  ] = await database.batch([
     database.select(fullSelect).from(requestUsageBuckets).where(currentFilter),
     database.select(fullSelect).from(requestUsageBuckets).where(previousFilter),
     database

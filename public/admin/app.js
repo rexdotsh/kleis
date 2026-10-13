@@ -14,8 +14,10 @@ import {
   importAccount,
   keyById,
   loadAccounts,
+  loadAccountUsage,
   loadDashboard,
   loadKeys,
+  loadKeyUsage,
   logout,
   modelsUrlForKey,
   reauthorizeAccount,
@@ -448,9 +450,14 @@ for (const [selector, field, sync, load] of [
     "#accounts-window-selector",
     "accountUsageWindowMs",
     syncAccountWindowButtons,
-    loadAccounts,
+    loadAccountUsage,
   ],
-  ["#keys-window-selector", "keyUsageWindowMs", syncKeyWindowButtons, loadKeys],
+  [
+    "#keys-window-selector",
+    "keyUsageWindowMs",
+    syncKeyWindowButtons,
+    loadKeyUsage,
+  ],
 ]) {
   $(selector).addEventListener("click", (e) => {
     const btn = e.target.closest(".dash-window-btn");
@@ -514,9 +521,16 @@ $(".tabs").addEventListener("keydown", (event) => {
 });
 
 let chartWidth = 0;
+let resizeFrame = 0;
 window.addEventListener("resize", () => {
   closeMenu();
   resolveConfirm(false);
+  if (resizeFrame) return;
+  resizeFrame = requestAnimationFrame(redrawChartForWidth);
+});
+
+function redrawChartForWidth() {
+  resizeFrame = 0;
   const width = $("#dash-content").clientWidth;
   if (
     width &&
@@ -528,7 +542,7 @@ window.addEventListener("resize", () => {
     chartWidth = width;
     renderDashboard(state.dashboardData);
   }
-});
+}
 
 const isTyping = (target) =>
   target instanceof HTMLElement &&

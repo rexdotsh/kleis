@@ -13,6 +13,7 @@ import {
 import {
   CodexResetCreditConsumeError,
   listProviderAccountQuotas,
+  peekProviderAccountQuotas,
   queryCodexThreadUsage,
   redeemCodexResetCredit,
 } from "../../domain/providers/provider-account-tracking";
@@ -25,6 +26,7 @@ import {
   findProviderAccountById,
   listProviderAccounts,
   listProviderStatuses,
+  summarizeProviderStatuses,
   setProviderAccountsEnabled,
   setPrimaryProviderAccount,
   type ProviderAccountRecord,
@@ -150,18 +152,22 @@ const toAdminAccountView = (
 
 export const adminAccountsRoutes = new Hono()
   .get("/", async (context) => {
-    const [accounts, providerStatuses] = await Promise.all([
-      listProviderAccounts(db),
-      listProviderStatuses(db),
-    ]);
-    const quotas = await listProviderAccountQuotas(db, accounts);
+    const accounts = await listProviderAccounts(db);
+    const quotas = peekProviderAccountQuotas(db, accounts);
     return context.json({
       accounts: accounts.map((account) => ({
         ...toAdminAccountView(account),
         quota: quotas.get(account.id) ?? null,
       })),
-      providers: providerStatuses,
+      providers: summarizeProviderStatuses(accounts),
     });
+  })
+  .get("/quotas", async (context) => {
+    const quotas = await listProviderAccountQuotas(
+      db,
+      await listProviderAccounts(db)
+    );
+    return context.json({ quotas: Object.fromEntries(quotas) });
   })
   .get("/providers", async (context) => {
     const providerStatuses = await listProviderStatuses(db);
@@ -270,12 +276,10 @@ export const adminAccountsRoutes = new Hono()
       const query = context.req.valid("query");
       const { windowMs, now, since } = resolveUsageWindow(query.windowMs);
 
-      const account = await findProviderAccountById(db, id);
-      if (!account) {
+      const detail = await getProviderAccountUsageDetail(db, id, since);
+      if (!detail) {
         return context.json(accountNotFoundBody, 404);
       }
-
-      const detail = await getProviderAccountUsageDetail(db, id, since);
 
       return context.json({
         windowMs,

@@ -5,11 +5,11 @@ import {
 } from "../../db/repositories/codex-reset-redemptions";
 import {
   findProviderAccountById,
+  listProviderAccounts,
   type ProviderAccountRecord,
 } from "../../db/repositories/provider-accounts";
 import {
   consumeCodexResetCredit,
-  fetchCodexAccounts,
   fetchCodexResetCredits,
   fetchCodexThreadUsage,
   fetchCodexUsageProfile,
@@ -31,7 +31,6 @@ type CodexTrackingData = {
   status?: Awaited<ReturnType<typeof fetchCodexUsageStatus>>;
   resetCredits?: Awaited<ReturnType<typeof fetchCodexResetCredits>>;
   profile?: Awaited<ReturnType<typeof fetchCodexUsageProfile>>;
-  accounts?: Awaited<ReturnType<typeof fetchCodexAccounts>>;
 };
 
 type ClaudeTrackingData = {
@@ -118,7 +117,6 @@ const codexFetchers = [
   ["status", fetchCodexUsageStatus],
   ["resetCredits", fetchCodexResetCredits],
   ["profile", fetchCodexUsageProfile],
-  ["accounts", fetchCodexAccounts],
 ] as const;
 
 const fetchCodexData = async (account: TrackingAccount) => {
@@ -263,6 +261,31 @@ const getProviderAccountQuota = (
     loadProviderAccountQuota(database, stored, false).catch(() => undefined);
   }
   return Promise.resolve(cached.quota);
+};
+
+// Returns whatever snapshot is cached, without waiting on providers, and
+// starts a lookup for accounts that have none or whose snapshot is stale.
+export const peekProviderAccountQuotas = (
+  database: Database,
+  providerAccounts: readonly ProviderAccountRecord[]
+): Map<string, AccountQuota | null> => {
+  const quotas = new Map<string, AccountQuota | null>();
+  for (const account of providerAccounts.filter(isTrackingAccount)) {
+    const cached = cache.get(quotaKey(account));
+    if (!cached || cached.expiresAt <= Date.now()) {
+      loadProviderAccountQuota(database, account, false).catch(() => undefined);
+    }
+    quotas.set(account.id, cached?.quota ?? null);
+  }
+  return quotas;
+};
+
+// A fresh process (every deploy) starts with no snapshots; loading them right
+// away means the first admin visit does not wait on providers.
+export const warmProviderAccountQuotas = async (
+  database: Database
+): Promise<void> => {
+  peekProviderAccountQuotas(database, await listProviderAccounts(database));
 };
 
 export const listProviderAccountQuotas = async (

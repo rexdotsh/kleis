@@ -2,7 +2,10 @@ import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 
 import type { Database } from "../../src/db";
 import type { ProviderAccountRecord } from "../../src/db/repositories/provider-accounts";
-import { listProviderAccountQuotas } from "../../src/domain/providers/provider-account-tracking";
+import {
+  listProviderAccountQuotas,
+  peekProviderAccountQuotas,
+} from "../../src/domain/providers/provider-account-tracking";
 
 const claudeAccount = (
   accountId: string | null = null,
@@ -114,6 +117,34 @@ describe("account quota cache", () => {
 
     const second = await listProviderAccountQuotas(database, [replaced]);
     expect(fiveHourUtilization(second.get(original.id))).toBe(31);
+  });
+
+  test("peeking never waits and starts one lookup the waiting read reuses", async () => {
+    let calls = 0;
+    let release: ((response: Response) => void) | undefined;
+    globalThis.fetch = (() => {
+      calls++;
+      return new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+    }) as unknown as typeof fetch;
+    const account = claudeAccount();
+
+    expect(peekProviderAccountQuotas(database, [account]).get(account.id)).toBe(
+      null
+    );
+    const waiting = listProviderAccountQuotas(database, [account]);
+    await Promise.resolve();
+    expect(calls).toBe(1);
+
+    release?.(Response.json({ five_hour: { utilization: 42 } }));
+    expect(fiveHourUtilization((await waiting).get(account.id))).toBe(42);
+    expect(
+      fiveHourUtilization(
+        peekProviderAccountQuotas(database, [account]).get(account.id)
+      )
+    ).toBe(42);
+    expect(calls).toBe(1);
   });
 
   test("reports the HTTP status of a failed usage sync", async () => {
