@@ -7,6 +7,7 @@ import {
   renderDashboard,
   renderKeys,
   renderOAuthFlow,
+  renderOAuthLoading,
   renderUsageSlot,
 } from "./app-render.js";
 
@@ -33,6 +34,8 @@ const state = {
   accountUsageRequestSeq: 0,
   keyUsageRequestSeq: 0,
   accounts: [],
+  accountsLoaded: false,
+  overviewReady: false,
   accountsById: new Map(),
   providerStatuses: [],
   accountUsageById: new Map(),
@@ -46,8 +49,10 @@ const state = {
   keyFilter: "",
   accountFilter: "",
   expandedAccountId: null,
+  pendingExpandedAccountId: null,
   showAllReauthorize: false,
   expandedKeyId: null,
+  pendingExpandedKeyId: null,
   cursorAccountId: null,
   cursorKeyId: null,
   enteringDetail: null,
@@ -56,6 +61,7 @@ const state = {
   creatingKey: false,
   openSnippets: new Set(),
   usageDetails: new Map(),
+  visibleUsageDetails: new Map(),
   activeOAuth: null,
   reauthorizeAccountId: null,
   oauthRequestSeq: 0,
@@ -64,6 +70,7 @@ const state = {
   revealedKeyIds: new Set(),
   dashboardWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   dashboardData: null,
+  dashboardError: null,
   dashboardLoading: false,
   dashboardRequestSeq: 0,
   pendingResetRedemptions: new Map(),
@@ -133,11 +140,7 @@ function toast(message, type = "success", action = null) {
     });
     el.append(button);
   }
-  const container = $("#toast-container");
-  const last = container.lastElementChild;
-  if (last && el.style)
-    el.style.bottom = `${(Number.parseFloat(last.style.bottom) || 0) + last.offsetHeight + 8}px`;
-  container.appendChild(el);
+  $("#toast-container").appendChild(el);
   setTimeout(dismiss, action ? 6000 : 3500);
 }
 
@@ -433,6 +436,14 @@ function usageMapFromList(items, idField) {
 }
 
 function switchToTab(name) {
+  if (name !== "accounts") {
+    state.pendingExpandedAccountId = null;
+    scheduleUsagePrefetch("account", null);
+  }
+  if (name !== "keys") {
+    state.pendingExpandedKeyId = null;
+    scheduleUsagePrefetch("key", null);
+  }
   for (const t of $$(".tab")) {
     const active = t.dataset.tab === name;
     t.classList.toggle("active", active);
@@ -623,7 +634,13 @@ async function loadDashboard() {
   state.dashboardAbort = controller;
   if (refreshButton) refreshButton.disabled = true;
   if (state.dashboardData) el.classList.add("is-loading");
-  else el.innerHTML = DASHBOARD_LOADING_HTML;
+  else {
+    const loading = $("#overview-loading");
+    loading.innerHTML = DASHBOARD_LOADING_HTML;
+    loading.hidden = false;
+    el.hidden = true;
+    $("#attention").hidden = true;
+  }
 
   try {
     const data = await api(
@@ -639,23 +656,30 @@ async function loadDashboard() {
     }
 
     state.dashboardData = data;
-    renderDashboard(data);
+    state.dashboardError = null;
   } catch (e) {
     if (requestSeq !== state.dashboardRequestSeq) return;
     const message = e instanceof Error ? e.message : "Failed to load usage";
     if (state.dashboardData) toast(message, "error");
-    else {
-      renderDashboard({});
-      const plot = el.querySelector(".plot");
-      if (plot)
-        plot.innerHTML = `<p class="usage-note err">${escapeHtml(message)}</p>`;
-    }
+    else state.dashboardError = message;
   } finally {
     if (requestSeq === state.dashboardRequestSeq) {
       state.dashboardLoading = false;
       el.classList.remove("is-loading");
       if (refreshButton) refreshButton.disabled = false;
+      renderOverviewWhenReady();
     }
+  }
+}
+
+function renderOverviewWhenReady() {
+  if (!state.accountsLoaded || state.dashboardLoading) return;
+  if (!(state.dashboardData || state.dashboardError)) return;
+  renderDashboard(state.dashboardData || {});
+  if (state.dashboardError) {
+    const plot = $("#dash-content").querySelector(".plot");
+    if (plot)
+      plot.innerHTML = `<p class="usage-note err">${escapeHtml(state.dashboardError)}</p>`;
   }
 }
 
@@ -675,39 +699,88 @@ function pruneUsageDetails(kind, ids) {
     if (key.startsWith(`${kind}:`) && !ids.has(key.split(":")[1]))
       state.usageDetails.delete(key);
   }
+  for (const key of state.visibleUsageDetails.keys()) {
+    if (key.startsWith(`${kind}:`) && !ids.has(key.split(":")[1]))
+      state.visibleUsageDetails.delete(key);
+  }
 }
 
-async function requestUsageDetail(kind, id) {
+function requestUsageDetail(kind, id, { notify = true } = {}) {
   const windowMs =
     kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
   const cacheKey = `${kind}:${id}:${windowMs}`;
   const previous = state.usageDetails.get(cacheKey);
-  if (
-    previous?.status === "loading" ||
-    Date.now() - (previous?.updatedAt || 0) < USAGE_DETAIL_TTL_MS
-  )
-    return;
-  const pending = { status: "loading", data: previous?.data };
+  if (previous?.status === "loading") {
+    if (!notify) previous.notify = false;
+    return previous.promise;
+  }
+  if (Date.now() - (previous?.updatedAt || 0) < USAGE_DETAIL_TTL_MS)
+    return Promise.resolve(previous);
+  const pending = { status: "loading", data: previous?.data, notify };
   state.usageDetails.set(cacheKey, pending);
   const token = state.token;
-  let entry;
-  try {
-    const data = await api(
-      `/admin/${kind === "account" ? "accounts" : "keys"}/${id}/usage?windowMs=${windowMs}`
-    );
-    entry = { status: "ready", data, updatedAt: Date.now() };
-  } catch (e) {
-    entry = {
-      status: "error",
-      error: e.message,
-      data: previous?.data,
-      updatedAt: Date.now(),
-    };
-  }
-  if (token !== state.token || state.usageDetails.get(cacheKey) !== pending)
-    return;
-  state.usageDetails.set(cacheKey, entry);
-  renderUsageSlot(kind, id);
+  pending.promise = (async () => {
+    let entry;
+    try {
+      const data = await api(
+        `/admin/${kind === "account" ? "accounts" : "keys"}/${id}/usage?windowMs=${windowMs}`
+      );
+      entry = { status: "ready", data, updatedAt: Date.now() };
+    } catch (e) {
+      entry = {
+        status: "error",
+        error: e.message,
+        data: previous?.data,
+        updatedAt: Date.now(),
+      };
+    }
+    if (token !== state.token || state.usageDetails.get(cacheKey) !== pending)
+      return;
+    state.usageDetails.set(cacheKey, entry);
+    if (pending.notify) renderUsageSlot(kind, id);
+    return entry;
+  })();
+  return pending.promise;
+}
+
+function usageHasTraffic(kind, id) {
+  return (
+    normalizeUsage(kind === "account" ? accountUsageForId(id) : usageForKey(id))
+      .requestCount > 0
+  );
+}
+
+async function waitForUsageDetail(kind, id, timeoutMs = 300) {
+  if (!usageHasTraffic(kind, id)) return;
+  const windowMs =
+    kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
+  const cached = state.usageDetails.get(`${kind}:${id}:${windowMs}`);
+  const pending = requestUsageDetail(kind, id);
+  if (cached?.data) return;
+  let timer;
+  await Promise.race([
+    pending,
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    }),
+  ]);
+  clearTimeout(timer);
+}
+
+const prefetchTimers = new Map();
+function scheduleUsagePrefetch(kind, id) {
+  clearTimeout(prefetchTimers.get(kind));
+  prefetchTimers.delete(kind);
+  if (!id || !usageHasTraffic(kind, id)) return;
+  const token = state.token;
+  prefetchTimers.set(
+    kind,
+    setTimeout(() => {
+      prefetchTimers.delete(kind);
+      if (token === state.token && usageHasTraffic(kind, id))
+        requestUsageDetail(kind, id);
+    }, 120)
+  );
 }
 
 async function loadAccounts() {
@@ -744,7 +817,10 @@ async function loadAccounts() {
         "providerAccountId"
       );
     } else {
-      toast("Failed to load account usage", "error");
+      toast(
+        usageResult.reason?.message || "Failed to load account usage",
+        "error"
+      );
     }
 
     syncAccountWindowButtons();
@@ -753,14 +829,23 @@ async function loadAccounts() {
     if (state.keysLoaded) {
       renderKeys();
     }
-    loadMissingQuotas(requestSeq, missingQuotas);
+    finishAccountLoad(requestSeq, missingQuotas);
   } catch (e) {
     if (requestSeq !== state.accountsRequestSeq) return;
     if (!state.accounts.length)
       $("#accounts-list").innerHTML =
         `<div class="empty-state"><p class="err">${escapeHtml(e.message)}</p></div>`;
     toast(e.message, "error");
+    state.accountsLoaded = true;
+    renderOverviewWhenReady();
   }
+}
+
+async function finishAccountLoad(requestSeq, missingQuotas) {
+  await loadMissingQuotas(requestSeq, missingQuotas);
+  if (requestSeq !== state.accountsRequestSeq) return;
+  state.accountsLoaded = true;
+  renderOverviewWhenReady();
 }
 
 // /admin/accounts returns cached limit snapshots without waiting on providers;
@@ -801,7 +886,12 @@ async function loadAccountUsage() {
       state.accountUsageWindowMs = usage.windowMs;
       syncAccountWindowButtons();
     }
-    state.accountUsageById = usageMapFromList(usage.usage, "providerAccountId");
+    const byId = usageMapFromList(usage.usage, "providerAccountId");
+    const expanded = state.expandedAccountId;
+    if (expanded && normalizeUsage(byId.get(expanded)).requestCount > 0)
+      await requestUsageDetail("account", expanded, { notify: false });
+    if (requestSeq !== state.accountUsageRequestSeq) return;
+    state.accountUsageById = byId;
     renderAccounts();
   } catch (e) {
     if (requestSeq !== state.accountUsageRequestSeq) return;
@@ -820,7 +910,12 @@ async function loadKeyUsage() {
       state.keyUsageWindowMs = usage.windowMs;
       syncKeyWindowButtons();
     }
-    state.keyUsageById = usageMapFromList(usage.usage, "apiKeyId");
+    const byId = usageMapFromList(usage.usage, "apiKeyId");
+    const expanded = state.expandedKeyId;
+    if (expanded && normalizeUsage(byId.get(expanded)).requestCount > 0)
+      await requestUsageDetail("key", expanded, { notify: false });
+    if (requestSeq !== state.keyUsageRequestSeq) return;
+    state.keyUsageById = byId;
     renderKeys();
   } catch (e) {
     if (requestSeq !== state.keyUsageRequestSeq) return;
@@ -855,7 +950,10 @@ async function loadKeys() {
         "apiKeyId"
       );
     } else {
-      toast("Failed to load API key usage", "error");
+      toast(
+        usageResult.reason?.message || "Failed to load API key usage",
+        "error"
+      );
     }
 
     syncKeyWindowButtons();
@@ -1442,8 +1540,10 @@ async function startOAuth() {
   btn.style.display = "none";
   const flow = $("#oauth-flow-active");
   flow.style.display = "block";
-  flow.innerHTML =
-    '<div class="flow"><div class="loading-indicator"><span class="spinner spinner-lg"></span></div></div>';
+  renderOAuthLoading(
+    provider,
+    provider === "codex" && $("#oauth-codex-mode").value === "headless"
+  );
 
   try {
     const body = {};
@@ -1658,6 +1758,8 @@ function logout() {
   clearPersistedToken();
   state.token = "";
   state.accounts = [];
+  state.accountsLoaded = false;
+  state.overviewReady = false;
   state.accountsById = new Map();
   state.providerStatuses = [];
   state.accountUsageById = new Map();
@@ -1671,8 +1773,10 @@ function logout() {
   state.keyFilter = "";
   state.accountFilter = "";
   state.expandedAccountId = null;
+  state.pendingExpandedAccountId = null;
   state.showAllReauthorize = false;
   state.expandedKeyId = null;
+  state.pendingExpandedKeyId = null;
   state.cursorAccountId = null;
   state.cursorKeyId = null;
   state.editingKeyId = null;
@@ -1680,15 +1784,20 @@ function logout() {
   state.creatingKey = false;
   state.openSnippets.clear();
   state.usageDetails = new Map();
+  state.visibleUsageDetails = new Map();
+  for (const timer of prefetchTimers.values()) clearTimeout(timer);
+  prefetchTimers.clear();
   state.activeOAuth = null;
   state.reauthorizeAccountId = null;
   state.revealedKeyIds.clear();
   state.dashboardWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.dashboardData = null;
+  state.dashboardError = null;
   state.dashboardLoading = false;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
   $("#dash-content").innerHTML = "";
+  $("#overview-loading").hidden = true;
   $("#attention").innerHTML = "";
   $("#accounts-filter").value = "";
   $("#keys-filter").value = "";
@@ -1701,6 +1810,9 @@ function logout() {
 }
 
 export {
+  scheduleUsagePrefetch,
+  usageHasTraffic,
+  waitForUsageDetail,
   $,
   $$,
   accountById,

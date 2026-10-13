@@ -224,6 +224,7 @@ code,
   display: none;
 }
 .login-box {
+  position: relative;
   width: 320px;
 }
 .login-logo {
@@ -262,13 +263,15 @@ code,
   flex: none;
 }
 .login-error {
+  position: absolute;
+  top: 100%;
+  width: 100%;
   margin-top: 12px;
   font-size: 12px;
   color: var(--err);
-  min-height: 40px;
 }
 .login-error:empty {
-  visibility: hidden;
+  display: none;
 }
 
 /* Buttons */
@@ -752,8 +755,6 @@ button.row:hover {
   min-height: 40px;
   font-size: 12px;
   color: var(--muted);
-  height: 40px;
-  overflow: auto;
 }
 
 #keys-foot {
@@ -943,6 +944,9 @@ button.row:hover {
 .detail.entering {
   animation: detail-in 260ms var(--ease-out);
 }
+.detail-resize {
+  position: relative;
+}
 @keyframes detail-in {
   from {
     clip-path: inset(0 0 100% 0);
@@ -955,13 +959,12 @@ button.row:hover {
 }
 .facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 20px 32px;
   padding: 8px 0 20px;
 }
 .fact {
   min-width: 0;
-  min-height: 104px;
 }
 .fact-label {
   font-size: 12px;
@@ -1004,28 +1007,6 @@ button.row:hover {
   margin-top: 10px;
 }
 
-.limit-windows {
-  height: 84px;
-  margin-top: 4px;
-  overflow: auto;
-  scrollbar-gutter: stable;
-}
-.limit-entry {
-  height: 42px;
-}
-.limit-entry > div:first-child {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-}
-.limit-entry .bone {
-  width: 70%;
-  margin-top: 8px;
-}
-.fact-value > .bone {
-  width: 48px;
-  margin: 7px 0;
-}
 .bar {
   height: 2px;
   overflow: hidden;
@@ -1066,13 +1047,6 @@ button.row:hover {
   display: inline-flex;
   gap: 8px;
   align-items: center;
-}
-.sync-note {
-  width: 180px;
-  justify-content: flex-end;
-}
-.hidden-action {
-  visibility: hidden;
 }
 
 /* Keys */
@@ -1154,14 +1128,8 @@ button.row:hover {
 
 /* Overview */
 
-#attention {
-  height: 160px;
-  margin-bottom: 32px;
-}
-.attention-list {
-  height: 120px;
-  overflow: auto;
-  scrollbar-gutter: stable;
+#attention:not(:empty) {
+  margin-bottom: 40px;
 }
 .attn {
   grid-template-columns: 6px 200px minmax(0, 1fr) 140px 16px;
@@ -1196,9 +1164,7 @@ button.row:hover {
   color: var(--muted);
 }
 .sub {
-  min-height: 32px;
-  height: 32px;
-  overflow: hidden;
+  min-height: 16px;
   margin-top: 4px;
   font-size: 12px;
   line-height: 16px;
@@ -1214,8 +1180,6 @@ button.row:hover {
 }
 .chart .sh {
   margin-bottom: 8px;
-  height: 32px;
-  overflow: hidden;
 }
 .legend {
   display: flex;
@@ -1303,17 +1267,6 @@ button.row:hover {
 .tables .row {
   height: 36px;
 }
-.dashboard-table {
-  height: 288px;
-  overflow: auto;
-  scrollbar-gutter: stable;
-}
-.dashboard-table .thead {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--page);
-}
 .dashboard-table .row:has(.model) {
   border-top: 0;
 }
@@ -1366,8 +1319,6 @@ button.row:hover {
 .flow {
   margin-top: 24px;
   padding-top: 8px;
-  height: 384px;
-  overflow: auto;
 }
 .flow-title {
   margin-top: 16px;
@@ -1398,7 +1349,20 @@ button.row:hover {
 .device-code {
   font: 500 20px / 28px var(--font-mono);
   letter-spacing: 0.08em;
-  height: 32px;
+}
+.device-code .bone {
+  width: 10ch;
+  margin: 10px 0;
+}
+.flow-input-skeleton {
+  display: flex;
+  align-items: center;
+}
+.flow-input-skeleton .bone {
+  width: 60%;
+}
+.flow-url-skeleton {
+  flex: 1;
 }
 .flow-actions {
   display: flex;
@@ -1410,16 +1374,6 @@ button.row:hover {
   margin-top: 16px;
   padding-left: 12px;
   color: var(--err);
-  height: 60px;
-  overflow: auto;
-}
-.oauth-flow-error[hidden] {
-  display: block !important;
-  visibility: hidden;
-}
-#oauth-codex-opts,
-#oauth-claude-opts {
-  min-height: 94px;
 }
 
 .collapsible {
@@ -1691,9 +1645,6 @@ input[type="checkbox"]:disabled {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  height: 80px;
-  overflow: auto;
-  scrollbar-gutter: stable;
 }
 .pin-row {
   display: grid;
@@ -1750,22 +1701,10 @@ input[type="checkbox"]:disabled {
 }
 .usage-panel {
   min-width: 0;
-  height: 176px;
-}
-.usage-table {
-  height: 156px;
-  overflow: auto;
-  scrollbar-gutter: stable;
 }
 .usage-grid .row,
 .usage-grid .list > .row:last-child {
   border: 0;
-}
-.usage-table .thead {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--surface);
 }
 .usage-table .usage-note {
   padding: 8px;
@@ -1808,7 +1747,7 @@ input[type="checkbox"]:disabled {
   grid-template-columns: minmax(0, 1fr) 96px 56px 56px 64px;
 }
 .usage-slot:empty {
-  min-height: 176px;
+  display: none;
 }
 .snippet-head {
   display: flex;
@@ -1867,12 +1806,13 @@ input[type="checkbox"]:disabled {
   right: 16px;
   bottom: 16px;
   z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
   pointer-events: none;
 }
 .toast {
-  position: absolute;
-  right: 0;
-  bottom: 0;
   display: flex;
   gap: 16px;
   align-items: center;
@@ -2083,12 +2023,8 @@ input[type="checkbox"]:disabled {
     padding-top: 16px;
     padding-bottom: 40px;
   }
-  #attention {
-    height: 208px;
+  #attention:not(:empty) {
     margin-bottom: 24px;
-  }
-  .attention-list {
-    height: 168px;
   }
   .list > .empty-state {
     padding: 12px 16px;
@@ -2205,9 +2141,6 @@ input[type="checkbox"]:disabled {
     width: 100%;
     margin-left: 0;
   }
-  .chart .sh {
-    height: 60px;
-  }
   .plot {
     height: 128px;
   }
@@ -2241,7 +2174,6 @@ input[type="checkbox"]:disabled {
   }
   .fact {
     padding: 0;
-    min-height: 104px;
   }
   .fact-label {
     font-size: 12px;

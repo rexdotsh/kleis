@@ -38,6 +38,7 @@ const accountName = (account) =>
   account.label || account.accountId || maskKey(account.id);
 const keyName = (key) => key.label || maskKey(key.key);
 const shortDate = formatShortDate;
+const hasTraffic = (usage) => normalizeUsage(usage).requestCount > 0;
 
 function untilText(timestamp) {
   const diff = timestamp - Date.now();
@@ -62,19 +63,48 @@ function quotaTimestamp(value) {
 const prefersMotion = () =>
   globalThis.matchMedia?.("(prefers-reduced-motion: no-preference)").matches ??
   false;
+const detailResizes = new WeakMap();
 
 // Re-renders replace the list's HTML, so rows are moved from where they were
 // to where they now are (FLIP); rows that are new simply appear.
 function renderWithMotion(container, update) {
   const before = new Map();
+  const details = new Map();
   const animate = prefersMotion() && container.querySelectorAll;
   if (animate) {
     for (const element of container.querySelectorAll("[data-flip]")) {
       before.set(element.dataset.flip, element.getBoundingClientRect().top);
     }
+    for (const detail of container.querySelectorAll(
+      ".detail:not(.inline-form)"
+    )) {
+      details.set(detail.dataset.detailFor, {
+        height: detail.getBoundingClientRect().height,
+        children: new Map(
+          Array.from(
+            detail.querySelectorAll(".facts > .fact, .usage-grid, .actions"),
+            (element) => [
+              detailMotionKey(element),
+              element.getBoundingClientRect().top,
+            ]
+          )
+        ),
+      });
+    }
+  }
+  // Snapshot the currently displayed geometry before interrupting a resize.
+  for (const detail of container.querySelectorAll?.(".detail") || []) {
+    detailResizes.get(detail)?.();
   }
   update();
   if (!(animate && before.size)) return;
+  let resizing = false;
+  for (const detail of container.querySelectorAll(
+    ".detail:not(.inline-form)"
+  )) {
+    const previous = details.get(detail.dataset.detailFor);
+    if (previous) resizing = animateDetailResize(detail, previous) || resizing;
+  }
   let lead = null;
   let leadDistance = 0;
   for (const element of container.querySelectorAll("[data-flip]")) {
@@ -88,7 +118,10 @@ function renderWithMotion(container, update) {
     element
       .animate(
         [{ transform: `translateY(${offset}px)` }, { transform: "none" }],
-        { duration: 260, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" }
+        {
+          duration: resizing ? 200 : 260,
+          easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+        }
       )
       .finished.then(done, done);
     if (Math.abs(offset) > leadDistance) {
@@ -97,6 +130,62 @@ function renderWithMotion(container, update) {
     }
   }
   lead?.classList.add("flipping-lead");
+}
+
+function detailMotionKey(element) {
+  return element.classList.contains("fact")
+    ? `fact:${element.querySelector(".fact-label").textContent}`
+    : element.classList.contains("actions")
+      ? "actions"
+      : "usage";
+}
+
+function animateDetailResize(detail, previous) {
+  const height = detail.getBoundingClientRect().height;
+  if (Math.abs(height - previous.height) < 1) return;
+  const timing = { duration: 200, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" };
+  const animations = [];
+  for (const element of detail.querySelectorAll(
+    ".facts > .fact, .usage-grid, .actions"
+  )) {
+    const top = previous.children.get(detailMotionKey(element));
+    if (top === undefined) continue;
+    const offset = top - element.getBoundingClientRect().top;
+    if (Math.abs(offset) >= 1)
+      animations.push(
+        element.animate(
+          [{ transform: `translateY(${offset}px)` }, { transform: "none" }],
+          timing
+        )
+      );
+  }
+  // The temporary shell keeps sibling FLIP motion compositor-only while the
+  // detail itself grows; it is removed as soon as the resize finishes.
+  const shell = document.createElement("div");
+  shell.className = "detail-resize";
+  shell.style.height = `${height}px`;
+  detail.replaceWith(shell);
+  shell.append(detail);
+  detail.style.position = "absolute";
+  detail.style.width = "100%";
+  detail.style.overflow = "hidden";
+  const finish = () => {
+    if (!detailResizes.has(detail)) return;
+    detailResizes.delete(detail);
+    for (const animation of animations) animation.cancel();
+    detail.style.position = "";
+    detail.style.width = "";
+    detail.style.overflow = "";
+    shell.replaceWith(detail);
+  };
+  detailResizes.set(detail, finish);
+  const animation = detail.animate(
+    [{ height: `${previous.height}px` }, { height: `${height}px` }],
+    timing
+  );
+  animations.push(animation);
+  animation.finished.then(finish, finish);
+  return true;
 }
 
 const SKELETON_HTML = Array.from(
@@ -372,7 +461,8 @@ function accountRowHtml(account, serving) {
 
 function fact(label, value, subs = [], extra = "") {
   const lines = subs
-    .map((sub) => `<div class="fact-sub">${sub || "&nbsp;"}</div>`)
+    .filter(Boolean)
+    .map((sub) => `<div class="fact-sub">${sub}</div>`)
     .join("");
   return `<div class="fact"><div class="fact-label">${label}</div><div class="fact-value">${value}</div>${lines}${extra}</div>`;
 }
@@ -388,29 +478,33 @@ function resetText(window) {
 
 function limitFacts(account) {
   const quota = account.quota;
-  const windows = accountWindows(account);
-  let content = windows
-    .map((window) => {
-      const severity = limitSeverity(window.percent);
-      return `<div class="limit-entry"><div><span class="ellipsis" title="${escapeHtml(window.label)}">${escapeHtml(window.label)}</span><span class="${severity}">${Math.round(window.percent)}%</span></div><div class="fact-sub">${escapeHtml(resetText(window)) || "&nbsp;"}</div></div>`;
-    })
-    .join("");
   if (!quota)
-    content = `<div class="limit-entry"><span class="bone"></span></div><div class="limit-entry"><span class="bone"></span></div>`;
-  else if (quota.error)
-    content += `<p class="fact-sub err" title="${escapeHtml(quota.error)}">Sync failed: ${escapeHtml(quota.error)}</p>`;
-  else if (!windows.length)
-    content = '<p class="muted small">None reported</p>';
-  return `<div class="fact quota-fact"><div class="fact-label">Rate limits</div><div class="limit-windows" tabindex="0" aria-label="Rate limits">${content}</div></div>`;
+    return [
+      fact("Rate limits", '<span class="muted">\u2014</span>', [
+        "waiting for the first sync",
+      ]),
+    ];
+  const facts = accountWindows(account).map((window) => {
+    const severity = limitSeverity(window.percent);
+    return fact(
+      escapeHtml(window.named ? window.label : `${window.label} window`),
+      `<span class="${severity}">${Math.round(window.percent)}%</span>`,
+      [escapeHtml(resetText(window))],
+      `<span class="bar${severity ? ` ${severity}` : ""}"><i style="width:${window.percent}%"></i></span>`
+    );
+  });
+  if (quota.error)
+    facts.push(
+      `<div class="fact"><div class="fact-label">Limit sync</div><div class="fact-value err">Failed</div><div class="fact-sub clamp" title="${escapeHtml(quota.error)}">${escapeHtml(quota.error)}</div></div>`
+    );
+  else if (!facts.length)
+    facts.push(fact("Rate limits", '<span class="muted">None reported</span>'));
+  return facts;
 }
 
 function creditsFact(account) {
   const data = account.quota?.data;
-  if (account.provider !== "codex") return "";
-  if (!account.quota)
-    return fact("Reset credits", '<span class="bone"></span>', [
-      "waiting for sync",
-    ]);
+  if (data?.provider !== "codex") return "";
   const credits = (data?.resetCredits?.credits || [])
     .filter((credit) => credit.status === "available")
     .sort(
@@ -424,7 +518,7 @@ function creditsFact(account) {
     credits.length,
     typeof available === "number" ? available : 0
   );
-  if (!count) return fact("Reset credits", "0", ["none available"]);
+  if (!count) return "";
   const next = credits[0];
   const expiry = quotaTimestamp(next?.expiresAt);
   const title = next
@@ -473,7 +567,7 @@ function usageFact(rawUsage, windowMs) {
   const usage = normalizeUsage(rawUsage);
   const failed = failedCount(usage);
   const label = `Last ${escapeHtml(usageWindowLabel(windowMs))}`;
-  if (!usage.requestCount) return fact(label, "0 requests", ["no traffic", ""]);
+  if (!usage.requestCount) return fact(label, "0 requests", ["no traffic"]);
   const problems = [
     failed && `${formatCount(failed)} failed`,
     usage.rateLimitCount && `${formatCount(usage.rateLimitCount)} rate-limited`,
@@ -629,20 +723,20 @@ function accountDetailHtml(account) {
     state.enteringDetail === `account:${account.id}` ? " entering" : "";
   return `<div class="detail${entering}" data-detail-for="${account.id}" data-flip="detail:${account.id}">
     <div class="facts">${[
-      limitFacts(account),
+      ...limitFacts(account),
       creditsFact(account),
       tokenFact(account),
       usageFact(accountUsageForId(account.id), state.accountUsageWindowMs),
       accountFact(account),
     ].join("")}</div>
-    <div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>
+    ${hasTraffic(accountUsageForId(account.id)) ? `<div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>` : ""}
     <div class="actions">
+      ${needsReauthorization(account) && supportsOAuth ? button("Reauthorize", "reauthorize-account", "A", "btn btn-primary btn-sm") : ""}
       ${account.isPrimary ? "" : button("Make primary", "set-primary", "P")}
       ${button("Refresh token", "refresh-account", "R")}
       ${button("Edit", "edit-account", "E")}
       ${button("Remove", "delete-account", "Del", "btn btn-ghost btn-sm btn-remove")}
-      ${supportsOAuth ? `<span class="reauthorize-action${needsReauthorization(account) ? "" : " hidden-action"}">${button("Reauthorize", "reauthorize-account", "A", "btn btn-primary btn-sm")}</span>` : ""}
-      <div class="right"><span class="sync-note">${synced}</span><span>Collapse <span class="kbd">esc</span></span></div>
+      <div class="right">${synced}<span>Collapse <span class="kbd">esc</span></span></div>
     </div>
   </div>`;
 }
@@ -704,7 +798,7 @@ function renderAccounts() {
             (a.createdAt ?? 0) - (b.createdAt ?? 0)
         );
       if (!rows.length) return "";
-      return `${groupHtml(provider, statuses.get(provider), rows.length)}<div class="group-rows">${rows
+      return `${groupHtml(provider, statuses.get(provider), rows.length)}<div class="group-rows" data-flip="rows:${provider}">${rows
         .map((account) =>
           accountRowHtml(account, isAccountServing(account, statuses))
         )
@@ -720,7 +814,11 @@ function renderAccounts() {
     )
   );
   const expanded = state.expandedAccountId;
-  if (expanded && expanded !== state.editingAccountId) {
+  if (
+    expanded &&
+    expanded !== state.editingAccountId &&
+    hasTraffic(accountUsageForId(expanded))
+  ) {
     requestUsageDetail("account", expanded);
   }
 }
@@ -942,7 +1040,7 @@ function keyDetailHtml(key) {
   return `<div class="detail${entering}" data-detail-for="${key.id}" data-flip="detail:${key.id}">
     ${keyLine}
     <div class="facts">${keyFacts(key)}</div>
-    <div class="usage-grid"><div class="usage-slot" data-usage-for="key:${key.id}">${usageSlotHtml("key", key.id)}</div>${snippet}</div>
+    ${hasTraffic(usageForKey(key.id)) || snippet ? `<div class="usage-grid">${hasTraffic(usageForKey(key.id)) ? `<div class="usage-slot" data-usage-for="key:${key.id}">${usageSlotHtml("key", key.id)}</div>` : ""}${snippet}</div>` : ""}
     <div class="actions">${actions.join("")}<div class="right"><span>Collapse <span class="kbd">esc</span></span></div></div>
   </div>`;
 }
@@ -1051,7 +1149,12 @@ function renderKeys() {
   if (state.creatingKey) syncScopedAccountAvailability("create");
   if (state.editingKeyId) syncScopedAccountAvailability("edit");
   const expanded = state.expandedKeyId;
-  if (expanded && expanded !== state.editingKeyId && visibleIds.has(expanded)) {
+  if (
+    expanded &&
+    expanded !== state.editingKeyId &&
+    visibleIds.has(expanded) &&
+    hasTraffic(usageForKey(expanded))
+  ) {
     requestUsageDetail("key", expanded);
   }
 }
@@ -1111,11 +1214,12 @@ function menuHtml(kind, id) {
 function usagePanelHtml(label, table, columns, message = "", loading = false) {
   const placeholder = loading
     ? Array.from(
-        { length: 4 },
+        { length: 3 },
         () => `<div class="row skeleton"><span class="bone"></span></div>`
       ).join("")
     : `<p class="usage-note muted">${escapeHtml(message || "No usage in this window.")}</p>`;
-  return `<div class="usage-panel"><div class="list-label">${label}${message ? `<span class="usage-status err" title="${escapeHtml(message)}">Unavailable</span>` : ""}</div><div class="list usage-table" tabindex="0" aria-label="${label}"><div class="row thead ${columns}">${table.head}</div>${table.body || placeholder}</div></div>`;
+  if (!(loading || message || table.body)) return "";
+  return `<div class="usage-panel"><div class="list-label">${label}${message ? `<span class="usage-status err" title="${escapeHtml(message)}">Unavailable</span>` : ""}</div><div class="list usage-table"><div class="row thead ${columns}">${table.head}</div>${table.body || placeholder}</div></div>`;
 }
 
 const DASHBOARD_LOADING_HTML = `<div class="kpis">${["Requests", "Success", "Tokens", "Cached input", "Avg latency"].map((label) => `<div class="kpi"><div class="kpi-label">${label}</div><div class="val"><span class="bone"></span></div><div class="sub">&nbsp;</div></div>`).join("")}</div><div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><span class="bone chart-bone"></span></div></div><div class="tables">${["By provider", "Top keys"].map((label) => `<div><div class="sh"><h2>${label}</h2></div><div class="list dashboard-table">${SKELETON_HTML}</div></div>`).join("")}</div>`;
@@ -1124,7 +1228,8 @@ function usageSlotHtml(kind, id) {
   const windowMs =
     kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
   const entry = state.usageDetails.get(`${kind}:${id}:${windowMs}`);
-  const data = entry?.data;
+  const data = entry?.data || state.visibleUsageDetails.get(`${kind}:${id}`);
+  if (entry?.data) state.visibleUsageDetails.set(`${kind}:${id}`, entry.data);
   const loading = !data && entry?.status !== "error";
   const message = entry?.status === "error" ? entry.error : "";
   return [
@@ -1139,7 +1244,13 @@ function usageSlotHtml(kind, id) {
 
 function renderUsageSlot(kind, id) {
   const slot = document.querySelector(`[data-usage-for="${kind}:${id}"]`);
-  if (slot) slot.innerHTML = usageSlotHtml(kind, id);
+  if (!slot) return;
+  const list = slot.closest?.("#accounts-list, #keys-list");
+  const update = () => {
+    slot.innerHTML = usageSlotHtml(kind, id);
+  };
+  if (list) renderWithMotion(list, update);
+  else update();
 }
 
 function modelListHtml(rows, message, loading) {
@@ -1257,6 +1368,14 @@ function setupSnippet(key, { maskKey: masked = false } = {}) {
 
 /* Connect */
 
+function renderOAuthLoading(provider, isDevice) {
+  const target = accountById(state.reauthorizeAccountId);
+  const name = target ? accountName(target) : null;
+  const container = $("#oauth-flow-active");
+  container.innerHTML = `<div class="flow" aria-busy="true"><p class="flow-title">${name ? `Reauthorizing <strong>${escapeHtml(name)}</strong>` : `Signing in to ${escapeHtml(providerName(provider))}`}</p><div class="field"><span class="field-label">1 \u00b7 Open this link and approve</span><div class="input-row"><span class="bone flow-url-skeleton"></span><button class="btn btn-ghost btn-sm" type="button" disabled>Copy</button></div></div><div class="field"><span class="field-label">2 \u00b7 ${isDevice ? "Enter this code on that page" : "Paste the code you get back"}</span>${isDevice ? '<div class="device-code"><span class="bone"></span></div>' : '<div class="field-input flow-input-skeleton"><span class="bone"></span></div>'}</div><div class="flow-actions"><button class="btn btn-primary btn-block" type="button" disabled>${isDevice ? "I\u2019ve approved it" : "Connect account"}</button><button id="btn-oauth-loading-cancel" class="btn btn-ghost" type="button">Start over</button></div></div>`;
+  $("#btn-oauth-loading-cancel").addEventListener?.("click", cancelOAuthFlow);
+}
+
 function renderOAuthFlow(data, provider) {
   const container = $("#oauth-flow-active");
   container.style.display = "block";
@@ -1305,7 +1424,7 @@ function renderOAuthFlow(data, provider) {
 
 function renderAttention() {
   const el = $("#attention");
-  if (!el) return;
+  if (!el || !state.overviewReady) return;
   const statuses = providerStatusMap();
   const items = [];
   for (const account of state.accounts) {
@@ -1344,16 +1463,14 @@ function renderAttention() {
   items.sort(
     (a, b) => Number(b.severity === "err") - Number(a.severity === "err")
   );
-  el.innerHTML = `<div class="sh"><h2>Needs attention</h2><span class="muted">${items.length || ""}</span></div><div class="list attention-list" tabindex="0" aria-label="Needs attention">${
-    items.length
-      ? items
-          .map(
-            (item) =>
-              `<div class="row attn${item.accountId ? "" : " static"}"${item.accountId ? ` data-account-id="${item.accountId}" tabindex="0" role="button"` : ""}><span class="dot ${item.severity}"></span><span class="ellipsis">${escapeHtml(item.name)}</span><span class="muted ellipsis d">${escapeHtml(item.text)}</span><span class="num muted small">${escapeHtml(item.when)}</span>${item.accountId ? icon("chev") : "<span></span>"}<span class="l2">${escapeHtml(item.text)}</span></div>`
-          )
-          .join("")
-      : '<p class="list-note muted">No issues reported.</p>'
-  }</div>`;
+  el.innerHTML = items.length
+    ? `<div class="sh"><h2>Needs attention</h2><span class="muted">${items.length}</span></div><div class="list">${items
+        .map(
+          (item) =>
+            `<div class="row attn${item.accountId ? "" : " static"}"${item.accountId ? ` data-account-id="${item.accountId}" tabindex="0" role="button"` : ""}><span class="dot ${item.severity}"></span><span class="ellipsis">${escapeHtml(item.name)}</span><span class="muted ellipsis d">${escapeHtml(item.text)}</span><span class="num muted small">${escapeHtml(item.when)}</span>${item.accountId ? icon("chev") : "<span></span>"}<span class="l2">${escapeHtml(item.text)}</span></div>`
+        )
+        .join("")}</div>`
+    : "";
 }
 
 function deltaText(current, previous) {
@@ -1645,6 +1762,11 @@ function topKeysHtml(data, metrics) {
 }
 
 function renderDashboard(rawData) {
+  if (!state.accountsLoaded) return;
+  state.overviewReady = true;
+  $("#overview-loading").hidden = true;
+  $("#attention").hidden = false;
+  $("#dash-content").hidden = false;
   renderAttention();
   const el = $("#dash-content");
   const data = rawData || {};
@@ -1680,6 +1802,7 @@ function renderDashboard(rawData) {
 }
 
 export {
+  renderOAuthLoading,
   ACCOUNT_LOADING_HTML,
   DASHBOARD_LOADING_HTML,
   KEY_LOADING_HTML,

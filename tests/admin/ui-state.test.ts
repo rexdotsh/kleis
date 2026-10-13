@@ -60,8 +60,11 @@ const {
   cancelOAuthFlow,
   escapeHtml,
   loadAccounts,
+  loadDashboard,
   loadAccountUsage,
   requestUsageDetail,
+  scheduleUsagePrefetch,
+  waitForUsageDetail,
   logout,
   normalizeUsage,
   startEditKey,
@@ -69,9 +72,8 @@ const {
   startOAuth,
   state,
 } = await import("../../public/admin/app-data.js");
-const { renderAccounts, renderDashboard, renderUsageSlot } = await import(
-  "../../public/admin/app-render.js"
-);
+const { renderAccounts, renderDashboard, renderUsageSlot, renderAttention } =
+  await import("../../public/admin/app-render.js");
 
 describe("admin UI request state", () => {
   beforeEach(() => {
@@ -86,6 +88,21 @@ describe("admin UI request state", () => {
       removeItem: () => undefined,
     } as unknown as Storage;
     elements.clear();
+    state.accountsLoaded = true;
+    state.overviewReady = false;
+    state.dashboardData = null;
+    state.dashboardError = null;
+    state.dashboardLoading = false;
+    state.accounts = [];
+    state.accountsById = new Map();
+    state.accountUsageById = new Map();
+    state.keyUsageById = new Map();
+    state.visibleUsageDetails = new Map();
+    state.usageDetails = new Map();
+    state.expandedAccountId = null;
+    state.expandedKeyId = null;
+    state.keysLoaded = false;
+    state.accountFilter = "";
   });
 
   afterEach(() => {
@@ -213,7 +230,7 @@ describe("admin UI request state", () => {
     expect(html).toContain("No usage in this window.");
   });
 
-  test("usage loading, ready and empty states keep both account table shells", () => {
+  test("usage skeletons are short and empty details omit table sections", () => {
     const id = "stable-account";
     state.accountUsageWindowMs = 86_400_000;
     state.usageDetails = new Map();
@@ -223,14 +240,15 @@ describe("admin UI request state", () => {
     expect(slot.innerHTML).toContain("By model");
     expect(slot.innerHTML.match(/class="usage-panel"/g)).toHaveLength(2);
     expect(slot.innerHTML).toContain('class="row skeleton"');
+    expect(slot.innerHTML.match(/class="row skeleton"/g)).toHaveLength(6);
+    expect(slot.innerHTML).not.toContain('tabindex="0"');
 
     state.usageDetails.set(`account:${id}:86400000`, {
       status: "ready",
       data: { totals: { requestCount: 0 } },
     });
     renderUsageSlot("account", id);
-    expect(slot.innerHTML.match(/class="usage-panel"/g)).toHaveLength(2);
-    expect(slot.innerHTML).toContain("No usage in this window.");
+    expect(slot.innerHTML).toBe("");
     state.usageDetails.set(`account:${id}:86400000`, {
       status: "error",
       error: "Unavailable",
@@ -253,10 +271,12 @@ describe("admin UI request state", () => {
       });
     }) as typeof fetch;
     const loading = requestUsageDetail("account", "cached");
-    await requestUsageDetail("account", "cached");
+    const duplicate = requestUsageDetail("account", "cached");
+    expect(duplicate).toBe(loading);
     expect(calls).toBe(1);
     release?.(Response.json({ totals: { requestCount: 1 }, models: [] }));
     await loading;
+    await duplicate;
     await requestUsageDetail("account", "cached");
     expect(calls).toBe(1);
 
@@ -287,7 +307,7 @@ describe("admin UI request state", () => {
     expect(state.usageDetails.get("account:cached:86400000")).toBe(entry);
   });
 
-  test("quota arrival does not insert or reorder account fact slots", () => {
+  test("restores natural quota facts and hides unused credits, actions and tables", () => {
     const account = {
       id: "quota-account",
       provider: "codex",
@@ -312,9 +332,12 @@ describe("admin UI request state", () => {
       ],
     ]);
     renderAccounts();
-    const before = element("#accounts-list").innerHTML.match(
-      /class="fact-label">[^<]+/g
-    );
+    const before = element("#accounts-list").innerHTML;
+    expect(before).toContain("waiting for the first sync");
+    expect(before).not.toContain("Reset credits");
+    expect(before).not.toContain("hidden-action");
+    expect(before).not.toContain("By key");
+    expect(before).not.toContain("By model");
     state.accounts = [
       {
         ...account,
@@ -330,10 +353,176 @@ describe("admin UI request state", () => {
       },
     ];
     renderAccounts();
-    expect(
-      element("#accounts-list").innerHTML.match(/class="fact-label">[^<]+/g)
-    ).toEqual(before);
+    const after = element("#accounts-list").innerHTML;
+    expect(after).toContain("20%");
+    expect(after).toContain("40%");
+    expect(after.match(/<span class="bar/g)).toHaveLength(2);
+    expect(after).not.toContain("limit-windows");
+    expect(after).not.toContain("Reset credits");
+    expect(after).not.toContain('class="fact-sub">&nbsp;');
+    state.accounts[0].expiresAt = Date.now() - 60_000;
+    renderAccounts();
+    const actions =
+      element("#accounts-list").innerHTML.split('class="actions"')[1];
+    expect(actions).toMatch(
+      /^>\s*<button class="btn btn-primary btn-sm" data-action="reauthorize-account"/
+    );
     state.expandedAccountId = null;
+  });
+
+  test("prefetch debounces targets, ignores no-traffic rows, and uses the cache", async () => {
+    state.token = "mock";
+    state.accountUsageWindowMs = 86_400_000;
+    state.accountUsageById = new Map([
+      ["first", { requestCount: 1 }],
+      ["second", { requestCount: 1 }],
+    ]);
+    const calls: string[] = [];
+    globalThis.fetch = ((url: RequestInfo | URL) => {
+      calls.push(String(url));
+      return Promise.resolve(Response.json({ models: [] }));
+    }) as typeof fetch;
+    scheduleUsagePrefetch("account", "first");
+    scheduleUsagePrefetch("account", "second");
+    expect(calls).toHaveLength(0);
+    await Bun.sleep(150);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("/second/usage?");
+    scheduleUsagePrefetch("account", "second");
+    await Bun.sleep(150);
+    expect(calls).toHaveLength(1);
+    scheduleUsagePrefetch("account", "empty");
+    await waitForUsageDetail("account", "empty");
+    await Bun.sleep(150);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("opening waits for prefetched data but caps the wait at 300ms", async () => {
+    state.token = "mock";
+    state.accountUsageById = new Map([["slow", { requestCount: 1 }]]);
+    let release: ((response: Response) => void) | undefined;
+    globalThis.fetch = (() =>
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      })) as typeof fetch;
+    const prefetched = requestUsageDetail("account", "slow");
+    const start = Date.now();
+    await waitForUsageDetail("account", "slow");
+    expect(Date.now() - start).toBeGreaterThanOrEqual(290);
+    expect(
+      state.usageDetails.get(`account:slow:${state.accountUsageWindowMs}`)
+        ?.status
+    ).toBe("loading");
+    release?.(Response.json({ models: [{ model: "ready", requestCount: 1 }] }));
+    await prefetched;
+    await waitForUsageDetail("account", "slow");
+    expect(
+      state.usageDetails.get(`account:slow:${state.accountUsageWindowMs}`)
+        ?.status
+    ).toBe("ready");
+  });
+
+  test("window changes retain visible details until fresh data arrives", async () => {
+    state.token = "mock";
+    state.accountUsageWindowMs = 3_600_000;
+    state.expandedAccountId = "window-account";
+    state.accountUsageById = new Map([["window-account", { requestCount: 1 }]]);
+    state.visibleUsageDetails.set("account:window-account", {
+      models: [{ model: "previous-model", requestCount: 1 }],
+    });
+    let release: ((response: Response) => void) | undefined;
+    globalThis.fetch = ((url: RequestInfo | URL) =>
+      String(url).includes("/window-account/usage?")
+        ? new Promise<Response>((resolve) => {
+            release = resolve;
+          })
+        : Promise.resolve(
+            Response.json({
+              windowMs: 3_600_000,
+              usage: [{ providerAccountId: "window-account", requestCount: 2 }],
+            })
+          )) as typeof fetch;
+    const loading = loadAccountUsage();
+    await Bun.sleep(0);
+    renderUsageSlot("account", "window-account");
+    expect(
+      element('[data-usage-for="account:window-account"]').innerHTML
+    ).toContain("previous-model");
+    expect(state.accountUsageById.get("window-account").requestCount).toBe(1);
+    release?.(
+      Response.json({ models: [{ model: "new-model", requestCount: 2 }] })
+    );
+    await loading;
+    renderUsageSlot("account", "window-account");
+    expect(
+      element('[data-usage-for="account:window-account"]').innerHTML
+    ).toContain("new-model");
+    expect(state.accountUsageById.get("window-account").requestCount).toBe(2);
+  });
+
+  test("Overview waits for accounts and dashboard before painting attention and KPIs", async () => {
+    state.accountsLoaded = false;
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        Response.json({ totals: { requestCount: 1 } })
+      )) as typeof fetch;
+    await loadDashboard();
+    expect(element("#overview-loading").innerHTML).toContain('class="kpis"');
+    expect(element("#dash-content").innerHTML).toBe("");
+    state.accountsLoaded = true;
+    renderDashboard(state.dashboardData);
+    expect(element("#dash-content").innerHTML).toContain('class="kpis"');
+    expect(element("#attention").innerHTML).toBe("");
+    state.accounts = [
+      {
+        id: "needs-login",
+        provider: "codex",
+        label: "Preview",
+        expiresAt: Date.now() - 60_000,
+      },
+    ];
+    renderAttention();
+    expect(element("#attention").innerHTML).toContain("Needs attention");
+    state.accounts = [];
+    renderAttention();
+    expect(element("#attention").innerHTML).toBe("");
+  });
+
+  test("cold quotas finish before the first Overview paint", async () => {
+    state.accountsLoaded = false;
+    let release: ((response: Response) => void) | undefined;
+    globalThis.fetch = ((url: RequestInfo | URL) => {
+      const path = String(url);
+      if (path === "/admin/accounts")
+        return Promise.resolve(
+          Response.json({
+            accounts: [
+              { id: "cold", provider: "codex", expiresAt: Date.now() + 60_000 },
+            ],
+          })
+        );
+      if (path === "/admin/accounts/quotas")
+        return new Promise<Response>((resolve) => {
+          release = resolve;
+        });
+      return Promise.resolve(
+        Response.json({ usage: [], totals: { requestCount: 1 } })
+      );
+    }) as typeof fetch;
+    await loadDashboard();
+    await loadAccounts();
+    expect(state.accountsLoaded).toBe(false);
+    expect(state.overviewReady).toBe(false);
+    expect(element("#dash-content").innerHTML).toBe("");
+    release?.(
+      Response.json({
+        quotas: { cold: { error: "Sync failed", errorStatus: 401 } },
+      })
+    );
+    await Bun.sleep(0);
+    expect(state.overviewReady).toBe(true);
+    expect(element("#attention").innerHTML).toContain("Needs attention");
+    expect(element("#dash-content").innerHTML).toContain('class="kpis"');
   });
 
   test("refresh keeps cached quotas and usage visible while detail revalidates", async () => {
