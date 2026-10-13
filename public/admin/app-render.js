@@ -1405,18 +1405,29 @@ function renderPreservingForm(container, html) {
 
 /* OpenCode setup */
 
-// OpenCode v2 reads both from its background service, which provides the
-// kleis provider without /connect.
+// OpenCode v2 loads models in its background service, so the URL goes into
+// that service's environment; the key is entered with /connect.
 function setupSnippet(key, { maskKey: masked = false } = {}) {
   return [
+    "# Terminal",
     `opencode service set env OPENCODE_MODELS_URL "${modelsUrlForKey(key)}"`,
-    `opencode service set env KLEIS_API_KEY "${masked ? maskKey(key.key) : key.key}"`,
     "opencode",
+    "",
+    "# Inside OpenCode",
+    "/connect",
+    "# provider: kleis",
+    `# key: ${masked ? maskKey(key.key) : key.key}`,
   ].join("\n");
 }
 
 const setupKeys = () =>
-  state.keys.filter((key) => isKeyActive(key) && modelsUrlForKey(key));
+  state.keys
+    .filter((key) => isKeyActive(key) && modelsUrlForKey(key))
+    .sort(
+      (a, b) =>
+        normalizeUsage(usageForKey(b.id)).requestCount -
+        normalizeUsage(usageForKey(a.id)).requestCount
+    );
 
 function renderOpenCodeSetup() {
   const panel = $("#opencode-setup");
@@ -1438,7 +1449,7 @@ function renderOpenCodeSetup() {
     .join("");
   const body = key
     ? `<pre class="snippet-block">${escapeHtml(setupSnippet(key, { maskKey: !state.revealedKeyIds.has(key.id) }))}</pre>
-      <p class="setup-note">Then choose a <span class="mono">kleis/\u2026</span> model with <span class="mono">/models</span>. Needs OpenCode v2.</p>`
+      <p class="setup-note">Then pick a model marked Kleis in <span class="mono">/models</span>. Needs OpenCode v2.</p>`
     : '<p class="setup-note">No active keys yet. Create one first.</p>';
   panel.innerHTML = `<div class="setup">
     <div class="setup-head">
