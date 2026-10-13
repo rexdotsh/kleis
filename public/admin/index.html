@@ -306,6 +306,17 @@
               </button>
             </div>
           </div>
+          <button
+            id="btn-shortcuts"
+            class="icon-btn shortcuts-btn"
+            type="button"
+            aria-label="Keyboard shortcuts"
+            aria-expanded="false"
+            aria-controls="shortcuts"
+            title="Keyboard shortcuts (?)"
+          >
+            ?
+          </button>
           <button id="btn-logout" class="btn btn-ghost btn-sm" type="button">
             Log out
           </button>
@@ -573,6 +584,67 @@
     </div>
 
     <div id="menu" class="menu" role="menu" hidden></div>
+
+    <div
+      id="shortcuts"
+      class="shortcuts"
+      role="dialog"
+      aria-label="Keyboard shortcuts"
+      hidden
+    >
+      <section>
+        <p class="cap">Anywhere</p>
+        <dl>
+          <dt><kbd>1–4</kbd></dt>
+          <dd>Switch tab</dd>
+          <dt><kbd>&#91;</kbd><kbd>&#93;</kbd></dt>
+          <dd>Shorter or longer window</dd>
+          <dt><kbd>j</kbd><kbd>k</kbd></dt>
+          <dd>Move between rows</dd>
+          <dt><kbd>Enter</kbd></dt>
+          <dd>Open or close row</dd>
+          <dt><kbd>Esc</kbd></dt>
+          <dd>Close, then clear</dd>
+          <dt><kbd>/</kbd></dt>
+          <dd>Filter</dd>
+          <dt><kbd>N</kbd></dt>
+          <dd>New key or account</dd>
+        </dl>
+      </section>
+      <section>
+        <p class="cap">Accounts</p>
+        <dl>
+          <dt><kbd>P</kbd></dt>
+          <dd>Make primary</dd>
+          <dt><kbd>R</kbd></dt>
+          <dd>Refresh token</dd>
+          <dt><kbd>A</kbd></dt>
+          <dd>Reauthorize</dd>
+          <dt><kbd>E</kbd></dt>
+          <dd>Edit</dd>
+          <dt><kbd>Del</kbd></dt>
+          <dd>Remove</dd>
+        </dl>
+      </section>
+      <section>
+        <p class="cap">Keys</p>
+        <dl>
+          <dt><kbd>C</kbd></dt>
+          <dd>Copy key</dd>
+          <dt><kbd>M</kbd></dt>
+          <dd>Copy models URL</dd>
+          <dt><kbd>S</kbd></dt>
+          <dd>Show or hide key</dd>
+          <dt><kbd>E</kbd></dt>
+          <dd>Edit</dd>
+          <dt><kbd>R</kbd></dt>
+          <dd>Rotate</dd>
+          <dt><kbd>Del</kbd></dt>
+          <dd>Revoke</dd>
+        </dl>
+      </section>
+      <p class="shortcuts-foot">Row shortcuts act on the highlighted row.</p>
+    </div>
 
     <div
       id="confirm"

@@ -131,6 +131,7 @@ describe("admin UI request state", () => {
           return this.textContent;
         },
         classList: { add: () => undefined },
+        append: () => undefined,
         remove: () => undefined,
       }),
     } as unknown as Document;
