@@ -13,6 +13,7 @@ import {
   listConfiguredProviders,
   listProviderAccounts,
   listProviderStatuses,
+  setPrimaryProviderAccount,
   setProviderAccountsEnabled,
   upsertProviderAccount,
 } from "../../src/db/repositories/provider-accounts";
@@ -363,6 +364,49 @@ describe("provider account enablement", () => {
       (await getRoutableProviderAccount(database, "claude", now + 1))?.id
     ).toBe("claude-primary");
     expect(await listProviderStatuses(database)).toContainEqual(status);
+  });
+
+  test("applies account pins per provider and uses the primary elsewhere", async () => {
+    const now = Date.now();
+    const codexPinned = { allowedAccountIds: ["codex-primary"] };
+    expect(
+      (await getRoutableProviderAccount(database, "claude", now, codexPinned))
+        ?.id
+    ).toBe("claude-primary");
+    expect(
+      (await getRoutableProviderAccount(database, "codex", now, codexPinned))
+        ?.id
+    ).toBe("codex-primary");
+
+    await setPrimaryProviderAccount(database, "claude-secondary", now);
+    expect(
+      (await getRoutableProviderAccount(database, "claude", now, codexPinned))
+        ?.id
+    ).toBe("claude-secondary");
+
+    const claudePinned = { allowedAccountIds: ["claude-primary"] };
+    expect(
+      (await getRoutableProviderAccount(database, "claude", now, claudePinned))
+        ?.id
+    ).toBe("claude-primary");
+    expect(
+      (await getRoutableProviderAccount(database, "codex", now, claudePinned))
+        ?.id
+    ).toBe("codex-primary");
+  });
+
+  test("does not fall back to the primary when the pinned account is disabled", async () => {
+    const now = Date.now();
+    await database
+      .update(providerAccounts)
+      .set({ enabled: false })
+      .where(eq(providerAccounts.id, "claude-secondary"));
+
+    expect(
+      await getRoutableProviderAccount(database, "claude", now, {
+        allowedAccountIds: ["claude-secondary"],
+      })
+    ).toBeNull();
   });
 
   test("bounds the Codex OAuth token refresh request", async () => {

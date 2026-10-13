@@ -8,6 +8,7 @@ import {
 } from "../../db/repositories/request-usage";
 import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
 import {
+  findPinnedProviderAccounts,
   getRoutableProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../domain/providers/provider-service";
@@ -249,7 +250,9 @@ const proxyRequest = async (
   }
 
   if (!account) {
-    const isAccountScoped = Boolean(accountScopeIds?.length);
+    const isAccountScoped =
+      (await findPinnedProviderAccounts(db, route.provider, accountScopeIds))
+        .length > 0;
     usageRecorder.recordImmediate(isAccountScoped ? 403 : 400);
     return context.json(
       proxyErrorResponse(
