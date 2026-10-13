@@ -263,9 +263,15 @@ type ApiKeyUsageModelBreakdown = UsageModelBreakdown;
 
 type ApiKeyUsageBucketRow = UsageBucketRow;
 
+type ApiKeyUsageAccountBreakdown = AveragedUsageTotals & {
+  providerAccountId: string;
+  provider: Provider;
+};
+
 type ApiKeyUsageDetail = {
   apiKeyId: string;
   totals: Omit<ApiKeyUsageSummary, "apiKeyId" | "providers">;
+  accounts: ApiKeyUsageAccountBreakdown[];
   endpoints: ApiKeyUsageEndpointBreakdown[];
   models: ApiKeyUsageModelBreakdown[];
   buckets: ApiKeyUsageBucketRow[];
@@ -282,63 +288,84 @@ export const getApiKeyUsageDetail = async (
     gte(requestUsageBuckets.bucketStart, sinceBucket)
   );
 
-  const [keyRows, totalsRows, endpointRows, modelRows, bucketRows] =
-    await database.batch([
-      database
-        .select({ id: apiKeys.id })
-        .from(apiKeys)
-        .where(eq(apiKeys.id, apiKeyId))
-        .limit(1),
-      database
-        .select({
-          ...selectUsageCounterSums(requestUsageBuckets),
-          ...selectUsageLatencySums(requestUsageBuckets),
-          ...selectUsageTokenSums(requestUsageBuckets),
-          ...selectUsageLastRequestAtMax(requestUsageBuckets),
-        })
-        .from(requestUsageBuckets)
-        .where(windowFilter),
-      database
-        .select({
-          provider: requestUsageBuckets.provider,
-          endpoint: requestUsageBuckets.endpoint,
-          ...selectUsageCounterSums(requestUsageBuckets),
-          ...selectUsageLatencySums(requestUsageBuckets),
-          ...selectUsageTokenSums(requestUsageBuckets),
-          ...selectUsageLastRequestAtMax(requestUsageBuckets),
-        })
-        .from(requestUsageBuckets)
-        .where(windowFilter)
-        .groupBy(requestUsageBuckets.provider, requestUsageBuckets.endpoint),
-      database
-        .select({
-          provider: requestUsageBuckets.provider,
-          endpoint: requestUsageBuckets.endpoint,
-          model: requestUsageBuckets.model,
-          ...selectUsageCounterSums(requestUsageBuckets),
-          ...selectUsageLatencySums(requestUsageBuckets),
-          ...selectUsageTokenSums(requestUsageBuckets),
-          ...selectUsageLastRequestAtMax(requestUsageBuckets),
-        })
-        .from(requestUsageBuckets)
-        .where(windowFilter)
-        .groupBy(
-          requestUsageBuckets.provider,
-          requestUsageBuckets.endpoint,
-          requestUsageBuckets.model
-        ),
-      database
-        .select({
-          bucketStart: requestUsageBuckets.bucketStart,
-          ...selectUsageCounterSums(requestUsageBuckets),
-          ...selectUsageTokenSums(requestUsageBuckets),
-        })
-        .from(requestUsageBuckets)
-        .where(windowFilter)
-        .groupBy(requestUsageBuckets.bucketStart)
-        .orderBy(desc(requestUsageBuckets.bucketStart))
-        .limit(DETAIL_BUCKET_LIMIT),
-    ]);
+  const [
+    keyRows,
+    totalsRows,
+    accountRows,
+    endpointRows,
+    modelRows,
+    bucketRows,
+  ] = await database.batch([
+    database
+      .select({ id: apiKeys.id })
+      .from(apiKeys)
+      .where(eq(apiKeys.id, apiKeyId))
+      .limit(1),
+    database
+      .select({
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
+      })
+      .from(requestUsageBuckets)
+      .where(windowFilter),
+    database
+      .select({
+        providerAccountId: requestUsageBuckets.providerAccountId,
+        provider: requestUsageBuckets.provider,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
+      })
+      .from(requestUsageBuckets)
+      .where(windowFilter)
+      .groupBy(
+        requestUsageBuckets.providerAccountId,
+        requestUsageBuckets.provider
+      ),
+    database
+      .select({
+        provider: requestUsageBuckets.provider,
+        endpoint: requestUsageBuckets.endpoint,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
+      })
+      .from(requestUsageBuckets)
+      .where(windowFilter)
+      .groupBy(requestUsageBuckets.provider, requestUsageBuckets.endpoint),
+    database
+      .select({
+        provider: requestUsageBuckets.provider,
+        endpoint: requestUsageBuckets.endpoint,
+        model: requestUsageBuckets.model,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageLatencySums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+        ...selectUsageLastRequestAtMax(requestUsageBuckets),
+      })
+      .from(requestUsageBuckets)
+      .where(windowFilter)
+      .groupBy(
+        requestUsageBuckets.provider,
+        requestUsageBuckets.endpoint,
+        requestUsageBuckets.model
+      ),
+    database
+      .select({
+        bucketStart: requestUsageBuckets.bucketStart,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+      })
+      .from(requestUsageBuckets)
+      .where(windowFilter)
+      .groupBy(requestUsageBuckets.bucketStart)
+      .orderBy(desc(requestUsageBuckets.bucketStart))
+      .limit(DETAIL_BUCKET_LIMIT),
+  ]);
 
   if (!keyRows.length) {
     return null;
@@ -350,6 +377,22 @@ export const getApiKeyUsageDetail = async (
     applyTotalsRow(totals, totalsRow);
   }
 
+  const accounts = accountRows
+    .map((row): ApiKeyUsageAccountBreakdown => {
+      const accountTotals = emptyUsageTotals();
+      applyTotalsRow(accountTotals, row);
+      return {
+        providerAccountId: row.providerAccountId,
+        provider: row.provider,
+        ...toAveragedTotals(accountTotals),
+      };
+    })
+    .sort(
+      (left, right) =>
+        right.requestCount - left.requestCount ||
+        (right.lastRequestAt ?? 0) - (left.lastRequestAt ?? 0)
+    );
+
   const endpoints: ApiKeyUsageEndpointBreakdown[] =
     mapEndpointUsageRows(endpointRows);
 
@@ -360,6 +403,7 @@ export const getApiKeyUsageDetail = async (
   return {
     apiKeyId,
     totals: toAveragedTotals(totals),
+    accounts,
     endpoints,
     models,
     buckets,

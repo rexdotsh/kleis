@@ -909,6 +909,7 @@ button.row:hover {
 }
 .switch {
   position: relative;
+  transition: background 160ms ease;
   width: 24px;
   height: 14px;
   background: var(--line-strong);
@@ -927,6 +928,9 @@ button.row:hover {
   transition:
     transform 160ms var(--ease-out),
     background 160ms ease;
+}
+.switch[aria-checked="true"] {
+  background: #44444a;
 }
 .switch[aria-checked="true"]::after {
   background: var(--text);
@@ -1510,9 +1514,6 @@ input[type="checkbox"]:disabled {
   color: var(--muted);
   cursor: pointer;
 }
-.pins .scope-check {
-  font-size: 12px;
-}
 
 /* Popover, inline forms and usage lists */
 
@@ -1609,52 +1610,70 @@ input[type="checkbox"]:disabled {
   padding-top: 8px;
 }
 
-.seg-choice {
-  display: inline-flex;
-}
-.seg-choice label {
-  position: relative;
-}
-.seg-choice input {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  opacity: 0;
-  cursor: pointer;
-}
-.seg-choice span {
-  display: block;
-  padding: 4px 12px;
-  line-height: 20px;
-  color: var(--muted);
-  border-radius: 4px;
-}
-.seg-choice label:hover span {
-  color: var(--text);
-}
-.seg-choice label:has(input:checked) span {
-  color: var(--text);
-  background: #1d1d20;
-}
-.seg-choice label:has(input:focus-visible) span {
-  outline: 1px solid var(--focus);
-}
-.pins {
+.access {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
-.pin-row {
+.access-row {
   display: grid;
-  grid-template-columns: 56px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 104px minmax(0, 1fr) 132px;
+  gap: 16px;
   align-items: center;
 }
-.pin-provider {
+.access-provider {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+}
+.access-row.off .access-provider span {
+  color: var(--muted);
+}
+.access-row select:disabled {
+  opacity: 0.45;
+}
+.access-note {
   font-size: 12px;
   color: var(--muted);
+  white-space: nowrap;
+}
+.access-note.warn {
+  color: var(--warn);
+}
+.access .scope-check {
+  font-size: 12px;
+}
+input[type="checkbox"].toggle {
+  position: relative;
+  display: block;
+  width: 24px;
+  height: 14px;
+  background: var(--line-strong);
+  border: 0;
+  border-radius: 7px;
+  transition: background 160ms ease;
+}
+input[type="checkbox"].toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  background: var(--muted);
+  border-radius: 50%;
+  clip-path: none;
+  transition:
+    transform 160ms var(--ease-out),
+    background 160ms ease;
+}
+input[type="checkbox"].toggle:checked {
+  background: #44444a;
+}
+input[type="checkbox"].toggle:checked::after {
+  background: var(--text);
+  transform: translateX(10px);
 }
 .json-edit > summary {
   display: inline-flex;
@@ -1748,6 +1767,16 @@ input[type="checkbox"]:disabled {
 }
 .usage-slot:empty {
   display: none;
+}
+.usage-slot:not(.usage-grid) > .usage-panel + .usage-panel {
+  margin-top: 20px;
+}
+:is(#accounts-list, #keys-list) .usage-slot .row[role="button"] {
+  cursor: pointer;
+  border-radius: 4px;
+}
+:is(#accounts-list, #keys-list) .usage-slot .row[role="button"]:hover {
+  background: var(--hover);
 }
 .snippet-head {
   display: flex;
@@ -2016,6 +2045,17 @@ input[type="checkbox"]:disabled {
 }
 
 @media (max-width: 640px) {
+  .access-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 8px;
+  }
+  .access-row select {
+    grid-row: 2;
+    grid-column: 1 / -1;
+  }
+  .access {
+    gap: 16px;
+  }
   .shell {
     padding: 0 16px;
   }
