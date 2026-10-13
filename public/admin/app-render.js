@@ -13,7 +13,6 @@ import {
   formatMetadataForInput,
   formatShortDate,
   dateInputValue,
-  hasUsageMetrics,
   isKeyActive,
   keyById,
   maskKey,
@@ -39,6 +38,7 @@ const accountName = (account) =>
   account.label || account.accountId || maskKey(account.id);
 const keyName = (key) => key.label || maskKey(key.key);
 const shortDate = formatShortDate;
+const hasTraffic = (usage) => normalizeUsage(usage).requestCount > 0;
 
 function untilText(timestamp) {
   const diff = timestamp - Date.now();
@@ -60,24 +60,51 @@ function quotaTimestamp(value) {
   return null;
 }
 
-const hasTraffic = (usage) => normalizeUsage(usage).requestCount > 0;
-
 const prefersMotion = () =>
   globalThis.matchMedia?.("(prefers-reduced-motion: no-preference)").matches ??
   false;
+const detailResizes = new WeakMap();
 
 // Re-renders replace the list's HTML, so rows are moved from where they were
 // to where they now are (FLIP); rows that are new simply appear.
 function renderWithMotion(container, update) {
   const before = new Map();
+  const details = new Map();
   const animate = prefersMotion() && container.querySelectorAll;
   if (animate) {
     for (const element of container.querySelectorAll("[data-flip]")) {
       before.set(element.dataset.flip, element.getBoundingClientRect().top);
     }
+    for (const detail of container.querySelectorAll(
+      ".detail:not(.inline-form)"
+    )) {
+      details.set(detail.dataset.detailFor, {
+        height: detail.getBoundingClientRect().height,
+        children: new Map(
+          Array.from(
+            detail.querySelectorAll(".facts > .fact, .usage-grid, .actions"),
+            (element) => [
+              detailMotionKey(element),
+              element.getBoundingClientRect().top,
+            ]
+          )
+        ),
+      });
+    }
+  }
+  // Snapshot the currently displayed geometry before interrupting a resize.
+  for (const detail of container.querySelectorAll?.(".detail") || []) {
+    detailResizes.get(detail)?.();
   }
   update();
   if (!(animate && before.size)) return;
+  let resizing = false;
+  for (const detail of container.querySelectorAll(
+    ".detail:not(.inline-form)"
+  )) {
+    const previous = details.get(detail.dataset.detailFor);
+    if (previous) resizing = animateDetailResize(detail, previous) || resizing;
+  }
   let lead = null;
   let leadDistance = 0;
   for (const element of container.querySelectorAll("[data-flip]")) {
@@ -91,7 +118,10 @@ function renderWithMotion(container, update) {
     element
       .animate(
         [{ transform: `translateY(${offset}px)` }, { transform: "none" }],
-        { duration: 260, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" }
+        {
+          duration: resizing ? 200 : 260,
+          easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+        }
       )
       .finished.then(done, done);
     if (Math.abs(offset) > leadDistance) {
@@ -102,11 +132,76 @@ function renderWithMotion(container, update) {
   lead?.classList.add("flipping-lead");
 }
 
+function detailMotionKey(element) {
+  return element.classList.contains("fact")
+    ? `fact:${element.querySelector(".fact-label").textContent}`
+    : element.classList.contains("actions")
+      ? "actions"
+      : "usage";
+}
+
+function animateDetailResize(detail, previous) {
+  const height = detail.getBoundingClientRect().height;
+  if (Math.abs(height - previous.height) < 1) return;
+  const timing = { duration: 200, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" };
+  const animations = [];
+  for (const element of detail.querySelectorAll(
+    ".facts > .fact, .usage-grid, .actions"
+  )) {
+    const top = previous.children.get(detailMotionKey(element));
+    if (top === undefined) continue;
+    const offset = top - element.getBoundingClientRect().top;
+    if (Math.abs(offset) >= 1)
+      animations.push(
+        element.animate(
+          [{ transform: `translateY(${offset}px)` }, { transform: "none" }],
+          timing
+        )
+      );
+  }
+  // The temporary shell keeps sibling FLIP motion compositor-only while the
+  // detail itself grows; it is removed as soon as the resize finishes.
+  const shell = document.createElement("div");
+  shell.className = "detail-resize";
+  shell.style.height = `${height}px`;
+  detail.replaceWith(shell);
+  shell.append(detail);
+  detail.style.position = "absolute";
+  detail.style.width = "100%";
+  detail.style.overflow = "hidden";
+  const finish = () => {
+    if (!detailResizes.has(detail)) return;
+    detailResizes.delete(detail);
+    for (const animation of animations) animation.cancel();
+    detail.style.position = "";
+    detail.style.width = "";
+    detail.style.overflow = "";
+    shell.replaceWith(detail);
+  };
+  detailResizes.set(detail, finish);
+  const animation = detail.animate(
+    [{ height: `${previous.height}px` }, { height: `${height}px` }],
+    timing
+  );
+  animations.push(animation);
+  animation.finished.then(finish, finish);
+  return true;
+}
+
 const SKELETON_HTML = Array.from(
   { length: 6 },
   (_, index) =>
     `<div class="row skeleton"><span class="bone" style="width:${[46, 38, 52, 34, 44, 40][index]}%"></span></div>`
 ).join("");
+
+const listSkeletonRows = (columns) =>
+  Array.from(
+    { length: 3 },
+    () =>
+      `<div class="row skeleton ${columns}"><span class="bone"></span><span class="l2">&nbsp;</span></div>`
+  ).join("");
+const ACCOUNT_LOADING_HTML = `<div class="row thead t-acc"><span>Account</span><span class="d">Limits</span><span class="num d">Token expires</span><span class="num">Requests</span></div>${PROVIDERS.map((provider) => `<div class="group"><span class="cap">${providerName(provider)}</span></div><div class="group-rows">${listSkeletonRows("t-acc")}</div>`).join("")}`;
+const KEY_LOADING_HTML = `<div class="row thead t-key"><span>Label</span><span class="d">Key</span><span class="d">Scope</span><span class="num">Requests</span><span class="num d">Last used</span></div>${listSkeletonRows("t-key")}${listSkeletonRows("t-key")}`;
 
 const kbd = (key) => `<span class="kbd" aria-hidden="true">${key}</span>`;
 
@@ -383,13 +478,12 @@ function resetText(window) {
 
 function limitFacts(account) {
   const quota = account.quota;
-  if (!quota) {
+  if (!quota)
     return [
       fact("Rate limits", '<span class="muted">\u2014</span>', [
         "waiting for the first sync",
       ]),
     ];
-  }
   const facts = accountWindows(account).map((window) => {
     const severity = limitSeverity(window.percent);
     return fact(
@@ -399,20 +493,19 @@ function limitFacts(account) {
       `<span class="bar${severity ? ` ${severity}` : ""}"><i style="width:${window.percent}%"></i></span>`
     );
   });
-  if (quota.error) {
+  if (quota.error)
     facts.push(
       `<div class="fact"><div class="fact-label">Limit sync</div><div class="fact-value err">Failed</div><div class="fact-sub clamp" title="${escapeHtml(quota.error)}">${escapeHtml(quota.error)}</div></div>`
     );
-  } else if (!facts.length) {
+  else if (!facts.length)
     facts.push(fact("Rate limits", '<span class="muted">None reported</span>'));
-  }
   return facts;
 }
 
 function creditsFact(account) {
   const data = account.quota?.data;
   if (data?.provider !== "codex") return "";
-  const credits = (data.resetCredits?.credits || [])
+  const credits = (data?.resetCredits?.credits || [])
     .filter((credit) => credit.status === "available")
     .sort(
       (a, b) =>
@@ -420,7 +513,7 @@ function creditsFact(account) {
         (quotaTimestamp(b.expiresAt) ?? Number.POSITIVE_INFINITY)
     );
   const available =
-    data.resetCredits?.availableCount ?? data.status?.resetCreditsAvailable;
+    data?.resetCredits?.availableCount ?? data?.status?.resetCreditsAvailable;
   const count = Math.max(
     credits.length,
     typeof available === "number" ? available : 0
@@ -705,7 +798,7 @@ function renderAccounts() {
             (a.createdAt ?? 0) - (b.createdAt ?? 0)
         );
       if (!rows.length) return "";
-      return `${groupHtml(provider, statuses.get(provider), rows.length)}<div class="group-rows">${rows
+      return `${groupHtml(provider, statuses.get(provider), rows.length)}<div class="group-rows" data-flip="rows:${provider}">${rows
         .map((account) =>
           accountRowHtml(account, isAccountServing(account, statuses))
         )
@@ -847,8 +940,10 @@ function keyFacts(key) {
   const usage = normalizeUsage(usageForKey(key.id));
   const cached = cacheReadRate(usage.inputTotalTokens, usage.cacheReadTokens);
   const pinned = (key.accountScopes || [])
-    .map((accountId) => accountById(accountId))
-    .filter(Boolean)
+    .map(
+      (accountId) =>
+        accountById(accountId) || { id: accountId, provider: "Account" }
+    )
     .map(
       (account) =>
         `${escapeHtml(providerName(account.provider))} via ${escapeHtml(accountName(account))}`
@@ -945,11 +1040,7 @@ function keyDetailHtml(key) {
   return `<div class="detail${entering}" data-detail-for="${key.id}" data-flip="detail:${key.id}">
     ${keyLine}
     <div class="facts">${keyFacts(key)}</div>
-    ${
-      hasTraffic(usageForKey(key.id)) || snippet
-        ? `<div class="usage-grid">${hasTraffic(usageForKey(key.id)) ? `<div class="usage-slot" data-usage-for="key:${key.id}">${usageSlotHtml("key", key.id)}</div>` : ""}${snippet}</div>`
-        : ""
-    }
+    ${hasTraffic(usageForKey(key.id)) || snippet ? `<div class="usage-grid">${hasTraffic(usageForKey(key.id)) ? `<div class="usage-slot" data-usage-for="key:${key.id}">${usageSlotHtml("key", key.id)}</div>` : ""}${snippet}</div>` : ""}
     <div class="actions">${actions.join("")}<div class="right"><span>Collapse <span class="kbd">esc</span></span></div></div>
   </div>`;
 }
@@ -1120,38 +1211,50 @@ function menuHtml(kind, id) {
 
 /* Usage inside expanded rows */
 
-const DETAIL_LOADING_HTML =
-  '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
+function usagePanelHtml(label, table, columns, message = "", loading = false) {
+  const placeholder = loading
+    ? Array.from(
+        { length: 3 },
+        () => `<div class="row skeleton"><span class="bone"></span></div>`
+      ).join("")
+    : `<p class="usage-note muted">${escapeHtml(message || "No usage in this window.")}</p>`;
+  if (!(loading || message || table.body)) return "";
+  return `<div class="usage-panel"><div class="list-label">${label}${message ? `<span class="usage-status err" title="${escapeHtml(message)}">Unavailable</span>` : ""}</div><div class="list usage-table"><div class="row thead ${columns}">${table.head}</div>${table.body || placeholder}</div></div>`;
+}
+
+const DASHBOARD_LOADING_HTML = `<div class="kpis">${["Requests", "Success", "Tokens", "Cached input", "Avg latency"].map((label) => `<div class="kpi"><div class="kpi-label">${label}</div><div class="val"><span class="bone"></span></div><div class="sub">&nbsp;</div></div>`).join("")}</div><div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><span class="bone chart-bone"></span></div></div><div class="tables">${["By provider", "Top keys"].map((label) => `<div><div class="sh"><h2>${label}</h2></div><div class="list dashboard-table">${SKELETON_HTML}</div></div>`).join("")}</div>`;
 
 function usageSlotHtml(kind, id) {
   const windowMs =
     kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
   const entry = state.usageDetails.get(`${kind}:${id}:${windowMs}`);
-  if (!entry || entry.status === "loading") {
-    return '<p class="usage-note muted"><span class="spinner"></span>Loading usage</p>';
-  }
-  if (entry.status === "error") {
-    return `<p class="usage-note err">${escapeHtml(entry.error)}</p>`;
-  }
-  const { data } = entry;
-  if (!data.totals?.requestCount) return "";
+  const data = entry?.data || state.visibleUsageDetails.get(`${kind}:${id}`);
+  if (entry?.data) state.visibleUsageDetails.set(`${kind}:${id}`, entry.data);
+  const loading = !data && entry?.status !== "error";
+  const message = entry?.status === "error" ? entry.error : "";
   return [
-    kind === "account" ? keyListHtml(data.apiKeys, data.totals) : "",
-    modelListHtml(data.models),
+    kind === "account"
+      ? keyListHtml(data?.apiKeys, data?.totals, message, loading)
+      : "",
+    modelListHtml(data?.models, message, loading),
   ]
     .filter(Boolean)
-    .map((list) => `<div>${list}</div>`)
     .join("");
 }
 
 function renderUsageSlot(kind, id) {
   const slot = document.querySelector(`[data-usage-for="${kind}:${id}"]`);
-  if (slot) slot.innerHTML = usageSlotHtml(kind, id);
+  if (!slot) return;
+  const list = slot.closest?.("#accounts-list, #keys-list");
+  const update = () => {
+    slot.innerHTML = usageSlotHtml(kind, id);
+  };
+  if (list) renderWithMotion(list, update);
+  else update();
 }
 
-function modelListHtml(rows) {
-  if (!rows?.length) return "";
-  const body = [...rows]
+function modelListHtml(rows, message, loading) {
+  const body = [...(rows || [])]
     .sort((a, b) => (b.requestCount ?? 0) - (a.requestCount ?? 0))
     .map((row) => {
       const usage = normalizeUsage(row);
@@ -1162,13 +1265,21 @@ function modelListHtml(rows) {
       return `<div class="row t-model"><span class="name"><span class="mono ellipsis">${escapeHtml(row.model?.trim() || "(unknown)")}</span><span class="tag d">${escapeHtml(`${providerName(row.provider)} \u00b7 ${row.endpoint}`)}</span></span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cached === null ? "\u2014" : `${cached}%`}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
     })
     .join("");
-  return `<div class="list-label">By model</div><div class="list"><div class="row thead t-model"><span>Model</span><span class="num">Requests</span><span class="num">Tokens</span><span class="num d">Cached</span><span class="num d">Latency</span></div>${body}</div>`;
+  return usagePanelHtml(
+    "By model",
+    {
+      head: '<span>Model</span><span class="num">Requests</span><span class="num">Tokens</span><span class="num d">Cached</span><span class="num d">Latency</span>',
+      body,
+    },
+    "t-model",
+    message,
+    loading
+  );
 }
 
-function keyListHtml(rows, totals) {
-  if (!rows?.length) return "";
+function keyListHtml(rows, totals, message, loading) {
   const total = normalizeUsage(totals).requestCount;
-  const body = [...rows]
+  const body = [...(rows || [])]
     .sort((a, b) => (b.requestCount ?? 0) - (a.requestCount ?? 0))
     .map((row) => {
       const usage = normalizeUsage(row);
@@ -1178,7 +1289,16 @@ function keyListHtml(rows, totals) {
       return `<div class="row t-bykey"><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
     })
     .join("");
-  return `<div class="list-label">By key</div><div class="list"><div class="row thead t-bykey"><span>Key</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span></div>${body}</div>`;
+  return usagePanelHtml(
+    "By key",
+    {
+      head: '<span>Key</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
+      body,
+    },
+    "t-bykey",
+    message,
+    loading
+  );
 }
 
 function apiKeyDisplayHtml(apiKeyId) {
@@ -1248,6 +1368,14 @@ function setupSnippet(key, { maskKey: masked = false } = {}) {
 
 /* Connect */
 
+function renderOAuthLoading(provider, isDevice) {
+  const target = accountById(state.reauthorizeAccountId);
+  const name = target ? accountName(target) : null;
+  const container = $("#oauth-flow-active");
+  container.innerHTML = `<div class="flow" aria-busy="true"><p class="flow-title">${name ? `Reauthorizing <strong>${escapeHtml(name)}</strong>` : `Signing in to ${escapeHtml(providerName(provider))}`}</p><div class="field"><span class="field-label">1 \u00b7 Open this link and approve</span><div class="input-row"><span class="bone flow-url-skeleton"></span><button class="btn btn-ghost btn-sm" type="button" disabled>Copy</button></div></div><div class="field"><span class="field-label">2 \u00b7 ${isDevice ? "Enter this code on that page" : "Paste the code you get back"}</span>${isDevice ? '<div class="device-code"><span class="bone"></span></div>' : '<div class="field-input flow-input-skeleton"><span class="bone"></span></div>'}</div><div class="flow-actions"><button class="btn btn-primary btn-block" type="button" disabled>${isDevice ? "I\u2019ve approved it" : "Connect account"}</button><button id="btn-oauth-loading-cancel" class="btn btn-ghost" type="button">Start over</button></div></div>`;
+  $("#btn-oauth-loading-cancel").addEventListener?.("click", cancelOAuthFlow);
+}
+
 function renderOAuthFlow(data, provider) {
   const container = $("#oauth-flow-active");
   container.style.display = "block";
@@ -1296,7 +1424,7 @@ function renderOAuthFlow(data, provider) {
 
 function renderAttention() {
   const el = $("#attention");
-  if (!el) return;
+  if (!el || !state.overviewReady) return;
   const statuses = providerStatusMap();
   const items = [];
   for (const account of state.accounts) {
@@ -1465,7 +1593,7 @@ function niceCeil(value) {
 function requestChartHtml(data, width) {
   const size = data.bucketSizeMs;
   const buckets = data.buckets || [];
-  if (!size || !buckets.length) return "";
+  if (!size || !buckets.length) return emptyChartHtml();
   const windowMs = data.windowMs ?? state.dashboardWindowMs;
   const end =
     typeof data.now === "number" ? data.now : buckets.at(-1).bucketStart + size;
@@ -1474,7 +1602,7 @@ function requestChartHtml(data, width) {
   const last = Math.floor((end - 1) / size) * size;
   const slots = [];
   for (let at = first; at <= last; at += size) slots.push(at);
-  if (slots.length < 2) return "";
+  if (slots.length < 2) return emptyChartHtml();
 
   const counts = new Map(
     buckets.map((bucket) => [bucket.bucketStart, bucket.requestCount])
@@ -1534,6 +1662,10 @@ function requestChartHtml(data, width) {
   </div>`;
 }
 
+function emptyChartHtml() {
+  return '<div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><p class="usage-note muted">No usage in this window.</p></div></div>';
+}
+
 function showChartHover(plot, clientX) {
   if (chart.slots.length < 2) return;
   const offset = clientX - plot.getBoundingClientRect().left;
@@ -1573,7 +1705,6 @@ function hideChartHover(plot) {
 
 function providerTableHtml(data, metrics) {
   const providers = data.byProvider || [];
-  if (!providers.length) return "";
   const models = new Map();
   for (const row of data.byModel || []) {
     const name = row.model?.trim() || "(unknown)";
@@ -1614,12 +1745,11 @@ function providerTableHtml(data, metrics) {
     })
     .join("");
 
-  return `<div><div class="sh"><h2>By provider</h2></div><div class="list"><div class="row thead t-prov"><span>Provider</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Cached</span></div>${rows}</div></div>`;
+  return `<div><div class="sh"><h2>By provider</h2></div><div class="list dashboard-table" tabindex="0" aria-label="Usage by provider"><div class="row thead t-prov"><span>Provider</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Cached</span></div>${rows || '<p class="list-note muted">No usage in this window.</p>'}</div></div>`;
 }
 
 function topKeysHtml(data, metrics) {
   const rows = (data.byKey || []).slice(0, 5);
-  if (!rows.length) return "";
   const body = rows
     .map((row) => {
       const share = metrics.requestCount
@@ -1628,18 +1758,19 @@ function topKeysHtml(data, metrics) {
       return `<div class="row t-keys" data-key-id="${escapeHtml(row.apiKeyId)}" tabindex="0" role="button"><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${formatCount(row.requestCount)}</span><span class="num muted">${share}%</span></div>`;
     })
     .join("");
-  return `<div><div class="sh"><h2>Top keys</h2><div class="right"><button class="link small" type="button" data-action="go-keys">View all keys</button></div></div><div class="list"><div class="row thead t-keys"><span>Key</span><span class="num">Requests</span><span class="num">Share</span></div>${body}</div></div>`;
+  return `<div><div class="sh"><h2>Top keys</h2><div class="right"><button class="link small" type="button" data-action="go-keys">View all keys</button></div></div><div class="list dashboard-table" tabindex="0" aria-label="Top keys"><div class="row thead t-keys"><span>Key</span><span class="num">Requests</span><span class="num">Share</span></div>${body || '<p class="list-note muted">No usage in this window.</p>'}</div></div>`;
 }
 
-function renderDashboard(data) {
+function renderDashboard(rawData) {
+  if (!state.accountsLoaded) return;
+  state.overviewReady = true;
+  $("#overview-loading").hidden = true;
+  $("#attention").hidden = false;
+  $("#dash-content").hidden = false;
   renderAttention();
   const el = $("#dash-content");
+  const data = rawData || {};
   const metrics = normalizeUsage(data?.totals);
-  if (!data?.totals || !hasUsageMetrics(metrics)) {
-    el.innerHTML =
-      '<div class="empty-state"><p>No usage in this window.</p></div>';
-    return;
-  }
 
   const width = el.clientWidth || 1200;
   const windowLabel = usageWindowLabel(
@@ -1652,7 +1783,7 @@ function renderDashboard(data) {
   ].join("");
 
   const plot = el.querySelector(".plot");
-  if (plot) {
+  if (plot?.querySelector(".plot-svg")) {
     let frame = 0;
     let pointerX = 0;
     plot.addEventListener("pointermove", (event) => {
@@ -1671,7 +1802,10 @@ function renderDashboard(data) {
 }
 
 export {
-  DETAIL_LOADING_HTML,
+  renderOAuthLoading,
+  ACCOUNT_LOADING_HTML,
+  DASHBOARD_LOADING_HTML,
+  KEY_LOADING_HTML,
   SKELETON_HTML,
   menuHtml,
   renderAccounts,

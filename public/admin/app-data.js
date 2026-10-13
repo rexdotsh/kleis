@@ -1,14 +1,18 @@
 import {
-  DETAIL_LOADING_HTML,
-  SKELETON_HTML,
+  ACCOUNT_LOADING_HTML,
+  DASHBOARD_LOADING_HTML,
+  KEY_LOADING_HTML,
   renderAccounts,
+  renderAttention,
   renderDashboard,
   renderKeys,
   renderOAuthFlow,
+  renderOAuthLoading,
   renderUsageSlot,
 } from "./app-render.js";
 
 const DEFAULT_KEY_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const USAGE_DETAIL_TTL_MS = 30_000;
 const ADMIN_TOKEN_STORAGE_KEY = "kleis_admin_token";
 const PROVIDER_ORDER = ["codex", "claude"];
 
@@ -30,6 +34,8 @@ const state = {
   accountUsageRequestSeq: 0,
   keyUsageRequestSeq: 0,
   accounts: [],
+  accountsLoaded: false,
+  overviewReady: false,
   accountsById: new Map(),
   providerStatuses: [],
   accountUsageById: new Map(),
@@ -43,8 +49,10 @@ const state = {
   keyFilter: "",
   accountFilter: "",
   expandedAccountId: null,
+  pendingExpandedAccountId: null,
   showAllReauthorize: false,
   expandedKeyId: null,
+  pendingExpandedKeyId: null,
   cursorAccountId: null,
   cursorKeyId: null,
   enteringDetail: null,
@@ -53,6 +61,7 @@ const state = {
   creatingKey: false,
   openSnippets: new Set(),
   usageDetails: new Map(),
+  visibleUsageDetails: new Map(),
   activeOAuth: null,
   reauthorizeAccountId: null,
   oauthRequestSeq: 0,
@@ -61,6 +70,7 @@ const state = {
   revealedKeyIds: new Set(),
   dashboardWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   dashboardData: null,
+  dashboardError: null,
   dashboardLoading: false,
   dashboardRequestSeq: 0,
   pendingResetRedemptions: new Map(),
@@ -132,6 +142,14 @@ function toast(message, type = "success", action = null) {
   }
   $("#toast-container").appendChild(el);
   setTimeout(dismiss, action ? 6000 : 3500);
+}
+
+function setButtonBusy(button, busy) {
+  if (!button) return;
+  button.disabled = busy;
+  if (busy) button.classList.add("is-busy");
+  else button.classList.remove("is-busy");
+  button.setAttribute?.("aria-busy", String(busy));
 }
 
 let confirmResolve = null;
@@ -418,6 +436,14 @@ function usageMapFromList(items, idField) {
 }
 
 function switchToTab(name) {
+  if (name !== "accounts") {
+    state.pendingExpandedAccountId = null;
+    scheduleUsagePrefetch("account", null);
+  }
+  if (name !== "keys") {
+    state.pendingExpandedKeyId = null;
+    scheduleUsagePrefetch("key", null);
+  }
   for (const t of $$(".tab")) {
     const active = t.dataset.tab === name;
     t.classList.toggle("active", active);
@@ -439,7 +465,8 @@ function switchToTab(name) {
 function showLoading(containerId) {
   const el = $(`#${containerId}`);
   if (el && !el.querySelector(".skeleton")) {
-    el.innerHTML = SKELETON_HTML;
+    el.innerHTML =
+      containerId === "accounts-list" ? ACCOUNT_LOADING_HTML : KEY_LOADING_HTML;
   }
 }
 
@@ -607,7 +634,13 @@ async function loadDashboard() {
   state.dashboardAbort = controller;
   if (refreshButton) refreshButton.disabled = true;
   if (state.dashboardData) el.classList.add("is-loading");
-  else el.innerHTML = DETAIL_LOADING_HTML;
+  else {
+    const loading = $("#overview-loading");
+    loading.innerHTML = DASHBOARD_LOADING_HTML;
+    loading.hidden = false;
+    el.hidden = true;
+    $("#attention").hidden = true;
+  }
 
   try {
     const data = await api(
@@ -623,51 +656,136 @@ async function loadDashboard() {
     }
 
     state.dashboardData = data;
-    renderDashboard(data);
+    state.dashboardError = null;
   } catch (e) {
     if (requestSeq !== state.dashboardRequestSeq) return;
-    state.dashboardData = null;
     const message = e instanceof Error ? e.message : "Failed to load usage";
-    el.innerHTML = `<div class="empty-state"><p class="err">${escapeHtml(message)}</p></div>`;
+    if (state.dashboardData) toast(message, "error");
+    else state.dashboardError = message;
   } finally {
     if (requestSeq === state.dashboardRequestSeq) {
       state.dashboardLoading = false;
       el.classList.remove("is-loading");
       if (refreshButton) refreshButton.disabled = false;
+      renderOverviewWhenReady();
     }
   }
 }
 
-function clearUsageDetails(kind) {
-  for (const key of state.usageDetails.keys()) {
-    if (key.startsWith(`${kind}:`)) state.usageDetails.delete(key);
+function renderOverviewWhenReady() {
+  if (!state.accountsLoaded || state.dashboardLoading) return;
+  if (!(state.dashboardData || state.dashboardError)) return;
+  renderDashboard(state.dashboardData || {});
+  if (state.dashboardError) {
+    const plot = $("#dash-content").querySelector(".plot");
+    if (plot)
+      plot.innerHTML = `<p class="usage-note err">${escapeHtml(state.dashboardError)}</p>`;
   }
 }
 
-async function requestUsageDetail(kind, id) {
+function invalidateUsageDetails(kind) {
+  for (const [key, entry] of state.usageDetails) {
+    if (key.startsWith(`${kind}:`))
+      state.usageDetails.set(key, {
+        ...entry,
+        status: entry.data ? "ready" : "stale",
+        updatedAt: 0,
+      });
+  }
+}
+
+function pruneUsageDetails(kind, ids) {
+  for (const key of state.usageDetails.keys()) {
+    if (key.startsWith(`${kind}:`) && !ids.has(key.split(":")[1]))
+      state.usageDetails.delete(key);
+  }
+  for (const key of state.visibleUsageDetails.keys()) {
+    if (key.startsWith(`${kind}:`) && !ids.has(key.split(":")[1]))
+      state.visibleUsageDetails.delete(key);
+  }
+}
+
+function requestUsageDetail(kind, id, { notify = true } = {}) {
   const windowMs =
     kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
   const cacheKey = `${kind}:${id}:${windowMs}`;
-  if (state.usageDetails.has(cacheKey)) return;
-  state.usageDetails.set(cacheKey, { status: "loading" });
-  const token = state.token;
-  let entry;
-  try {
-    const data = await api(
-      `/admin/${kind === "account" ? "accounts" : "keys"}/${id}/usage?windowMs=${windowMs}`
-    );
-    entry = { status: "ready", data };
-  } catch (e) {
-    entry = { status: "error", error: e.message };
+  const previous = state.usageDetails.get(cacheKey);
+  if (previous?.status === "loading") {
+    if (!notify) previous.notify = false;
+    return previous.promise;
   }
-  if (token !== state.token || !state.usageDetails.has(cacheKey)) return;
-  state.usageDetails.set(cacheKey, entry);
-  renderUsageSlot(kind, id);
+  if (Date.now() - (previous?.updatedAt || 0) < USAGE_DETAIL_TTL_MS)
+    return Promise.resolve(previous);
+  const pending = { status: "loading", data: previous?.data, notify };
+  state.usageDetails.set(cacheKey, pending);
+  const token = state.token;
+  pending.promise = (async () => {
+    let entry;
+    try {
+      const data = await api(
+        `/admin/${kind === "account" ? "accounts" : "keys"}/${id}/usage?windowMs=${windowMs}`
+      );
+      entry = { status: "ready", data, updatedAt: Date.now() };
+    } catch (e) {
+      entry = {
+        status: "error",
+        error: e.message,
+        data: previous?.data,
+        updatedAt: Date.now(),
+      };
+    }
+    if (token !== state.token || state.usageDetails.get(cacheKey) !== pending)
+      return;
+    state.usageDetails.set(cacheKey, entry);
+    if (pending.notify) renderUsageSlot(kind, id);
+    return entry;
+  })();
+  return pending.promise;
+}
+
+function usageHasTraffic(kind, id) {
+  return (
+    normalizeUsage(kind === "account" ? accountUsageForId(id) : usageForKey(id))
+      .requestCount > 0
+  );
+}
+
+async function waitForUsageDetail(kind, id, timeoutMs = 300) {
+  if (!usageHasTraffic(kind, id)) return;
+  const windowMs =
+    kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
+  const cached = state.usageDetails.get(`${kind}:${id}:${windowMs}`);
+  const pending = requestUsageDetail(kind, id);
+  if (cached?.data) return;
+  let timer;
+  await Promise.race([
+    pending,
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    }),
+  ]);
+  clearTimeout(timer);
+}
+
+const prefetchTimers = new Map();
+function scheduleUsagePrefetch(kind, id) {
+  clearTimeout(prefetchTimers.get(kind));
+  prefetchTimers.delete(kind);
+  if (!id || !usageHasTraffic(kind, id)) return;
+  const token = state.token;
+  prefetchTimers.set(
+    kind,
+    setTimeout(() => {
+      prefetchTimers.delete(kind);
+      if (token === state.token && usageHasTraffic(kind, id))
+        requestUsageDetail(kind, id);
+    }, 120)
+  );
 }
 
 async function loadAccounts() {
   const requestSeq = ++state.accountsRequestSeq;
-  clearUsageDetails("account");
+  invalidateUsageDetails("account");
   if (!state.accounts.length) showLoading("accounts-list");
   try {
     const [accountsResult, usageResult] = await Promise.allSettled([
@@ -678,8 +796,16 @@ async function loadAccounts() {
     if (accountsResult.status !== "fulfilled") throw accountsResult.reason;
     if (requestSeq !== state.accountsRequestSeq) return;
 
-    state.accounts = accountsResult.value.accounts || [];
+    const accounts = accountsResult.value.accounts || [];
+    const missingQuotas = new Set(
+      accounts.filter((account) => !account.quota).map((account) => account.id)
+    );
+    state.accounts = accounts.map((account) => ({
+      ...account,
+      quota: account.quota || state.accountsById.get(account.id)?.quota,
+    }));
     state.accountsById = usageMapFromList(state.accounts, "id");
+    pruneUsageDetails("account", state.accountsById);
     state.providerStatuses = accountsResult.value.providers || [];
 
     if (usageResult.status === "fulfilled") {
@@ -691,8 +817,10 @@ async function loadAccounts() {
         "providerAccountId"
       );
     } else {
-      state.accountUsageById = new Map();
-      toast("Failed to load account usage", "error");
+      toast(
+        usageResult.reason?.message || "Failed to load account usage",
+        "error"
+      );
     }
 
     syncAccountWindowButtons();
@@ -701,26 +829,32 @@ async function loadAccounts() {
     if (state.keysLoaded) {
       renderKeys();
     }
-    loadMissingQuotas(requestSeq);
+    finishAccountLoad(requestSeq, missingQuotas);
   } catch (e) {
     if (requestSeq !== state.accountsRequestSeq) return;
-    state.accounts = [];
-    state.accountsById = new Map();
-    state.accountUsageById = new Map();
-    state.providerStatuses = [];
-    $("#accounts-list").innerHTML =
-      `<div class="empty-state"><p class="err">${escapeHtml(e.message)}</p></div>`;
+    if (!state.accounts.length)
+      $("#accounts-list").innerHTML =
+        `<div class="empty-state"><p class="err">${escapeHtml(e.message)}</p></div>`;
     toast(e.message, "error");
+    state.accountsLoaded = true;
+    renderOverviewWhenReady();
   }
+}
+
+async function finishAccountLoad(requestSeq, missingQuotas) {
+  await loadMissingQuotas(requestSeq, missingQuotas);
+  if (requestSeq !== state.accountsRequestSeq) return;
+  state.accountsLoaded = true;
+  renderOverviewWhenReady();
 }
 
 // /admin/accounts returns cached limit snapshots without waiting on providers;
 // accounts without one yet (after a deploy, or a new account) fill in here.
-async function loadMissingQuotas(requestSeq) {
+async function loadMissingQuotas(requestSeq, missingQuotas) {
   const missing = state.accounts.some(
     (account) =>
       (account.provider === "codex" || account.provider === "claude") &&
-      !account.quota
+      (!account.quota || missingQuotas.has(account.id))
   );
   if (!missing) return;
   try {
@@ -743,7 +877,6 @@ async function loadMissingQuotas(requestSeq) {
 
 async function loadAccountUsage() {
   const requestSeq = ++state.accountUsageRequestSeq;
-  clearUsageDetails("account");
   try {
     const usage = await api(
       `/admin/accounts/usage?windowMs=${state.accountUsageWindowMs}`
@@ -753,7 +886,12 @@ async function loadAccountUsage() {
       state.accountUsageWindowMs = usage.windowMs;
       syncAccountWindowButtons();
     }
-    state.accountUsageById = usageMapFromList(usage.usage, "providerAccountId");
+    const byId = usageMapFromList(usage.usage, "providerAccountId");
+    const expanded = state.expandedAccountId;
+    if (expanded && normalizeUsage(byId.get(expanded)).requestCount > 0)
+      await requestUsageDetail("account", expanded, { notify: false });
+    if (requestSeq !== state.accountUsageRequestSeq) return;
+    state.accountUsageById = byId;
     renderAccounts();
   } catch (e) {
     if (requestSeq !== state.accountUsageRequestSeq) return;
@@ -763,7 +901,6 @@ async function loadAccountUsage() {
 
 async function loadKeyUsage() {
   const requestSeq = ++state.keyUsageRequestSeq;
-  clearUsageDetails("key");
   try {
     const usage = await api(
       `/admin/keys/usage?windowMs=${state.keyUsageWindowMs}`
@@ -773,7 +910,12 @@ async function loadKeyUsage() {
       state.keyUsageWindowMs = usage.windowMs;
       syncKeyWindowButtons();
     }
-    state.keyUsageById = usageMapFromList(usage.usage, "apiKeyId");
+    const byId = usageMapFromList(usage.usage, "apiKeyId");
+    const expanded = state.expandedKeyId;
+    if (expanded && normalizeUsage(byId.get(expanded)).requestCount > 0)
+      await requestUsageDetail("key", expanded, { notify: false });
+    if (requestSeq !== state.keyUsageRequestSeq) return;
+    state.keyUsageById = byId;
     renderKeys();
   } catch (e) {
     if (requestSeq !== state.keyUsageRequestSeq) return;
@@ -783,7 +925,7 @@ async function loadKeyUsage() {
 
 async function loadKeys() {
   const requestSeq = ++state.keysRequestSeq;
-  clearUsageDetails("key");
+  invalidateUsageDetails("key");
   if (!state.keysLoaded) showLoading("keys-list");
   try {
     const [keysResult, usageResult] = await Promise.allSettled([
@@ -796,6 +938,7 @@ async function loadKeys() {
 
     state.keys = keysResult.value.keys || [];
     state.keysById = usageMapFromList(state.keys, "id");
+    pruneUsageDetails("key", state.keysById);
     state.keysLoaded = true;
 
     if (usageResult.status === "fulfilled") {
@@ -807,8 +950,10 @@ async function loadKeys() {
         "apiKeyId"
       );
     } else {
-      state.keyUsageById = new Map();
-      toast("Failed to load API key usage", "error");
+      toast(
+        usageResult.reason?.message || "Failed to load API key usage",
+        "error"
+      );
     }
 
     syncKeyWindowButtons();
@@ -818,13 +963,9 @@ async function loadKeys() {
     }
   } catch (e) {
     if (requestSeq !== state.keysRequestSeq) return;
-    state.keys = [];
-    state.keysById = new Map();
-    state.keyUsageById = new Map();
-    state.keysLoaded = true;
-    $("#keys-foot").innerHTML = "";
-    $("#keys-list").innerHTML =
-      `<div class="empty-state"><p class="err">${escapeHtml(e.message)}</p></div>`;
+    if (!state.keysLoaded)
+      $("#keys-list").innerHTML =
+        `<div class="empty-state"><p class="err">${escapeHtml(e.message)}</p></div>`;
     toast(e.message, "error");
   }
 }
@@ -929,21 +1070,15 @@ async function refreshAccount(id) {
   const btn = document.querySelector(
     `[data-action="refresh-account"][data-account-id="${id}"]`
   );
-  const label = btn?.textContent;
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Refreshing\u2026';
-  }
+  setButtonBusy(btn, true);
   try {
     await api(`/admin/accounts/${id}/refresh`, { method: "POST" });
     toast("Token refreshed");
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = label || "Refresh token";
-    }
+  } finally {
+    setButtonBusy(btn, false);
   }
 }
 
@@ -1055,9 +1190,7 @@ async function saveAccountEdits() {
     return;
   }
 
-  const previousLabel = saveButton.textContent;
-  saveButton.disabled = true;
-  saveButton.innerHTML = '<span class="spinner"></span> Saving…';
+  setButtonBusy(saveButton, true);
   try {
     await api(`/admin/accounts/${accountId}`, {
       method: "PATCH",
@@ -1072,8 +1205,8 @@ async function saveAccountEdits() {
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
-    saveButton.disabled = false;
-    saveButton.textContent = previousLabel || "Save";
+  } finally {
+    setButtonBusy(saveButton, false);
   }
 }
 
@@ -1102,8 +1235,7 @@ async function createKey() {
     ...(modelScopes.length ? { modelScopes } : {}),
   };
 
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Creating…';
+  setButtonBusy(btn, true);
   try {
     const data = await api("/admin/keys", {
       method: "POST",
@@ -1116,8 +1248,8 @@ async function createKey() {
     await loadKeys();
   } catch (e) {
     toast(e.message, "error");
-    btn.disabled = false;
-    btn.textContent = "Create key";
+  } finally {
+    setButtonBusy(btn, false);
   }
 }
 
@@ -1179,9 +1311,7 @@ async function saveKeyEdits() {
     }
   }
 
-  const previousLabel = saveButton.textContent;
-  saveButton.disabled = true;
-  saveButton.innerHTML = '<span class="spinner"></span> Saving…';
+  setButtonBusy(saveButton, true);
   try {
     await api(`/admin/keys/${keyId}`, {
       method: "PATCH",
@@ -1192,8 +1322,8 @@ async function saveKeyEdits() {
     await loadKeys();
   } catch (e) {
     toast(e.message, "error");
-    saveButton.disabled = false;
-    saveButton.textContent = previousLabel || "Save";
+  } finally {
+    setButtonBusy(saveButton, false);
   }
 }
 
@@ -1232,11 +1362,7 @@ async function rotateKey(id, button) {
     payload.expiresAt = existing.expiresAt;
   }
 
-  const previousText = button?.textContent;
-  if (button) {
-    button.disabled = true;
-    button.innerHTML = '<span class="spinner"></span>';
-  }
+  setButtonBusy(button, true);
   const revokeOld = $("#rotate-revoke-old")?.checked ?? false;
   let keyCreated = false;
   try {
@@ -1264,10 +1390,7 @@ async function rotateKey(id, button) {
       toast(e.message, "error");
     }
   } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = previousText || "Rotate";
-    }
+    setButtonBusy(button, false);
   }
 }
 
@@ -1319,10 +1442,11 @@ async function copyToClipboard(text, btn, confirmation = "Copied") {
       toast(confirmation);
       return;
     }
-    const original = btn.textContent;
-    btn.textContent = "Copied";
+    btn.dataset.confirmation = "Copied";
+    btn.classList.add("copy-confirmed");
     setTimeout(() => {
-      btn.textContent = original;
+      btn.classList.remove("copy-confirmed");
+      delete btn.dataset.confirmation;
     }, 2000);
   } catch {
     toast("Failed to copy", "error");
@@ -1402,7 +1526,7 @@ function cancelOAuthFlow() {
   state.activeOAuth = null;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
-  $("#btn-oauth-start").disabled = false;
+  setButtonBusy($("#btn-oauth-start"), false);
   $("#btn-oauth-start").style.display = "";
   clearReauthorization();
 }
@@ -1412,8 +1536,14 @@ async function startOAuth() {
   const requestSeq = ++state.oauthRequestSeq;
   const provider = $("#oauth-provider").value;
   const btn = $("#btn-oauth-start");
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Starting…';
+  setButtonBusy(btn, true);
+  btn.style.display = "none";
+  const flow = $("#oauth-flow-active");
+  flow.style.display = "block";
+  renderOAuthLoading(
+    provider,
+    provider === "codex" && $("#oauth-codex-mode").value === "headless"
+  );
 
   try {
     const body = {};
@@ -1456,10 +1586,11 @@ async function startOAuth() {
   } catch (e) {
     if (requestSeq !== state.oauthRequestSeq) return;
     toast(e.message, "error");
+    flow.innerHTML = `<div class="flow"><p class="err">${escapeHtml(e.message)}</p><button id="btn-oauth-retry" class="btn btn-ghost" type="button">Start over</button></div>`;
+    $("#btn-oauth-retry").addEventListener?.("click", cancelOAuthFlow);
   } finally {
     if (requestSeq === state.oauthRequestSeq) {
-      btn.disabled = Boolean(state.activeOAuth);
-      btn.textContent = "Continue";
+      setButtonBusy(btn, Boolean(state.activeOAuth));
     }
   }
 }
@@ -1468,9 +1599,7 @@ async function completeOAuth() {
   if (!state.activeOAuth) return;
   const requestSeq = state.oauthRequestSeq;
   const btn = $("#btn-oauth-complete");
-  const label = btn.textContent;
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Connecting…';
+  setButtonBusy(btn, true);
 
   try {
     const body = { state: state.activeOAuth.state };
@@ -1496,8 +1625,7 @@ async function completeOAuth() {
     const error = $("#oauth-flow-error");
     error.textContent = `${e.message}. If this code was consumed or the flow expired, cancel and start over.`;
     error.hidden = false;
-    btn.disabled = false;
-    btn.textContent = label;
+    setButtonBusy(btn, false);
   }
 }
 
@@ -1537,8 +1665,7 @@ async function importAccount() {
   if (metadata) body.metadata = metadata;
 
   const btn = $("#btn-import-account");
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> Importing…';
+  setButtonBusy(btn, true);
   try {
     await api(`/admin/accounts/${provider}/import`, {
       method: "POST",
@@ -1560,8 +1687,7 @@ async function importAccount() {
   } catch (e) {
     toast(e.message, "error");
   } finally {
-    btn.disabled = false;
-    btn.textContent = "Import account";
+    setButtonBusy(btn, false);
   }
 }
 
@@ -1588,8 +1714,7 @@ async function handleLogin() {
     return;
   }
   const btn = $("#login-btn");
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>';
+  setButtonBusy(btn, true);
   $("#login-error").textContent = "";
   try {
     await verifyToken(token);
@@ -1603,8 +1728,7 @@ async function handleLogin() {
     clearPersistedToken();
     state.token = "";
   } finally {
-    btn.disabled = false;
-    btn.textContent = "Sign in";
+    setButtonBusy(btn, false);
   }
 }
 
@@ -1617,6 +1741,7 @@ function enterApp() {
   syncDashboardWindowButtons();
   syncAccountWindowButtons();
   syncKeyWindowButtons();
+  renderAttention();
   loadDashboard();
   loadAccounts();
   loadKeys();
@@ -1633,6 +1758,8 @@ function logout() {
   clearPersistedToken();
   state.token = "";
   state.accounts = [];
+  state.accountsLoaded = false;
+  state.overviewReady = false;
   state.accountsById = new Map();
   state.providerStatuses = [];
   state.accountUsageById = new Map();
@@ -1646,8 +1773,10 @@ function logout() {
   state.keyFilter = "";
   state.accountFilter = "";
   state.expandedAccountId = null;
+  state.pendingExpandedAccountId = null;
   state.showAllReauthorize = false;
   state.expandedKeyId = null;
+  state.pendingExpandedKeyId = null;
   state.cursorAccountId = null;
   state.cursorKeyId = null;
   state.editingKeyId = null;
@@ -1655,15 +1784,20 @@ function logout() {
   state.creatingKey = false;
   state.openSnippets.clear();
   state.usageDetails = new Map();
+  state.visibleUsageDetails = new Map();
+  for (const timer of prefetchTimers.values()) clearTimeout(timer);
+  prefetchTimers.clear();
   state.activeOAuth = null;
   state.reauthorizeAccountId = null;
   state.revealedKeyIds.clear();
   state.dashboardWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.dashboardData = null;
+  state.dashboardError = null;
   state.dashboardLoading = false;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
   $("#dash-content").innerHTML = "";
+  $("#overview-loading").hidden = true;
   $("#attention").innerHTML = "";
   $("#accounts-filter").value = "";
   $("#keys-filter").value = "";
@@ -1676,6 +1810,9 @@ function logout() {
 }
 
 export {
+  scheduleUsagePrefetch,
+  usageHasTraffic,
+  waitForUsageDetail,
   $,
   $$,
   accountById,

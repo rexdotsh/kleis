@@ -29,6 +29,7 @@ import {
   rotateKey,
   saveAccountEdits,
   saveKeyEdits,
+  scheduleUsagePrefetch,
   setConfirmAnchor,
   setPrimary,
   startCreateKey,
@@ -45,6 +46,8 @@ import {
   toast,
   toggleProvider,
   updateOAuthProviderUI,
+  usageHasTraffic,
+  waitForUsageDetail,
 } from "./app-data.js";
 import {
   menuHtml,
@@ -128,11 +131,34 @@ function revealDetail(listId, id) {
   if (!detail) return;
   const { bottom } = detail.getBoundingClientRect();
   if (bottom > innerHeight) {
-    detail.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const reduced = globalThis.matchMedia?.(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
+    detail.scrollIntoView({
+      block: "nearest",
+      behavior: reduced ? "instant" : "smooth",
+    });
   }
 }
 
-function setExpandedAccount(id) {
+let accountOpenSeq = 0;
+let keyOpenSeq = 0;
+
+async function setExpandedAccount(id) {
+  const seq = ++accountOpenSeq;
+  const token = state.token;
+  state.pendingExpandedAccountId = id;
+  if (id && usageHasTraffic("account", id))
+    await waitForUsageDetail("account", id);
+  if (
+    seq !== accountOpenSeq ||
+    token !== state.token ||
+    state.pendingExpandedAccountId !== id
+  )
+    return false;
+  state.pendingExpandedAccountId = null;
+  if (id && (activeTab() !== "accounts" || !state.accountsById.has(id)))
+    return false;
   state.expandedAccountId = id;
   if (state.editingAccountId !== id) state.editingAccountId = null;
   if (id) state.cursorAccountId = id;
@@ -140,9 +166,22 @@ function setExpandedAccount(id) {
   renderAccounts();
   state.enteringDetail = null;
   if (id) revealDetail("#accounts-list", id);
+  return true;
 }
 
-function setExpandedKey(id) {
+async function setExpandedKey(id) {
+  const seq = ++keyOpenSeq;
+  const token = state.token;
+  state.pendingExpandedKeyId = id;
+  if (id && usageHasTraffic("key", id)) await waitForUsageDetail("key", id);
+  if (
+    seq !== keyOpenSeq ||
+    token !== state.token ||
+    state.pendingExpandedKeyId !== id
+  )
+    return false;
+  state.pendingExpandedKeyId = null;
+  if (id && (activeTab() !== "keys" || !state.keysById.has(id))) return false;
   state.expandedKeyId = id;
   if (state.editingKeyId !== id) state.editingKeyId = null;
   if (id) state.cursorKeyId = id;
@@ -150,6 +189,7 @@ function setExpandedKey(id) {
   renderKeys();
   state.enteringDetail = null;
   if (id) revealDetail("#keys-list", id);
+  return true;
 }
 
 const LISTS = {
@@ -176,6 +216,10 @@ function setCursor(tab, row, { focus = false, mouse = false } = {}) {
     if (current !== row) current.classList.remove("cursor");
   }
   state[list.cursorField] = row ? list.idOf(row) : null;
+  scheduleUsagePrefetch(
+    tab === "accounts" ? "account" : "key",
+    row ? list.idOf(row) : null
+  );
   if (!row) return;
   row.classList.add("cursor");
   if (focus) {
@@ -212,16 +256,26 @@ for (const tab of ["accounts", "keys"]) {
   $(list.container).addEventListener("mouseleave", () => {
     if (cursorFromMouse) setCursor(tab, null);
   });
+  $(list.container).addEventListener("focusin", (event) => {
+    const row = event.target.closest(list.selector);
+    if (row) setCursor(tab, row);
+  });
 }
 
-function toggleAccount(id) {
-  setExpandedAccount(state.expandedAccountId === id ? null : id);
-  accountRow(id)?.focus({ preventScroll: true });
+async function toggleAccount(id) {
+  const applied = await setExpandedAccount(
+    (state.pendingExpandedAccountId || state.expandedAccountId) === id
+      ? null
+      : id
+  );
+  if (applied) accountRow(id)?.focus({ preventScroll: true });
 }
 
-function toggleKey(id) {
-  setExpandedKey(state.expandedKeyId === id ? null : id);
-  keyRow(id)?.focus({ preventScroll: true });
+async function toggleKey(id) {
+  const applied = await setExpandedKey(
+    (state.pendingExpandedKeyId || state.expandedKeyId) === id ? null : id
+  );
+  if (applied) keyRow(id)?.focus({ preventScroll: true });
 }
 
 function reveal(row) {
@@ -229,25 +283,23 @@ function reveal(row) {
   row?.focus({ preventScroll: true });
 }
 
-function showAccount(id) {
+async function showAccount(id) {
   if (state.accountFilter) {
     state.accountFilter = "";
     $("#accounts-filter").value = "";
   }
   switchToTab("accounts");
-  setExpandedAccount(id);
-  reveal(accountRow(id));
+  if (await setExpandedAccount(id)) reveal(accountRow(id));
 }
 
-function showKey(id) {
+async function showKey(id) {
   if (!keyById(id)) return;
   if (state.keyFilter) {
     state.keyFilter = "";
     $("#keys-filter").value = "";
   }
   switchToTab("keys");
-  setExpandedKey(id);
-  reveal(keyRow(id));
+  if (await setExpandedKey(id)) reveal(keyRow(id));
 }
 
 let menuAnchor = null;
@@ -770,13 +822,13 @@ function handleEscape() {
   }
   const tab = activeTab();
   if (tab === "accounts") {
-    const id = state.expandedAccountId;
+    const id = state.pendingExpandedAccountId || state.expandedAccountId;
     if (state.editingAccountId) cancelEditAccount();
     else if (id) setExpandedAccount(null);
     else setCursor("accounts", null);
     if (id) accountRow(id)?.focus();
   } else if (tab === "keys") {
-    const id = state.expandedKeyId;
+    const id = state.pendingExpandedKeyId || state.expandedKeyId;
     if (state.creatingKey) cancelCreateKey();
     else if (state.editingKeyId) cancelEditKey();
     else if (id) setExpandedKey(null);
