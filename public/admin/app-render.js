@@ -1,33 +1,56 @@
 import {
   $,
   accountById,
+  accountScopeOptionsHtml,
   accountUsageForId,
-  activeKeysWithModelsUrl,
-  api,
   cacheReadRate,
   cancelOAuthFlow,
   completeOAuth,
   copyToClipboard,
   escapeHtml,
-  expiryCountdown,
-  formatBucketTime,
   formatCompact,
   formatCount,
+  formatMetadataForInput,
+  dateInputValue,
   hasUsageMetrics,
   isKeyActive,
   keyById,
   maskKey,
-  metadataHtml,
   modelsUrlForKey,
   normalizeUsage,
-  openModal,
   relativeTime,
+  requestUsageDetail,
   state,
+  syncScopedAccountAvailability,
   tokenStatus,
   usageForKey,
-  usageMetaParts,
   usageWindowLabel,
 } from "./app-data.js";
+
+const PROVIDERS = ["codex", "claude"];
+const PROVIDER_NAMES = { codex: "Codex", claude: "Claude" };
+const DAY_MS = 86_400_000;
+
+const providerName = (provider) => PROVIDER_NAMES[provider] || provider;
+const icon = (name) =>
+  `<svg width="16" height="16" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+const accountName = (account) =>
+  account.label || account.accountId || maskKey(account.id);
+const keyName = (key) => key.label || maskKey(key.key);
+const shortDate = (timestamp) =>
+  new Date(timestamp).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+
+function untilText(timestamp) {
+  const diff = timestamp - Date.now();
+  if (diff <= 0) return relativeTime(timestamp);
+  if (diff < 60_000) return "in <1m";
+  if (diff < 3_600_000) return `in ${Math.floor(diff / 60_000)}m`;
+  if (diff < DAY_MS) return `in ${Math.floor(diff / 3_600_000)}h`;
+  return `in ${Math.floor(diff / DAY_MS)}d`;
+}
 
 function quotaTimestamp(value) {
   if (typeof value === "number") {
@@ -40,996 +63,1507 @@ function quotaTimestamp(value) {
   return null;
 }
 
-function limitResetLabel(resetsAt, pct) {
-  const timestamp = quotaTimestamp(resetsAt);
-  if (timestamp) return `resets ${relativeTime(timestamp)}`;
-  return pct === 0 ? "not started" : "";
-}
+const hasTraffic = (usage) => normalizeUsage(usage).requestCount > 0;
 
-function limitRowHtml(label, percent, resetsAt) {
-  if (typeof percent !== "number" || !Number.isFinite(percent)) return "";
-  const pct = Math.max(0, Math.min(100, percent));
-  const severity = pct >= 90 ? "critical" : pct >= 70 ? "warn" : "ok";
-  return `<div class="limit-row limit-${severity}">
-    <span class="limit-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
-    <span class="limit-track"><span class="limit-fill" style="width:${pct}%"></span></span>
-    <span class="limit-pct">${Math.round(pct)}%</span>
-    <span class="limit-reset">${escapeHtml(limitResetLabel(resetsAt, pct))}</span>
-  </div>`;
-}
-
-const windowLimitRow = (label, window) =>
-  limitRowHtml(
-    label,
-    window?.usedPercent ?? window?.utilization,
-    window?.resetAt ?? window?.resetsAt
+function failedCount(metrics) {
+  return (
+    metrics.proxyErrorCount +
+    metrics.upstreamErrorCount +
+    metrics.unclassifiedFailureCount
   );
-
-function windowSpanName(seconds, fallback) {
-  if (typeof seconds !== "number" || seconds <= 0) return fallback;
-  const hours = Math.round(seconds / 3600);
-  if (hours >= 24 && hours % 24 === 0) return `${hours / 24}d window`;
-  return `${hours}h window`;
 }
+
+function successRateText(metrics) {
+  if (!metrics.requestCount) return "\u2014";
+  const rate = (metrics.successCount / metrics.requestCount) * 100;
+  return rate >= 100 ? "100%" : `${(Math.floor(rate * 10) / 10).toFixed(1)}%`;
+}
+
+function requestsCellHtml(usage) {
+  const metrics = normalizeUsage(usage);
+  const failed = failedCount(metrics);
+  const count = `<span${metrics.requestCount ? "" : ' class="muted"'}>${formatCount(metrics.requestCount)}</span>`;
+  return failed
+    ? `<span class="warn small">${formatCount(failed)} failed</span>&ensp;${count}`
+    : count;
+}
+
+/* Accounts */
 
 const CODEX_PLAN_LABELS = {
-  free: "free",
-  go: "go",
-  plus: "plus",
-  pro: "pro",
-  prolite: "pro lite",
-  team: "team",
-  self_serve_business_prolite: "business pro",
-  self_serve_business_usage_based: "business usage-based",
-  business: "business",
-  ent26: "enterprise",
-  enterprise_cbp_automation: "enterprise automation",
-  enterprise_cbp_usage_based: "enterprise usage-based",
-  enterprise: "enterprise",
-  edu: "education",
-  unknown: "unknown",
+  free: "Free",
+  go: "Go",
+  plus: "Plus",
+  pro: "Pro",
+  prolite: "Pro Lite",
+  team: "Team",
+  self_serve_business_prolite: "Business Pro",
+  self_serve_business_usage_based: "Business, usage-based",
+  business: "Business",
+  ent26: "Enterprise",
+  enterprise_cbp_automation: "Enterprise automation",
+  enterprise_cbp_usage_based: "Enterprise, usage-based",
+  enterprise: "Enterprise",
+  edu: "Education",
+  unknown: "Unknown",
 };
 
-function codexPlanLabel(planType) {
-  return planType ? CODEX_PLAN_LABELS[planType] || planType : "";
+function spanLabel(seconds, fallback) {
+  if (typeof seconds !== "number" || seconds <= 0) return fallback;
+  const hours = Math.round(seconds / 3600);
+  return hours >= 24 && hours % 24 === 0 ? `${hours / 24}d` : `${hours}h`;
 }
 
-function compactTokens(value) {
-  return value >= 1_000_000_000
-    ? `${(value / 1_000_000_000).toFixed(1)}B`
-    : formatCompact(value);
+function windowEntry(label, window, named = false) {
+  const percent = window?.usedPercent ?? window?.utilization;
+  if (typeof percent !== "number" || !Number.isFinite(percent)) return null;
+  return {
+    label,
+    named,
+    percent: Math.max(0, Math.min(100, percent)),
+    resetsAt: quotaTimestamp(window?.resetAt ?? window?.resetsAt),
+  };
 }
 
-function codexLimitsBody(account, data) {
-  const status = data.status;
-  const rows = [
-    windowLimitRow(
-      windowSpanName(status?.primaryWindow?.windowSeconds, "5h window"),
-      status?.primaryWindow
-    ),
-    windowLimitRow(
-      windowSpanName(status?.secondaryWindow?.windowSeconds, "weekly"),
-      status?.secondaryWindow
-    ),
-    ...(status?.additionalRateLimits || []).map((limit) =>
-      windowLimitRow(
-        limit.limitName || limit.meteredFeature || "extra limit",
-        limit.primaryWindow
-      )
-    ),
+function accountWindows(account) {
+  const data = account.quota?.data;
+  if (!data) return [];
+  if (data.provider === "codex") {
+    const status = data.status;
+    return [
+      windowEntry(
+        spanLabel(status?.primaryWindow?.windowSeconds, "5h"),
+        status?.primaryWindow
+      ),
+      windowEntry(
+        spanLabel(status?.secondaryWindow?.windowSeconds, "7d"),
+        status?.secondaryWindow
+      ),
+      ...(status?.additionalRateLimits || []).map((limit) =>
+        windowEntry(
+          limit.limitName || limit.meteredFeature || "Extra",
+          limit.primaryWindow,
+          true
+        )
+      ),
+    ].filter(Boolean);
+  }
+  const subscription = data.subscription;
+  return [
+    windowEntry("5h", subscription?.fiveHour),
+    windowEntry("7d", subscription?.sevenDay),
+    ...(subscription?.limits || [])
+      .filter((limit) => limit.kind === "weekly_scoped")
+      .map((limit) =>
+        windowEntry(
+          `${limit.modelDisplayName || "Scoped"} 7d`,
+          { utilization: limit.percent, resetsAt: limit.resetsAt },
+          true
+        )
+      ),
+  ].filter(Boolean);
+}
+
+function tightestWindow(account) {
+  let tightest = null;
+  for (const window of accountWindows(account)) {
+    if (!tightest || window.percent > tightest.percent) tightest = window;
+  }
+  return tightest;
+}
+
+function limitSeverity(percent) {
+  if (percent >= 100) return "err";
+  return percent >= 75 ? "warn" : "";
+}
+
+function needsReauthorization(account) {
+  return (
+    tokenStatus(account.expiresAt).class !== "active" ||
+    (account.lastRefreshStatus && account.lastRefreshStatus !== "success") ||
+    account.quota?.errorStatus === 401 ||
+    account.quota?.errorStatus === 403
+  );
+}
+
+function accountIssues(account) {
+  const issues = [];
+  if (tokenStatus(account.expiresAt).class === "expired") {
+    issues.push({
+      severity: "err",
+      text: "token expired, reauthorize",
+      when: `expired ${relativeTime(account.expiresAt)}`,
+    });
+  } else if (
+    account.lastRefreshStatus &&
+    account.lastRefreshStatus !== "success"
+  ) {
+    issues.push({
+      severity: "err",
+      text: `token refresh failed (${account.lastRefreshStatus})`,
+      when: account.lastRefreshAt ? relativeTime(account.lastRefreshAt) : "",
+    });
+  }
+  const quota = account.quota;
+  if (quota?.errorStatus === 401 || quota?.errorStatus === 403) {
+    issues.push({
+      severity: "err",
+      text: `provider rejected the token (${quota.errorStatus}), reauthorize`,
+      when: "",
+    });
+  } else if (quota?.error) {
+    issues.push({ severity: "warn", text: "limit sync failed", when: "" });
+  }
+  const tightest = tightestWindow(account);
+  const severity = tightest ? limitSeverity(tightest.percent) : "";
+  if (severity) {
+    issues.push({
+      severity,
+      text: `${tightest.named ? tightest.label : `${tightest.label} window`} at ${Math.round(tightest.percent)}%`,
+      when:
+        tightest.resetsAt && tightest.resetsAt > Date.now()
+          ? `resets ${untilText(tightest.resetsAt)}`
+          : "",
+    });
+  }
+  return issues.sort(
+    (a, b) => Number(b.severity === "err") - Number(a.severity === "err")
+  );
+}
+
+function providerStatusMap() {
+  return new Map(
+    (state.providerStatuses || []).map((status) => [status.provider, status])
+  );
+}
+
+function isAccountServing(account, statuses = providerStatusMap()) {
+  return (
+    account.enabled !== false &&
+    statuses.get(account.provider)?.enabled !== false
+  );
+}
+
+function tokenCell(account) {
+  if (!account.expiresAt) return { text: "\u2014", cls: "muted" };
+  if (account.expiresAt <= Date.now()) return { text: "Expired", cls: "err" };
+  return { text: untilText(account.expiresAt), cls: "muted" };
+}
+
+function accountRowHtml(account, serving) {
+  const name = accountName(account);
+  const open = state.expandedAccountId === account.id;
+  const issues = serving ? accountIssues(account) : [];
+  const dot = serving ? issues[0]?.severity || "" : "off";
+  const tightest = tightestWindow(account);
+  const limitClass = tightest ? limitSeverity(tightest.percent) || "muted" : "";
+  const limitText = tightest
+    ? `${escapeHtml(tightest.label)} ${Math.round(tightest.percent)}%`
+    : account.quota?.error
+      ? "Sync failed"
+      : "\u2014";
+  const token = tokenCell(account);
+  const usage = accountUsageForId(account.id);
+  const phoneParts = [
+    `<span class="${limitClass || (account.quota?.error ? "warn" : "")}">${limitText}</span>`,
+    token.cls === "err"
+      ? '<span class="err">token expired</span>'
+      : `expires ${escapeHtml(token.text)}`,
   ];
 
-  const chips = [];
-  const planLabel = codexPlanLabel(status?.planType);
-  if (planLabel) chips.push(`${planLabel} plan`);
-  if (typeof data.profile?.lifetimeTokens === "number") {
-    chips.push(`${compactTokens(data.profile.lifetimeTokens)} lifetime tok`);
-  }
+  return `<div class="row t-acc${open ? " open" : ""}${serving ? "" : " dim"}" data-account-id="${account.id}" tabindex="0" role="button" aria-expanded="${open}">
+    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag">Primary</span>' : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}</span>
+    <span class="num d ${limitClass || (account.quota?.error ? "warn" : "muted")}">${limitText}</span>
+    <span class="num d ${token.cls}">${escapeHtml(token.text)}</span>
+    <span class="num">${requestsCellHtml(usage)}</span>
+    <button class="more" type="button" data-menu="account" data-account-id="${account.id}" aria-label="Actions for ${escapeHtml(name)}" aria-haspopup="menu" aria-expanded="false">${icon("more")}</button>
+    <span class="l2">${phoneParts.join(" \u00b7 ")}</span>
+  </div>${open ? accountDetailHtml(account) : ""}`;
+}
 
-  const available =
-    data.resetCredits?.availableCount ?? status?.resetCreditsAvailable;
-  const availableCredits = (data.resetCredits?.credits || [])
+function fact(label, value, subs = [], extra = "") {
+  const lines = subs
+    .filter(Boolean)
+    .map((sub) => `<div class="fact-sub">${sub}</div>`)
+    .join("");
+  return `<div class="fact"><div class="fact-label">${label}</div><div class="fact-value">${value}</div>${lines}${extra}</div>`;
+}
+
+function resetText(window) {
+  if (window.resetsAt) {
+    return window.resetsAt > Date.now()
+      ? `resets ${untilText(window.resetsAt)}`
+      : "reset, waiting for sync";
+  }
+  return window.percent === 0 ? "not started" : "";
+}
+
+function limitFacts(account) {
+  const quota = account.quota;
+  if (!quota) {
+    return [
+      fact("Rate limits", '<span class="muted">\u2014</span>', [
+        "waiting for the first sync",
+      ]),
+    ];
+  }
+  const facts = accountWindows(account).map((window) => {
+    const severity = limitSeverity(window.percent);
+    return fact(
+      escapeHtml(window.named ? window.label : `${window.label} window`),
+      `<span class="${severity}">${Math.round(window.percent)}%</span>`,
+      [escapeHtml(resetText(window))],
+      `<span class="bar${severity ? ` ${severity}` : ""}"><i style="width:${window.percent}%"></i></span>`
+    );
+  });
+  if (quota.error) {
+    facts.push(
+      `<div class="fact"><div class="fact-label">Limit sync</div><div class="fact-value err">Failed</div><div class="fact-sub clamp" title="${escapeHtml(quota.error)}">${escapeHtml(quota.error)}</div></div>`
+    );
+  } else if (!facts.length) {
+    facts.push(fact("Rate limits", '<span class="muted">None reported</span>'));
+  }
+  return facts;
+}
+
+function creditsFact(account) {
+  const data = account.quota?.data;
+  if (data?.provider !== "codex") return "";
+  const credits = (data.resetCredits?.credits || [])
     .filter((credit) => credit.status === "available")
     .sort(
       (a, b) =>
         (quotaTimestamp(a.expiresAt) ?? Number.POSITIVE_INFINITY) -
         (quotaTimestamp(b.expiresAt) ?? Number.POSITIVE_INFINITY)
     );
-  const actions = availableCredits.map((credit) => {
-    const expiry = quotaTimestamp(credit.expiresAt);
-    const expiryLabel = expiry
-      ? `credit expires ${relativeTime(expiry)}`
-      : "credit does not expire";
-    const title = `${credit.description || "Consume a reset credit to restore limits"} \u00b7 ${expiryLabel}`;
-    return `<button class="btn btn-credit btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" data-credit-id="${escapeHtml(credit.id)}" type="button" title="${escapeHtml(title)}">${escapeHtml((credit.title || "restore limits").toLowerCase())}</button>`;
-  });
-  if (!actions.length && typeof available === "number" && available > 0) {
-    actions.push(
-      `<button class="btn btn-credit btn-sm" data-action="redeem-reset-credit" data-account-id="${account.id}" type="button" title="Consume a reset credit to restore limits">restore limits${available > 1 ? ` (${available})` : ""}</button>`
-    );
-  }
-
-  const soonestExpiry = quotaTimestamp(availableCredits[0]?.expiresAt);
-  if (soonestExpiry) {
-    chips.push(`reset credit expires ${relativeTime(soonestExpiry)}`);
-  }
-
-  return { rows, chips, actions };
-}
-
-function claudeLimitsBody(data) {
-  const subscription = data.subscription;
-  const rows = [
-    windowLimitRow("5h window", subscription?.fiveHour),
-    windowLimitRow("weekly", subscription?.sevenDay),
-    ...(subscription?.limits || [])
-      .filter((limit) => limit.kind === "weekly_scoped")
-      .map((limit) =>
-        limitRowHtml(
-          (
-            limit.modelDisplayName ||
-            limit.kind ||
-            "scoped weekly"
-          ).toLowerCase(),
-          limit.percent,
-          limit.resetsAt
-        )
-      ),
-  ];
-
-  const chips = [];
-  const extra = subscription?.extraUsage;
-  if (extra?.isEnabled) {
-    chips.push(
-      typeof extra.utilization === "number"
-        ? `extra usage on \u00b7 ${Math.round(extra.utilization)}% used`
-        : "extra usage on"
-    );
-  }
-
-  return { rows, chips, actions: [] };
-}
-
-function accountTrackingHtml(account) {
-  const tracking = account.quota;
-  if (!tracking) {
-    return `<div class="limits">
-      <div class="limits-head"><span class="limits-title">rate limits</span><span class="limits-sync idle">awaiting first sync</span></div>
-    </div>`;
-  }
-
-  const data = tracking.data || {};
-  const body =
-    data.provider === "codex"
-      ? codexLimitsBody(account, data)
-      : claudeLimitsBody(data);
-  const rows = body.rows.filter(Boolean).join("");
-
-  const sync = tracking.error
-    ? `<span class="limits-sync error" title="${escapeHtml(tracking.error)}">sync failed</span>`
-    : `<span class="limits-sync ok">synced ${escapeHtml(relativeTime(tracking.fetchedAt))}</span>`;
-
-  const foot =
-    body.chips.length || body.actions.length
-      ? `<div class="limits-foot">
-          <div class="limits-chips">${body.chips.map((chip) => `<span>${escapeHtml(chip)}</span>`).join('<span class="dot-sep"></span>')}</div>
-          ${body.actions.length ? `<div class="limits-actions">${body.actions.join("")}</div>` : ""}
-        </div>`
-      : "";
-
-  return `<div class="limits">
-    <div class="limits-head"><span class="limits-title">rate limits</span>${sync}</div>
-    ${rows ? `<div class="limit-rows">${rows}</div>` : '<div class="limits-empty-text">no limit data reported</div>'}
-    ${foot}
-  </div>`;
-}
-
-function providerStatusItemHtml(status) {
-  const { provider, enabled, accountCount, enabledAccountCount } = status;
-  const countLabel =
-    enabled && enabledAccountCount < accountCount
-      ? `${enabledAccountCount}/${accountCount} enabled`
-      : `${accountCount} account${accountCount === 1 ? "" : "s"}`;
-
-  return `<div class="provider-status-item${enabled ? "" : " disabled"}">
-    <span class="badge badge-${provider}">${provider}</span>
-    <span class="provider-status-meta">
-      <span class="status-dot ${enabled ? "active" : "expired"}"></span>
-      <span>${enabled ? "enabled" : "disabled"}</span>
-      <span class="dot-sep"></span>
-      <span>${countLabel}</span>
-    </span>
-    <button
-      class="btn ${enabled ? "btn-ghost" : "btn-primary"} btn-sm"
-      data-action="toggle-provider"
-      data-provider="${provider}"
-      data-enabled="${enabled ? "false" : "true"}"
-      type="button"
-    >${enabled ? "disable" : "enable"}</button>
-  </div>`;
-}
-
-function renderProviderStatuses() {
-  const statuses = (state.providerStatuses || []).filter(
-    (status) => status.accountCount > 0
+  const available =
+    data.resetCredits?.availableCount ?? data.status?.resetCreditsAvailable;
+  const count = Math.max(
+    credits.length,
+    typeof available === "number" ? available : 0
   );
-  $("#providers-status").innerHTML = statuses.length
-    ? statuses.map(providerStatusItemHtml).join("")
+  if (!count) return "";
+  const next = credits[0];
+  const expiry = quotaTimestamp(next?.expiresAt);
+  const title = next
+    ? `${next.title || "Reset credit"}: ${next.description || "restores this account's Codex limits"}`
+    : "Consume a reset credit to restore limits";
+  const use = `<button class="link small" type="button" data-action="redeem-reset-credit" data-account-id="${account.id}"${next ? ` data-credit-id="${escapeHtml(next.id)}"` : ""} title="${escapeHtml(title)}">Use one</button>`;
+  let expiryText = "";
+  if (next) {
+    expiryText = expiry
+      ? `${count > 1 ? "next expires" : "expires"} ${untilText(expiry)}`
+      : "does not expire";
+  }
+  return fact(
+    count === 1 ? "Reset credit" : "Reset credits",
+    `${count}${use}`,
+    [escapeHtml(expiryText)]
+  );
+}
+
+function tokenFact(account) {
+  const expired = tokenStatus(account.expiresAt).class === "expired";
+  const refreshFailed =
+    account.lastRefreshStatus && account.lastRefreshStatus !== "success";
+  let value = "Active";
+  if (account.enabled === false) value = "Disabled";
+  else if (expired) value = '<span class="err">Expired</span>';
+  else if (needsReauthorization(account)) {
+    value = '<span class="err">Needs reauthorization</span>';
+  }
+  let expiry = "no expiry recorded";
+  if (account.expiresAt) {
+    expiry = expired
+      ? `expired ${relativeTime(account.expiresAt)}`
+      : `expires ${untilText(account.expiresAt)}`;
+  }
+  let refresh = "never refreshed";
+  if (refreshFailed) {
+    refresh = `<span class="err">refresh failed: ${escapeHtml(account.lastRefreshStatus)}</span>`;
+  } else if (account.lastRefreshAt) {
+    refresh = `refreshed ${escapeHtml(relativeTime(account.lastRefreshAt))}`;
+  }
+  return fact("Token", value, [escapeHtml(expiry), refresh]);
+}
+
+function usageFact(rawUsage, windowMs) {
+  const usage = normalizeUsage(rawUsage);
+  const failed = failedCount(usage);
+  const label = `Last ${escapeHtml(usageWindowLabel(windowMs))}`;
+  if (!usage.requestCount) return fact(label, "0 requests", ["no traffic"]);
+  const problems = [
+    failed && `${formatCount(failed)} failed`,
+    usage.rateLimitCount && `${formatCount(usage.rateLimitCount)} rate-limited`,
+  ].filter(Boolean);
+  return fact(
+    label,
+    `${formatCount(usage.requestCount)} request${usage.requestCount === 1 ? "" : "s"}`,
+    [
+      `${successRateText(usage)} success \u00b7 ${formatCount(usage.avgLatencyMs)} ms avg`,
+      problems.length
+        ? `<span class="warn">${problems.join(" \u00b7 ")}</span>`
+        : usage.lastRequestAt &&
+          `last request ${escapeHtml(relativeTime(usage.lastRequestAt))}`,
+    ]
+  );
+}
+
+function accountFact(account) {
+  const data = account.quota?.data;
+  const added = account.createdAt
+    ? `added ${shortDate(account.createdAt)}`
     : "";
+  const id = account.accountId
+    ? `<span class="mono" title="${escapeHtml(account.accountId)}">${escapeHtml(account.accountId)}</span>`
+    : "";
+  if (account.provider === "claude") {
+    const extra = data?.subscription?.extraUsage;
+    return fact(
+      "Sign-in",
+      account.metadata?.oauthMode === "console" ? "Console" : "claude.ai",
+      [
+        extra?.isEnabled &&
+          (typeof extra.utilization === "number"
+            ? `extra usage on \u00b7 ${Math.round(extra.utilization)}% used`
+            : "extra usage on"),
+        id,
+        added,
+      ]
+    );
+  }
+  const plan =
+    CODEX_PLAN_LABELS[data?.status?.planType] || data?.status?.planType;
+  const lifetime = data?.profile?.lifetimeTokens;
+  return fact("Plan", escapeHtml(plan || "Unknown"), [
+    typeof lifetime === "number" &&
+      `${formatCompact(lifetime)} lifetime tokens`,
+    id,
+    added,
+  ]);
 }
 
-function accountCardHtml(account) {
-  const disabled = account.enabled === false;
-  const tokenHealth = tokenStatus(account.expiresAt);
-  const s = disabled ? { label: "disabled", class: "unknown" } : tokenHealth;
-  const needsReauthorization =
-    tokenHealth.class !== "active" ||
-    (account.lastRefreshStatus && account.lastRefreshStatus !== "success") ||
-    account.quota?.errorStatus === 401 ||
-    account.quota?.errorStatus === 403;
-  const name = account.label || account.accountId || account.id;
-  const usage = accountUsageForId(account.id);
-  const windowLabel = usageWindowLabel(state.accountUsageWindowMs);
-  const shortAccountId = maskKey(account.id);
+function formRow(label, description, control, forId = "") {
+  const title = forId
+    ? `<label for="${forId}">${label}</label>`
+    : `<span>${label}</span>`;
+  return `<div class="form-row"><div class="form-row-label">${title}${description ? `<p>${description}</p>` : ""}</div><div class="form-row-control">${control}</div></div>`;
+}
 
-  const setPrimaryBtn = account.isPrimary
-    ? ""
-    : `<button class="btn btn-ghost btn-sm" data-action="set-primary" data-account-id="${account.id}" type="button">set primary</button>`;
-  const editBtn = `<button class="btn btn-ghost btn-sm" data-action="edit-account" data-account-id="${account.id}" type="button">edit</button>`;
+function formFoot(primaryButton, cancelAction) {
+  return `<div class="form-foot"><div></div><div class="form-foot-buttons">${primaryButton}<button class="btn btn-ghost btn-sm" data-action="${cancelAction}" type="button">Cancel</button></div></div>`;
+}
 
-  const identityParts = [];
-  if (account.accountId && account.accountId !== name) {
-    identityParts.push(
-      `<span class="card-meta-item"><span class="text-muted">account:</span> ${escapeHtml(account.accountId)}</span>`
-    );
-  }
-  identityParts.push(
-    `<span class="card-meta-item"><span class="text-muted">id:</span> ${escapeHtml(shortAccountId)}</span>`
-  );
-  if (account.createdAt) {
-    identityParts.push(
-      `<span class="card-meta-item"><span class="text-muted">created:</span> ${escapeHtml(relativeTime(account.createdAt))}</span>`
-    );
-  }
+function accountEditHtml(account) {
+  return `<div class="detail inline-form" data-form="account:${account.id}" data-detail-for="${account.id}">
+    <div class="form-rows">
+      ${formRow(
+        "Label",
+        "Shown in lists and usage.",
+        `<input id="edit-account-label" class="field-input" type="text" maxlength="160" placeholder="${escapeHtml(account.metadata?.email || "my-main-account")}" autocomplete="off" value="${escapeHtml(account.label || "")}">`,
+        "edit-account-label"
+      )}
+      ${formRow(
+        "Account ID",
+        "The provider\u2019s account ID. Leave empty to clear.",
+        `<input id="edit-account-account-id" class="field-input mono" type="text" maxlength="200" placeholder="None" autocomplete="off" value="${escapeHtml(account.accountId || "")}">`,
+        "edit-account-account-id"
+      )}
+      ${formRow(
+        "Metadata",
+        "Provider settings stored with the account.",
+        `<details class="json-edit"><summary>Show JSON</summary><textarea id="edit-account-metadata" class="field-input" rows="7" aria-label="Metadata JSON" placeholder='{"chatgptAccountId":"org_123"}'>${escapeHtml(formatMetadataForInput(account.metadata))}</textarea><p class="field-hint">Must be a JSON object. Leave empty to clear.</p></details>`
+      )}
+    </div>
+    ${formFoot(`<button id="btn-save-account" class="btn btn-primary btn-sm" data-action="save-account" data-account-id="${account.id}" type="button">Save</button>`, "cancel-edit-account")}
+  </div>`;
+}
 
-  const usageParts = usageMetaParts(usage, { windowLabel });
-
-  const meta = metadataHtml(
-    Object.fromEntries(
-      Object.entries(account.metadata ?? {}).filter(
-        ([key, value]) =>
-          !(key === "chatgptAccountId" && value === account.accountId) &&
-          !(key === "email" && value === name)
-      )
+function keyFormHtml(mode, key = null) {
+  const create = mode === "create";
+  const prefix = create ? "key-" : "edit-key-";
+  const providerClass = create
+    ? "key-scope-provider"
+    : "edit-key-scope-provider";
+  const scopes = key?.providerScopes || [];
+  const selectedProvider = scopes.length === 1 ? scopes[0] : "all";
+  const providerChoice = `<div class="seg seg-choice" role="radiogroup" aria-label="Providers">${[
+    ["all", "All providers"],
+    ...PROVIDERS.map((provider) => [provider, providerName(provider)]),
+  ]
+    .map(
+      ([value, label]) =>
+        `<label><input type="radio" name="${prefix}providers" value="${value}" class="${providerClass}"${value === selectedProvider ? " checked" : ""}><span>${label}</span></label>`
     )
-  );
+    .join("")}</div>`;
+  const rows = [
+    formRow(
+      "Label",
+      "Shown in lists and usage.",
+      `<input id="${prefix}label" class="field-input" type="text" maxlength="120" placeholder="my-laptop" autocomplete="off" value="${escapeHtml(key?.label || "")}">`,
+      `${prefix}label`
+    ),
+    formRow("Providers", "Which providers this key can use.", providerChoice),
+    formRow(
+      "Account",
+      "Requests use each provider\u2019s primary account unless you pin one.",
+      `<div id="${prefix}account-scopes" class="pins">${accountScopeOptionsHtml(mode, key?.accountScopes || [])}</div>`
+    ),
+    formRow(
+      "Models",
+      "Comma separated. Leave empty to allow every model.",
+      `<input id="${prefix}model-scopes" class="field-input mono" type="text" placeholder="All models" autocomplete="off" spellcheck="false" value="${escapeHtml(key?.modelScopes?.join(", ") || "")}">`,
+      `${prefix}model-scopes`
+    ),
+    create
+      ? ""
+      : formRow(
+          "Expires",
+          "Leave empty for a key that never expires.",
+          `<input id="edit-key-expires-at" class="field-input field-date" type="date" value="${key.expiresAt ? dateInputValue(key.expiresAt) : ""}">`,
+          "edit-key-expires-at"
+        ),
+  ];
+  const submit = create
+    ? '<button id="btn-submit-key" class="btn btn-primary btn-sm" data-action="submit-key" type="button">Create key</button>'
+    : `<button id="btn-save-key" class="btn btn-primary btn-sm" data-action="save-key" data-key-id="${key.id}" type="button">Save</button>`;
+  return `<div class="${create ? "create-form" : "detail"} inline-form" data-form="${create ? "create-key" : `edit-key:${key.id}`}"${key ? ` data-detail-for="${key.id}"` : ""}>
+    ${create ? '<div class="form-title">New API key</div>' : ""}
+    <div class="form-rows">${rows.join("")}</div>
+    ${formFoot(submit, create ? "cancel-create-key" : "cancel-edit-key")}
+  </div>`;
+}
 
-  return `<div class="card${disabled ? " card-disabled" : ""}" data-account-id="${account.id}" role="group" tabindex="0" aria-label="Open usage details for ${escapeHtml(name)}">
-    <div class="card-top">
-      <div class="card-identity">
-        <span class="badge badge-${account.provider}">${account.provider}</span>
-        <span class="card-label">${escapeHtml(name)}</span>
-        ${account.isPrimary ? '<span class="badge badge-primary">primary</span>' : ""}
-        ${disabled ? '<span class="badge badge-disabled">disabled</span>' : ""}
-      </div>
-      <div class="card-actions">
-        ${editBtn}
-        ${setPrimaryBtn}
-        ${needsReauthorization && (account.provider === "codex" || account.provider === "claude") ? `<button class="btn btn-ghost btn-sm" data-action="reauthorize-account" data-account-id="${account.id}" type="button">reauthorize</button>` : ""}
-        <button class="btn btn-ghost btn-sm" data-action="refresh-account" data-account-id="${account.id}" type="button">refresh</button>
-        <button class="btn btn-danger btn-sm" data-action="delete-account" data-account-id="${account.id}" type="button">delete</button>
-      </div>
+function accountDetailHtml(account) {
+  if (state.editingAccountId === account.id) return accountEditHtml(account);
+  const supportsOAuth =
+    account.provider === "codex" || account.provider === "claude";
+  const button = (label, action, cls = "btn btn-ghost btn-sm") =>
+    `<button class="${cls}" data-action="${action}" data-account-id="${account.id}" type="button">${label}</button>`;
+  const synced = account.quota?.fetchedAt
+    ? `<span>Limits synced ${escapeHtml(relativeTime(account.quota.fetchedAt))}</span>`
+    : "";
+  return `<div class="detail" data-detail-for="${account.id}">
+    <div class="facts">${[
+      ...limitFacts(account),
+      creditsFact(account),
+      tokenFact(account),
+      usageFact(accountUsageForId(account.id), state.accountUsageWindowMs),
+      accountFact(account),
+    ].join("")}</div>
+    ${hasTraffic(accountUsageForId(account.id)) ? `<div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>` : ""}
+    <div class="actions">
+      ${needsReauthorization(account) && supportsOAuth ? button("Reauthorize", "reauthorize-account", "btn btn-primary btn-sm") : ""}
+      ${button("Refresh token", "refresh-account")}
+      ${account.isPrimary ? "" : button("Make primary", "set-primary")}
+      ${button("Edit", "edit-account")}
+      ${button("Remove", "delete-account", "btn btn-ghost btn-sm btn-remove")}
+      <div class="right">${synced}<span>Collapse <span class="kbd">esc</span></span></div>
     </div>
-    <div class="card-status">
-      <span class="status-dot ${s.class}"></span>
-      <span>${s.label}</span>
-      <span class="dot-sep"></span>
-      <span>${escapeHtml(expiryCountdown(account.expiresAt))}</span>
-      ${account.lastRefreshAt ? `<span class="dot-sep"></span><span title="${escapeHtml(new Date(account.lastRefreshAt).toLocaleString())}">refreshed ${escapeHtml(relativeTime(account.lastRefreshAt))}</span>` : ""}
-      ${account.lastRefreshStatus && account.lastRefreshStatus !== "success" ? `<span class="dot-sep"></span><span class="text-error">${escapeHtml(account.lastRefreshStatus)}</span>` : ""}
-    </div>
-    <div class="card-meta">${identityParts.join("")}</div>
-    ${usageParts.length ? `<div class="card-meta">${usageParts.join("")}</div>` : ""}
-    ${meta ? `<div class="card-meta">${meta}</div>` : ""}
-    ${accountTrackingHtml(account)}
+  </div>`;
+}
+
+function accountMatches(account, filter) {
+  return [
+    account.label,
+    account.accountId,
+    account.id,
+    account.provider,
+    account.metadata?.email,
+  ].some((value) => value && String(value).toLowerCase().includes(filter));
+}
+
+function groupHtml(provider, status, count) {
+  const enabled = status?.enabled !== false;
+  const name = providerName(provider);
+  return `<div class="group"><span class="cap">${escapeHtml(name)}</span><span class="muted small">${count}</span>
+    <div class="right">${enabled ? "Enabled" : "Disabled"}<button class="switch" type="button" role="switch" aria-checked="${enabled}" aria-label="${escapeHtml(name)} enabled" data-action="toggle-provider" data-provider="${provider}" data-enabled="${enabled ? "false" : "true"}"></button></div>
   </div>`;
 }
 
 function renderAccounts() {
+  renderAttention();
+  renderReauthorizeList();
   const { accounts } = state;
-  renderProviderStatuses();
-  $("#accounts-count").textContent = accounts.length
-    ? `(${accounts.length})`
-    : "";
+  const filter = state.accountFilter.trim().toLowerCase();
+  const matches = filter
+    ? accounts.filter((account) => accountMatches(account, filter))
+    : accounts;
+  $("#accounts-count").textContent = filter
+    ? `${matches.length} of ${accounts.length}`
+    : accounts.length
+      ? String(accounts.length)
+      : "";
 
   if (!accounts.length) {
     $("#accounts-list").innerHTML =
-      '<div class="empty-state"><div class="empty-state-text">No provider accounts connected yet.</div><button class="btn btn-primary btn-sm" type="button" data-action="go-connect">connect a provider</button></div>';
+      '<div class="empty-state"><p>No accounts connected yet.</p><button class="btn btn-primary btn-sm" type="button" data-action="go-connect">Connect an account</button></div>';
+    return;
+  }
+  if (!matches.length) {
+    $("#accounts-list").innerHTML =
+      `<div class="empty-state"><p>No accounts match \u201c${escapeHtml(state.accountFilter.trim())}\u201d.</p><button class="link small" type="button" data-action="clear-filter">Clear filter</button></div>`;
     return;
   }
 
-  $("#accounts-list").innerHTML = accounts.map(accountCardHtml).join("");
-}
-
-function keyProviderSummaryHtml(key, usage) {
-  const parts = [];
-
-  const pinnedByProvider = new Map();
-  if (key.accountScopes?.length) {
-    for (const accountId of key.accountScopes) {
-      const account = accountById(accountId);
-      if (account) {
-        pinnedByProvider.set(
-          account.provider,
-          account.label || account.accountId || maskKey(account.id)
+  const statuses = providerStatusMap();
+  const providers = [
+    ...new Set([...PROVIDERS, ...matches.map((account) => account.provider)]),
+  ];
+  const groups = providers
+    .map((provider) => {
+      const rows = matches
+        .filter((account) => account.provider === provider)
+        .sort(
+          (a, b) =>
+            Number(b.isPrimary) - Number(a.isPrimary) ||
+            (a.createdAt ?? 0) - (b.createdAt ?? 0)
         );
-      }
-    }
+      if (!rows.length) return "";
+      return `${groupHtml(provider, statuses.get(provider), rows.length)}<div class="group-rows">${rows
+        .map((account) =>
+          accountRowHtml(account, isAccountServing(account, statuses))
+        )
+        .join("")}</div>`;
+    })
+    .join("");
+
+  renderPreservingForm(
+    $("#accounts-list"),
+    `<div class="row thead t-acc"><span>Account</span><span class="num d">Tightest limit</span><span class="num d">Token expires</span><span class="num">Requests ${escapeHtml(usageWindowLabel(state.accountUsageWindowMs))}</span><span></span></div>${groups}`
+  );
+  const expanded = state.expandedAccountId;
+  if (
+    expanded &&
+    expanded !== state.editingAccountId &&
+    hasTraffic(accountUsageForId(expanded))
+  ) {
+    requestUsageDetail("account", expanded);
   }
-
-  const countByProvider = new Map();
-  if (usage?.providers?.length) {
-    for (const pu of usage.providers) {
-      countByProvider.set(pu.provider, normalizeUsage(pu));
-    }
-  }
-
-  const providers = key.providerScopes?.length
-    ? key.providerScopes
-    : countByProvider.size
-      ? Array.from(countByProvider.keys())
-      : Array.from(pinnedByProvider.keys());
-
-  for (const provider of providers) {
-    const metrics = countByProvider.get(provider);
-    const pinned = pinnedByProvider.get(provider);
-    const countPart = metrics
-      ? ` ${formatCount(metrics.requestCount)} reqs`
-      : "";
-    const pinnedPart = pinned
-      ? ` <span class="text-muted">via ${escapeHtml(pinned)}</span>`
-      : "";
-    parts.push(
-      `<span class="card-meta-item"><span class="badge badge-${provider}">${provider}</span>${countPart}${pinnedPart}</span>`
-    );
-  }
-
-  if (key.modelScopes?.length) {
-    const label =
-      key.modelScopes.length <= 2
-        ? key.modelScopes.join(", ")
-        : `${key.modelScopes.slice(0, 2).join(", ")} +${key.modelScopes.length - 2}`;
-    parts.push(
-      `<span class="card-meta-item text-muted">models: ${escapeHtml(label)}</span>`
-    );
-  }
-
-  if (!parts.length) {
-    parts.push('<span class="card-meta-item text-muted">all providers</span>');
-  }
-
-  return parts;
 }
 
-function keyCardHtml(key) {
-  const revoked = !!key.revokedAt;
-  const status = revoked ? "revoked" : isKeyActive(key) ? "active" : "expired";
-  const isRevealed = state.revealedKeyIds.has(key.id);
-  const keyDisplay = isRevealed ? key.key : maskKey(key.key);
-  const usage = usageForKey(key.id);
-  const windowLabel = usageWindowLabel(state.keyUsageWindowMs);
-  const modelsUrl = status === "active" ? modelsUrlForKey(key) : null;
+function accountMenuItems(account) {
+  const supportsOAuth =
+    account.provider === "codex" || account.provider === "claude";
+  return [
+    { label: "Refresh token", action: "refresh-account", shortcut: "R" },
+    supportsOAuth && {
+      label: "Reauthorize",
+      action: "reauthorize-account",
+      shortcut: "A",
+    },
+    !account.isPrimary && {
+      label: "Make primary",
+      action: "set-primary",
+      shortcut: "P",
+    },
+    { label: "Edit", action: "edit-account", shortcut: "E" },
+    "separator",
+    {
+      label: "Remove",
+      action: "delete-account",
+      shortcut: "\u232b",
+      danger: true,
+    },
+  ];
+}
 
-  const providerParts = keyProviderSummaryHtml(key, usage);
-  const metaParts = [];
+function reauthorizeReason(account) {
+  const status = account.quota?.errorStatus;
+  if (tokenStatus(account.expiresAt).class === "expired") {
+    return `expired ${relativeTime(account.expiresAt)}`;
+  }
+  if (account.lastRefreshStatus && account.lastRefreshStatus !== "success") {
+    return "refresh failed";
+  }
+  if (status === 401 || status === 403) return `rejected (${status})`;
+  return "no expiry recorded";
+}
 
-  metaParts.push(
-    ...usageMetaParts(usage, {
-      windowLabel,
-      includeMaxLatency: true,
-    })
+function renderReauthorizeList() {
+  const el = $("#reauthorize-list");
+  if (!el) return;
+  const accounts = state.accounts.filter(
+    (account) => account.provider === "codex" || account.provider === "claude"
   );
-  if (!revoked && key.expiresAt) {
-    metaParts.push(
-      `<span class="card-meta-item"><span class="badge badge-${status}">${escapeHtml(expiryCountdown(key.expiresAt))}</span></span>`
+  if (!accounts.length) {
+    el.innerHTML = '<p class="muted list-note">No accounts connected yet.</p>';
+    return;
+  }
+  const flagged = accounts.filter(needsReauthorization);
+  const others = accounts.filter((account) => !needsReauthorization(account));
+  const shown = state.showAllReauthorize ? [...flagged, ...others] : flagged;
+  const rows = shown.map((account) => {
+    const reason = flagged.includes(account)
+      ? reauthorizeReason(account)
+      : providerName(account.provider);
+    return `<button class="row reauth" type="button" data-action="reauthorize-account" data-account-id="${account.id}"><span class="name"><span class="dot ${flagged.includes(account) ? "err" : ""}"></span><span class="ellipsis">${escapeHtml(accountName(account))}</span></span><span class="small ${flagged.includes(account) ? "err" : "muted"}">${escapeHtml(reason)}</span>${icon("chev")}</button>`;
+  });
+  if (others.length) {
+    rows.push(
+      `<button class="row reauth" type="button" data-action="toggle-reauthorize-all"><span class="muted">${state.showAllReauthorize ? "Show fewer" : `${others.length} other account${others.length === 1 ? "" : "s"}`}</span><span></span>${icon("chev")}</button>`
     );
   }
+  el.innerHTML = rows.join("");
+}
 
-  const actionButtons = revoked
-    ? `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">edit</button><button class="btn btn-danger btn-sm" data-action="delete-key" data-key-id="${key.id}" type="button">delete</button>`
-    : `<button class="btn btn-ghost btn-sm" data-action="edit-key" data-key-id="${key.id}" type="button">edit</button><button class="btn btn-ghost btn-sm" data-action="rotate-key" data-key-id="${key.id}" type="button">rotate</button><button class="btn btn-danger btn-sm" data-action="revoke-key" data-key-id="${key.id}" type="button">revoke</button>`;
+/* Keys */
 
-  return `<div class="card" data-key-id="${key.id}" role="group" tabindex="0" aria-label="Open usage details for ${escapeHtml(key.label || "untitled key")}">
-    <div class="card-top">
-      <div class="card-identity">
-        <span class="card-label">${escapeHtml(key.label || "untitled")}</span>
-        <span class="badge badge-${status}">${status}</span>
-      </div>
-      <div class="card-actions">
-        <button class="btn btn-ghost btn-sm" data-action="copy-key" data-key-id="${key.id}" type="button">copy</button>
-        ${modelsUrl ? `<button class="btn btn-ghost btn-sm" data-action="copy-models-url" data-key-id="${key.id}" type="button">copy models url</button>` : ""}
-        <button class="btn btn-ghost btn-sm" data-action="toggle-key" data-key-id="${key.id}" type="button">${isRevealed ? "hide" : "show"}</button>
-        ${actionButtons}
-      </div>
-    </div>
-    <div class="card-key"><code>${escapeHtml(keyDisplay)}</code></div>
-    <div class="card-meta">${providerParts.join("")}</div>
-    ${metaParts.length ? `<div class="card-meta">${metaParts.join("")}</div>` : ""}
+function keyScopeHtml(key) {
+  const pinned = new Map();
+  for (const accountId of key.accountScopes || []) {
+    const account = accountById(accountId);
+    if (account) pinned.set(account.provider, accountName(account));
+  }
+  const via = (provider) =>
+    pinned.has(provider)
+      ? ` <span class="muted">via ${escapeHtml(pinned.get(provider))}</span>`
+      : "";
+  const parts = key.providerScopes?.length
+    ? key.providerScopes.map(
+        (provider) => `${escapeHtml(providerName(provider))}${via(provider)}`
+      )
+    : [
+        "All providers",
+        ...Array.from(pinned.keys()).map(
+          (provider) =>
+            `<span class="muted">${escapeHtml(providerName(provider))}</span>${via(provider)}`
+        ),
+      ];
+  const models = key.modelScopes?.length
+    ? ` <span class="muted" title="${escapeHtml(key.modelScopes.join(", "))}">\u00b7 ${key.modelScopes.length} model${key.modelScopes.length === 1 ? "" : "s"}</span>`
+    : "";
+  return `${parts.join(", ")}${models}`;
+}
+
+function keyScopeText(key) {
+  const providers = key.providerScopes?.length
+    ? key.providerScopes.map(providerName).join(", ")
+    : "All providers";
+  return key.modelScopes?.length
+    ? `${providers} \u00b7 ${key.modelScopes.length} model${key.modelScopes.length === 1 ? "" : "s"}`
+    : providers;
+}
+
+function keyMatches(key, filter) {
+  return [
+    key.label,
+    key.key,
+    key.id,
+    ...(key.providerScopes || []),
+    ...(key.modelScopes || []),
+  ].some((value) => value && String(value).toLowerCase().includes(filter));
+}
+
+function keyFacts(key) {
+  const usage = normalizeUsage(usageForKey(key.id));
+  const cached = cacheReadRate(usage.inputTotalTokens, usage.cacheReadTokens);
+  const pinned = (key.accountScopes || [])
+    .map((accountId) => accountById(accountId))
+    .filter(Boolean)
+    .map(
+      (account) =>
+        `${escapeHtml(providerName(account.provider))} via ${escapeHtml(accountName(account))}`
+    );
+  let expiry;
+  if (key.revokedAt) {
+    expiry = fact("Revoked", shortDate(key.revokedAt), [
+      escapeHtml(relativeTime(key.revokedAt)),
+    ]);
+  } else if (key.expiresAt) {
+    const expired = key.expiresAt <= Date.now();
+    expiry = fact(
+      "Expires",
+      expired
+        ? '<span class="err">Expired</span>'
+        : escapeHtml(untilText(key.expiresAt)),
+      [shortDate(key.expiresAt)]
+    );
+  } else {
+    expiry = fact("Expires", "Never");
+  }
+  return [
+    usageFact(usageForKey(key.id), state.keyUsageWindowMs),
+    fact("Tokens", formatCompact(usage.totalTokens), [
+      cached === null ? "" : `${cached}% cached input`,
+      usage.outputTokens ? `${formatCompact(usage.outputTokens)} output` : "",
+    ]),
+    fact(
+      "Scope",
+      escapeHtml(
+        key.providerScopes?.length
+          ? key.providerScopes.map(providerName).join(", ")
+          : "All providers"
+      ),
+      [
+        ...pinned,
+        key.modelScopes?.length
+          ? `<span title="${escapeHtml(key.modelScopes.join(", "))}">${escapeHtml(key.modelScopes.join(", "))}</span>`
+          : "",
+      ]
+    ),
+    expiry,
+    fact("Created", key.createdAt ? shortDate(key.createdAt) : "\u2014", [
+      `<span class="mono" title="${escapeHtml(key.id)}">${escapeHtml(key.id)}</span>`,
+    ]),
+  ].join("");
+}
+
+function keyDetailHtml(key) {
+  if (state.editingKeyId === key.id) return keyFormHtml("edit", key);
+  const revoked = Boolean(key.revokedAt);
+  const active = isKeyActive(key);
+  const revealed = state.revealedKeyIds.has(key.id);
+  const button = (label, action, cls = "btn btn-ghost btn-sm") =>
+    `<button class="${cls}" data-action="${action}" data-key-id="${key.id}" type="button">${label}</button>`;
+  const keyLine = revealed
+    ? `<div class="key-line"><code>${escapeHtml(key.key)}</code>${button("Copy", "copy-key")}${button("Hide", "toggle-key")}</div>`
+    : "";
+  const snippetOpen = state.openSnippets.has(key.id);
+  const snippet =
+    active && modelsUrlForKey(key)
+      ? `<div class="snippet${snippetOpen ? " open" : ""}">
+          <div class="snippet-head">
+            <button class="snippet-toggle" type="button" data-action="toggle-snippet" data-key-id="${key.id}" aria-expanded="${snippetOpen}">${icon("chev")}Use with OpenCode</button>
+            <button class="link small" type="button" data-action="copy-models-url" data-key-id="${key.id}">Copy URL</button>
+            <button class="link small" type="button" data-action="copy-snippet" data-key-id="${key.id}">Copy snippet</button>
+          </div>
+          <pre class="snippet-block">${escapeHtml(setupSnippet(key, { maskKey: !revealed }))}</pre>
+        </div>`
+      : "";
+  const actions = revoked
+    ? [
+        button("Edit", "edit-key"),
+        button("Delete", "delete-key", "btn btn-ghost btn-sm btn-remove"),
+      ]
+    : [
+        button("Copy key", "copy-key"),
+        button(revealed ? "Hide key" : "Show key", "toggle-key"),
+        button("Edit", "edit-key"),
+        button("Rotate", "rotate-key"),
+        button("Revoke", "revoke-key", "btn btn-ghost btn-sm btn-remove"),
+      ];
+  return `<div class="detail" data-detail-for="${key.id}">
+    ${keyLine}
+    <div class="facts">${keyFacts(key)}</div>
+    ${
+      hasTraffic(usageForKey(key.id)) || snippet
+        ? `<div class="usage-grid">${hasTraffic(usageForKey(key.id)) ? `<div class="usage-slot" data-usage-for="key:${key.id}">${usageSlotHtml("key", key.id)}</div>` : ""}${snippet}</div>`
+        : ""
+    }
+    <div class="actions">${actions.join("")}<div class="right"><span>Collapse <span class="kbd">esc</span></span></div></div>
   </div>`;
+}
+
+function keyRowHtml(key) {
+  const revoked = Boolean(key.revokedAt);
+  const active = isKeyActive(key);
+  const open = state.expandedKeyId === key.id;
+  const usage = usageForKey(key.id);
+  const metrics = normalizeUsage(usage);
+  const expiringSoon =
+    active && key.expiresAt && key.expiresAt - Date.now() < 3 * DAY_MS;
+  let dot = "";
+  if (!active) dot = "off";
+  else if (expiringSoon) dot = "warn";
+  let tag = "";
+  if (revoked) tag = "Revoked";
+  else if (!active) tag = "Expired";
+  else if (key.expiresAt) tag = `Expires ${untilText(key.expiresAt)}`;
+  const lastUsed = metrics.lastRequestAt
+    ? relativeTime(metrics.lastRequestAt)
+    : "\u2014";
+  const name = keyName(key);
+
+  return `<div class="row t-key${open ? " open" : ""}${active || open ? "" : " dim"}" data-key-id="${key.id}" tabindex="0" role="button" aria-expanded="${open}">
+    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${tag ? `<span class="tag${expiringSoon ? " warn" : ""}">${escapeHtml(tag)}</span>` : ""}</span>
+    <span class="mono muted ellipsis d">${escapeHtml(maskKey(key.key))}</span>
+    <span class="ellipsis d">${keyScopeHtml(key)}</span>
+    <span class="num">${revoked && !metrics.requestCount ? '<span class="muted">\u2014</span>' : requestsCellHtml(usage)}</span>
+    <span class="num muted d">${escapeHtml(lastUsed)}</span>
+    <button class="more" type="button" data-menu="key" data-key-id="${key.id}" aria-label="Actions for ${escapeHtml(name)}" aria-haspopup="menu" aria-expanded="false">${icon("more")}</button>
+    <span class="l2">${escapeHtml([maskKey(key.key), keyScopeText(key), metrics.lastRequestAt ? lastUsed : ""].filter(Boolean).join(" \u00b7 "))}</span>
+  </div>${open ? keyDetailHtml(key) : ""}`;
+}
+
+function keyActivity(key) {
+  const metrics = normalizeUsage(usageForKey(key.id));
+  return [metrics.requestCount, metrics.lastRequestAt ?? 0];
+}
+
+function compareKeys(a, b) {
+  const rank = (key) => {
+    if (key.revokedAt) return 2;
+    return isKeyActive(key) ? 0 : 1;
+  };
+  const [aCount, aLast] = keyActivity(a);
+  const [bCount, bLast] = keyActivity(b);
+  return (
+    rank(a) - rank(b) ||
+    bCount - aCount ||
+    bLast - aLast ||
+    (b.createdAt ?? 0) - (a.createdAt ?? 0)
+  );
 }
 
 function renderKeys() {
   const { keys, showRevokedKeys } = state;
-  const visibleKeys = showRevokedKeys
-    ? keys
-    : keys.filter((key) => !key.revokedAt);
-  const hiddenRevokedCount = keys.length - visibleKeys.length;
+  const activeCount = keys.filter(isKeyActive).length;
+  const revokedCount = keys.filter((key) => key.revokedAt).length;
+  const filter = state.keyFilter.trim().toLowerCase();
+  $("#keys-count").textContent = keys.length
+    ? `${activeCount} active \u00b7 ${keys.length} total`
+    : "";
 
-  if (!showRevokedKeys && hiddenRevokedCount > 0) {
-    $("#keys-count").textContent = `(${visibleKeys.length}/${keys.length})`;
-  } else {
-    $("#keys-count").textContent = visibleKeys.length
-      ? `(${visibleKeys.length})`
-      : "";
-  }
+  let visible = keys.filter(
+    (key) => showRevokedKeys || !key.revokedAt || key.id === state.expandedKeyId
+  );
+  if (filter) visible = visible.filter((key) => keyMatches(key, filter));
+  visible = [...visible].sort(compareKeys);
 
-  const showRevokedToggle = $("#toggle-show-revoked-keys");
-  if (showRevokedToggle) {
-    showRevokedToggle.checked = showRevokedKeys;
-  }
-
-  if (!visibleKeys.length) {
-    if (keys.length && !showRevokedKeys) {
-      $("#keys-list").innerHTML =
-        '<div class="empty-state"><div class="empty-state-text">No active API keys. Revoked keys are hidden.</div><button class="btn btn-ghost btn-sm" type="button" data-action="show-revoked">show revoked</button></div>';
-      return;
-    }
-
-    $("#keys-list").innerHTML =
-      '<div class="empty-state"><div class="empty-state-text">No API keys created yet.</div><button class="btn btn-primary btn-sm" type="button" data-action="open-create-key">create one</button></div>';
-    return;
-  }
-
-  const activeIds = new Set(visibleKeys.map((k) => k.id));
+  const visibleIds = new Set(visible.map((key) => key.id));
   for (const id of state.revealedKeyIds) {
-    if (!activeIds.has(id)) state.revealedKeyIds.delete(id);
+    if (!visibleIds.has(id)) state.revealedKeyIds.delete(id);
   }
 
-  $("#keys-list").innerHTML = visibleKeys.map(keyCardHtml).join("");
+  const toggle = revokedCount
+    ? ` \u00b7 <button class="link" type="button" data-action="${showRevokedKeys ? "hide-revoked" : "show-revoked"}">${showRevokedKeys ? "Hide revoked" : `Show ${revokedCount} revoked`}</button>`
+    : "";
+  let foot = "";
+  if (filter) {
+    foot = `${visible.length} match${visible.length === 1 ? "" : "es"}${toggle}`;
+  } else if (keys.length) {
+    foot = `Showing ${visible.length === keys.length ? "all " : ""}${visible.length}${visible.length === keys.length ? "" : ` of ${keys.length}`}, most active first${toggle}`;
+  }
+  $("#keys-foot").innerHTML = foot ? `<span>${foot}</span>` : "";
+
+  const createForm = state.creatingKey ? keyFormHtml("create") : "";
+  let body;
+  if (!keys.length) {
+    body = createForm
+      ? ""
+      : '<div class="empty-state"><p>No API keys yet.</p><button class="btn btn-primary btn-sm" type="button" data-action="open-create-key">Create a key</button></div>';
+  } else if (visible.length) {
+    body = `<div class="row thead t-key"><span>Label</span><span class="d">Key</span><span class="d">Scope</span><span class="num">Requests ${escapeHtml(usageWindowLabel(state.keyUsageWindowMs))}</span><span class="num d">Last used</span><span></span></div>${visible.map(keyRowHtml).join("")}`;
+  } else {
+    body = filter
+      ? `<div class="empty-state"><p>No keys match \u201c${escapeHtml(state.keyFilter.trim())}\u201d.</p><button class="link small" type="button" data-action="clear-filter">Clear filter</button></div>`
+      : '<div class="empty-state"><p>No active API keys.</p><button class="btn btn-primary btn-sm" type="button" data-action="open-create-key">Create a key</button></div>';
+  }
+
+  renderPreservingForm($("#keys-list"), `${createForm}${body}`);
+  if (state.creatingKey) syncScopedAccountAvailability("create");
+  if (state.editingKeyId) syncScopedAccountAvailability("edit");
+  const expanded = state.expandedKeyId;
+  if (
+    expanded &&
+    expanded !== state.editingKeyId &&
+    visibleIds.has(expanded) &&
+    hasTraffic(usageForKey(expanded))
+  ) {
+    requestUsageDetail("key", expanded);
+  }
 }
 
-const DETAIL_EMPTY_STATE_HTML =
-  '<div class="empty-state"><div class="empty-state-text">No usage data in this window.</div></div>';
+function keyMenuItems(key) {
+  const revoked = Boolean(key.revokedAt);
+  const active = isKeyActive(key);
+  return [
+    !revoked && { label: "Copy key", action: "copy-key", shortcut: "C" },
+    active &&
+      modelsUrlForKey(key) && {
+        label: "Copy models URL",
+        action: "copy-models-url",
+        shortcut: "M",
+      },
+    !revoked && {
+      label: state.revealedKeyIds.has(key.id) ? "Hide key" : "Show key",
+      action: "toggle-key",
+      shortcut: "S",
+    },
+    { label: "Edit", action: "edit-key", shortcut: "E" },
+    !revoked && { label: "Rotate", action: "rotate-key", shortcut: "R" },
+    "separator",
+    revoked
+      ? {
+          label: "Delete",
+          action: "delete-key",
+          shortcut: "\u232b",
+          danger: true,
+        }
+      : {
+          label: "Revoke",
+          action: "revoke-key",
+          shortcut: "\u232b",
+          danger: true,
+        },
+  ];
+}
+
+function menuHtml(kind, id) {
+  const subject = kind === "account" ? accountById(id) : keyById(id);
+  if (!subject) return "";
+  const items = (
+    kind === "account" ? accountMenuItems(subject) : keyMenuItems(subject)
+  ).filter(Boolean);
+  return items
+    .map((item) => {
+      if (item === "separator") return "<hr>";
+      const shortcut = item.shortcut === "\u232b" ? "Backspace" : item.shortcut;
+      return `<button class="menu-item${item.danger ? " danger" : ""}" type="button" role="menuitem" data-action="${item.action}" data-${kind}-id="${id}" data-shortcut="${shortcut}"><span>${item.label}</span><span class="kbd">${item.shortcut}</span></button>`;
+    })
+    .join("");
+}
+
+/* Usage inside expanded rows */
 
 const DETAIL_LOADING_HTML =
   '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
 
-function renderDetailStats(totals) {
-  const metrics = normalizeUsage(totals);
-  const rate = metrics.successRate !== null ? `${metrics.successRate}%` : "-";
-  const stats = [
-    [formatCount(metrics.requestCount), "requests"],
-    [rate, "success rate"],
-    [formatCount(metrics.proxyErrorCount), "proxy fail"],
-    [formatCount(metrics.upstreamErrorCount), "upstream fail"],
-    [formatCount(metrics.clientErrorCount), "4xx other"],
-    [formatCount(metrics.serverErrorCount), "5xx"],
-    [formatCount(metrics.authErrorCount), "auth"],
-    [formatCount(metrics.rateLimitCount), "429"],
-    [`${formatCount(metrics.avgLatencyMs)}ms`, "avg latency"],
-    [`${formatCount(metrics.maxLatencyMs)}ms`, "max latency"],
-    [formatCount(metrics.inputTotalTokens), "input total"],
-    [formatCount(metrics.inputTokens), "input uncached"],
-    [formatCount(metrics.outputTokens), "output tokens"],
-    [formatCount(metrics.reasoningTokens), "reasoning"],
-    [formatCount(metrics.totalTokens), "total tokens"],
-    [formatCount(metrics.cacheReadTokens), "cache read"],
-    [formatCount(metrics.cacheWriteTokens), "cache write"],
-  ];
-  let html = `<div class="detail-stats">${stats.map(([v, l]) => `<div class="detail-stat"><div class="detail-stat-value">${v}</div><div class="detail-stat-label">${l}</div></div>`).join("")}</div>`;
-  if (metrics.lastRequestAt) {
-    html += `<div style="font-size:11px;color:var(--text-tertiary);margin-bottom:16px">last request: ${escapeHtml(new Date(metrics.lastRequestAt).toLocaleString())}</div>`;
+function usageSlotHtml(kind, id) {
+  const windowMs =
+    kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
+  const entry = state.usageDetails.get(`${kind}:${id}:${windowMs}`);
+  if (!entry || entry.status === "loading") {
+    return '<p class="usage-note muted"><span class="spinner"></span>Loading usage</p>';
   }
-  return html;
-}
-
-const USAGE_TABLE_HEADERS = [
-  "reqs",
-  "ok",
-  "proxy fail",
-  "upstream fail",
-  "429",
-  "avg ms",
-  "input tok",
-  "output tok",
-  "cache read",
-  "cache write",
-];
-
-const ENDPOINT_LEAD_COLS = [
-  [
-    "provider",
-    (ep) => `<span class="badge badge-${ep.provider}">${ep.provider}</span>`,
-  ],
-  ["endpoint", (ep) => escapeHtml(ep.endpoint)],
-];
-
-const MODEL_LEAD_COLS = [
-  [
-    "provider",
-    (modelRow) =>
-      `<span class="badge badge-${modelRow.provider}">${modelRow.provider}</span>`,
-  ],
-  ["endpoint", (modelRow) => escapeHtml(modelRow.endpoint)],
-  [
-    "model",
-    (modelRow) => `<code>${escapeHtml(modelRow.model || "(none)")}</code>`,
-  ],
-];
-
-function usageTableHtml(rows, leadCols) {
-  const headers = [...leadCols.map((c) => c[0]), ...USAGE_TABLE_HEADERS];
-  let html = `<table class="detail-table"><thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>`;
-  for (const row of rows) {
-    const metrics = normalizeUsage(row);
-    const lead = leadCols.map((c) => `<td>${c[1](row)}</td>`).join("");
-    html += `<tr>${lead}<td>${formatCount(metrics.requestCount)}</td><td>${formatCount(metrics.successCount)}</td><td>${metrics.proxyErrorCount ? formatCount(metrics.proxyErrorCount) : "-"}</td><td>${metrics.upstreamErrorCount ? formatCount(metrics.upstreamErrorCount) : "-"}</td><td>${metrics.rateLimitCount ? formatCount(metrics.rateLimitCount) : "-"}</td><td>${formatCount(metrics.avgLatencyMs)}</td><td>${formatCount(metrics.inputTokens)}</td><td>${formatCount(metrics.outputTokens)}</td><td>${formatCount(metrics.cacheReadTokens)}</td><td>${formatCount(metrics.cacheWriteTokens)}</td></tr>`;
+  if (entry.status === "error") {
+    return `<p class="usage-note err">${escapeHtml(entry.error)}</p>`;
   }
-  html += "</tbody></table>";
-  return html;
-}
-
-function renderUsageTable(title, rows, leadCols) {
-  if (!rows.length) return "";
-  return `<div class="detail-section-title">${title}</div><div style="overflow:auto">${usageTableHtml(rows, leadCols)}</div>`;
-}
-
-function renderKeyDetailBody(data) {
-  const { totals } = data;
-  if (!totals.requestCount) {
-    return DETAIL_EMPTY_STATE_HTML;
-  }
-
+  const { data } = entry;
+  if (!data.totals?.requestCount) return "";
   return [
-    renderDetailStats(totals),
-    renderUsageTable(
-      "by provider / endpoint",
-      data.endpoints,
-      ENDPOINT_LEAD_COLS
-    ),
-    renderUsageTable(
-      "by provider / endpoint / model",
-      data.models || [],
-      MODEL_LEAD_COLS
-    ),
-  ].join("");
+    kind === "account" ? keyListHtml(data.apiKeys, data.totals) : "",
+    modelListHtml(data.models),
+  ]
+    .filter(Boolean)
+    .map((list) => `<div>${list}</div>`)
+    .join("");
+}
+
+function renderUsageSlot(kind, id) {
+  const slot = document.querySelector(`[data-usage-for="${kind}:${id}"]`);
+  if (slot) slot.innerHTML = usageSlotHtml(kind, id);
+}
+
+function modelListHtml(rows) {
+  if (!rows?.length) return "";
+  const body = [...rows]
+    .sort((a, b) => (b.requestCount ?? 0) - (a.requestCount ?? 0))
+    .map((row) => {
+      const usage = normalizeUsage(row);
+      const cached = cacheReadRate(
+        usage.inputTotalTokens,
+        usage.cacheReadTokens
+      );
+      return `<div class="row t-model"><span class="name"><span class="mono ellipsis">${escapeHtml(row.model?.trim() || "(unknown)")}</span><span class="tag d">${escapeHtml(`${providerName(row.provider)} \u00b7 ${row.endpoint}`)}</span></span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cached === null ? "\u2014" : `${cached}%`}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
+    })
+    .join("");
+  return `<div class="list-label">By model</div><div class="list"><div class="row thead t-model"><span>Model</span><span class="num">Requests</span><span class="num">Tokens</span><span class="num d">Cached</span><span class="num d">Latency</span></div>${body}</div>`;
+}
+
+function keyListHtml(rows, totals) {
+  if (!rows?.length) return "";
+  const total = normalizeUsage(totals).requestCount;
+  const body = [...rows]
+    .sort((a, b) => (b.requestCount ?? 0) - (a.requestCount ?? 0))
+    .map((row) => {
+      const usage = normalizeUsage(row);
+      const share = total
+        ? `${((usage.requestCount / total) * 100).toFixed(1)}%`
+        : "\u2014";
+      return `<div class="row t-bykey"><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
+    })
+    .join("");
+  return `<div class="list-label">By key</div><div class="list"><div class="row thead t-bykey"><span>Key</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span></div>${body}</div>`;
 }
 
 function apiKeyDisplayHtml(apiKeyId) {
   const key = keyById(apiKeyId);
-  if (key) {
-    return escapeHtml(key.label || maskKey(key.key));
+  if (key) return escapeHtml(keyName(key));
+  return `<span class="mono muted">${escapeHtml(apiKeyId.slice(0, 8))}\u2026</span>`;
+}
+
+/* Inline forms survive list re-renders */
+
+function fieldKey(input) {
+  if (input.type === "checkbox" || input.type === "radio") {
+    return `${input.name || input.className}:${input.value}`;
   }
-  return `<code>${escapeHtml(apiKeyId.slice(0, 8))}...</code>`;
+  return input.id || `${input.className}:${input.dataset.provider ?? ""}`;
 }
 
-function renderAccountDetailBody(data) {
-  const { totals } = data;
-  if (!totals.requestCount) {
-    return DETAIL_EMPTY_STATE_HTML;
-  }
+const isChoice = (input) => input.type === "checkbox" || input.type === "radio";
 
-  return [
-    renderDetailStats(totals),
-    renderUsageTable("by API key", data.apiKeys, [
-      ["api key", (k) => apiKeyDisplayHtml(k.apiKeyId)],
-    ]),
-    renderUsageTable(
-      "by provider / endpoint",
-      data.endpoints,
-      ENDPOINT_LEAD_COLS
-    ),
-    renderUsageTable(
-      "by provider / endpoint / model",
-      data.models || [],
-      MODEL_LEAD_COLS
-    ),
-  ].join("");
-}
-
-async function openUsageDetailModal({ title, path, renderBody }) {
-  $("#key-detail-title").textContent = title;
-  $("#key-detail-body").innerHTML = DETAIL_LOADING_HTML;
-  openModal($("#modal-key-detail"), ".modal-close");
-
-  try {
-    const data = await api(path);
-    $("#key-detail-body").innerHTML = renderBody(data);
-  } catch (e) {
-    $("#key-detail-body").innerHTML =
-      `<div class="empty-state"><div class="empty-state-text text-error">${escapeHtml(e.message)}</div></div>`;
+function renderPreservingForm(container, html) {
+  const form = container.querySelector?.(".inline-form");
+  const saved = form
+    ? {
+        id: form.dataset.form,
+        focus: form.contains(document.activeElement)
+          ? fieldKey(document.activeElement)
+          : null,
+        fields: new Map(
+          Array.from(
+            form.querySelectorAll("input, textarea, select"),
+            (input) => [
+              fieldKey(input),
+              isChoice(input) ? input.checked : input.value,
+            ]
+          )
+        ),
+      }
+    : null;
+  container.innerHTML = html;
+  const next = saved && container.querySelector(".inline-form");
+  if (!next || next.dataset.form !== saved.id) return;
+  for (const input of next.querySelectorAll("input, textarea, select")) {
+    const key = fieldKey(input);
+    if (saved.fields.has(key)) {
+      if (isChoice(input)) input.checked = saved.fields.get(key);
+      else input.value = saved.fields.get(key);
+    }
+    if (key === saved.focus) input.focus();
   }
 }
 
-async function openKeyDetail(keyId) {
-  const key = keyById(keyId);
-  const label = key?.label || maskKey(key?.key || keyId);
-  await openUsageDetailModal({
-    title: label,
-    path: `/admin/keys/${keyId}/usage?windowMs=${state.keyUsageWindowMs}`,
-    renderBody: renderKeyDetailBody,
-  });
-}
+/* OpenCode setup */
 
-async function openAccountDetail(accountId) {
-  const account = accountById(accountId);
-  const label = account?.label || account?.accountId || accountId;
-  const title = account
-    ? `${account.provider} account: ${label}`
-    : `account: ${label}`;
-
-  await openUsageDetailModal({
-    title,
-    path: `/admin/accounts/${accountId}/usage?windowMs=${state.accountUsageWindowMs}`,
-    renderBody: renderAccountDetailBody,
-  });
-}
-
-function setupSnippet(key) {
-  if (!key) {
-    return [
-      "# No active API keys with a models URL.",
-      "# Create an API key first, then reopen this dialog.",
-    ].join("\n");
-  }
-
-  const modelsUrl = modelsUrlForKey(key);
+function setupSnippet(key, { maskKey: masked = false } = {}) {
   return [
     "# Terminal",
-    `export OPENCODE_MODELS_URL="${modelsUrl}"`,
+    `export OPENCODE_MODELS_URL="${modelsUrlForKey(key)}"`,
     "opencode models --refresh",
     "opencode",
     "",
     "# Inside OpenCode",
     "/connect",
     "# provider: kleis",
-    `# token: ${key.key}`,
+    `# token: ${masked ? maskKey(key.key) : key.key}`,
   ].join("\n");
 }
 
-function openSetupModal() {
-  const select = $("#setup-key-select");
-  const snippet = $("#setup-snippet");
-  if (!select || !snippet) return;
-
-  const keys = activeKeysWithModelsUrl();
-
-  select.innerHTML = keys.length
-    ? keys
-        .map(
-          (k) =>
-            `<option value="${k.id}">${escapeHtml(k.label || maskKey(k.key))}</option>`
-        )
-        .join("")
-    : '<option value="">no active keys</option>';
-
-  const selected = keys.length ? keys[0] : null;
-  snippet.textContent = setupSnippet(selected);
-  openModal($("#modal-opencode-setup"), "#setup-key-select");
-}
-
-function showKeyReveal(fullKey) {
-  const reveal = document.createElement("div");
-  reveal.className = "key-reveal";
-  const value = document.createElement("span");
-  value.className = "key-reveal-value";
-  value.textContent = fullKey;
-  reveal.append(value);
-  const btn = document.createElement("button");
-  btn.className = "btn btn-ghost btn-sm";
-  btn.type = "button";
-  btn.textContent = "copy";
-  btn.addEventListener("click", () => copyToClipboard(fullKey, btn));
-  reveal.append(btn);
-  $("#keys-list").prepend(reveal);
-  setTimeout(() => reveal.remove(), 30_000);
-}
+/* Connect */
 
 function renderOAuthFlow(data, provider) {
   const container = $("#oauth-flow-active");
   container.style.display = "block";
+  $("#btn-oauth-start").style.display = "none";
 
-  const urlStep = `<div class="oauth-step"><span class="oauth-step-num">1</span><div><div style="margin-bottom:4px">Open the authorization page:</div><div class="oauth-url"><a href="${escapeHtml(data.authorizationUrl)}" target="_blank" rel="noopener">${escapeHtml(data.authorizationUrl)}</a></div></div></div>`;
-
-  const instrStep = data.instructions
-    ? `<div class="oauth-step"><span class="oauth-step-num">2</span><div><div class="oauth-instructions">${escapeHtml(data.instructions)}</div></div></div>`
+  const isDevice = data.method === "auto";
+  const target = state.activeOAuth?.accountName;
+  const url = escapeHtml(data.authorizationUrl);
+  const deviceCode = isDevice
+    ? (data.instructions || "").replace(/^Enter code:\s*/i, "")
     : "";
 
-  const lastNum = data.instructions ? 3 : 2;
-  const isDevice = data.method === "auto";
+  const steps = [
+    `<div class="field"><span class="field-label">1 \u00b7 Open this link and approve</span><div class="input-row"><a class="mono ellipsis" href="${url}" target="_blank" rel="noopener">${url}</a><button class="btn btn-ghost btn-sm" type="button" id="btn-oauth-copy-url">Copy</button></div></div>`,
+  ];
+  if (isDevice) {
+    steps.push(
+      `<div class="field"><span class="field-label">2 \u00b7 Enter this code on that page</span><div class="device-code">${escapeHtml(deviceCode)}</div></div>`
+    );
+  } else {
+    steps.push(
+      `<div class="field"><label class="field-label" for="oauth-code">2 \u00b7 Paste the code you get back</label><input id="oauth-code" class="field-input mono" type="text" placeholder="${provider === "codex" ? "Code or callback URL" : "Authorization code"}" autocomplete="off" spellcheck="false"></div>`
+    );
+  }
 
-  const completeStep = isDevice
-    ? '<div style="margin-bottom:8px">Once you have authorized, click complete:</div><button class="btn btn-primary" type="button" id="btn-oauth-complete">complete flow</button>'
-    : '<div style="margin-bottom:8px">After authorizing, paste callback code or full callback URL:</div><input id="oauth-code" class="field-input" type="text" placeholder="code or callback URL" style="margin-bottom:8px"><button class="btn btn-primary" type="button" id="btn-oauth-complete">complete flow</button>';
-
-  const target = state.activeOAuth?.accountName;
-  const mode = state.activeOAuth?.mode;
-  container.innerHTML = `<div class="oauth-flow-panel">
-    <div class="oauth-flow-title">${target ? "Reauthorizing" : "Connecting"} <span class="badge badge-${provider}">${provider}</span>${target ? ` <strong>${escapeHtml(target)}</strong>` : ""}${mode ? ` <span class="text-muted">· ${escapeHtml(mode)}</span>` : ""}</div>
-    ${urlStep}${instrStep}
-    <div class="oauth-step"><span class="oauth-step-num">${lastNum}</span><div>${completeStep}</div></div>
+  container.innerHTML = `<div class="flow">
+    <p class="flow-title">${target ? `Reauthorizing <strong>${escapeHtml(target)}</strong>` : `Signing in to ${escapeHtml(providerName(provider))}`}</p>
+    ${steps.join("")}
     <p id="oauth-flow-error" class="oauth-flow-error" role="alert" hidden></p>
-    <button class="btn btn-ghost btn-sm" type="button" id="btn-oauth-cancel">cancel flow / start over</button>
+    <div class="flow-actions">
+      <button class="btn btn-primary btn-block" type="button" id="btn-oauth-complete">${isDevice ? "I\u2019ve approved it" : "Connect account"}</button>
+      <button class="btn btn-ghost" type="button" id="btn-oauth-cancel">Start over</button>
+    </div>
   </div>`;
 
   $("#btn-oauth-complete").addEventListener("click", completeOAuth);
   $("#btn-oauth-cancel").addEventListener("click", cancelOAuthFlow);
+  const copyUrl = $("#btn-oauth-copy-url");
+  copyUrl.addEventListener("click", () =>
+    copyToClipboard(data.authorizationUrl, copyUrl)
+  );
+  ($("#oauth-code") || $("#btn-oauth-complete")).focus();
 }
 
-function dashDelta(current, previous) {
-  if (!previous || previous === 0) return current > 0 ? null : 0;
-  return Math.round(((current - previous) / previous) * 100);
+/* Overview */
+
+function renderAttention() {
+  const el = $("#attention");
+  if (!el) return;
+  const statuses = providerStatusMap();
+  const items = [];
+  for (const account of state.accounts) {
+    if (!isAccountServing(account, statuses)) continue;
+    const issues = accountIssues(account);
+    if (!issues.length) continue;
+    items.push({
+      severity: issues[0].severity,
+      name: accountName(account),
+      text: `${providerName(account.provider)} \u00b7 ${issues.map((issue) => issue.text).join(", ")}`,
+      when: issues.find((issue) => issue.when)?.when || "",
+      accountId: account.id,
+    });
+  }
+
+  const totals = state.dashboardData?.totals;
+  if (totals) {
+    const metrics = normalizeUsage(totals);
+    const failed =
+      metrics.upstreamErrorCount + metrics.unclassifiedFailureCount;
+    const errorRate = metrics.requestCount
+      ? (failed + metrics.proxyErrorCount + metrics.rateLimitCount) /
+        metrics.requestCount
+      : 0;
+    if (metrics.proxyErrorCount > 0 || errorRate >= 0.01) {
+      items.push({
+        severity: "warn",
+        name: "Request errors",
+        text: `${formatCount(failed)} upstream fails \u00b7 ${formatCount(metrics.rateLimitCount)} rate-limited (429) \u00b7 ${formatCount(metrics.proxyErrorCount)} proxy fails`,
+        when: `last ${usageWindowLabel(state.dashboardWindowMs)}`,
+        accountId: null,
+      });
+    }
+  }
+
+  items.sort(
+    (a, b) => Number(b.severity === "err") - Number(a.severity === "err")
+  );
+  el.innerHTML = items.length
+    ? `<div class="sh"><h2>Needs attention</h2><span class="muted">${items.length}</span></div><div class="list">${items
+        .map(
+          (item) =>
+            `<div class="row attn${item.accountId ? "" : " static"}"${item.accountId ? ` data-account-id="${item.accountId}" tabindex="0" role="button"` : ""}><span class="dot ${item.severity}"></span><span class="ellipsis">${escapeHtml(item.name)}</span><span class="muted ellipsis d">${escapeHtml(item.text)}</span><span class="num muted small">${escapeHtml(item.when)}</span>${item.accountId ? icon("chev") : "<span></span>"}<span class="l2">${escapeHtml(item.text)}</span></div>`
+        )
+        .join("")}</div>`
+    : "";
 }
 
-function dashDeltaHtml(value, inverted) {
-  if (value === null || value === undefined) return "";
-  if (value === 0) return '<div class="dash-kpi-delta neutral">\u2014</div>';
-  const sign = value > 0 ? "+" : "";
-  const cls = value > 0 !== (inverted || false) ? "positive" : "negative";
-  return `<div class="dash-kpi-delta ${cls}">${sign}${value}% vs prev</div>`;
+function deltaText(current, previous) {
+  if (!previous) return "";
+  const pct = Math.round(((current - previous) / previous) * 100);
+  if (pct === 0) return "0%";
+  return `${pct > 0 ? "+" : "\u2212"}${Math.abs(pct)}%`;
 }
 
-function renderDashKpis(m, pm) {
-  const cr = cacheReadRate(m.inputTotalTokens, m.cacheReadTokens);
-  const prevCr = cacheReadRate(pm.inputTotalTokens, pm.cacheReadTokens);
-
+function kpisHtml(metrics, previous, windowLabel) {
+  const cached = cacheReadRate(
+    metrics.inputTotalTokens,
+    metrics.cacheReadTokens
+  );
+  const errors = Math.max(0, metrics.requestCount - metrics.successCount);
+  const requestsDelta = deltaText(metrics.requestCount, previous.requestCount);
   const kpis = [
-    {
-      label: "requests",
-      value: formatCompact(m.requestCount),
-      delta: dashDelta(m.requestCount, pm.requestCount),
-      accent: "var(--amber)",
-    },
-    {
-      label: "success rate",
-      value: m.successRate !== null ? `${m.successRate}%` : "-",
-      delta: dashDelta(m.successRate ?? 0, pm.successRate ?? 0),
-      accent: "var(--green)",
-    },
-    {
-      label: "tokens",
-      value: formatCompact(m.totalTokens),
-      delta: dashDelta(m.totalTokens, pm.totalTokens),
-      accent: "var(--amber)",
-    },
-    {
-      label: "cached input",
-      value: cr === null ? "-" : `${cr}%`,
-      delta: cr === null || prevCr === null ? null : dashDelta(cr, prevCr),
-      accent: "var(--amber)",
-    },
-    {
-      label: "avg latency",
-      value: `${formatCount(m.avgLatencyMs)}ms`,
-      delta: dashDelta(m.avgLatencyMs, pm.avgLatencyMs),
-      inverted: true,
-      accent: "var(--text-secondary)",
-    },
+    [
+      "Requests",
+      formatCompact(metrics.requestCount),
+      requestsDelta ? `${requestsDelta} vs previous ${windowLabel}` : "",
+    ],
+    [
+      "Success",
+      successRateText(metrics),
+      errors ? `${formatCount(errors)} errors` : "No errors",
+    ],
+    [
+      "Tokens",
+      formatCompact(metrics.totalTokens),
+      deltaText(metrics.totalTokens, previous.totalTokens),
+    ],
+    [
+      "Cached input",
+      cached === null ? "\u2014" : `${cached}%`,
+      cached === null ? "" : "of input tokens",
+    ],
+    [
+      "Avg latency",
+      `${formatCount(metrics.avgLatencyMs)}<span class="unit">ms</span>`,
+      deltaText(metrics.avgLatencyMs, previous.avgLatencyMs),
+    ],
   ];
-
-  return `<div class="dash-kpi-row">${kpis
+  return `<div class="kpis">${kpis
     .map(
-      (k) =>
-        `<div class="dash-kpi" style="border-top-color:${k.accent}"><div class="dash-kpi-label">${k.label}</div><div class="dash-kpi-value">${k.value}</div>${dashDeltaHtml(k.delta, k.inverted)}</div>`
+      ([label, value, sub]) =>
+        `<div class="kpi"><div class="kpi-label">${label}</div><div class="val">${value}</div><div class="sub">${sub}</div></div>`
     )
     .join("")}</div>`;
 }
 
-function renderSvgBarChart(buckets, seriesExtractor, bucketSizeMs) {
-  if (!buckets.length) return "";
+const TICK_STEPS_MS = [
+  5, 10, 15, 30, 60, 120, 180, 240, 360, 720, 1440, 2880, 7200, 10_080,
+].map((minutes) => minutes * 60_000);
 
-  const bucketSeries = buckets.map((bucket) => {
-    const series = seriesExtractor(bucket);
-    let total = 0;
-    for (const item of series) total += item.value;
-    return { bucket, series, total };
+function chartTicks(start, end, plotWidth) {
+  const maxTicks = Math.max(2, Math.min(8, Math.floor(plotWidth / 80)));
+  const step =
+    TICK_STEPS_MS.find((ms) => (end - start) / ms <= maxTicks) ??
+    TICK_STEPS_MS.at(-1);
+  const ticks = [];
+  const cursor = new Date(start);
+  cursor.setHours(0, 0, 0, 0);
+  if (step >= DAY_MS) {
+    if (cursor.getTime() < start) cursor.setDate(cursor.getDate() + 1);
+    while (cursor.getTime() <= end) {
+      ticks.push({ at: cursor.getTime(), date: true });
+      cursor.setDate(cursor.getDate() + step / DAY_MS);
+    }
+    return ticks;
+  }
+  for (let at = cursor.getTime(); at <= end; at += step) {
+    if (at < start) continue;
+    const date = new Date(at);
+    ticks.push({
+      at,
+      date: date.getHours() === 0 && date.getMinutes() === 0,
+    });
+  }
+  return ticks;
+}
+
+function bucketLabel(bucketSizeMs) {
+  const minutes = Math.round(bucketSizeMs / 60_000);
+  if (minutes === 1) return "minute";
+  if (minutes < 60) return `${minutes} minutes`;
+  const hours = minutes / 60;
+  return hours === 1 ? "hour" : `${hours} hours`;
+}
+
+const timeLabel = (timestamp) =>
+  new Date(timestamp).toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
   });
 
-  const W = 700;
-  const H = 140;
-  const PL = 44;
-  const PR = 8;
-  const PT = 12;
-  const PB = 24;
-  const chartW = W - PL - PR;
-  const chartH = H - PT - PB;
+const chart = {
+  slots: [],
+  current: [],
+  previous: null,
+  width: 0,
+  plotWidth: 0,
+  x: () => 0,
+  y: () => 0,
+};
 
-  let maxVal = 0;
-  for (const item of bucketSeries) {
-    if (item.total > maxVal) maxVal = item.total;
+function niceCeil(value) {
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  for (const factor of [1, 2, 2.5, 5, 10]) {
+    if (factor * magnitude >= value) return factor * magnitude;
   }
-  if (maxVal === 0) return "";
-
-  const step = chartW / bucketSeries.length;
-  const barW = Math.max(1.5, Math.min(12, step * 0.8));
-
-  let svg = `<svg class="dash-chart-svg" viewBox="0 0 ${W} ${H}">`;
-
-  const gridValues = [maxVal, Math.round(maxVal / 2), 0];
-  for (let i = 0; i < gridValues.length; i++) {
-    const y = PT + (chartH * i) / 2;
-    svg += `<line x1="${PL}" y1="${y}" x2="${W - PR}" y2="${y}" stroke="var(--border-subtle)" stroke-width="0.5"/>`;
-    svg += `<text x="${PL - 4}" y="${y + 3}" text-anchor="end" fill="var(--text-tertiary)" font-size="9" font-family="var(--font-mono)">${formatCompact(gridValues[i])}</text>`;
-  }
-
-  for (let i = 0; i < bucketSeries.length; i++) {
-    const item = bucketSeries[i];
-    const x = PL + i * step + (step - barW) / 2;
-    let currentY = PT + chartH - (item.total / maxVal) * chartH;
-    for (const s of item.series) {
-      const h = (s.value / maxVal) * chartH;
-      if (h > 0.5) {
-        const tip = `${formatBucketTime(item.bucket.bucketStart, bucketSizeMs)}: ${formatCount(s.value)} ${s.label}`;
-        svg += `<rect x="${x}" y="${currentY}" width="${barW}" height="${h}" fill="${s.color}" rx="0.5"><title>${escapeHtml(tip)}</title></rect>`;
-        currentY += h;
-      }
-    }
-  }
-
-  const labelCount = Math.min(6, bucketSeries.length);
-  if (labelCount > 1) {
-    const labelStep = Math.max(1, Math.floor(bucketSeries.length / labelCount));
-    for (let i = 0; i < bucketSeries.length; i += labelStep) {
-      const x = PL + i * step + step / 2;
-      svg += `<text x="${x}" y="${H - 4}" text-anchor="middle" fill="var(--text-tertiary)" font-size="8" font-family="var(--font-mono)">${escapeHtml(formatBucketTime(bucketSeries[i].bucket.bucketStart, bucketSizeMs))}</text>`;
-    }
-  }
-
-  svg += "</svg>";
-  return svg;
+  return 10 * magnitude;
 }
 
-function requestSeriesExtractor(bucket) {
-  const m = normalizeUsage(bucket);
-  const upstreamOrOtherFailCount =
-    m.upstreamErrorCount + m.unclassifiedFailureCount;
-  return [
-    { value: m.successCount, color: "var(--green)", label: "success" },
-    { value: m.proxyErrorCount, color: "var(--red)", label: "proxy fail" },
-    {
-      value: upstreamOrOtherFailCount,
-      color: "var(--text-secondary)",
-      label: "upstream/other fail",
-    },
-    { value: m.rateLimitCount, color: "var(--amber)", label: "429" },
-  ];
+function requestChartHtml(data, width) {
+  const size = data.bucketSizeMs;
+  const buckets = data.buckets || [];
+  if (!size || !buckets.length) return "";
+  const windowMs = data.windowMs ?? state.dashboardWindowMs;
+  const end =
+    typeof data.now === "number" ? data.now : buckets.at(-1).bucketStart + size;
+  const since = typeof data.since === "number" ? data.since : end - windowMs;
+  const first = Math.floor(since / size) * size;
+  const last = Math.floor((end - 1) / size) * size;
+  const slots = [];
+  for (let at = first; at <= last; at += size) slots.push(at);
+  if (slots.length < 2) return "";
+
+  const counts = new Map(
+    buckets.map((bucket) => [bucket.bucketStart, bucket.requestCount])
+  );
+  const previousCounts = new Map(
+    (data.previousBuckets || []).map((bucket) => [
+      bucket.bucketStart + windowMs,
+      bucket.requestCount,
+    ])
+  );
+  const current = slots.map((at) => counts.get(at) ?? 0);
+  const previous = data.previousBuckets?.length
+    ? slots.map((at) => previousCounts.get(at) ?? 0)
+    : null;
+
+  const height = width < 640 ? 128 : 160;
+  const top = 8;
+  const plotWidth = width - 48;
+  const plotHeight = height - top - 24;
+  const step = niceCeil(Math.max(3, ...current, ...(previous || [])) / 3);
+  const yMax = step * 3;
+  const x = (index) => (index / (slots.length - 1)) * plotWidth;
+  const y = (value) => top + (1 - value / yMax) * plotHeight;
+  const points = (series) =>
+    series
+      .map((value, index) => `${x(index).toFixed(1)},${y(value).toFixed(1)}`)
+      .join(" ");
+  Object.assign(chart, { slots, current, previous, width, plotWidth, x, y });
+
+  let svg = `<svg class="plot-svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Requests per ${bucketLabel(size)}"><g class="grid">`;
+  for (let k = 0; k <= 3; k++) {
+    const gy = Math.round(y(step * k)) + 0.5;
+    const label = formatCompact(step * k).replace(/\.0(?=[KMBT])/, "");
+    svg += `<line x1="0" x2="${plotWidth}" y1="${gy}" y2="${gy}"/><text x="${width}" y="${gy + 4}" text-anchor="end">${label}</text>`;
+  }
+  svg += "</g><g>";
+  for (const tick of chartTicks(first, last, plotWidth)) {
+    const tx = ((tick.at - first) / (last - first)) * plotWidth;
+    if (tx > plotWidth - 40) continue;
+    svg += `<text x="${tx.toFixed(1)}" y="${height - 4}">${escapeHtml(tick.date ? shortDate(tick.at) : timeLabel(tick.at))}</text>`;
+  }
+  svg += "</g>";
+  if (previous)
+    svg += `<polyline class="line-prev" points="${points(previous)}"/>`;
+  svg += `<polyline class="line" points="${points(current)}"/><g class="hover" visibility="hidden"><line class="hover-line" y1="${top}" y2="${top + plotHeight}"/><circle class="hover-dot" r="3"/></g></svg>`;
+
+  const windowLabel = usageWindowLabel(windowMs);
+  const range =
+    windowMs >= 2 * DAY_MS
+      ? `${shortDate(first)} \u2013 ${shortDate(end)}`
+      : `Last ${windowLabel}`;
+  return `<div class="chart">
+    <div class="sh"><h2>Requests</h2><span class="muted small">per ${bucketLabel(size)}</span>
+      <div class="right legend"><span><i class="sw"></i>${escapeHtml(range)}</span>${previous ? `<span><i class="sw prev"></i>Previous ${escapeHtml(windowLabel)}</span>` : ""}</div>
+    </div>
+    <div class="plot">${svg}<div class="tip" hidden></div></div>
+  </div>`;
 }
 
-function tokenSeriesExtractor(bucket) {
-  const m = normalizeUsage(bucket);
-  return [
-    { value: m.inputTokens, color: "var(--amber)", label: "input" },
-    { value: m.outputTokens, color: "var(--green)", label: "output" },
-    { value: m.cacheReadTokens, color: "var(--amber)", label: "cache read" },
-    {
-      value: m.cacheWriteTokens,
-      color: "var(--text-secondary)",
-      label: "cache write",
-    },
-  ];
+function showChartHover(plot, clientX) {
+  if (chart.slots.length < 2) return;
+  const offset = clientX - plot.getBoundingClientRect().left;
+  const index = Math.max(
+    0,
+    Math.min(
+      chart.slots.length - 1,
+      Math.round((offset / chart.plotWidth) * (chart.slots.length - 1))
+    )
+  );
+  const hx = chart.x(index);
+  const hover = plot.querySelector(".hover");
+  hover.setAttribute("visibility", "visible");
+  const line = hover.querySelector(".hover-line");
+  line.setAttribute("x1", String(Math.round(hx) + 0.5));
+  line.setAttribute("x2", String(Math.round(hx) + 0.5));
+  const dot = hover.querySelector(".hover-dot");
+  dot.setAttribute("cx", hx.toFixed(1));
+  dot.setAttribute("cy", chart.y(chart.current[index]).toFixed(1));
+
+  const at = new Date(chart.slots[index]);
+  const day = at.toLocaleDateString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+  const tip = plot.querySelector(".tip");
+  tip.innerHTML = `<span class="muted">${escapeHtml(`${day} \u00b7 ${timeLabel(at)}`)}</span><span>${formatCount(chart.current[index])} requests</span>${chart.previous ? `<span class="muted">prev ${formatCount(chart.previous[index])}</span>` : ""}`;
+  tip.hidden = false;
+  const tipWidth = tip.offsetWidth;
+  const left =
+    hx + 12 + tipWidth > chart.plotWidth ? hx - 12 - tipWidth : hx + 12;
+  tip.style.left = `${Math.max(0, left)}px`;
 }
 
-function renderProviderBreakdown(providers, totalMetrics) {
+function hideChartHover(plot) {
+  plot.querySelector(".hover")?.setAttribute("visibility", "hidden");
+  const tip = plot.querySelector(".tip");
+  if (tip) tip.hidden = true;
+}
+
+function providerTableHtml(data, metrics) {
+  const providers = data.byProvider || [];
   if (!providers.length) return "";
-  let html = '<div class="dash-provider-grid">';
-  for (const p of providers) {
-    const pm = normalizeUsage(p);
-    const pct = totalMetrics.requestCount
-      ? Math.round((pm.requestCount / totalMetrics.requestCount) * 100)
-      : 0;
-    const barPct = pct > 0 ? Math.max(pct, 2) : 0;
-    const tokTotal = pm.totalTokens;
-    const cr = cacheReadRate(pm.inputTotalTokens, pm.cacheReadTokens);
-    html += `<div class="dash-provider-row">
-      <div class="dash-provider-info">
-        <span class="badge badge-${p.provider}">${p.provider}</span>
-        <span class="dash-provider-pct">${pct}%</span>
-      </div>
-      <div class="dash-provider-track">
-        <div class="dash-provider-fill" style="width:${barPct}%;background:var(--${p.provider})"></div>
-      </div>
-      <span class="dash-provider-stats">
-        <span class="dash-provider-stat">${formatCount(pm.requestCount)} reqs</span>
-        <span class="dash-provider-stat">${formatCompact(tokTotal)} tok</span>
-        <span class="dash-provider-stat">${cr === null ? "-" : `${cr}%`} cached input</span>
-      </span>
-    </div>`;
+  const models = new Map();
+  for (const row of data.byModel || []) {
+    const name = row.model?.trim() || "(unknown)";
+    const group = models.get(row.provider) ?? new Map();
+    const entry = group.get(name) ?? {
+      requestCount: 0,
+      totalTokens: 0,
+      inputTotalTokens: 0,
+      cacheReadTokens: 0,
+    };
+    const usage = normalizeUsage(row);
+    entry.requestCount += usage.requestCount;
+    entry.totalTokens += usage.totalTokens;
+    entry.inputTotalTokens += usage.inputTotalTokens;
+    entry.cacheReadTokens += usage.cacheReadTokens;
+    group.set(name, entry);
+    models.set(row.provider, group);
   }
-  html += "</div>";
-  return html;
+  const cachedText = (usage) => {
+    const rate = cacheReadRate(usage.inputTotalTokens, usage.cacheReadTokens);
+    return rate === null ? "\u2014" : `${rate}%`;
+  };
+
+  const rows = providers
+    .map((row) => {
+      const usage = normalizeUsage(row);
+      const share = metrics.requestCount
+        ? Math.round((usage.requestCount / metrics.requestCount) * 100)
+        : 0;
+      const modelRows = Array.from(models.get(row.provider) ?? [])
+        .sort((a, b) => b[1].requestCount - a[1].requestCount)
+        .map(
+          ([name, entry]) =>
+            `<div class="row t-prov"><span class="model ellipsis">${escapeHtml(name)}</span><span class="num muted">${formatCount(entry.requestCount)}</span><span></span><span class="num muted d">${formatCompact(entry.totalTokens)}</span><span class="num muted d">${cachedText(entry)}</span></div>`
+        )
+        .join("");
+      return `<div class="row t-prov"><span>${escapeHtml(providerName(row.provider))}</span><span class="num">${formatCount(usage.requestCount)}</span><span class="num muted">${share}%</span><span class="num d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cachedText(usage)}</span></div>${modelRows}`;
+    })
+    .join("");
+
+  return `<div><div class="sh"><h2>By provider</h2></div><div class="list"><div class="row thead t-prov"><span>Provider</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Cached</span></div>${rows}</div></div>`;
 }
 
-function renderDashTable(title, rows, leadCols) {
+function topKeysHtml(data, metrics) {
+  const rows = (data.byKey || []).slice(0, 5);
   if (!rows.length) return "";
-  return `<div class="dash-card" style="overflow:auto"><div class="dash-chart-title">${title}</div>${usageTableHtml(rows, leadCols)}</div>`;
+  const body = rows
+    .map((row) => {
+      const share = metrics.requestCount
+        ? ((row.requestCount / metrics.requestCount) * 100).toFixed(1)
+        : "0.0";
+      return `<div class="row t-keys" data-key-id="${escapeHtml(row.apiKeyId)}" tabindex="0" role="button"><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${formatCount(row.requestCount)}</span><span class="num muted">${share}%</span></div>`;
+    })
+    .join("");
+  return `<div><div class="sh"><h2>Top keys</h2><div class="right"><button class="link small" type="button" data-action="go-keys">View all keys</button></div></div><div class="list"><div class="row thead t-keys"><span>Key</span><span class="num">Requests</span><span class="num">Share</span></div>${body}</div></div>`;
 }
-
-const DASH_KEY_LEAD_COLS = [["key", (row) => apiKeyDisplayHtml(row.apiKeyId)]];
 
 function renderDashboard(data) {
+  renderAttention();
   const el = $("#dash-content");
-  if (!data || !data.totals) {
+  const metrics = normalizeUsage(data?.totals);
+  if (!data?.totals || !hasUsageMetrics(metrics)) {
     el.innerHTML =
-      '<div class="dash-empty">No usage data in this window.</div>';
+      '<div class="empty-state"><p>No usage in this window.</p></div>';
     return;
   }
 
-  const m = normalizeUsage(data.totals);
-  if (!hasUsageMetrics(m)) {
-    el.innerHTML =
-      '<div class="dash-empty">No usage data in this window.</div>';
-    return;
-  }
-
-  const {
-    previousTotals,
-    byProvider = [],
-    byEndpoint = [],
-    byModel = [],
-    byKey = [],
-    buckets = [],
-    bucketSizeMs,
-  } = data;
-  const pm = normalizeUsage(previousTotals);
-
-  let html = renderDashKpis(m, pm);
-
-  const reqChart = renderSvgBarChart(
-    buckets,
-    requestSeriesExtractor,
-    bucketSizeMs
+  const width = el.clientWidth || 1200;
+  const windowLabel = usageWindowLabel(
+    data.windowMs ?? state.dashboardWindowMs
   );
-  const tokChart = renderSvgBarChart(
-    buckets,
-    tokenSeriesExtractor,
-    bucketSizeMs
-  );
+  el.innerHTML = [
+    kpisHtml(metrics, normalizeUsage(data.previousTotals), windowLabel),
+    requestChartHtml(data, width),
+    `<div class="tables">${providerTableHtml(data, metrics)}${topKeysHtml(data, metrics)}</div>`,
+  ].join("");
 
-  if (reqChart || tokChart) {
-    html += '<div class="dash-grid-2">';
-    if (reqChart) {
-      html += `<div class="dash-card"><div class="dash-chart-title">request volume</div>${reqChart}<div class="dash-legend"><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--green)"></span>success</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--red)"></span>proxy fail</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--text-secondary)"></span>upstream/other fail</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--amber)"></span>429</span></div></div>`;
-    }
-    if (tokChart) {
-      html += `<div class="dash-card"><div class="dash-chart-title">token usage</div>${tokChart}<div class="dash-legend"><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--amber)"></span>input</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--green)"></span>output</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--amber)"></span>cache read</span><span class="dash-legend-item"><span class="dash-legend-dot" style="background:var(--text-secondary)"></span>cache write</span></div></div>`;
-    }
-    html += "</div>";
+  const plot = el.querySelector(".plot");
+  if (plot) {
+    plot.addEventListener("pointermove", (event) =>
+      showChartHover(plot, event.clientX)
+    );
+    plot.addEventListener("pointerleave", () => hideChartHover(plot));
   }
-
-  if (byProvider.length) {
-    html += `<div class="dash-card"><div class="dash-chart-title">by provider</div>${renderProviderBreakdown(byProvider, m)}</div>`;
-  }
-
-  html += renderDashTable("by model", byModel, MODEL_LEAD_COLS);
-  html += renderDashTable("by API key", byKey, DASH_KEY_LEAD_COLS);
-  html += renderDashTable("by endpoint", byEndpoint, ENDPOINT_LEAD_COLS);
-
-  if (m.lastRequestAt) {
-    html += `<div class="dash-last-request">last request: ${escapeHtml(new Date(m.lastRequestAt).toLocaleString())}</div>`;
-  }
-
-  el.innerHTML = html;
 }
 
 export {
   DETAIL_LOADING_HTML,
-  openAccountDetail,
-  openKeyDetail,
-  openSetupModal,
+  menuHtml,
   renderAccounts,
+  renderAttention,
   renderDashboard,
   renderKeys,
   renderOAuthFlow,
+  renderUsageSlot,
   setupSnippet,
-  showKeyReveal,
 };

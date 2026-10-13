@@ -4,7 +4,7 @@ import {
   renderDashboard,
   renderKeys,
   renderOAuthFlow,
-  showKeyReveal,
+  renderUsageSlot,
 } from "./app-render.js";
 
 const DEFAULT_KEY_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -35,6 +35,16 @@ const state = {
   keyUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   keysLoaded: false,
   showRevokedKeys: false,
+  keyFilter: "",
+  accountFilter: "",
+  expandedAccountId: null,
+  showAllReauthorize: false,
+  expandedKeyId: null,
+  editingKeyId: null,
+  editingAccountId: null,
+  creatingKey: false,
+  openSnippets: new Set(),
+  usageDetails: new Map(),
   activeOAuth: null,
   reauthorizeAccountId: null,
   oauthRequestSeq: 0,
@@ -51,20 +61,6 @@ const state = {
 const APP_ORIGIN = window.location.origin;
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
-const modalPreviousFocus = new WeakMap();
-
-function openModal(modal, focusSelector = "button, input, select") {
-  modalPreviousFocus.set(modal, document.activeElement);
-  modal.classList.add("open");
-  modal.querySelector(focusSelector)?.focus();
-}
-
-function closeModal(modal) {
-  modal.classList.remove("open");
-  modalPreviousFocus.get(modal)?.focus?.();
-  modalPreviousFocus.delete(modal);
-}
-
 function escapeHtml(str) {
   return String(str ?? "")
     .replaceAll("&", "&amp;")
@@ -113,25 +109,68 @@ function toast(message, type = "success") {
 }
 
 let confirmResolve = null;
+let confirmAnchor = null;
+let confirmReturnFocus = null;
 
-function showConfirm(title, message, actionLabel = "confirm", extrasHtml = "") {
+function setConfirmAnchor(element) {
+  confirmAnchor = element;
+}
+
+function positionPopover(popover, anchor) {
+  const width = popover.offsetWidth;
+  const height = popover.offsetHeight;
+  const rect = anchor?.isConnected ? anchor.getBoundingClientRect() : null;
+  if (!rect?.width) {
+    popover.style.left = `${Math.max(8, (innerWidth - width) / 2) + scrollX}px`;
+    popover.style.top = `${innerHeight * 0.2 + scrollY}px`;
+    return;
+  }
+  const left =
+    rect.left + width <= innerWidth - 8
+      ? rect.left
+      : Math.max(8, rect.right - width);
+  const below = rect.bottom + 6;
+  const top =
+    below + height > innerHeight - 8
+      ? Math.max(8, rect.top - height - 6)
+      : below;
+  popover.style.left = `${left + scrollX}px`;
+  popover.style.top = `${top + scrollY}px`;
+}
+
+function showConfirm(
+  title,
+  message,
+  actionLabel = "Confirm",
+  { extrasHtml = "", danger = false } = {}
+) {
   if (confirmResolve) resolveConfirm(false);
   return new Promise((resolve) => {
     confirmResolve = resolve;
+    const popover = $("#confirm");
     $("#confirm-title").textContent = title;
     $("#confirm-message").textContent = message;
     $("#confirm-extras").innerHTML = extrasHtml;
-    $("#btn-confirm-action").textContent = actionLabel;
-    openModal($("#modal-confirm"), "#btn-confirm-cancel");
+    const action = $("#btn-confirm-action");
+    action.textContent = actionLabel;
+    action.className = `btn btn-sm ${danger ? "btn-danger" : "btn-primary"}`;
+    confirmReturnFocus = confirmAnchor;
+    popover.hidden = false;
+    positionPopover(popover, confirmAnchor);
+    popover.focus();
   });
 }
 
 function resolveConfirm(value) {
+  const popover = $("#confirm");
+  const wasOpen = popover.hidden === false;
+  popover.hidden = true;
   if (confirmResolve) {
     confirmResolve(value);
     confirmResolve = null;
   }
-  closeModal($("#modal-confirm"));
+  if (wasOpen && confirmReturnFocus?.isConnected) confirmReturnFocus.focus();
+  confirmReturnFocus = null;
 }
 
 function relativeTime(ts) {
@@ -153,16 +192,6 @@ function relativeTime(ts) {
   });
 }
 
-function expiryCountdown(expiresAt) {
-  if (!expiresAt) return "unknown";
-  const seconds = Math.floor((expiresAt - Date.now()) / 1000);
-  if (seconds <= 0) return "expired";
-  if (seconds < 60) return `${seconds}s left`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m left`;
-  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h left`;
-  return `${Math.floor(seconds / 86_400)}d left`;
-}
-
 function tokenStatus(expiresAt) {
   if (!expiresAt) return { label: "unknown", class: "unknown" };
   return expiresAt > Date.now()
@@ -171,7 +200,7 @@ function tokenStatus(expiresAt) {
 }
 
 function maskKey(k) {
-  return k.length <= 12 ? k : `${k.slice(0, 8)}...${k.slice(-4)}`;
+  return k.length <= 14 ? k : `${k.slice(0, 9)}\u2026${k.slice(-4)}`;
 }
 
 function keyById(keyId) {
@@ -211,7 +240,9 @@ function usageForKey(keyId) {
 }
 
 function usageWindowLabel(windowMs) {
-  if (windowMs % 86_400_000 === 0) return `${windowMs / 86_400_000}d`;
+  if (windowMs % 86_400_000 === 0 && windowMs > 86_400_000) {
+    return `${windowMs / 86_400_000}d`;
+  }
   if (windowMs % 3_600_000 === 0) return `${windowMs / 3_600_000}h`;
   if (windowMs % 60_000 === 0) return `${windowMs / 60_000}m`;
   return `${Math.floor(windowMs / 1000)}s`;
@@ -238,22 +269,6 @@ function cacheReadRate(inputTotalTokens, cacheReadTokens) {
   return inputTotalTokens > 0
     ? Math.round((cacheReadTokens / inputTotalTokens) * 100)
     : null;
-}
-
-function formatBucketTime(ts, bucketSizeMs) {
-  const d = new Date(ts);
-  if (bucketSizeMs >= 86_400_000) {
-    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-  }
-  if (bucketSizeMs >= 3_600_000) {
-    return d.toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  }
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function syncDashboardWindowButtons() {
@@ -360,43 +375,6 @@ function hasUsageMetrics(metrics) {
   );
 }
 
-function usageMetaParts(
-  usage,
-  { windowLabel = null, includeMaxLatency = false } = {}
-) {
-  if (!usage) return [];
-  const metrics = normalizeUsage(usage);
-  const meta = (text, color) =>
-    `<span class="card-meta-item"${color ? ` style="color:${color}"` : ""}>${text}</span>`;
-  return [
-    metrics.requestCount &&
-      meta(
-        `${formatCount(metrics.requestCount)} reqs${windowLabel ? ` (${windowLabel})` : ""}`
-      ),
-    metrics.successRate !== null && meta(`${metrics.successRate}% success`),
-    metrics.proxyErrorCount &&
-      meta(`${formatCount(metrics.proxyErrorCount)} proxy fail`, "var(--red)"),
-    metrics.upstreamErrorCount &&
-      meta(
-        `${formatCount(metrics.upstreamErrorCount)} upstream fail`,
-        "var(--text-secondary)"
-      ),
-    metrics.unclassifiedFailureCount &&
-      meta(
-        `${formatCount(metrics.unclassifiedFailureCount)} other fail`,
-        "var(--text-secondary)"
-      ),
-    metrics.rateLimitCount &&
-      meta(`${formatCount(metrics.rateLimitCount)} 429`, "var(--amber)"),
-    metrics.avgLatencyMs && meta(`${formatCount(metrics.avgLatencyMs)}ms avg`),
-    includeMaxLatency &&
-      metrics.maxLatencyMs &&
-      meta(`${formatCount(metrics.maxLatencyMs)}ms max`),
-    metrics.lastRequestAt &&
-      meta(`last req ${escapeHtml(relativeTime(metrics.lastRequestAt))}`),
-  ].filter(Boolean);
-}
-
 function usageMapFromList(items, idField) {
   const map = new Map();
   if (!Array.isArray(items)) return map;
@@ -415,7 +393,14 @@ function switchToTab(name) {
   }
   for (const p of $$(".tab-panel"))
     p.classList.toggle("active", p.id === `panel-${name}`);
+  for (const control of $$(".top-ctl")) {
+    control.hidden = control.dataset.for !== name;
+  }
   history.replaceState(null, "", `#${name}`);
+  // The chart is sized to its container, which has no width while hidden.
+  if (name === "usage" && state.dashboardData && !state.dashboardLoading) {
+    renderDashboard(state.dashboardData);
+  }
 }
 
 function showLoading(containerId) {
@@ -424,35 +409,6 @@ function showLoading(containerId) {
     el.innerHTML =
       '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
   }
-}
-
-const METADATA_HIDDEN_KEYS = new Set([
-  "provider",
-  "idToken",
-  "betaHeaders",
-  "userAgent",
-  "systemIdentity",
-  "toolPrefix",
-  "requestProfile",
-  "tokenType",
-  "scope",
-]);
-
-function metadataHtml(metadata) {
-  if (!metadata || typeof metadata !== "object") return "";
-  const entries = Object.entries(metadata).filter(([k, v]) => {
-    if (METADATA_HIDDEN_KEYS.has(k)) return false;
-    if (v === null || v === undefined || v === "") return false;
-    if (Array.isArray(v) && !v.length) return false;
-    return true;
-  });
-  if (!entries.length) return "";
-  return entries
-    .map(([k, v]) => {
-      const display = Array.isArray(v) ? v.join(", ") : String(v);
-      return `<span class="card-meta-item"><span class="text-muted">${escapeHtml(k)}:</span> ${escapeHtml(display)}</span>`;
-    })
-    .join("");
 }
 
 function formatMetadataForInput(metadata) {
@@ -482,23 +438,16 @@ const checkedValues = (selector) =>
     .filter((input) => input.checked)
     .map((input) => input.value);
 
-function setCheckedValues(selector, values) {
-  const allowed = new Set(values || []);
-  for (const input of $$(selector)) {
-    input.checked = allowed.has(input.value);
-  }
-}
-
-const KEY_SCOPE_MODAL_CONFIG = {
+const KEY_SCOPE_FORMS = {
   create: {
-    modalSelector: "#modal-create-key",
     providerSelector: ".key-scope-provider",
+    pinSelector: ".key-account-pin",
     accountSelector: ".key-scope-account",
     accountContainer: "#key-account-scopes",
   },
   edit: {
-    modalSelector: "#modal-edit-key",
     providerSelector: ".edit-key-scope-provider",
+    pinSelector: ".edit-key-account-pin",
     accountSelector: ".edit-key-scope-account",
     accountContainer: "#edit-key-account-scopes",
   },
@@ -506,16 +455,21 @@ const KEY_SCOPE_MODAL_CONFIG = {
 
 const shortId = (value) =>
   value && value.length > 14
-    ? `${value.slice(0, 8)}...${value.slice(-4)}`
+    ? `${value.slice(0, 8)}\u2026${value.slice(-4)}`
     : value || "";
 
-function renderAccountScopeOptions(mode, selectedAccountIds = []) {
-  const config = KEY_SCOPE_MODAL_CONFIG[mode];
-  const container = $(config.accountContainer);
-  if (!container) {
-    return;
-  }
+const accountLabel = (account) =>
+  account.label || account.accountId || shortId(account.id);
 
+function renderAccountScopeOptions(mode, selectedAccountIds = []) {
+  const container = $(KEY_SCOPE_FORMS[mode].accountContainer);
+  if (container) {
+    container.innerHTML = accountScopeOptionsHtml(mode, selectedAccountIds);
+  }
+}
+
+function accountScopeOptionsHtml(mode, selectedAccountIds = []) {
+  const config = KEY_SCOPE_FORMS[mode];
   const selectedIds = new Set(selectedAccountIds || []);
   const knownIds = new Set(state.accounts.map((account) => account.id));
   const unavailableIds =
@@ -523,95 +477,71 @@ function renderAccountScopeOptions(mode, selectedAccountIds = []) {
       ? Array.from(selectedIds).filter((id) => !knownIds.has(id))
       : [];
   if (!state.accounts.length && !unavailableIds.length) {
-    container.innerHTML =
-      '<div class="scope-empty">No provider accounts connected yet. Leave this empty to keep using each provider\'s primary account once one exists.</div>';
-    return;
+    return '<p class="field-hint">No accounts connected yet, so requests use each provider\u2019s primary account once one exists.</p>';
   }
 
-  const groups = PROVIDER_ORDER.map((provider) => ({
-    provider,
-    accounts: state.accounts
+  const pins = PROVIDER_ORDER.map((provider) => {
+    const accounts = state.accounts
       .filter((account) => account.provider === provider)
       .sort(
         (left, right) =>
           Number(right.isPrimary) - Number(left.isPrimary) ||
-          right.createdAt - left.createdAt
-      ),
-  })).filter((group) => group.accounts.length);
-
-  const availableOptions = groups
+          left.createdAt - right.createdAt
+      );
+    if (!accounts.length) return "";
+    const primary = accounts.find((account) => account.isPrimary);
+    const options = accounts
+      .map(
+        (account) =>
+          `<option value="${account.id}"${selectedIds.has(account.id) ? " selected" : ""}>${escapeHtml(accountLabel(account))}${account.enabled === false ? " (disabled)" : ""}</option>`
+      )
+      .join("");
+    return `<div class="pin-row" data-provider="${provider}">
+        <span class="pin-provider">${providerLabel(provider)}</span>
+        <select class="field-input ${config.pinSelector.slice(1)}" data-provider="${provider}" aria-label="${providerLabel(provider)} account">
+          <option value="">Primary account${primary ? ` (${escapeHtml(accountLabel(primary))})` : ""}</option>
+          ${options}
+        </select>
+      </div>`;
+  }).join("");
+  const preserved = unavailableIds
     .map(
-      ({ provider, accounts }) => `<div class="scope-account-group-header">
-          <span class="badge badge-${provider}">${provider}</span>
-        </div>
-        <div class="scope-account-list">
-          ${accounts
-            .map(
-              (account) => `<label class="scope-account-option">
-                <input
-                  type="checkbox"
-                  value="${account.id}"
-                  class="${config.accountSelector.slice(1)}"
-                  data-provider="${account.provider}"
-                  ${selectedIds.has(account.id) ? "checked" : ""}
-                >
-                <span class="scope-account-copy">
-                  <span class="scope-account-name">${escapeHtml(account.label || account.accountId || shortId(account.id))}</span>
-                  ${account.isPrimary ? '<span class="badge badge-primary">primary</span>' : ""}
-                  <span class="scope-account-meta">${escapeHtml([shortId(account.id), account.enabled === false ? "disabled" : "", account.expiresAt ? expiryCountdown(account.expiresAt) : ""].filter(Boolean).join(" · "))}</span>
-                </span>
-              </label>`
-            )
-            .join("")}
-        </div>`
+      (id) =>
+        `<label class="scope-check"><input type="checkbox" value="${escapeHtml(id)}" class="${config.accountSelector.slice(1)}" data-preserved-scope="true" checked> Keep the pin to ${escapeHtml(shortId(id))}, which is not in the loaded account list</label>`
     )
     .join("");
-  const unavailableOptions = unavailableIds.length
-    ? `<div class="scope-account-group-header">Unavailable account scopes</div>
-       <div class="scope-account-list">
-         ${unavailableIds
-           .map(
-             (id) => `<label class="scope-account-option">
-               <input type="checkbox" value="${escapeHtml(id)}" class="${config.accountSelector.slice(1)}" data-preserved-scope="true" checked>
-               <span class="scope-account-copy">${escapeHtml(shortId(id))} (not in the loaded account list; uncheck to remove this restriction)</span>
-             </label>`
-           )
-           .join("")}
-       </div>`
-    : "";
-  container.innerHTML = `${availableOptions}${unavailableOptions}`;
+  return `${pins}${preserved}`;
+}
+
+function selectedProviderScopes(mode) {
+  return checkedValues(KEY_SCOPE_FORMS[mode].providerSelector).filter(
+    (value) => value !== "all"
+  );
+}
+
+function selectedAccountScopes(mode) {
+  const config = KEY_SCOPE_FORMS[mode];
+  const pinned = Array.from($$(config.pinSelector))
+    .filter((select) => select.value && !select.closest(".pin-row")?.hidden)
+    .map((select) => select.value);
+  return [...pinned, ...checkedValues(config.accountSelector)];
 }
 
 function syncScopedAccountAvailability(mode) {
-  const config = KEY_SCOPE_MODAL_CONFIG[mode];
-  const selectedProviders = new Set(checkedValues(config.providerSelector));
-  const hasProviderFilter = selectedProviders.size > 0;
-
-  for (const input of $$(config.accountSelector)) {
-    if (input.dataset.preservedScope === "true") {
-      continue;
-    }
-    const provider = input.dataset.provider || "";
-    const allowed = !hasProviderFilter || selectedProviders.has(provider);
-    input.disabled = !allowed;
-    if (!allowed) {
-      input.checked = false;
-    }
-    input
-      .closest(".scope-account-option")
-      ?.classList.toggle("disabled", !allowed);
+  const config = KEY_SCOPE_FORMS[mode];
+  const providers = new Set(selectedProviderScopes(mode));
+  for (const select of $$(config.pinSelector)) {
+    const allowed = !providers.size || providers.has(select.dataset.provider);
+    const row = select.closest(".pin-row");
+    if (row) row.hidden = !allowed;
+    if (!allowed) select.value = "";
   }
 }
 
-function refreshOpenKeyScopeModal(mode) {
-  const config = KEY_SCOPE_MODAL_CONFIG[mode];
-  if (!$(config.modalSelector).classList.contains("open")) {
-    return;
-  }
-
-  const selectedAccountScopes = checkedValues(config.accountSelector);
-  renderAccountScopeOptions(mode, selectedAccountScopes);
-  syncScopedAccountAvailability(mode);
+function dateInputValue(timestamp) {
+  const date = new Date(timestamp);
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
 function parseOptionalJsonObject(raw, fieldLabel) {
@@ -631,10 +561,6 @@ function parseOptionalJsonObject(raw, fieldLabel) {
   }
 
   return parsed;
-}
-
-function activeKeysWithModelsUrl() {
-  return state.keys.filter((k) => isKeyActive(k) && modelsUrlForKey(k));
 }
 
 async function loadDashboard() {
@@ -665,7 +591,7 @@ async function loadDashboard() {
     if (requestSeq !== state.dashboardRequestSeq) return;
     state.dashboardData = null;
     const message = e instanceof Error ? e.message : "Failed to load usage";
-    el.innerHTML = `<div class="dash-empty text-error">${escapeHtml(message)}</div>`;
+    el.innerHTML = `<div class="empty-state"><p class="err">${escapeHtml(message)}</p></div>`;
   } finally {
     if (requestSeq === state.dashboardRequestSeq) {
       state.dashboardLoading = false;
@@ -674,8 +600,36 @@ async function loadDashboard() {
   }
 }
 
+function clearUsageDetails(kind) {
+  for (const key of state.usageDetails.keys()) {
+    if (key.startsWith(`${kind}:`)) state.usageDetails.delete(key);
+  }
+}
+
+async function requestUsageDetail(kind, id) {
+  const windowMs =
+    kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
+  const cacheKey = `${kind}:${id}:${windowMs}`;
+  if (state.usageDetails.has(cacheKey)) return;
+  state.usageDetails.set(cacheKey, { status: "loading" });
+  const token = state.token;
+  let entry;
+  try {
+    const data = await api(
+      `/admin/${kind === "account" ? "accounts" : "keys"}/${id}/usage?windowMs=${windowMs}`
+    );
+    entry = { status: "ready", data };
+  } catch (e) {
+    entry = { status: "error", error: e.message };
+  }
+  if (token !== state.token || !state.usageDetails.has(cacheKey)) return;
+  state.usageDetails.set(cacheKey, entry);
+  renderUsageSlot(kind, id);
+}
+
 async function loadAccounts() {
   const requestSeq = ++state.accountsRequestSeq;
+  clearUsageDetails("account");
   if (!state.accounts.length) showLoading("accounts-list");
   try {
     const [accountsResult, usageResult] = await Promise.allSettled([
@@ -705,9 +659,6 @@ async function loadAccounts() {
 
     syncAccountWindowButtons();
 
-    refreshOpenKeyScopeModal("create");
-    refreshOpenKeyScopeModal("edit");
-
     renderAccounts();
     if (state.keysLoaded) {
       renderKeys();
@@ -718,15 +669,15 @@ async function loadAccounts() {
     state.accountsById = new Map();
     state.accountUsageById = new Map();
     state.providerStatuses = [];
-    $("#providers-status").innerHTML = "";
     $("#accounts-list").innerHTML =
-      `<div class="empty-state"><div class="empty-state-text text-error">${escapeHtml(e.message)}</div></div>`;
+      `<div class="empty-state"><p class="err">${escapeHtml(e.message)}</p></div>`;
     toast(e.message, "error");
   }
 }
 
 async function loadKeys() {
   const requestSeq = ++state.keysRequestSeq;
+  clearUsageDetails("key");
   if (!state.keysLoaded) showLoading("keys-list");
   try {
     const [keysResult, usageResult] = await Promise.allSettled([
@@ -765,8 +716,9 @@ async function loadKeys() {
     state.keysById = new Map();
     state.keyUsageById = new Map();
     state.keysLoaded = true;
+    $("#keys-foot").innerHTML = "";
     $("#keys-list").innerHTML =
-      `<div class="empty-state"><div class="empty-state-text text-error">${escapeHtml(e.message)}</div></div>`;
+      `<div class="empty-state"><p class="err">${escapeHtml(e.message)}</p></div>`;
     toast(e.message, "error");
   }
 }
@@ -775,9 +727,9 @@ async function setPrimary(id) {
   const account = accountById(id);
   const name = account?.label || account?.accountId || id;
   const confirmed = await showConfirm(
-    "Set Primary Account",
-    `Set "${name}" as the primary ${account?.provider || ""} account? Requests will be routed to this account.`,
-    "set primary"
+    "Make primary account?",
+    `Route ${providerLabel(account?.provider)} requests to "${name}" unless a key pins another account.`,
+    "Make primary"
   );
   if (!confirmed) return;
 
@@ -793,9 +745,10 @@ async function setPrimary(id) {
 async function toggleProvider(provider, enabled) {
   if (!enabled) {
     const confirmed = await showConfirm(
-      "Disable Provider",
-      `Disable ${provider}? All ${provider} accounts will stop receiving proxy traffic and its models will disappear from model registries. You can re-enable it at any time.`,
-      "disable"
+      `Disable ${providerLabel(provider)}?`,
+      `All ${providerLabel(provider)} accounts stop receiving proxy traffic and its models disappear from model registries. You can re-enable it at any time.`,
+      "Disable",
+      { danger: true }
     );
     if (!confirmed) return;
   }
@@ -803,23 +756,17 @@ async function toggleProvider(provider, enabled) {
   const btn = document.querySelector(
     `[data-action="toggle-provider"][data-provider="${provider}"]`
   );
-  if (btn) {
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>';
-  }
+  if (btn) btn.disabled = true;
   try {
     await api(`/admin/accounts/providers/${provider}`, {
       method: "PATCH",
       body: JSON.stringify({ enabled }),
     });
-    toast(enabled ? `${provider} enabled` : `${provider} disabled`);
+    toast(`${providerLabel(provider)} ${enabled ? "enabled" : "disabled"}`);
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = enabled ? "enable" : "disable";
-    }
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -827,15 +774,16 @@ async function deleteAccount(id) {
   const account = accountById(id);
   const name = account?.label || account?.accountId || id;
   const confirmed = await showConfirm(
-    "Delete Account",
-    `Delete "${name}"? This will remove all stored tokens for this account. This cannot be undone.`,
-    "delete"
+    "Remove account?",
+    `Remove "${name}" and its stored tokens. This cannot be undone.`,
+    "Remove",
+    { danger: true }
   );
   if (!confirmed) return;
 
   try {
     await api(`/admin/accounts/${id}`, { method: "DELETE" });
-    toast("Account deleted");
+    toast("Account removed");
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
@@ -846,9 +794,10 @@ async function refreshAccount(id) {
   const btn = document.querySelector(
     `[data-action="refresh-account"][data-account-id="${id}"]`
   );
+  const label = btn?.textContent;
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span>';
+    btn.innerHTML = '<span class="spinner"></span> Refreshing\u2026';
   }
   try {
     await api(`/admin/accounts/${id}/refresh`, { method: "POST" });
@@ -858,7 +807,7 @@ async function refreshAccount(id) {
     toast(e.message, "error");
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "refresh";
+      btn.textContent = label || "Refresh token";
     }
   }
 }
@@ -896,12 +845,16 @@ async function redeemResetCredit(accountId, creditId) {
   const label = account?.label || account?.accountId || accountId;
   const redemptionKey = `${accountId}:${creditId || "auto"}`;
   const existingRequestId = state.pendingResetRedemptions.get(redemptionKey);
+  const credit = account?.quota?.data?.resetCredits?.credits?.find(
+    (entry) => entry.id === creditId
+  );
+  const creditName = credit?.title ? `"${credit.title}"` : "a reset credit";
   const confirmed = await showConfirm(
-    "Reset Codex Limits",
+    "Reset Codex limits?",
     existingRequestId
       ? `Retry the pending reset for "${label}" with the same idempotency key?`
-      : `Consume a reset credit for "${label}"? This changes the upstream Codex account quota.`,
-    existingRequestId ? "retry reset" : "use credit"
+      : `Use ${creditName} on "${label}"? Its Codex rate limits reset upstream right away.`,
+    existingRequestId ? "Retry reset" : "Use credit"
   );
   if (!confirmed) return;
 
@@ -931,24 +884,25 @@ async function redeemResetCredit(accountId, creditId) {
   }
 }
 
-function openEditAccountModal(id) {
-  const account = accountById(id);
-  if (!account) {
+function startEditAccount(id) {
+  if (!accountById(id)) {
     toast("Account was not found", "error");
     return;
   }
+  state.expandedAccountId = id;
+  state.editingAccountId = id;
+  renderAccounts();
+  $("#edit-account-label")?.focus?.();
+}
 
-  $("#edit-account-title").textContent = `Edit ${account.provider} Account`;
-  $("#edit-account-label").value = account.label || "";
-  $("#edit-account-account-id").value = account.accountId || "";
-  $("#edit-account-metadata").value = formatMetadataForInput(account.metadata);
-  $("#btn-modal-save-account").dataset.accountId = account.id;
-  openModal($("#modal-edit-account"), "#edit-account-label");
+function cancelEditAccount() {
+  state.editingAccountId = null;
+  renderAccounts();
 }
 
 async function saveAccountEdits() {
-  const saveButton = $("#btn-modal-save-account");
-  const accountId = saveButton?.dataset.accountId;
+  const saveButton = $("#btn-save-account");
+  const accountId = state.editingAccountId;
   if (!accountId) {
     toast("Account was not found", "error");
     return;
@@ -968,7 +922,7 @@ async function saveAccountEdits() {
 
   const previousLabel = saveButton.textContent;
   saveButton.disabled = true;
-  saveButton.innerHTML = '<span class="spinner"></span> saving...';
+  saveButton.innerHTML = '<span class="spinner"></span> Saving…';
   try {
     await api(`/admin/accounts/${accountId}`, {
       method: "PATCH",
@@ -978,33 +932,33 @@ async function saveAccountEdits() {
         metadata,
       }),
     });
-    closeModal($("#modal-edit-account"));
-    saveButton.dataset.accountId = "";
-    toast("Account profile updated");
+    state.editingAccountId = null;
+    toast("Account updated");
     await loadAccounts();
   } catch (e) {
     toast(e.message, "error");
-  } finally {
     saveButton.disabled = false;
-    saveButton.textContent = previousLabel || "save";
+    saveButton.textContent = previousLabel || "Save";
   }
 }
 
-function openCreateKeyModal() {
-  $("#key-label").value = "";
-  $("#key-model-scopes").value = "";
-  for (const cb of $$(".key-scope-provider")) cb.checked = false;
-  renderAccountScopeOptions("create");
-  syncScopedAccountAvailability("create");
-  openModal($("#modal-create-key"), "#key-label");
+function startCreateKey() {
+  state.creatingKey = true;
+  renderKeys();
+  $("#key-label")?.focus?.();
+}
+
+function cancelCreateKey() {
+  state.creatingKey = false;
+  renderKeys();
 }
 
 async function createKey() {
-  const btn = $("#btn-modal-create-key");
+  const btn = $("#btn-submit-key");
   if (btn.disabled) return;
   const label = trimmedOrNull($("#key-label").value);
-  const providerScopes = checkedValues(".key-scope-provider");
-  const accountScopes = checkedValues(".key-scope-account");
+  const providerScopes = selectedProviderScopes("create");
+  const accountScopes = selectedAccountScopes("create");
   const modelScopes = parseCommaSeparatedList($("#key-model-scopes").value);
   const body = {
     ...(label ? { label } : {}),
@@ -1014,57 +968,55 @@ async function createKey() {
   };
 
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> creating...';
+  btn.innerHTML = '<span class="spinner"></span> Creating…';
   try {
     const data = await api("/admin/keys", {
       method: "POST",
       body: JSON.stringify(body),
     });
-    closeModal($("#modal-create-key"));
+    state.creatingKey = false;
+    state.expandedKeyId = data.key.id;
+    state.revealedKeyIds.add(data.key.id);
     toast("API key created");
-    showKeyReveal(data.key.key);
     await loadKeys();
   } catch (e) {
     toast(e.message, "error");
-  } finally {
     btn.disabled = false;
-    btn.textContent = "create";
+    btn.textContent = "Create key";
   }
 }
 
-function openEditKeyModal(id) {
+function startEditKey(id) {
   const key = keyById(id);
   if (!key) {
     toast("API key was not found", "error");
     return;
   }
-
-  $("#edit-key-label").value = key.label || "";
-  $("#edit-key-model-scopes").value = key.modelScopes?.join(", ") || "";
-  $("#edit-key-expires-at").value =
-    key.expiresAt === null ? "" : String(key.expiresAt);
-  setCheckedValues(".edit-key-scope-provider", key.providerScopes);
+  state.expandedKeyId = id;
+  state.editingKeyId = id;
+  renderKeys();
   renderAccountScopeOptions("edit", key.accountScopes);
   syncScopedAccountAvailability("edit");
+  $("#edit-key-label")?.focus?.();
+}
 
-  const saveButton = $("#btn-modal-save-key");
-  saveButton.dataset.keyId = key.id;
-  saveButton.dataset.originalExpiresAt =
-    key.expiresAt === null ? "" : String(key.expiresAt);
-  openModal($("#modal-edit-key"), "#edit-key-label");
+function cancelEditKey() {
+  state.editingKeyId = null;
+  renderKeys();
 }
 
 async function saveKeyEdits() {
-  const saveButton = $("#btn-modal-save-key");
-  const keyId = saveButton?.dataset.keyId;
-  if (!keyId) {
+  const saveButton = $("#btn-save-key");
+  const keyId = state.editingKeyId;
+  const existing = keyById(keyId);
+  if (!existing) {
     toast("API key was not found", "error");
     return;
   }
 
   const label = trimmedOrNull($("#edit-key-label").value);
-  const providerScopes = checkedValues(".edit-key-scope-provider");
-  const accountScopes = checkedValues(".edit-key-scope-account");
+  const providerScopes = selectedProviderScopes("edit");
+  const accountScopes = selectedAccountScopes("edit");
   const modelScopes = parseCommaSeparatedList(
     $("#edit-key-model-scopes").value
   );
@@ -1076,13 +1028,14 @@ async function saveKeyEdits() {
     modelScopes: modelScopes.length ? modelScopes : null,
   };
 
-  const expiresAtRaw = $("#edit-key-expires-at").value.trim();
-  const originalExpiresAt = saveButton.dataset.originalExpiresAt || "";
-  if (expiresAtRaw !== originalExpiresAt) {
-    if (expiresAtRaw) {
-      const parsedExpiresAt = Number(expiresAtRaw);
-      if (!Number.isFinite(parsedExpiresAt) || parsedExpiresAt <= 0) {
-        toast("Expires At must be a valid unix timestamp", "error");
+  const expiresDate = $("#edit-key-expires-at").value.trim();
+  const originalDate =
+    existing.expiresAt == null ? "" : dateInputValue(existing.expiresAt);
+  if (expiresDate !== originalDate) {
+    if (expiresDate) {
+      const parsedExpiresAt = new Date(`${expiresDate}T23:59:59`).getTime();
+      if (!Number.isFinite(parsedExpiresAt)) {
+        toast("Pick a valid expiry date", "error");
         return;
       }
       body.expiresAt = parsedExpiresAt;
@@ -1093,22 +1046,19 @@ async function saveKeyEdits() {
 
   const previousLabel = saveButton.textContent;
   saveButton.disabled = true;
-  saveButton.innerHTML = '<span class="spinner"></span> saving...';
+  saveButton.innerHTML = '<span class="spinner"></span> Saving…';
   try {
     await api(`/admin/keys/${keyId}`, {
       method: "PATCH",
       body: JSON.stringify(body),
     });
-    closeModal($("#modal-edit-key"));
-    saveButton.dataset.keyId = "";
-    saveButton.dataset.originalExpiresAt = "";
+    state.editingKeyId = null;
     toast("API key updated");
     await loadKeys();
   } catch (e) {
     toast(e.message, "error");
-  } finally {
     saveButton.disabled = false;
-    saveButton.textContent = previousLabel || "save";
+    saveButton.textContent = previousLabel || "Save";
   }
 }
 
@@ -1121,10 +1071,13 @@ async function rotateKey(id, button) {
 
   const label = existing.label || maskKey(existing.key);
   const confirmed = await showConfirm(
-    "Rotate API Key",
+    "Rotate API key?",
     `Create a new key with the same settings as "${label}".`,
-    "rotate",
-    '<label class="scope-check" style="margin-top:14px;margin-bottom:0"><input id="rotate-revoke-old" type="checkbox"> revoke old key after rotate</label>'
+    "Rotate",
+    {
+      extrasHtml:
+        '<label class="scope-check confirm-check"><input id="rotate-revoke-old" type="checkbox"> Revoke the old key afterwards</label>',
+    }
   );
   if (!confirmed) return;
 
@@ -1144,9 +1097,11 @@ async function rotateKey(id, button) {
     payload.expiresAt = existing.expiresAt;
   }
 
-  const previousText = button.textContent;
-  button.disabled = true;
-  button.innerHTML = '<span class="spinner"></span>';
+  const previousText = button?.textContent;
+  if (button) {
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner"></span>';
+  }
   const revokeOld = $("#rotate-revoke-old")?.checked ?? false;
   let keyCreated = false;
   try {
@@ -1154,8 +1109,9 @@ async function rotateKey(id, button) {
       method: "POST",
       body: JSON.stringify(payload),
     });
-    showKeyReveal(data.key.key);
     keyCreated = true;
+    state.expandedKeyId = data.key.id;
+    state.revealedKeyIds.add(data.key.id);
     if (revokeOld) {
       await api(`/admin/keys/${id}/revoke`, { method: "POST" });
     }
@@ -1173,8 +1129,10 @@ async function rotateKey(id, button) {
       toast(e.message, "error");
     }
   } finally {
-    button.disabled = false;
-    button.textContent = previousText || "rotate";
+    if (button) {
+      button.disabled = false;
+      button.textContent = previousText || "Rotate";
+    }
   }
 }
 
@@ -1182,9 +1140,10 @@ async function revokeKey(id) {
   const key = keyById(id);
   const label = key?.label || maskKey(key?.key || id);
   const confirmed = await showConfirm(
-    "Revoke API Key",
-    `Revoke "${label}"? Any clients using this key will stop working immediately. This cannot be undone.`,
-    "revoke"
+    "Revoke API key?",
+    `Clients using "${label}" stop working immediately. This cannot be undone.`,
+    "Revoke",
+    { danger: true }
   );
   if (!confirmed) return;
 
@@ -1201,9 +1160,10 @@ async function deleteKey(id) {
   const key = keyById(id);
   const label = key?.label || maskKey(key?.key || id);
   const confirmed = await showConfirm(
-    "Delete Revoked API Key",
-    `Delete "${label}" permanently? This removes the key and its usage history. This cannot be undone.`,
-    "delete"
+    "Delete revoked key?",
+    `Delete "${label}" and its usage history permanently. This cannot be undone.`,
+    "Delete",
+    { danger: true }
   );
   if (!confirmed) return;
 
@@ -1217,16 +1177,36 @@ async function deleteKey(id) {
   }
 }
 
-async function copyToClipboard(text, btn) {
+async function copyToClipboard(text, btn, confirmation = "Copied") {
   try {
     await navigator.clipboard.writeText(text);
+    if (!btn?.isConnected) {
+      toast(confirmation);
+      return;
+    }
     const original = btn.textContent;
-    btn.textContent = "copied";
+    btn.textContent = "Copied";
     setTimeout(() => {
       btn.textContent = original;
     }, 2000);
   } catch {
     toast("Failed to copy", "error");
+  }
+}
+
+function providerLabel(provider) {
+  return { codex: "Codex", claude: "Claude" }[provider] || provider || "";
+}
+
+function syncConnectControls() {
+  for (const group of $$(".seg[data-select]")) {
+    const select = $(`#${group.dataset.select}`);
+    for (const option of group.querySelectorAll("button")) {
+      const selected = option.dataset.value === select.value;
+      option.classList.toggle("on", selected);
+      option.setAttribute("aria-checked", String(selected));
+      option.disabled = select.disabled;
+    }
   }
 }
 
@@ -1238,6 +1218,7 @@ function clearReauthorization() {
   $("#oauth-codex-mode").disabled = false;
   $("#oauth-claude-mode").disabled = false;
   $("#btn-oauth-clear-target").disabled = false;
+  syncConnectControls();
 }
 
 function updateOAuthProviderUI() {
@@ -1255,7 +1236,7 @@ async function reauthorizeAccount(id) {
     const confirmed = await showConfirm(
       "Replace active OAuth flow?",
       "The current authorization code will no longer work in this form.",
-      "start over"
+      "Start over"
     );
     if (!confirmed) return;
     cancelOAuthFlow();
@@ -1264,7 +1245,7 @@ async function reauthorizeAccount(id) {
   state.reauthorizeAccountId = id;
   const target = $("#oauth-reauthorize-target");
   $("#oauth-reauthorize-label").textContent =
-    `Reauthorizing ${account.label || account.accountId || account.provider}. Existing settings and API-key scopes stay attached to this account.${account.provider === "claude" ? " Verify you sign in to the same Claude account and organization; this cannot be checked automatically." : ""}`;
+    `Reauthorizing ${account.label || account.accountId || providerLabel(account.provider)}. Its settings and API-key scopes stay attached.${account.provider === "claude" ? " Sign in to the same Claude account and organization; Kleis cannot check this for you." : ""}`;
   target.style.display = "flex";
   $("#oauth-provider").value = account.provider;
   $("#oauth-provider").disabled = true;
@@ -1276,6 +1257,7 @@ async function reauthorizeAccount(id) {
     $("#oauth-claude-mode").value = account.metadata?.oauthMode || "max";
     $("#oauth-claude-mode").disabled = true;
   }
+  syncConnectControls();
   switchToTab("oauth");
   toast(`Reauthorizing ${account.label || account.provider}`);
 }
@@ -1286,6 +1268,7 @@ function cancelOAuthFlow() {
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
   $("#btn-oauth-start").disabled = false;
+  $("#btn-oauth-start").style.display = "";
   clearReauthorization();
 }
 
@@ -1295,7 +1278,7 @@ async function startOAuth() {
   const provider = $("#oauth-provider").value;
   const btn = $("#btn-oauth-start");
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> starting...';
+  btn.innerHTML = '<span class="spinner"></span> Starting…';
 
   try {
     const body = {};
@@ -1333,15 +1316,15 @@ async function startOAuth() {
     $("#oauth-codex-mode").disabled = true;
     $("#oauth-claude-mode").disabled = true;
     $("#btn-oauth-clear-target").disabled = true;
+    syncConnectControls();
     renderOAuthFlow(data, provider);
-    toast("OAuth flow started");
   } catch (e) {
     if (requestSeq !== state.oauthRequestSeq) return;
     toast(e.message, "error");
   } finally {
     if (requestSeq === state.oauthRequestSeq) {
       btn.disabled = Boolean(state.activeOAuth);
-      btn.innerHTML = "start oauth flow";
+      btn.textContent = "Continue";
     }
   }
 }
@@ -1350,8 +1333,9 @@ async function completeOAuth() {
   if (!state.activeOAuth) return;
   const requestSeq = state.oauthRequestSeq;
   const btn = $("#btn-oauth-complete");
+  const label = btn.textContent;
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> completing...';
+  btn.innerHTML = '<span class="spinner"></span> Connecting…';
 
   try {
     const body = { state: state.activeOAuth.state };
@@ -1378,7 +1362,7 @@ async function completeOAuth() {
     error.textContent = `${e.message}. If this code was consumed or the flow expired, cancel and start over.`;
     error.hidden = false;
     btn.disabled = false;
-    btn.innerHTML = "complete flow";
+    btn.textContent = label;
   }
 }
 
@@ -1400,7 +1384,7 @@ async function importAccount() {
     ? Number(expiresAtRaw)
     : Date.now() + 60 * 60 * 1000;
   if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
-    toast("Expires At must be a valid unix timestamp", "error");
+    toast("Expires at must be a valid unix timestamp", "error");
     return;
   }
 
@@ -1419,7 +1403,7 @@ async function importAccount() {
 
   const btn = $("#btn-import-account");
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> importing...';
+  btn.innerHTML = '<span class="spinner"></span> Importing…';
   try {
     await api(`/admin/accounts/${provider}/import`, {
       method: "POST",
@@ -1442,7 +1426,7 @@ async function importAccount() {
     toast(e.message, "error");
   } finally {
     btn.disabled = false;
-    btn.textContent = "import account";
+    btn.textContent = "Import account";
   }
 }
 
@@ -1495,7 +1479,7 @@ async function handleLogin() {
     state.token = "";
   } finally {
     btn.disabled = false;
-    btn.textContent = "authenticate";
+    btn.textContent = "Sign in";
   }
 }
 
@@ -1531,6 +1515,16 @@ function logout() {
   state.keyUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.keysLoaded = false;
   state.showRevokedKeys = false;
+  state.keyFilter = "";
+  state.accountFilter = "";
+  state.expandedAccountId = null;
+  state.showAllReauthorize = false;
+  state.expandedKeyId = null;
+  state.editingKeyId = null;
+  state.editingAccountId = null;
+  state.creatingKey = false;
+  state.openSnippets.clear();
+  state.usageDetails = new Map();
   state.activeOAuth = null;
   state.reauthorizeAccountId = null;
   state.revealedKeyIds.clear();
@@ -1539,13 +1533,14 @@ function logout() {
   state.dashboardLoading = false;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
-  $("#providers-status").innerHTML = "";
   $("#dash-content").innerHTML = "";
+  $("#attention").innerHTML = "";
+  $("#accounts-filter").value = "";
+  $("#keys-filter").value = "";
   syncDashboardWindowButtons();
   syncAccountWindowButtons();
   $("#login-gate").classList.remove("hidden");
   $("#app").classList.remove("visible");
-  $("#toggle-show-revoked-keys").checked = false;
   $("#login-token").value = "";
   $("#login-error").textContent = "";
 }
@@ -1554,25 +1549,27 @@ export {
   $,
   $$,
   accountById,
+  accountScopeOptionsHtml,
   accountUsageForId,
-  activeKeysWithModelsUrl,
   api,
   cacheReadRate,
-  clearPersistedToken,
-  closeModal,
-  clearReauthorization,
+  cancelCreateKey,
+  cancelEditAccount,
+  cancelEditKey,
   cancelOAuthFlow,
+  clearPersistedToken,
+  clearReauthorization,
   completeOAuth,
   copyToClipboard,
   createKey,
+  dateInputValue,
   deleteAccount,
   deleteKey,
   enterApp,
   escapeHtml,
-  expiryCountdown,
-  formatBucketTime,
   formatCompact,
   formatCount,
+  formatMetadataForInput,
   handleLogin,
   hasUsageMetrics,
   importAccount,
@@ -1583,38 +1580,38 @@ export {
   loadKeys,
   logout,
   maskKey,
-  metadataHtml,
   modelsUrlForKey,
   normalizeUsage,
-  openCreateKeyModal,
-  openModal,
-  openEditAccountModal,
-  openEditKeyModal,
   readPersistedToken,
-  refreshAccount,
   reauthorizeAccount,
   redeemResetCredit,
+  refreshAccount,
   relativeTime,
+  requestUsageDetail,
   resolveConfirm,
   restoreSession,
   revokeKey,
   rotateKey,
   saveAccountEdits,
   saveKeyEdits,
+  setConfirmAnchor,
   setPrimary,
+  startCreateKey,
+  startEditAccount,
+  startEditKey,
   startOAuth,
   state,
   switchToTab,
   syncAccountWindowButtons,
+  syncConnectControls,
   syncDashboardWindowButtons,
+  syncKeyWindowButtons,
   syncScopedAccountAvailability,
   toast,
   toggleProvider,
   tokenStatus,
   updateOAuthProviderUI,
   usageForKey,
-  usageMetaParts,
   usageWindowLabel,
   verifyToken,
-  syncKeyWindowButtons,
 };

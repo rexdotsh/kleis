@@ -13,7 +13,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-      href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600;700&family=Lexend:wght@300;400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     >
     <link rel="stylesheet" href="./styles.css">
@@ -21,18 +21,23 @@
   <body>
     <div id="login-gate">
       <div class="login-box">
-        <div class="login-logo">kleis</div>
-        <div class="login-sub">admin console</div>
+        <div class="login-logo">
+          <svg width="16" height="16" aria-hidden="true">
+            <use href="#i-key"></use>
+          </svg>
+          kleis
+        </div>
+        <div class="login-sub">Admin</div>
         <div class="login-form">
           <input
             id="login-token"
             type="password"
-            placeholder="admin token"
+            placeholder="Admin token"
             autocomplete="off"
             spellcheck="false"
           >
           <button id="login-btn" class="btn btn-primary" type="button">
-            authenticate
+            Sign in
           </button>
         </div>
         <div id="login-error" class="login-error" role="alert"></div>
@@ -41,36 +46,76 @@
 
     <div id="toast-container" role="status" aria-live="polite"></div>
 
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+      <symbol id="i-key" viewBox="0 0 16 16">
+        <g
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.25"
+          stroke-linecap="round"
+        >
+          <circle cx="5.5" cy="10.5" r="3" />
+          <path d="M7.6 8.4 13.5 2.5M11.4 4.6l1.6 1.6M9.9 6.1l1.2 1.2" />
+        </g>
+      </symbol>
+      <symbol id="i-more" viewBox="0 0 16 16">
+        <g fill="currentColor">
+          <circle cx="3.5" cy="8" r="1.1" />
+          <circle cx="8" cy="8" r="1.1" />
+          <circle cx="12.5" cy="8" r="1.1" />
+        </g>
+      </symbol>
+      <symbol id="i-chev" viewBox="0 0 16 16">
+        <path
+          d="M6 4l4 4-4 4"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.25"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 16 16">
+        <g
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.25"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M13 8a5 5 0 1 1-1.5-3.6" />
+          <path d="M13 2.5v3h-3" />
+        </g>
+      </symbol>
+    </svg>
+
     <div id="app">
-      <header class="header">
-        <div class="shell header-inner">
-          <div class="header-left">
-            <span class="header-brand">kleis</span>
-            <span class="header-tag">admin</span>
-          </div>
-          <button id="btn-logout" class="btn btn-ghost btn-sm" type="button">
-            logout
-          </button>
-        </div>
-      </header>
-
-      <div class="shell">
-        <nav class="tabs fade-in" role="tablist" aria-label="Admin sections">
-          <button class="tab active" data-tab="usage" type="button">
-            usage
-          </button>
-          <button class="tab" data-tab="accounts" type="button">
-            accounts
-          </button>
-          <button class="tab" data-tab="keys" type="button">api keys</button>
-          <button class="tab" data-tab="oauth" type="button">connect</button>
-        </nav>
-
-        <div id="panel-usage" class="tab-panel active fade-in-delay">
-          <div class="dash-controls">
-            <div><span class="section-title">Usage</span></div>
-            <div class="section-actions">
-              <div class="dash-window-selector" id="dash-window-selector">
+      <header class="top">
+        <div class="shell top-inner">
+          <span class="brand">
+            <svg width="16" height="16" aria-hidden="true">
+              <use href="#i-key"></use>
+            </svg>
+            kleis
+          </span>
+          <nav class="tabs" role="tablist" aria-label="Admin sections">
+            <button class="tab active" data-tab="usage" type="button">
+              Overview
+            </button>
+            <button class="tab" data-tab="accounts" type="button">
+              Accounts
+            </button>
+            <button class="tab" data-tab="keys" type="button">Keys</button>
+            <button class="tab" data-tab="oauth" type="button">Connect</button>
+          </nav>
+          <div class="top-right">
+            <div class="top-ctl" data-for="usage">
+              <div
+                class="seg"
+                id="dash-window-selector"
+                role="group"
+                aria-label="Usage window"
+              >
                 <button
                   class="dash-window-btn"
                   data-window="3600000"
@@ -109,24 +154,33 @@
               </div>
               <button
                 id="btn-refresh-dash"
-                class="btn btn-ghost btn-sm"
+                class="icon-btn"
                 type="button"
+                aria-label="Refresh"
+                title="Refresh"
               >
-                refresh
+                <svg width="16" height="16" aria-hidden="true">
+                  <use href="#i-refresh"></use>
+                </svg>
               </button>
             </div>
-          </div>
-          <div id="dash-content"></div>
-        </div>
-
-        <div id="panel-accounts" class="tab-panel fade-in-delay">
-          <div class="section-header">
-            <div>
-              <span class="section-title">Provider Accounts</span>
-              <span id="accounts-count" class="section-count"></span>
-            </div>
-            <div class="section-actions">
-              <div class="dash-window-selector" id="accounts-window-selector">
+            <div class="top-ctl" data-for="accounts" hidden>
+              <label class="filter">
+                <input
+                  id="accounts-filter"
+                  type="search"
+                  placeholder="Filter accounts"
+                  autocomplete="off"
+                  spellcheck="false"
+                >
+                <span class="kbd" aria-hidden="true">/</span>
+              </label>
+              <div
+                class="seg"
+                id="accounts-window-selector"
+                role="group"
+                aria-label="Usage window"
+              >
                 <button
                   class="dash-window-btn"
                   data-window="3600000"
@@ -165,551 +219,377 @@
               </div>
               <button
                 id="btn-refresh-accounts"
-                class="btn btn-ghost btn-sm"
+                class="icon-btn"
                 type="button"
+                aria-label="Refresh"
+                title="Refresh"
               >
-                refresh
+                <svg width="16" height="16" aria-hidden="true">
+                  <use href="#i-refresh"></use>
+                </svg>
               </button>
             </div>
-          </div>
-          <div id="providers-status" class="provider-status-row"></div>
-          <div id="accounts-list"></div>
-        </div>
-
-        <div id="panel-keys" class="tab-panel">
-          <div class="section-header">
-            <div>
-              <span class="section-title">API Keys</span>
-              <span id="keys-count" class="section-count"></span>
-            </div>
-            <div class="dash-window-selector" id="keys-window-selector">
-              <button
-                class="dash-window-btn"
-                data-window="3600000"
-                type="button"
+            <div class="top-ctl" data-for="keys" hidden>
+              <label class="filter">
+                <input
+                  id="keys-filter"
+                  type="search"
+                  placeholder="Filter keys"
+                  autocomplete="off"
+                  spellcheck="false"
+                >
+                <span class="kbd" aria-hidden="true">/</span>
+              </label>
+              <div
+                class="seg"
+                id="keys-window-selector"
+                role="group"
+                aria-label="Usage window"
               >
-                1h
-              </button>
-              <button
-                class="dash-window-btn"
-                data-window="21600000"
-                type="button"
-              >
-                6h
-              </button>
-              <button
-                class="dash-window-btn active"
-                data-window="86400000"
-                type="button"
-              >
-                24h
-              </button>
-              <button
-                class="dash-window-btn"
-                data-window="604800000"
-                type="button"
-              >
-                7d
-              </button>
-              <button
-                class="dash-window-btn"
-                data-window="2592000000"
-                type="button"
-              >
-                30d
-              </button>
-            </div>
-          </div>
-          <div class="section-toolbar">
-            <label class="toggle-inline">
-              <input id="toggle-show-revoked-keys" type="checkbox">
-              show revoked
-            </label>
-            <div class="section-actions">
-              <button
-                id="btn-open-setup"
-                class="btn btn-ghost btn-sm"
-                type="button"
-              >
-                opencode setup
-              </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="3600000"
+                  type="button"
+                >
+                  1h
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="21600000"
+                  type="button"
+                >
+                  6h
+                </button>
+                <button
+                  class="dash-window-btn active"
+                  data-window="86400000"
+                  type="button"
+                >
+                  24h
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="604800000"
+                  type="button"
+                >
+                  7d
+                </button>
+                <button
+                  class="dash-window-btn"
+                  data-window="2592000000"
+                  type="button"
+                >
+                  30d
+                </button>
+              </div>
               <button
                 id="btn-refresh-keys"
-                class="btn btn-ghost btn-sm"
+                class="icon-btn"
                 type="button"
+                aria-label="Refresh"
+                title="Refresh"
               >
-                refresh
-              </button>
-              <button
-                id="btn-create-key"
-                class="btn btn-primary btn-sm"
-                type="button"
-              >
-                + new key
+                <svg width="16" height="16" aria-hidden="true">
+                  <use href="#i-refresh"></use>
+                </svg>
               </button>
             </div>
           </div>
-
-          <div id="keys-list"></div>
+          <button id="btn-logout" class="btn btn-ghost btn-sm" type="button">
+            Log out
+          </button>
         </div>
+      </header>
 
-        <div id="panel-oauth" class="tab-panel">
-          <div class="section-header">
-            <span class="section-title">Connect Provider</span>
+      <main class="shell main">
+        <section id="panel-usage" class="tab-panel active">
+          <div id="attention"></div>
+          <div id="dash-content"></div>
+        </section>
+
+        <section id="panel-accounts" class="tab-panel">
+          <div class="sh">
+            <h2>Accounts</h2>
+            <span id="accounts-count" class="muted"></span>
           </div>
+          <div id="accounts-list" class="list"></div>
+        </section>
 
-          <div class="card">
-            <div class="field-hint" style="margin-bottom:14px">
-              OAuth flow (recommended)
-            </div>
-            <div class="field">
-              <label class="field-label" for="oauth-provider">Provider</label>
-              <select id="oauth-provider" class="field-input">
-                <option value="codex">Codex (OpenAI)</option>
-                <option value="claude">Claude (Anthropic)</option>
-              </select>
-            </div>
-            <div id="oauth-codex-opts" class="field" style="display:none">
-              <label class="field-label" for="oauth-codex-mode">
-                OAuth Mode
-              </label>
-              <select id="oauth-codex-mode" class="field-input">
-                <option value="browser">Browser callback code</option>
-                <option value="headless">Headless device flow</option>
-              </select>
-              <div class="field-hint">
-                Use headless for SSH and remote terminals
-              </div>
-            </div>
-            <div id="oauth-claude-opts" class="field" style="display:none">
-              <label class="field-label" for="oauth-claude-mode">
-                OAuth Mode
-              </label>
-              <select id="oauth-claude-mode" class="field-input">
-                <option value="max">Max (claude.ai)</option>
-                <option value="console">Console (platform.claude.com)</option>
-              </select>
-            </div>
-            <div
-              id="oauth-reauthorize-target"
-              class="oauth-target"
-              style="display:none"
-            >
-              <span id="oauth-reauthorize-label"></span>
-              <button
-                id="btn-oauth-clear-target"
-                class="btn btn-ghost btn-sm"
-                type="button"
-              >
-                cancel reauthorization
+        <section id="panel-keys" class="tab-panel">
+          <div class="sh">
+            <h2>API keys</h2>
+            <span id="keys-count" class="muted"></span>
+            <div class="right">
+              <button id="btn-create-key" class="btn btn-primary" type="button">
+                New key
+                <span class="kbd" aria-hidden="true">N</span>
               </button>
             </div>
-            <button id="btn-oauth-start" class="btn btn-primary" type="button">
-              start oauth flow
-            </button>
           </div>
+          <div id="keys-list" class="list"></div>
+          <div id="keys-foot" class="list-foot"></div>
+        </section>
 
-          <div id="oauth-flow-active" style="display:none"></div>
-
-          <details class="collapsible">
-            <summary>Manual token import</summary>
-            <div class="collapsible-body">
+        <section id="panel-oauth" class="tab-panel">
+          <div class="connect">
+            <div class="connect-main">
+              <div class="sh"><h2>Connect an account</h2></div>
+              <p class="muted">
+                Sign in once. Kleis keeps the token and refreshes it for you.
+              </p>
+              <div
+                id="oauth-reauthorize-target"
+                class="oauth-target"
+                style="display:none"
+              >
+                <span id="oauth-reauthorize-label"></span>
+                <button
+                  id="btn-oauth-clear-target"
+                  class="btn btn-ghost btn-sm"
+                  type="button"
+                >
+                  Cancel
+                </button>
+              </div>
               <div class="field">
-                <label class="field-label" for="import-provider">
-                  Provider
-                </label>
-                <select id="import-provider" class="field-input">
-                  <option value="codex">Codex (OpenAI)</option>
-                  <option value="claude">Claude (Anthropic)</option>
+                <span class="field-label" id="oauth-provider-label"
+                  >Provider</span
+                >
+                <div
+                  class="seg seg-full"
+                  role="radiogroup"
+                  aria-labelledby="oauth-provider-label"
+                  data-select="oauth-provider"
+                >
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked="false"
+                    data-value="codex"
+                  >
+                    Codex
+                  </button><button
+                    type="button"
+                    role="radio"
+                    aria-checked="false"
+                    data-value="claude"
+                  >
+                    Claude
+                  </button>
+                </div>
+                <select id="oauth-provider" hidden>
+                  <option value="codex">Codex</option>
+                  <option value="claude">Claude</option>
                 </select>
               </div>
-              <div class="field">
-                <label class="field-label" for="import-access-token">
-                  Access Token
-                </label>
-                <input
-                  id="import-access-token"
-                  class="field-input"
-                  type="text"
-                  placeholder="access token"
-                  autocomplete="off"
-                  spellcheck="false"
+              <div id="oauth-codex-opts" class="field" style="display:none">
+                <span class="field-label" id="oauth-codex-mode-label"
+                  >Sign in with</span
                 >
-              </div>
-              <div class="field">
-                <label class="field-label" for="import-refresh-token">
-                  Refresh Token
-                </label>
-                <input
-                  id="import-refresh-token"
-                  class="field-input"
-                  type="text"
-                  placeholder="refresh token"
-                  autocomplete="off"
-                  spellcheck="false"
+                <div
+                  class="seg seg-full"
+                  role="radiogroup"
+                  aria-labelledby="oauth-codex-mode-label"
+                  data-select="oauth-codex-mode"
                 >
-              </div>
-              <div class="field">
-                <label class="field-label" for="import-expires-at">
-                  Expires At (unix seconds or ms)
-                </label>
-                <input
-                  id="import-expires-at"
-                  class="field-input"
-                  type="number"
-                  placeholder="1767225600000"
-                >
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked="false"
+                    data-value="browser"
+                  >
+                    Browser
+                  </button><button
+                    type="button"
+                    role="radio"
+                    aria-checked="false"
+                    data-value="headless"
+                  >
+                    Device code
+                  </button>
+                </div>
+                <select id="oauth-codex-mode" hidden>
+                  <option value="browser">Browser</option>
+                  <option value="headless">Device code</option>
+                </select>
                 <div class="field-hint">
-                  If omitted, defaults to one hour from now.
+                  Use a device code over SSH or on a remote machine.
                 </div>
               </div>
-              <div class="field">
-                <label class="field-label" for="import-account-id">
-                  Account ID (optional)
-                </label>
-                <input
-                  id="import-account-id"
-                  class="field-input"
-                  type="text"
-                  placeholder="provider-specific account id"
+              <div id="oauth-claude-opts" class="field" style="display:none">
+                <span class="field-label" id="oauth-claude-mode-label"
+                  >Sign in with</span
                 >
-              </div>
-              <div class="field">
-                <label class="field-label" for="import-label">
-                  Label (optional)
-                </label>
-                <input
-                  id="import-label"
-                  class="field-input"
-                  type="text"
-                  placeholder="my-main-account"
+                <div
+                  class="seg seg-full"
+                  role="radiogroup"
+                  aria-labelledby="oauth-claude-mode-label"
+                  data-select="oauth-claude-mode"
                 >
-              </div>
-              <div class="field">
-                <label class="field-label" for="import-metadata">
-                  Metadata JSON (optional)
-                </label>
-                <textarea
-                  id="import-metadata"
-                  class="field-input"
-                  placeholder='{"chatgptAccountId":"org_123"}'
-                ></textarea>
-                <div class="field-hint">
-                  Optional provider metadata. Leave empty for defaults.
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked="false"
+                    data-value="max"
+                  >
+                    claude.ai
+                  </button><button
+                    type="button"
+                    role="radio"
+                    aria-checked="false"
+                    data-value="console"
+                  >
+                    Console
+                  </button>
                 </div>
+                <select id="oauth-claude-mode" hidden>
+                  <option value="max">claude.ai</option>
+                  <option value="console">Console</option>
+                </select>
               </div>
               <button
-                id="btn-import-account"
-                class="btn btn-primary"
+                id="btn-oauth-start"
+                class="btn btn-primary btn-block"
                 type="button"
               >
-                import account
+                Continue
               </button>
+              <div id="oauth-flow-active" style="display:none"></div>
+              <details class="collapsible">
+                <summary>Import tokens manually</summary>
+                <div class="collapsible-body">
+                  <div class="field">
+                    <label class="field-label" for="import-provider">
+                      Provider
+                    </label>
+                    <select id="import-provider" class="field-input">
+                      <option value="codex">Codex</option>
+                      <option value="claude">Claude</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="import-access-token">
+                      Access token
+                    </label>
+                    <input
+                      id="import-access-token"
+                      class="field-input"
+                      type="text"
+                      placeholder="access token"
+                      autocomplete="off"
+                      spellcheck="false"
+                    >
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="import-refresh-token">
+                      Refresh token
+                    </label>
+                    <input
+                      id="import-refresh-token"
+                      class="field-input"
+                      type="text"
+                      placeholder="refresh token"
+                      autocomplete="off"
+                      spellcheck="false"
+                    >
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="import-expires-at">
+                      Expires at (unix seconds or ms)
+                    </label>
+                    <input
+                      id="import-expires-at"
+                      class="field-input"
+                      type="number"
+                      placeholder="1767225600000"
+                    >
+                    <div class="field-hint">
+                      If omitted, defaults to one hour from now.
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="import-account-id">
+                      Account ID (optional)
+                    </label>
+                    <input
+                      id="import-account-id"
+                      class="field-input"
+                      type="text"
+                      placeholder="provider-specific account id"
+                    >
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="import-label">
+                      Label (optional)
+                    </label>
+                    <input
+                      id="import-label"
+                      class="field-input"
+                      type="text"
+                      placeholder="my-main-account"
+                    >
+                  </div>
+                  <div class="field">
+                    <label class="field-label" for="import-metadata">
+                      Metadata (JSON, optional)
+                    </label>
+                    <textarea
+                      id="import-metadata"
+                      class="field-input"
+                      placeholder='{"chatgptAccountId":"org_123"}'
+                    ></textarea>
+                    <div class="field-hint">
+                      Optional provider metadata. Leave empty for defaults.
+                    </div>
+                  </div>
+                  <button
+                    id="btn-import-account"
+                    class="btn btn-primary"
+                    type="button"
+                  >
+                    Import account
+                  </button>
+                </div>
+              </details>
             </div>
-          </details>
-        </div>
-      </div>
+            <aside class="connect-side">
+              <div class="sh"><h2>Reauthorize</h2></div>
+              <div id="reauthorize-list" class="list"></div>
+            </aside>
+          </div>
+        </section>
+      </main>
     </div>
 
-    <div id="modal-create-key" class="modal-backdrop">
-      <div
-        class="modal modal-wide"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="create-key-title"
-      >
-        <div class="modal-title" id="create-key-title">Create API Key</div>
-        <div class="field">
-          <label class="field-label" for="key-label">Label</label>
-          <input
-            id="key-label"
-            class="field-input"
-            type="text"
-            maxlength="120"
-            placeholder="my-laptop"
-          >
-        </div>
-        <div class="field">
-          <label class="field-label">Provider Scopes</label>
-          <div class="field-hint" style="margin-bottom:8px">
-            Leave empty for all providers.
-          </div>
-          <div class="scope-grid">
-            <label class="scope-check">
-              <input type="checkbox" value="codex" class="key-scope-provider">
-              codex
-            </label>
-            <label class="scope-check">
-              <input type="checkbox" value="claude" class="key-scope-provider">
-              claude
-            </label>
-          </div>
-        </div>
-        <div class="field">
-          <label class="field-label">Account Scopes</label>
-          <div class="field-hint" style="margin-bottom:10px">
-            Optional. Leave empty to use each provider's primary account. Pick
-            up to one account per provider to pin requests, even if that account
-            is not primary.
-          </div>
-          <div id="key-account-scopes" class="scope-account-groups"></div>
-        </div>
-        <div class="field">
-          <label class="field-label" for="key-model-scopes">
-            Model Scopes
-          </label>
-          <textarea
-            id="key-model-scopes"
-            class="field-input field-input-compact"
-            placeholder="gpt-5.6-luna, anthropic/claude-sonnet-4-5"
-            rows="2"
-          ></textarea>
-          <div class="field-hint">
-            Comma or newline separated. Leave empty for all.
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost modal-close" type="button">
-            cancel
-          </button>
-          <button
-            id="btn-modal-create-key"
-            class="btn btn-primary"
-            type="button"
-          >
-            create
-          </button>
-        </div>
-      </div>
-    </div>
+    <div id="menu" class="menu" role="menu" hidden></div>
 
-    <div id="modal-edit-account" class="modal-backdrop">
-      <div
-        class="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="edit-account-title"
-      >
-        <div class="modal-title" id="edit-account-title">Edit Account</div>
-        <div class="field">
-          <label class="field-label" for="edit-account-label">Label</label>
-          <input
-            id="edit-account-label"
-            class="field-input"
-            type="text"
-            maxlength="160"
-            placeholder="my-main-account"
-          >
-        </div>
-        <div class="field">
-          <label class="field-label" for="edit-account-account-id">
-            Account ID
-          </label>
-          <input
-            id="edit-account-account-id"
-            class="field-input"
-            type="text"
-            maxlength="200"
-            placeholder="provider-specific account id"
-          >
-          <div class="field-hint">Leave empty to clear.</div>
-        </div>
-        <div class="field">
-          <label class="field-label" for="edit-account-metadata">
-            Profile Metadata JSON
-          </label>
-          <textarea
-            id="edit-account-metadata"
-            class="field-input"
-            placeholder='{"chatgptAccountId":"org_123"}'
-          ></textarea>
-          <div class="field-hint">
-            Must be a JSON object. Leave empty to clear metadata.
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost modal-close" type="button">
-            cancel
-          </button>
-          <button
-            id="btn-modal-save-account"
-            class="btn btn-primary"
-            type="button"
-          >
-            save
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div id="modal-edit-key" class="modal-backdrop">
-      <div
-        class="modal modal-wide"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="edit-key-title"
-      >
-        <div class="modal-title" id="edit-key-title">Edit API Key</div>
-        <div class="field">
-          <label class="field-label" for="edit-key-label">Label</label>
-          <input
-            id="edit-key-label"
-            class="field-input"
-            type="text"
-            maxlength="120"
-            placeholder="my-laptop"
-          >
-        </div>
-        <div class="field">
-          <label class="field-label">Provider Scopes</label>
-          <div class="field-hint" style="margin-bottom:8px">
-            Leave empty for all providers.
-          </div>
-          <div class="scope-grid">
-            <label class="scope-check">
-              <input
-                type="checkbox"
-                value="codex"
-                class="edit-key-scope-provider"
-              >
-              codex
-            </label>
-            <label class="scope-check">
-              <input
-                type="checkbox"
-                value="claude"
-                class="edit-key-scope-provider"
-              >
-              claude
-            </label>
-          </div>
-        </div>
-        <div class="field">
-          <label class="field-label">Account Scopes</label>
-          <div class="field-hint" style="margin-bottom:10px">
-            Optional. Leave empty to follow the provider primary account. Pick
-            up to one account per provider to pin requests.
-          </div>
-          <div id="edit-key-account-scopes" class="scope-account-groups"></div>
-        </div>
-        <div class="field">
-          <label class="field-label" for="edit-key-model-scopes">
-            Model Scopes
-          </label>
-          <textarea
-            id="edit-key-model-scopes"
-            class="field-input field-input-compact"
-            placeholder="gpt-5.6-luna, anthropic/claude-sonnet-4-5"
-            rows="2"
-          ></textarea>
-          <div class="field-hint">
-            Comma or newline separated. Leave empty for all.
-          </div>
-        </div>
-        <div class="field">
-          <label class="field-label" for="edit-key-expires-at">
-            Expires At (unix seconds or ms)
-          </label>
-          <input
-            id="edit-key-expires-at"
-            class="field-input"
-            type="number"
-            placeholder="1767225600000"
-          >
-          <div class="field-hint">
-            Leave unchanged to keep existing value. Clear to remove expiration.
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost modal-close" type="button">
-            cancel
-          </button>
-          <button id="btn-modal-save-key" class="btn btn-primary" type="button">
-            save
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div id="modal-confirm" class="modal-backdrop">
-      <div
-        class="modal modal-sm"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="confirm-title"
-        aria-describedby="confirm-message"
-      >
-        <div class="modal-title" id="confirm-title"></div>
-        <div class="modal-body" id="confirm-message"></div>
-        <div id="confirm-extras"></div>
-        <div class="modal-footer">
-          <button class="btn btn-ghost" id="btn-confirm-cancel" type="button">
-            cancel
-          </button>
-          <button class="btn btn-danger" id="btn-confirm-action" type="button">
-            confirm
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div id="modal-key-detail" class="modal-backdrop">
-      <div
-        class="modal"
-        style="width:min(90vw, 900px)"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="key-detail-title"
-      >
-        <div
-          style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px"
+    <div
+      id="confirm"
+      class="popover"
+      role="alertdialog"
+      aria-labelledby="confirm-title"
+      aria-describedby="confirm-message"
+      tabindex="-1"
+      hidden
+    >
+      <p id="confirm-title" class="popover-title"></p>
+      <p id="confirm-message" class="popover-text"></p>
+      <div id="confirm-extras"></div>
+      <div class="popover-actions">
+        <button
+          id="btn-confirm-cancel"
+          class="btn btn-ghost btn-sm"
+          type="button"
         >
-          <div
-            class="modal-title"
-            id="key-detail-title"
-            style="margin-bottom:0"
-          ></div>
-          <button class="btn btn-ghost btn-sm modal-close" type="button">
-            close
-          </button>
-        </div>
-        <div id="key-detail-body">
-          <div class="loading-indicator">
-            <span class="spinner spinner-lg"></span>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div id="modal-opencode-setup" class="modal-backdrop">
-      <div
-        class="modal"
-        style="width:560px"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="setup-title"
-      >
-        <div
-          style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px"
+          Cancel
+        </button>
+        <button
+          id="btn-confirm-action"
+          class="btn btn-danger btn-sm"
+          type="button"
         >
-          <div class="modal-title" id="setup-title" style="margin-bottom:0">
-            OpenCode setup
-          </div>
-          <button class="btn btn-ghost btn-sm modal-close" type="button">
-            close
-          </button>
-        </div>
-        <div class="field" style="margin-bottom:10px">
-          <label class="field-label" for="setup-key-select">API Key</label>
-          <select id="setup-key-select" class="field-input"></select>
-        </div>
-        <pre id="setup-snippet" class="snippet-block"></pre>
-        <div class="modal-footer">
-          <button class="btn btn-ghost modal-close" type="button">close</button>
-          <button id="btn-copy-setup" class="btn btn-primary" type="button">
-            copy snippet
-          </button>
-        </div>
+          Confirm
+        </button>
       </div>
     </div>
 

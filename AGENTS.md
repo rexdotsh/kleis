@@ -52,3 +52,9 @@ This project uses Ultracite (Biome-based) for formatting and linting.
 Write code that is type-safe and explicit. Use `unknown` over `any`, const assertions for immutable values, early returns over nested conditionals, `for...of` over `.forEach()`, `async/await` over promise chains, and template literals over concatenation. Remove `console.log`/`debugger` from production code. Throw `Error` objects, not strings.
 
 The admin UI is vanilla JS in `public/admin/`.
+
+---
+
+## Pull Requests
+
+**UI changes**: always attach screenshots of every changed screen, desktop and phone, to the PR description. Use `gh pr create --attach` or `gh pr edit --attach`, and reference each file in the body as `![alt](./file.png)` so it is placed inline. The repo is public, so screenshots must use fake data: never real account emails, IDs, keys or labels.

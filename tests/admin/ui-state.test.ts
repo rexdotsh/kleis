@@ -62,7 +62,7 @@ const {
   loadAccounts,
   logout,
   normalizeUsage,
-  openEditKeyModal,
+  startEditKey,
   saveKeyEdits,
   startOAuth,
   state,
@@ -135,7 +135,7 @@ describe("admin UI request state", () => {
       }),
     } as unknown as Document;
 
-    openEditKeyModal(keyId);
+    startEditKey(keyId);
     expect(element("#edit-key-account-scopes").innerHTML).toContain(
       'value="missing-account" class="edit-key-scope-account" data-preserved-scope="true" checked'
     );
@@ -187,15 +187,15 @@ describe("admin UI request state", () => {
       byProvider: [{ ...metrics, provider: "claude" }],
     });
     const html = element("#dash-content").innerHTML;
-    expect(html).toContain('cached input</div><div class="dash-kpi-value">70%');
-    expect(html).toContain("70% cached input");
+    expect(html).toContain('Cached input</div><div class="val">70%');
+    expect(html).toContain('<span class="num muted d">70%</span>');
     expect(html).not.toContain("cache hit");
   });
 
   test("renders no cached input rate when no usage was captured", () => {
     renderDashboard({ totals: { requestCount: 1 } });
     expect(element("#dash-content").innerHTML).toContain(
-      'cached input</div><div class="dash-kpi-value">-'
+      'Cached input</div><div class="val">\u2014'
     );
   });
 

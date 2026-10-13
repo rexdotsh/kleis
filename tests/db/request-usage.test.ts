@@ -151,4 +151,36 @@ describe("request usage token accounting", () => {
       dashboard.buckets.reduce((sum, bucket) => sum + bucket.cacheReadTokens, 0)
     ).toBe(720);
   });
+
+  test("returns previous-window request buckets for the comparison line", async () => {
+    const anchor = Date.parse("2026-09-25T12:00:00Z");
+    const windowMs = 86_400_000;
+    await database.insert(requestUsageBuckets).values(
+      [anchor - 3_600_000, anchor - windowMs - 3_600_000].map(
+        (bucketStart, index) => ({
+          bucketStart,
+          apiKeyId: "chart-key",
+          providerAccountId: "codex-account",
+          provider: "codex" as const,
+          endpoint: "responses",
+          model: "gpt-6-sol",
+          requestCount: index + 2,
+          successCount: index + 2,
+          lastRequestAt: bucketStart,
+        })
+      )
+    );
+
+    const dashboard = await getDashboardUsage(
+      database,
+      anchor - windowMs,
+      windowMs
+    );
+
+    expect(dashboard.buckets.map((bucket) => bucket.requestCount)).toEqual([2]);
+    expect(dashboard.previousBuckets).toEqual([
+      { bucketStart: anchor - windowMs - 3_600_000, requestCount: 3 },
+    ]);
+    expect(dashboard.previousTotals.requestCount).toBe(3);
+  });
 });
