@@ -143,12 +143,40 @@ const findSseEventBoundary = (
   return { index: match.index, length: match[0].length };
 };
 
-const readSseDataLines = (chunk: string): string[] =>
-  chunk
-    .replace(/\r\n|\r/gu, "\n")
-    .split("\n")
-    .filter((line) => line === "data" || line.startsWith("data:"))
-    .map((line) => (line === "data" ? "" : line.slice(5).trimStart()));
+// Streams that use CR line endings take the regex path, which keeps a CRLF
+// from being read as two line breaks.
+const findLfEventBoundary = (
+  buffer: string,
+  from: number
+): { index: number; length: number } | null => {
+  const index = buffer.indexOf("\n\n", from);
+  return index === -1 ? null : { index, length: 2 };
+};
+
+const readSseDataLines = (chunk: string): string[] => {
+  if (chunk.includes("\r")) {
+    return chunk
+      .replace(/\r\n|\r/gu, "\n")
+      .split("\n")
+      .filter((line) => line === "data" || line.startsWith("data:"))
+      .map((line) => (line === "data" ? "" : line.slice(5).trimStart()));
+  }
+  const lines: string[] = [];
+  let start = 0;
+  while (start < chunk.length) {
+    const newline = chunk.indexOf("\n", start);
+    const end = newline === -1 ? chunk.length : newline;
+    if (chunk.startsWith("data", start)) {
+      if (end === start + 4) {
+        lines.push("");
+      } else if (chunk[start + 4] === ":") {
+        lines.push(chunk.slice(start + 5, end).trimStart());
+      }
+    }
+    start = end + 1;
+  }
+  return lines;
+};
 
 const rewriteSseData = (
   chunk: string,
@@ -284,6 +312,7 @@ export const createOpenAiSseUsagePassthrough = (
   let lastWriteAt = startedAt;
   let closed = false;
   let utf8ValidationEnabled = true;
+  let sawCarriageReturn = false;
   let clearKeepAlive: (() => void) | null = null;
 
   const logStreamAnomaly = (
@@ -434,13 +463,13 @@ export const createOpenAiSseUsagePassthrough = (
               });
             }
           }
-          pendingText += decoder.decode(value, { stream: true });
+          const decoded = decoder.decode(value, { stream: true });
+          sawCarriageReturn ||= decoded.includes("\r");
+          pendingText += decoded;
           let output = "";
-          let boundary = findSseEventBoundary(pendingText);
-          while (boundary) {
-            const eventEnd = boundary.index + boundary.length;
-            output += transformSseEvent(
-              pendingText.slice(0, eventEnd),
+          const transformEvent = (eventText: string): string =>
+            transformSseEvent(
+              eventText,
               usageState,
               input.extractUsage,
               reportInvalidJson,
@@ -448,11 +477,29 @@ export const createOpenAiSseUsagePassthrough = (
               reasoningState,
               reportReasoningOverlap
             );
-            pendingText = pendingText.slice(eventEnd);
-            boundary = findSseEventBoundary(pendingText);
+          if (sawCarriageReturn) {
+            let boundary = findSseEventBoundary(pendingText);
+            while (boundary) {
+              const eventEnd = boundary.index + boundary.length;
+              output += transformEvent(pendingText.slice(0, eventEnd));
+              pendingText = pendingText.slice(eventEnd);
+              boundary = findSseEventBoundary(pendingText);
+            }
+          } else {
+            let cursor = 0;
+            let boundary = findLfEventBoundary(pendingText, cursor);
+            while (boundary) {
+              const eventEnd = boundary.index + boundary.length;
+              output += transformEvent(pendingText.slice(cursor, eventEnd));
+              cursor = eventEnd;
+              boundary = findLfEventBoundary(pendingText, cursor);
+            }
+            if (cursor) {
+              pendingText = pendingText.slice(cursor);
+            }
           }
           if (output) {
-            pendingBytes = encoder.encode(pendingText).byteLength;
+            pendingBytes = Buffer.byteLength(pendingText);
           }
           if (pendingBytes > MAX_SSE_EVENT_BYTES) {
             logStreamAnomaly("openai_sse_event_too_large", {

@@ -3166,6 +3166,36 @@ describe("proxy contract: claude", () => {
     expect(transformedText).toContain('"name":"shell"');
   });
 
+  test("passes text events through unchanged and still reports usage and tool names", async () => {
+    const usages: TokenUsage[] = [];
+    const result = prepareClaudeUsageRequest((usage) => usages.push(usage));
+    const events = [
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":3,"cache_read_input_tokens":40,"output_tokens":1}}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"say \\"tool_use\\" and   keep spacing"}}\n\n',
+      'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"mcp_Shell","input":{}}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ];
+    const response = await result.transformResponse(
+      new Response(events.join(""), {
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+    const text = await response.text();
+
+    expect(text).toContain(events[1]);
+    expect(text).toContain('"name":"shell"');
+    expect(text).not.toContain("mcp_Shell");
+    expect(usages).toEqual([
+      {
+        inputTokens: 3,
+        outputTokens: 9,
+        cacheReadTokens: 40,
+        cacheWriteTokens: 0,
+      },
+    ]);
+  });
+
   test("applies downstream backpressure to Claude SSE reads", async () => {
     const result = prepareClaudeUsageRequest();
     const encoder = new TextEncoder();

@@ -2,9 +2,9 @@ import { Hono, type Context } from "hono";
 
 import { db } from "../../db";
 import {
+  buildRequestUsageRow,
+  buildTokenUsageRow,
   MISSING_PROVIDER_ACCOUNT_ID,
-  recordRequestUsage,
-  recordTokenUsage,
 } from "../../db/repositories/request-usage";
 import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
 import {
@@ -19,6 +19,7 @@ import {
 } from "../../providers/proxies/codex-proxy";
 import { tryProxyCodexWebSocket } from "../../providers/proxies/codex-websocket";
 import type { UsageRequestSource } from "../../usage/request-outcome";
+import { createUsageBuffer } from "../../usage/usage-buffer";
 import {
   isTokenUsagePopulated,
   type TokenUsage,
@@ -67,9 +68,9 @@ const createCodexSseHeaderTimeout = (): {
   };
 };
 
-const runInBackground = (promise: Promise<unknown>): void => {
-  promise.catch(() => undefined);
-};
+const usageBuffer = createUsageBuffer(db);
+
+export const flushProxyUsage = (): Promise<void> => usageBuffer.flush();
 
 type BunFetchRequestInit = RequestInit & {
   timeout?: number | false;
@@ -138,15 +139,15 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
       occurredAt,
       ...(tokenUsage !== undefined ? { tokenUsage } : {}),
     };
-    runInBackground(recordRequestUsage(db, usageInput));
+    usageBuffer.add(buildRequestUsageRow(usageInput));
   };
 
   const recordTokenCounters = (
     tokenUsage: TokenUsage,
     occurredAt: number
   ): void => {
-    runInBackground(
-      recordTokenUsage(db, {
+    usageBuffer.add(
+      buildTokenUsageRow({
         apiKeyId: input.apiKeyId,
         providerAccountId: input.getProviderAccountId(),
         provider: input.route.provider,

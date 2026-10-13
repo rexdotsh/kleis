@@ -10,7 +10,7 @@ import { adminUsageRoutes } from "./http/routes/admin-usage";
 import { cronRoutes } from "./http/routes/cron";
 import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
-import { proxyRoutes } from "./http/routes/proxy";
+import { flushProxyUsage, proxyRoutes } from "./http/routes/proxy";
 import { gracefulShutdown } from "./http/graceful-shutdown";
 import { resolveRequestIdleTimeout } from "./http/utils/request-timeout";
 
@@ -54,6 +54,7 @@ app.use("/openai/v1/*", requireProxyApiKey);
 app.use("/anthropic/v1/*", requireProxyApiKey);
 app.route("/", proxyRoutes);
 
+gracefulShutdown.beforeExit(flushProxyUsage);
 gracefulShutdown.install();
 
 export default {
