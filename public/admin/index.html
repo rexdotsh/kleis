@@ -10,13 +10,24 @@
       type="image/svg+xml"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23d4a24e'/%3E%3Ccircle cx='16' cy='12' r='4.5' fill='%230a0a0c'/%3E%3Crect x='13.5' y='14' width='5' height='12' rx='1.5' fill='%230a0a0c'/%3E%3C/svg%3E"
     >
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
+      rel="preload"
+      href="./fonts/geist-latin.v1.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    >
+    <link
+      rel="preload"
+      href="./fonts/geist-mono-latin.v1.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
     >
     <link rel="stylesheet" href="./styles.css">
+    <link rel="modulepreload" href="./app.js">
+    <link rel="modulepreload" href="./app-data.js">
+    <link rel="modulepreload" href="./app-render.js">
   </head>
   <body>
     <div id="login-gate">

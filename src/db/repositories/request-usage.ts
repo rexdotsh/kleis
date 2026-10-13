@@ -8,7 +8,7 @@ import {
 import type { TokenUsage } from "../../usage/token-usage";
 import { toNonNegativeInteger } from "../../utils/number";
 import type { Database } from "../index";
-import { requestUsageBuckets, type Provider } from "../schema";
+import { apiKeys, requestUsageBuckets, type Provider } from "../schema";
 import {
   applyTotalsRow,
   DETAIL_BUCKET_LIMIT,
@@ -223,7 +223,7 @@ export const listApiKeyUsageSummaries = async (
 ): Promise<ApiKeyUsageSummary[]> => {
   const sinceBucket = toUsageBucketStart(toNonNegativeInteger(sinceMs));
 
-  const [totalsRows, providerRows] = await Promise.all([
+  const [totalsRows, providerRows] = await database.batch([
     database
       .select({
         groupKey: requestUsageBuckets.apiKeyId,
@@ -275,64 +275,74 @@ export const getApiKeyUsageDetail = async (
   database: Database,
   apiKeyId: string,
   sinceMs: number
-): Promise<ApiKeyUsageDetail> => {
+): Promise<ApiKeyUsageDetail | null> => {
   const sinceBucket = toUsageBucketStart(toNonNegativeInteger(sinceMs));
   const windowFilter = and(
     eq(requestUsageBuckets.apiKeyId, apiKeyId),
     gte(requestUsageBuckets.bucketStart, sinceBucket)
   );
 
-  const [totalsRows, endpointRows, modelRows, bucketRows] = await Promise.all([
-    database
-      .select({
-        ...selectUsageCounterSums(requestUsageBuckets),
-        ...selectUsageLatencySums(requestUsageBuckets),
-        ...selectUsageTokenSums(requestUsageBuckets),
-        ...selectUsageLastRequestAtMax(requestUsageBuckets),
-      })
-      .from(requestUsageBuckets)
-      .where(windowFilter),
-    database
-      .select({
-        provider: requestUsageBuckets.provider,
-        endpoint: requestUsageBuckets.endpoint,
-        ...selectUsageCounterSums(requestUsageBuckets),
-        ...selectUsageLatencySums(requestUsageBuckets),
-        ...selectUsageTokenSums(requestUsageBuckets),
-        ...selectUsageLastRequestAtMax(requestUsageBuckets),
-      })
-      .from(requestUsageBuckets)
-      .where(windowFilter)
-      .groupBy(requestUsageBuckets.provider, requestUsageBuckets.endpoint),
-    database
-      .select({
-        provider: requestUsageBuckets.provider,
-        endpoint: requestUsageBuckets.endpoint,
-        model: requestUsageBuckets.model,
-        ...selectUsageCounterSums(requestUsageBuckets),
-        ...selectUsageLatencySums(requestUsageBuckets),
-        ...selectUsageTokenSums(requestUsageBuckets),
-        ...selectUsageLastRequestAtMax(requestUsageBuckets),
-      })
-      .from(requestUsageBuckets)
-      .where(windowFilter)
-      .groupBy(
-        requestUsageBuckets.provider,
-        requestUsageBuckets.endpoint,
-        requestUsageBuckets.model
-      ),
-    database
-      .select({
-        bucketStart: requestUsageBuckets.bucketStart,
-        ...selectUsageCounterSums(requestUsageBuckets),
-        ...selectUsageTokenSums(requestUsageBuckets),
-      })
-      .from(requestUsageBuckets)
-      .where(windowFilter)
-      .groupBy(requestUsageBuckets.bucketStart)
-      .orderBy(desc(requestUsageBuckets.bucketStart))
-      .limit(DETAIL_BUCKET_LIMIT),
-  ]);
+  const [keyRows, totalsRows, endpointRows, modelRows, bucketRows] =
+    await database.batch([
+      database
+        .select({ id: apiKeys.id })
+        .from(apiKeys)
+        .where(eq(apiKeys.id, apiKeyId))
+        .limit(1),
+      database
+        .select({
+          ...selectUsageCounterSums(requestUsageBuckets),
+          ...selectUsageLatencySums(requestUsageBuckets),
+          ...selectUsageTokenSums(requestUsageBuckets),
+          ...selectUsageLastRequestAtMax(requestUsageBuckets),
+        })
+        .from(requestUsageBuckets)
+        .where(windowFilter),
+      database
+        .select({
+          provider: requestUsageBuckets.provider,
+          endpoint: requestUsageBuckets.endpoint,
+          ...selectUsageCounterSums(requestUsageBuckets),
+          ...selectUsageLatencySums(requestUsageBuckets),
+          ...selectUsageTokenSums(requestUsageBuckets),
+          ...selectUsageLastRequestAtMax(requestUsageBuckets),
+        })
+        .from(requestUsageBuckets)
+        .where(windowFilter)
+        .groupBy(requestUsageBuckets.provider, requestUsageBuckets.endpoint),
+      database
+        .select({
+          provider: requestUsageBuckets.provider,
+          endpoint: requestUsageBuckets.endpoint,
+          model: requestUsageBuckets.model,
+          ...selectUsageCounterSums(requestUsageBuckets),
+          ...selectUsageLatencySums(requestUsageBuckets),
+          ...selectUsageTokenSums(requestUsageBuckets),
+          ...selectUsageLastRequestAtMax(requestUsageBuckets),
+        })
+        .from(requestUsageBuckets)
+        .where(windowFilter)
+        .groupBy(
+          requestUsageBuckets.provider,
+          requestUsageBuckets.endpoint,
+          requestUsageBuckets.model
+        ),
+      database
+        .select({
+          bucketStart: requestUsageBuckets.bucketStart,
+          ...selectUsageCounterSums(requestUsageBuckets),
+          ...selectUsageTokenSums(requestUsageBuckets),
+        })
+        .from(requestUsageBuckets)
+        .where(windowFilter)
+        .groupBy(requestUsageBuckets.bucketStart)
+        .orderBy(desc(requestUsageBuckets.bucketStart))
+        .limit(DETAIL_BUCKET_LIMIT),
+    ]);
+
+  if (!keyRows.length) {
+    return null;
+  }
 
   const totals = emptyUsageTotals();
   const totalsRow = totalsRows[0];

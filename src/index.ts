@@ -11,8 +11,13 @@ import { cronRoutes } from "./http/routes/cron";
 import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
 import { flushProxyUsage, proxyRoutes } from "./http/routes/proxy";
+import { db } from "./db";
+import { warmProviderAccountQuotas } from "./domain/providers/provider-account-tracking";
 import { gracefulShutdown } from "./http/graceful-shutdown";
 import { resolveRequestIdleTimeout } from "./http/utils/request-timeout";
+import { errorLogFields, logWarn } from "./utils/log";
+
+const QUOTA_WARMUP_DELAY_MS = 3000;
 
 const app = new Hono();
 
@@ -45,6 +50,7 @@ app.route("/", adminUiRoutes);
 
 const adminApi = new Hono();
 adminApi.use("/*", requireAdminAuth);
+adminApi.get("/session", (context) => context.body(null, 204));
 adminApi.route("/accounts", adminAccountsRoutes);
 adminApi.route("/keys", adminKeysRoutes);
 adminApi.route("/usage", adminUsageRoutes);
@@ -56,6 +62,12 @@ app.route("/", proxyRoutes);
 
 gracefulShutdown.beforeExit(flushProxyUsage);
 gracefulShutdown.install();
+
+setTimeout(() => {
+  warmProviderAccountQuotas(db).catch((error: unknown) => {
+    logWarn("quota_warmup_failed", errorLogFields(error));
+  });
+}, QUOTA_WARMUP_DELAY_MS).unref();
 
 export default {
   idleTimeout: 255,

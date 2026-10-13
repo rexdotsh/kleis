@@ -365,12 +365,10 @@ export const adminKeysRoutes = new Hono()
       const query = context.req.valid("query");
       const { windowMs, now, since } = resolveUsageWindow(query.windowMs);
 
-      const key = await findApiKeyById(db, id);
-      if (!key) {
+      const detail = await getApiKeyUsageDetail(db, id, since);
+      if (!detail) {
         return context.json(apiKeyNotFoundBody, 404);
       }
-
-      const detail = await getApiKeyUsageDetail(db, id, since);
 
       return context.json({
         windowMs,

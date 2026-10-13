@@ -11,6 +11,7 @@ import {
   formatCompact,
   formatCount,
   formatMetadataForInput,
+  formatShortDate,
   dateInputValue,
   hasUsageMetrics,
   isKeyActive,
@@ -37,11 +38,7 @@ const icon = (name) =>
 const accountName = (account) =>
   account.label || account.accountId || maskKey(account.id);
 const keyName = (key) => key.label || maskKey(key.key);
-const shortDate = (timestamp) =>
-  new Date(timestamp).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-  });
+const shortDate = formatShortDate;
 
 function untilText(timestamp) {
   const diff = timestamp - Date.now();
@@ -1330,11 +1327,16 @@ function bucketLabel(bucketSizeMs) {
   return hours === 1 ? "hour" : `${hours} hours`;
 }
 
-const timeLabel = (timestamp) =>
-  new Date(timestamp).toLocaleTimeString("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+const timeFormat = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const dayFormat = new Intl.DateTimeFormat("en-US", {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+});
+const timeLabel = (timestamp) => timeFormat.format(timestamp);
 
 const chart = {
   slots: [],
@@ -1447,11 +1449,7 @@ function showChartHover(plot, clientX) {
   dot.setAttribute("cy", chart.y(chart.current[index]).toFixed(1));
 
   const at = new Date(chart.slots[index]);
-  const day = at.toLocaleDateString("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  });
+  const day = dayFormat.format(at);
   const tip = plot.querySelector(".tip");
   tip.innerHTML = `<span class="muted">${escapeHtml(`${day} \u00b7 ${timeLabel(at)}`)}</span><span>${formatCount(chart.current[index])} requests</span>${chart.previous ? `<span class="muted">prev ${formatCount(chart.previous[index])}</span>` : ""}`;
   tip.hidden = false;
@@ -1549,10 +1547,20 @@ function renderDashboard(data) {
 
   const plot = el.querySelector(".plot");
   if (plot) {
-    plot.addEventListener("pointermove", (event) =>
-      showChartHover(plot, event.clientX)
-    );
-    plot.addEventListener("pointerleave", () => hideChartHover(plot));
+    let frame = 0;
+    let pointerX = 0;
+    plot.addEventListener("pointermove", (event) => {
+      pointerX = event.clientX;
+      frame ||= requestAnimationFrame(() => {
+        frame = 0;
+        showChartHover(plot, pointerX);
+      });
+    });
+    plot.addEventListener("pointerleave", () => {
+      cancelAnimationFrame(frame);
+      frame = 0;
+      hideChartHover(plot);
+    });
   }
 }
 
