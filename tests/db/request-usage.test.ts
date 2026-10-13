@@ -7,8 +7,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Database } from "../../src/db";
+import { createApiKey } from "../../src/db/repositories/api-keys";
 import { getDashboardUsage } from "../../src/db/repositories/dashboard-usage";
 import {
+  getApiKeyUsageDetail,
   listApiKeyUsageSummaries,
   recordRequestUsage,
   recordTokenUsage,
@@ -182,5 +184,43 @@ describe("request usage token accounting", () => {
       { bucketStart: anchor - windowMs - 3_600_000, requestCount: 3 },
     ]);
     expect(dashboard.previousTotals.requestCount).toBe(3);
+  });
+
+  test("breaks a key's usage down by the account that served it", async () => {
+    const now = Date.now();
+    const key = await createApiKey(database, { label: "laptop" }, now);
+    const request = (providerAccountId: string, statusCode: number) =>
+      recordRequestUsage(database, {
+        apiKeyId: key.id,
+        providerAccountId,
+        provider: providerAccountId.startsWith("codex") ? "codex" : "claude",
+        endpoint: providerAccountId.startsWith("codex")
+          ? "responses"
+          : "messages",
+        model: "model",
+        source: "upstream",
+        statusCode,
+        durationMs: 10,
+        occurredAt: now,
+      });
+    await request("codex-a", 200);
+    await request("codex-a", 200);
+    await request("claude-b", 200);
+    await request("claude-b", 429);
+    await request("claude-b", 200);
+
+    const detail = await getApiKeyUsageDetail(database, key.id, now - 60_000);
+
+    expect(
+      detail?.accounts.map((account) => ({
+        id: account.providerAccountId,
+        provider: account.provider,
+        requests: account.requestCount,
+        successes: account.successCount,
+      }))
+    ).toEqual([
+      { id: "claude-b", provider: "claude", requests: 3, successes: 2 },
+      { id: "codex-a", provider: "codex", requests: 2, successes: 2 },
+    ]);
   });
 });

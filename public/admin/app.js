@@ -442,6 +442,11 @@ $("#accounts-list").addEventListener("click", (event) => {
     } else accountActions[action]?.(accountId, button);
     return;
   }
+  const linkedKey = event.target.closest(".usage-slot .row[data-key-id]");
+  if (linkedKey) {
+    showKey(linkedKey.dataset.keyId);
+    return;
+  }
   if (event.target.closest(".detail")) return;
   const row = event.target.closest(".row[data-account-id]");
   if (row) toggleAccount(row.dataset.accountId);
@@ -458,18 +463,38 @@ $("#keys-list").addEventListener("click", (event) => {
     keyActions[button.dataset.action]?.(button.dataset.keyId, button);
     return;
   }
+  const linkedAccount = event.target.closest(
+    ".usage-slot .row[data-account-id]"
+  );
+  if (linkedAccount) {
+    showAccount(linkedAccount.dataset.accountId);
+    return;
+  }
   if (event.target.closest(".detail, .inline-form")) return;
   const row = event.target.closest(".row[data-key-id]");
   if (row) toggleKey(row.dataset.keyId);
 });
 
 $("#keys-list").addEventListener("change", (event) => {
-  if (event.target.matches(".key-scope-provider")) {
-    syncScopedAccountAvailability("create");
+  const { target } = event;
+  if (!target.closest(".access")) return;
+  const mode = target.closest('[data-form="create-key"]') ? "create" : "edit";
+  const toggles =
+    mode === "create" ? ".key-scope-provider" : ".edit-key-scope-provider";
+  if (
+    target.matches(toggles) &&
+    !target.checked &&
+    !target.closest(".access").querySelector(`${toggles}:checked`)
+  ) {
+    target.checked = true;
+    const note = target.closest(".access-row")?.querySelector(".access-note");
+    if (note) {
+      note.textContent = "Keep one provider on";
+      note.className = "access-note warn";
+    }
+    return;
   }
-  if (event.target.matches(".edit-key-scope-provider")) {
-    syncScopedAccountAvailability("edit");
-  }
+  syncScopedAccountAvailability(mode);
 });
 
 for (const [listId, open] of [
@@ -501,7 +526,8 @@ for (const [listId, open] of [
     const row = event.target.closest(".row[tabindex]");
     if (!row || event.target !== row) return;
     event.preventDefault();
-    open(row);
+    if (row.closest(".usage-slot")) row.click();
+    else open(row);
   });
 }
 

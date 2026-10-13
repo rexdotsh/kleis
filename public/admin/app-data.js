@@ -520,26 +520,39 @@ const shortId = (value) =>
 const accountLabel = (account) =>
   account.label || account.accountId || shortId(account.id);
 
-function renderAccountScopeOptions(mode, selectedAccountIds = []) {
+function renderKeyAccess(mode, key) {
   const container = $(KEY_SCOPE_FORMS[mode].accountContainer);
-  if (container) {
-    container.innerHTML = accountScopeOptionsHtml(mode, selectedAccountIds);
-  }
+  if (container) container.innerHTML = keyAccessHtml(mode, key);
 }
 
-function accountScopeOptionsHtml(mode, selectedAccountIds = []) {
+function accessNote({ on, hasAccounts, pinned, pinnedDisabled }) {
+  if (!on) return { text: "No access", cls: "" };
+  if (!hasAccounts) return { text: "No account connected", cls: "warn" };
+  if (pinnedDisabled) return { text: "Account disabled", cls: "warn" };
+  return pinned
+    ? { text: "Always this account", cls: "" }
+    : { text: "Follows the primary", cls: "" };
+}
+
+const accessNoteHtml = (note) =>
+  `<span class="access-note${note.cls ? ` ${note.cls}` : ""}">${note.text}</span>`;
+
+// One line per provider: whether the key may use it, and through which
+// account. Pins only apply to their own provider.
+function keyAccessHtml(mode, key = null) {
   const config = KEY_SCOPE_FORMS[mode];
-  const selectedIds = new Set(selectedAccountIds || []);
+  const allowed = key?.providerScopes?.length
+    ? new Set(key.providerScopes)
+    : null;
+  const selectedIds = new Set(key?.accountScopes || []);
   const knownIds = new Set(state.accounts.map((account) => account.id));
   const unavailableIds =
     mode === "edit"
       ? Array.from(selectedIds).filter((id) => !knownIds.has(id))
       : [];
-  if (!state.accounts.length && !unavailableIds.length) {
-    return '<p class="field-hint">No accounts connected yet, so requests use each provider\u2019s primary account once one exists.</p>';
-  }
 
-  const pins = PROVIDER_ORDER.map((provider) => {
+  const rows = PROVIDER_ORDER.map((provider) => {
+    const on = !allowed || allowed.has(provider);
     const accounts = state.accounts
       .filter((account) => account.provider === provider)
       .sort(
@@ -547,20 +560,28 @@ function accountScopeOptionsHtml(mode, selectedAccountIds = []) {
           Number(right.isPrimary) - Number(left.isPrimary) ||
           left.createdAt - right.createdAt
       );
-    if (!accounts.length) return "";
     const primary = accounts.find((account) => account.isPrimary);
+    const pinned = accounts.find((account) => selectedIds.has(account.id));
+    const name = providerLabel(provider);
+    const first = accounts.length
+      ? `Primary account${primary ? ` (${escapeHtml(accountLabel(primary))})` : ""}`
+      : "No accounts connected";
     const options = accounts
       .map(
         (account) =>
-          `<option value="${account.id}"${selectedIds.has(account.id) ? " selected" : ""}>${escapeHtml(accountLabel(account))}${account.enabled === false ? " (disabled)" : ""}</option>`
+          `<option value="${account.id}"${account === pinned ? " selected" : ""}${account.enabled === false ? ' data-disabled="true"' : ""}>${escapeHtml(accountLabel(account))}${account.enabled === false ? " (disabled)" : ""}</option>`
       )
       .join("");
-    return `<div class="pin-row" data-provider="${provider}">
-        <span class="pin-provider">${providerLabel(provider)}</span>
-        <select class="field-input ${config.pinSelector.slice(1)}" data-provider="${provider}" aria-label="${providerLabel(provider)} account">
-          <option value="">Primary account${primary ? ` (${escapeHtml(accountLabel(primary))})` : ""}</option>
-          ${options}
-        </select>
+    const note = accessNote({
+      on,
+      hasAccounts: accounts.length > 0,
+      pinned: Boolean(pinned),
+      pinnedDisabled: pinned?.enabled === false,
+    });
+    return `<div class="access-row${on ? "" : " off"}" data-provider="${provider}">
+        <label class="access-provider"><input type="checkbox" role="switch" class="toggle ${config.providerSelector.slice(1)}" value="${provider}"${on ? " checked" : ""}><span>${name}</span></label>
+        <select class="field-input ${config.pinSelector.slice(1)}" data-provider="${provider}" aria-label="${name} account"${on && accounts.length ? "" : " disabled"}><option value="">${first}</option>${options}</select>
+        ${accessNoteHtml(note)}
       </div>`;
   }).join("");
   const preserved = unavailableIds
@@ -569,31 +590,47 @@ function accountScopeOptionsHtml(mode, selectedAccountIds = []) {
         `<label class="scope-check"><input type="checkbox" value="${escapeHtml(id)}" class="${config.accountSelector.slice(1)}" data-preserved-scope="true" checked> Keep the pin to ${escapeHtml(shortId(id))}, which is not in the loaded account list</label>`
     )
     .join("");
-  return `${pins}${preserved}`;
+  return `${rows}${preserved}`;
 }
 
+// null when every provider is on (no restriction); [] when none is.
 function selectedProviderScopes(mode) {
-  return checkedValues(KEY_SCOPE_FORMS[mode].providerSelector).filter(
-    (value) => value !== "all"
-  );
+  const toggles = Array.from($$(KEY_SCOPE_FORMS[mode].providerSelector));
+  const on = toggles
+    .filter((toggle) => toggle.checked)
+    .map((toggle) => toggle.value);
+  return on.length === toggles.length ? null : on;
 }
 
 function selectedAccountScopes(mode) {
   const config = KEY_SCOPE_FORMS[mode];
   const pinned = Array.from($$(config.pinSelector))
-    .filter((select) => select.value && !select.closest(".pin-row")?.hidden)
+    .filter((select) => select.value && !select.disabled)
     .map((select) => select.value);
   return [...pinned, ...checkedValues(config.accountSelector)];
 }
 
 function syncScopedAccountAvailability(mode) {
   const config = KEY_SCOPE_FORMS[mode];
-  const providers = new Set(selectedProviderScopes(mode));
-  for (const select of $$(config.pinSelector)) {
-    const allowed = !providers.size || providers.has(select.dataset.provider);
-    const row = select.closest(".pin-row");
-    if (row) row.hidden = !allowed;
-    if (!allowed) select.value = "";
+  for (const toggle of $$(config.providerSelector)) {
+    const row = toggle.closest(".access-row");
+    const select = row?.querySelector("select");
+    if (!(row && select)) continue;
+    const on = toggle.checked;
+    const hasAccounts = select.options.length > 1;
+    row.classList.toggle("off", !on);
+    select.disabled = !(on && hasAccounts);
+    const note = accessNote({
+      on,
+      hasAccounts,
+      pinned: Boolean(select.value),
+      pinnedDisabled: select.selectedOptions[0]?.dataset.disabled === "true",
+    });
+    const noteEl = row.querySelector(".access-note");
+    if (noteEl) {
+      noteEl.textContent = note.text;
+      noteEl.className = `access-note${note.cls ? ` ${note.cls}` : ""}`;
+    }
   }
 }
 
@@ -1226,11 +1263,15 @@ async function createKey() {
   if (btn.disabled) return;
   const label = trimmedOrNull($("#key-label").value);
   const providerScopes = selectedProviderScopes("create");
+  if (providerScopes?.length === 0) {
+    toast("Turn on at least one provider", "error");
+    return;
+  }
   const accountScopes = selectedAccountScopes("create");
   const modelScopes = parseCommaSeparatedList($("#key-model-scopes").value);
   const body = {
     ...(label ? { label } : {}),
-    ...(providerScopes.length ? { providerScopes } : {}),
+    ...(providerScopes ? { providerScopes } : {}),
     ...(accountScopes.length ? { accountScopes } : {}),
     ...(modelScopes.length ? { modelScopes } : {}),
   };
@@ -1262,7 +1303,7 @@ function startEditKey(id) {
   state.expandedKeyId = id;
   state.editingKeyId = id;
   renderKeys();
-  renderAccountScopeOptions("edit", key.accountScopes);
+  renderKeyAccess("edit", key);
   syncScopedAccountAvailability("edit");
   $("#edit-key-label")?.focus?.();
 }
@@ -1283,6 +1324,10 @@ async function saveKeyEdits() {
 
   const label = trimmedOrNull($("#edit-key-label").value);
   const providerScopes = selectedProviderScopes("edit");
+  if (providerScopes?.length === 0) {
+    toast("Turn on at least one provider", "error");
+    return;
+  }
   const accountScopes = selectedAccountScopes("edit");
   const modelScopes = parseCommaSeparatedList(
     $("#edit-key-model-scopes").value
@@ -1290,7 +1335,7 @@ async function saveKeyEdits() {
 
   const body = {
     label,
-    providerScopes: providerScopes.length ? providerScopes : null,
+    providerScopes,
     accountScopes: accountScopes.length ? accountScopes : null,
     modelScopes: modelScopes.length ? modelScopes : null,
   };
@@ -1816,7 +1861,7 @@ export {
   $,
   $$,
   accountById,
-  accountScopeOptionsHtml,
+  keyAccessHtml,
   accountUsageForId,
   api,
   cacheReadRate,

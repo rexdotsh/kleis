@@ -1,7 +1,6 @@
 import {
   $,
   accountById,
-  accountScopeOptionsHtml,
   accountUsageForId,
   cacheReadRate,
   cancelOAuthFlow,
@@ -14,6 +13,7 @@ import {
   formatShortDate,
   dateInputValue,
   isKeyActive,
+  keyAccessHtml,
   keyById,
   maskKey,
   modelsUrlForKey,
@@ -201,7 +201,7 @@ const listSkeletonRows = (columns) =>
       `<div class="row skeleton ${columns}"><span class="bone"></span><span class="l2">&nbsp;</span></div>`
   ).join("");
 const ACCOUNT_LOADING_HTML = `<div class="row thead t-acc"><span>Account</span><span class="d">Limits</span><span class="num d">Token expires</span><span class="num">Requests</span></div>${PROVIDERS.map((provider) => `<div class="group"><span class="cap">${providerName(provider)}</span></div><div class="group-rows">${listSkeletonRows("t-acc")}</div>`).join("")}`;
-const KEY_LOADING_HTML = `<div class="row thead t-key"><span>Label</span><span class="d">Key</span><span class="d">Scope</span><span class="num">Requests</span><span class="num d">Last used</span></div>${listSkeletonRows("t-key")}${listSkeletonRows("t-key")}`;
+const KEY_LOADING_HTML = `<div class="row thead t-key"><span>Label</span><span class="d">Key</span><span class="d">Access</span><span class="num">Requests</span><span class="num d">Last used</span></div>${listSkeletonRows("t-key")}${listSkeletonRows("t-key")}`;
 
 const kbd = (key) => `<span class="kbd" aria-hidden="true">${key}</span>`;
 
@@ -658,20 +658,6 @@ function accountEditHtml(account) {
 function keyFormHtml(mode, key = null) {
   const create = mode === "create";
   const prefix = create ? "key-" : "edit-key-";
-  const providerClass = create
-    ? "key-scope-provider"
-    : "edit-key-scope-provider";
-  const scopes = key?.providerScopes || [];
-  const selectedProvider = scopes.length === 1 ? scopes[0] : "all";
-  const providerChoice = `<div class="seg seg-choice" role="radiogroup" aria-label="Providers">${[
-    ["all", "All providers"],
-    ...PROVIDERS.map((provider) => [provider, providerName(provider)]),
-  ]
-    .map(
-      ([value, label]) =>
-        `<label><input type="radio" name="${prefix}providers" value="${value}" class="${providerClass}"${value === selectedProvider ? " checked" : ""}><span>${label}</span></label>`
-    )
-    .join("")}</div>`;
   const rows = [
     formRow(
       "Label",
@@ -679,11 +665,10 @@ function keyFormHtml(mode, key = null) {
       `<input id="${prefix}label" class="field-input" type="text" maxlength="120" placeholder="my-laptop" autocomplete="off" value="${escapeHtml(key?.label || "")}">`,
       `${prefix}label`
     ),
-    formRow("Providers", "Which providers this key can use.", providerChoice),
     formRow(
-      "Account",
-      "Requests use each provider\u2019s primary account unless you pin one.",
-      `<div id="${prefix}account-scopes" class="pins">${accountScopeOptionsHtml(mode, key?.accountScopes || [])}</div>`
+      "Access",
+      "Switch a provider off to block it. Each provider uses its primary account unless you pick one.",
+      `<div id="${prefix}account-scopes" class="access">${keyAccessHtml(mode, key)}</div>`
     ),
     formRow(
       "Models",
@@ -890,40 +875,76 @@ function renderReauthorizeList() {
 
 /* Keys */
 
-function keyScopeHtml(key) {
+// Each provider the key may use and the account it goes through.
+function keyAccess(key) {
   const pinned = new Map();
   for (const accountId of key.accountScopes || []) {
     const account = accountById(accountId);
-    if (account) pinned.set(account.provider, accountName(account));
+    if (account) pinned.set(account.provider, account);
   }
-  const via = (provider) =>
-    pinned.has(provider)
-      ? ` <span class="muted">via ${escapeHtml(pinned.get(provider))}</span>`
-      : "";
-  const parts = key.providerScopes?.length
-    ? key.providerScopes.map(
-        (provider) => `${escapeHtml(providerName(provider))}${via(provider)}`
+  const providers = key.providerScopes?.length
+    ? PROVIDERS.filter((provider) => key.providerScopes.includes(provider))
+    : PROVIDERS;
+  return {
+    restricted: providers.length < PROVIDERS.length,
+    routes: providers.map((provider) => ({
+      provider,
+      account: pinned.get(provider) ?? null,
+    })),
+  };
+}
+
+function routeText(route, { named = false } = {}) {
+  if (route.account) return `via ${accountName(route.account)}`;
+  const primary = named
+    ? state.accounts.find(
+        (account) => account.provider === route.provider && account.isPrimary
       )
-    : [
-        "All providers",
-        ...Array.from(pinned.keys()).map(
-          (provider) =>
-            `<span class="muted">${escapeHtml(providerName(provider))}</span>${via(provider)}`
-        ),
-      ];
-  const models = key.modelScopes?.length
-    ? ` <span class="muted" title="${escapeHtml(key.modelScopes.join(", "))}">\u00b7 ${key.modelScopes.length} model${key.modelScopes.length === 1 ? "" : "s"}</span>`
+    : null;
+  return primary ? `via primary (${accountName(primary)})` : "via primary";
+}
+
+// null when the key can use every provider through its primary account.
+function keyScopeParts(key) {
+  const { restricted, routes } = keyAccess(key);
+  if (!(restricted || routes.some((route) => route.account))) return null;
+  return routes.map((route) => ({
+    provider: `${providerName(route.provider)}${routes.length === 1 ? " only" : ""}`,
+    via: routeText(route),
+  }));
+}
+
+const modelCountText = (key) =>
+  key.modelScopes?.length
+    ? `${key.modelScopes.length} model${key.modelScopes.length === 1 ? "" : "s"}`
     : "";
-  return `${parts.join(", ")}${models}`;
+
+function keyScopeHtml(key) {
+  const parts = keyScopeParts(key);
+  const access = parts
+    ? parts
+        .map(
+          (part) =>
+            `${escapeHtml(part.provider)} <span class="muted">${escapeHtml(part.via)}</span>`
+        )
+        .join('<span class="muted"> \u00b7 </span>')
+    : "All providers";
+  const models = modelCountText(key);
+  return models
+    ? `${access} <span class="muted" title="${escapeHtml(key.modelScopes.join(", "))}">\u00b7 ${models}</span>`
+    : access;
 }
 
 function keyScopeText(key) {
-  const providers = key.providerScopes?.length
-    ? key.providerScopes.map(providerName).join(", ")
-    : "All providers";
-  return key.modelScopes?.length
-    ? `${providers} \u00b7 ${key.modelScopes.length} model${key.modelScopes.length === 1 ? "" : "s"}`
-    : providers;
+  const parts = keyScopeParts(key);
+  return [
+    parts
+      ? parts.map((part) => `${part.provider} ${part.via}`).join(" \u00b7 ")
+      : "All providers",
+    modelCountText(key),
+  ]
+    .filter(Boolean)
+    .join(" \u00b7 ");
 }
 
 function keyMatches(key, filter) {
@@ -939,15 +960,7 @@ function keyMatches(key, filter) {
 function keyFacts(key) {
   const usage = normalizeUsage(usageForKey(key.id));
   const cached = cacheReadRate(usage.inputTotalTokens, usage.cacheReadTokens);
-  const pinned = (key.accountScopes || [])
-    .map(
-      (accountId) =>
-        accountById(accountId) || { id: accountId, provider: "Account" }
-    )
-    .map(
-      (account) =>
-        `${escapeHtml(providerName(account.provider))} via ${escapeHtml(accountName(account))}`
-    );
+  const access = keyAccess(key);
   let expiry;
   if (key.revokedAt) {
     expiry = fact("Revoked", shortDate(key.revokedAt), [
@@ -972,14 +985,17 @@ function keyFacts(key) {
       usage.outputTokens ? `${formatCompact(usage.outputTokens)} output` : "",
     ]),
     fact(
-      "Scope",
+      "Access",
       escapeHtml(
-        key.providerScopes?.length
-          ? key.providerScopes.map(providerName).join(", ")
+        access.restricted
+          ? `${access.routes.map((route) => providerName(route.provider)).join(", ")} only`
           : "All providers"
       ),
       [
-        ...pinned,
+        ...access.routes.map(
+          (route) =>
+            `${escapeHtml(providerName(route.provider))} ${escapeHtml(routeText(route, { named: true }))}`
+        ),
         key.modelScopes?.length
           ? `<span title="${escapeHtml(key.modelScopes.join(", "))}">${escapeHtml(key.modelScopes.join(", "))}</span>`
           : "",
@@ -1135,7 +1151,7 @@ function renderKeys() {
       ? ""
       : '<div class="empty-state"><p>No API keys yet.</p><button class="btn btn-primary btn-sm" type="button" data-action="open-create-key">Create a key</button></div>';
   } else if (visible.length) {
-    body = `<div class="row thead t-key"><span>Label</span><span class="d">Key</span><span class="d">Scope</span><span class="num">Requests ${escapeHtml(usageWindowLabel(state.keyUsageWindowMs))}</span><span class="num d">Last used</span><span></span></div>${visible.map(keyRowHtml).join("")}`;
+    body = `<div class="row thead t-key"><span>Label</span><span class="d">Key</span><span class="d">Access</span><span class="num">Requests ${escapeHtml(usageWindowLabel(state.keyUsageWindowMs))}</span><span class="num d">Last used</span><span></span></div>${visible.map(keyRowHtml).join("")}`;
   } else {
     body = filter
       ? `<div class="empty-state"><p>No keys match \u201c${escapeHtml(state.keyFilter.trim())}\u201d.</p><button class="link small" type="button" data-action="clear-filter">Clear filter</button></div>`
@@ -1235,7 +1251,7 @@ function usageSlotHtml(kind, id) {
   return [
     kind === "account"
       ? keyListHtml(data?.apiKeys, data?.totals, message, loading)
-      : "",
+      : accountListHtml(data?.accounts, data?.totals, message, loading),
     modelListHtml(data?.models, message, loading),
   ]
     .filter(Boolean)
@@ -1286,13 +1302,53 @@ function keyListHtml(rows, totals, message, loading) {
       const share = total
         ? `${((usage.requestCount / total) * 100).toFixed(1)}%`
         : "\u2014";
-      return `<div class="row t-bykey"><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
+      const link = keyById(row.apiKeyId)
+        ? ` data-key-id="${escapeHtml(row.apiKeyId)}" tabindex="0" role="button"`
+        : "";
+      return `<div class="row t-bykey"${link}><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
     })
     .join("");
   return usagePanelHtml(
     "By key",
     {
       head: '<span>Key</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
+      body,
+    },
+    "t-bykey",
+    message,
+    loading
+  );
+}
+
+// Requests refused before an account was chosen are stored under this id.
+const NOT_ROUTED_ACCOUNT_ID = "__missing__";
+
+function accountListHtml(rows, totals, message, loading) {
+  const total = normalizeUsage(totals).requestCount;
+  const body = (rows || [])
+    .map((row) => {
+      const usage = normalizeUsage(row);
+      const share = total
+        ? `${((usage.requestCount / total) * 100).toFixed(1)}%`
+        : "\u2014";
+      const account = accountById(row.providerAccountId);
+      let name = `<span class="mono muted" title="${escapeHtml(row.providerAccountId)}">Removed account</span>`;
+      if (row.providerAccountId === NOT_ROUTED_ACCOUNT_ID) {
+        name =
+          '<span class="muted" title="Refused before an account was chosen">Not routed</span>';
+      } else if (account) {
+        name = escapeHtml(accountName(account));
+      }
+      const link = account
+        ? ` data-account-id="${account.id}" tabindex="0" role="button"`
+        : "";
+      return `<div class="row t-bykey"${link}><span class="name"><span class="ellipsis">${name}</span><span class="tag d">${escapeHtml(providerName(row.provider))}</span></span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
+    })
+    .join("");
+  return usagePanelHtml(
+    "By account",
+    {
+      head: '<span>Account</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
       body,
     },
     "t-bykey",
