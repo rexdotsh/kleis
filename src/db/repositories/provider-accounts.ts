@@ -7,6 +7,20 @@ import {
   serializeProviderAccountMetadata,
   type ProviderAccountMetadata,
 } from "../../providers/metadata";
+import { invalidateLookupCaches } from "../lookup-cache";
+
+// Every write clears the proxy's routing lookups once it completes.
+const withInvalidation =
+  <Args extends unknown[], Result>(
+    write: (...args: Args) => Promise<Result>
+  ): ((...args: Args) => Promise<Result>) =>
+  async (...args) => {
+    try {
+      return await write(...args);
+    } finally {
+      invalidateLookupCaches();
+    }
+  };
 
 export type ProviderAccountRecord = {
   id: string;
@@ -227,100 +241,25 @@ const buildProviderAccountUpsertUpdate = (input: {
   updatedAt: input.now,
 });
 
-export const upsertProviderAccount = async (
-  database: Database,
-  input: UpsertProviderAccountInput
-): Promise<ProviderAccountRecord> => {
-  const existing = input.accountId
-    ? await findProviderAccountByProviderAndAccountId(
-        database,
-        input.provider,
-        input.accountId
-      )
-    : null;
-
-  if (existing) {
-    await database
-      .update(providerAccounts)
-      .set(
-        buildProviderAccountUpsertUpdate({
-          existingLabel: existing.label,
-          nextLabel: input.label,
-          accessToken: input.accessToken,
-          refreshToken: input.refreshToken,
-          expiresAt: input.expiresAt,
-          metadata: input.metadata,
-          now: input.now,
-        })
-      )
-      .where(eq(providerAccounts.id, existing.id));
-
-    const updated = await findProviderAccountById(database, existing.id);
-    if (!updated) {
-      throw new Error("Failed to load updated provider account");
-    }
-    return updated;
-  }
-
-  const isPrimary = !(await hasPrimaryProviderAccount(
-    database,
-    input.provider
-  ));
-  const enabled = await isProviderEnabledForNewAccount(
-    database,
-    input.provider
-  );
-  const insertValues: typeof providerAccounts.$inferInsert = {
-    id: crypto.randomUUID(),
-    provider: input.provider,
-    label: input.label === undefined ? null : input.label,
-    accountId: input.accountId,
-    isPrimary,
-    enabled,
-    accessToken: input.accessToken,
-    refreshToken: input.refreshToken,
-    refreshLockToken: null,
-    refreshLockExpiresAt: null,
-    expiresAt: input.expiresAt,
-    metadataJson: serializeProviderAccountMetadata(input.metadata),
-    lastRefreshAt: null,
-    lastRefreshStatus: null,
-    createdAt: input.now,
-    updatedAt: input.now,
-  };
-
-  const attemptInsert = async (
-    values: typeof providerAccounts.$inferInsert
+export const upsertProviderAccount = withInvalidation(
+  async (
+    database: Database,
+    input: UpsertProviderAccountInput
   ): Promise<ProviderAccountRecord> => {
-    await database.insert(providerAccounts).values(values);
-    const created = await findProviderAccountById(database, values.id);
-    if (!created) {
-      throw new Error("Failed to load created provider account");
-    }
+    const existing = input.accountId
+      ? await findProviderAccountByProviderAndAccountId(
+          database,
+          input.provider,
+          input.accountId
+        )
+      : null;
 
-    return created;
-  };
-
-  try {
-    return await attemptInsert(insertValues);
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) {
-      throw error;
-    }
-  }
-
-  if (input.accountId) {
-    const concurrent = await findProviderAccountByProviderAndAccountId(
-      database,
-      input.provider,
-      input.accountId
-    );
-    if (concurrent) {
+    if (existing) {
       await database
         .update(providerAccounts)
         .set(
           buildProviderAccountUpsertUpdate({
-            existingLabel: concurrent.label,
+            existingLabel: existing.label,
             nextLabel: input.label,
             accessToken: input.accessToken,
             refreshToken: input.refreshToken,
@@ -329,22 +268,99 @@ export const upsertProviderAccount = async (
             now: input.now,
           })
         )
-        .where(eq(providerAccounts.id, concurrent.id));
+        .where(eq(providerAccounts.id, existing.id));
 
-      const updated = await findProviderAccountById(database, concurrent.id);
+      const updated = await findProviderAccountById(database, existing.id);
       if (!updated) {
         throw new Error("Failed to load updated provider account");
       }
       return updated;
     }
-  }
 
-  return attemptInsert({
-    ...insertValues,
-    id: crypto.randomUUID(),
-    isPrimary: false,
-  });
-};
+    const isPrimary = !(await hasPrimaryProviderAccount(
+      database,
+      input.provider
+    ));
+    const enabled = await isProviderEnabledForNewAccount(
+      database,
+      input.provider
+    );
+    const insertValues: typeof providerAccounts.$inferInsert = {
+      id: crypto.randomUUID(),
+      provider: input.provider,
+      label: input.label === undefined ? null : input.label,
+      accountId: input.accountId,
+      isPrimary,
+      enabled,
+      accessToken: input.accessToken,
+      refreshToken: input.refreshToken,
+      refreshLockToken: null,
+      refreshLockExpiresAt: null,
+      expiresAt: input.expiresAt,
+      metadataJson: serializeProviderAccountMetadata(input.metadata),
+      lastRefreshAt: null,
+      lastRefreshStatus: null,
+      createdAt: input.now,
+      updatedAt: input.now,
+    };
+
+    const attemptInsert = async (
+      values: typeof providerAccounts.$inferInsert
+    ): Promise<ProviderAccountRecord> => {
+      await database.insert(providerAccounts).values(values);
+      const created = await findProviderAccountById(database, values.id);
+      if (!created) {
+        throw new Error("Failed to load created provider account");
+      }
+
+      return created;
+    };
+
+    try {
+      return await attemptInsert(insertValues);
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) {
+        throw error;
+      }
+    }
+
+    if (input.accountId) {
+      const concurrent = await findProviderAccountByProviderAndAccountId(
+        database,
+        input.provider,
+        input.accountId
+      );
+      if (concurrent) {
+        await database
+          .update(providerAccounts)
+          .set(
+            buildProviderAccountUpsertUpdate({
+              existingLabel: concurrent.label,
+              nextLabel: input.label,
+              accessToken: input.accessToken,
+              refreshToken: input.refreshToken,
+              expiresAt: input.expiresAt,
+              metadata: input.metadata,
+              now: input.now,
+            })
+          )
+          .where(eq(providerAccounts.id, concurrent.id));
+
+        const updated = await findProviderAccountById(database, concurrent.id);
+        if (!updated) {
+          throw new Error("Failed to load updated provider account");
+        }
+        return updated;
+      }
+    }
+
+    return attemptInsert({
+      ...insertValues,
+      id: crypto.randomUUID(),
+      isPrimary: false,
+    });
+  }
+);
 
 export class ProviderAccountReauthorizationConflict extends Error {
   constructor(message: string) {
@@ -353,80 +369,82 @@ export class ProviderAccountReauthorizationConflict extends Error {
   }
 }
 
-export const replaceProviderAccountCredentials = async (
-  database: Database,
-  id: string,
-  input: {
-    provider: Provider;
-    accountId: string | null;
-    accessToken: string;
-    refreshToken: string;
-    expiresAt: number;
-    metadata: ProviderAccountMetadata | null;
-    now: number;
-  }
-): Promise<ProviderAccountRecord | null> => {
-  const existing = await findProviderAccountById(database, id);
-  if (!existing || existing.provider !== input.provider) {
-    return null;
-  }
-  const persistedIdentity =
-    existing.accountId ||
-    (existing.metadata?.provider === "codex"
-      ? existing.metadata.chatgptAccountId
-      : null);
-  if (
-    persistedIdentity &&
-    persistedIdentity !== input.accountId &&
-    !(input.provider === "claude" && input.accountId === null)
-  ) {
-    throw new ProviderAccountReauthorizationConflict(
-      "OAuth account identity does not match the selected account"
-    );
-  }
-
-  let result: { rowsAffected: number };
-  try {
-    result = await database
-      .update(providerAccounts)
-      .set({
-        accountId: input.accountId ?? existing.accountId,
-        accessToken: input.accessToken,
-        refreshToken: input.refreshToken,
-        expiresAt: input.expiresAt,
-        metadataJson: serializeProviderAccountMetadata(input.metadata),
-        refreshLockToken: null,
-        refreshLockExpiresAt: null,
-        lastRefreshAt: input.now,
-        lastRefreshStatus: "success",
-        updatedAt: input.now,
-      })
-      .where(
-        and(
-          eq(providerAccounts.id, id),
-          eq(providerAccounts.provider, input.provider),
-          eq(providerAccounts.updatedAt, existing.updatedAt)
-        )
-      );
-  } catch (error) {
-    if (isUniqueConstraintError(error)) {
+export const replaceProviderAccountCredentials = withInvalidation(
+  async (
+    database: Database,
+    id: string,
+    input: {
+      provider: Provider;
+      accountId: string | null;
+      accessToken: string;
+      refreshToken: string;
+      expiresAt: number;
+      metadata: ProviderAccountMetadata | null;
+      now: number;
+    }
+  ): Promise<ProviderAccountRecord | null> => {
+    const existing = await findProviderAccountById(database, id);
+    if (!existing || existing.provider !== input.provider) {
+      return null;
+    }
+    const persistedIdentity =
+      existing.accountId ||
+      (existing.metadata?.provider === "codex"
+        ? existing.metadata.chatgptAccountId
+        : null);
+    if (
+      persistedIdentity &&
+      persistedIdentity !== input.accountId &&
+      !(input.provider === "claude" && input.accountId === null)
+    ) {
       throw new ProviderAccountReauthorizationConflict(
-        "OAuth account identity is already connected to another account"
+        "OAuth account identity does not match the selected account"
       );
     }
-    if (input.provider === "claude") {
-      // libSQL errors may include the token-bearing UPDATE parameters.
-      throw new Error("Unable to replace Claude account credentials");
+
+    let result: { rowsAffected: number };
+    try {
+      result = await database
+        .update(providerAccounts)
+        .set({
+          accountId: input.accountId ?? existing.accountId,
+          accessToken: input.accessToken,
+          refreshToken: input.refreshToken,
+          expiresAt: input.expiresAt,
+          metadataJson: serializeProviderAccountMetadata(input.metadata),
+          refreshLockToken: null,
+          refreshLockExpiresAt: null,
+          lastRefreshAt: input.now,
+          lastRefreshStatus: "success",
+          updatedAt: input.now,
+        })
+        .where(
+          and(
+            eq(providerAccounts.id, id),
+            eq(providerAccounts.provider, input.provider),
+            eq(providerAccounts.updatedAt, existing.updatedAt)
+          )
+        );
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        throw new ProviderAccountReauthorizationConflict(
+          "OAuth account identity is already connected to another account"
+        );
+      }
+      if (input.provider === "claude") {
+        // libSQL errors may include the token-bearing UPDATE parameters.
+        throw new Error("Unable to replace Claude account credentials");
+      }
+      throw error;
     }
-    throw error;
+    if (result.rowsAffected === 0) {
+      throw new ProviderAccountReauthorizationConflict(
+        "Provider account changed during reauthorization"
+      );
+    }
+    return findProviderAccountById(database, id);
   }
-  if (result.rowsAffected === 0) {
-    throw new ProviderAccountReauthorizationConflict(
-      "Provider account changed during reauthorization"
-    );
-  }
-  return findProviderAccountById(database, id);
-};
+);
 
 type UpdateProviderAccountTokensInput = {
   accessToken: string;
@@ -440,78 +458,82 @@ type UpdateProviderAccountTokensInput = {
   now: number;
 };
 
-export const updateProviderAccountTokens = async (
-  database: Database,
-  id: string,
-  input: UpdateProviderAccountTokensInput
-): Promise<ProviderAccountRecord | null> => {
-  const setValues: Partial<typeof providerAccounts.$inferInsert> = {
-    accessToken: input.accessToken,
-    refreshToken: input.refreshToken,
-    expiresAt: input.expiresAt,
-    lastRefreshAt: input.now,
-    lastRefreshStatus: input.lastRefreshStatus,
-    updatedAt: input.now,
-  };
+export const updateProviderAccountTokens = withInvalidation(
+  async (
+    database: Database,
+    id: string,
+    input: UpdateProviderAccountTokensInput
+  ): Promise<ProviderAccountRecord | null> => {
+    const setValues: Partial<typeof providerAccounts.$inferInsert> = {
+      accessToken: input.accessToken,
+      refreshToken: input.refreshToken,
+      expiresAt: input.expiresAt,
+      lastRefreshAt: input.now,
+      lastRefreshStatus: input.lastRefreshStatus,
+      updatedAt: input.now,
+    };
 
-  if ("accountId" in input) {
-    setValues.accountId = input.accountId ?? null;
-  }
+    if ("accountId" in input) {
+      setValues.accountId = input.accountId ?? null;
+    }
 
-  if ("metadata" in input) {
-    setValues.metadataJson = serializeProviderAccountMetadata(
-      input.metadata ?? null
+    if ("metadata" in input) {
+      setValues.metadataJson = serializeProviderAccountMetadata(
+        input.metadata ?? null
+      );
+    }
+
+    const whereClause = and(
+      eq(providerAccounts.id, id),
+      ...(input.refreshLockToken
+        ? [
+            eq(providerAccounts.refreshLockToken, input.refreshLockToken),
+            gt(providerAccounts.refreshLockExpiresAt, Date.now()),
+          ]
+        : []),
+      ...(input.expectedRefreshToken
+        ? [eq(providerAccounts.refreshToken, input.expectedRefreshToken)]
+        : [])
     );
+
+    const result = await database
+      .update(providerAccounts)
+      .set(setValues)
+      .where(whereClause);
+    if (result.rowsAffected === 0) {
+      return null;
+    }
+
+    return findProviderAccountById(database, id);
   }
+);
 
-  const whereClause = and(
-    eq(providerAccounts.id, id),
-    ...(input.refreshLockToken
-      ? [
-          eq(providerAccounts.refreshLockToken, input.refreshLockToken),
-          gt(providerAccounts.refreshLockExpiresAt, Date.now()),
-        ]
-      : []),
-    ...(input.expectedRefreshToken
-      ? [eq(providerAccounts.refreshToken, input.expectedRefreshToken)]
-      : [])
-  );
+export const recordProviderAccountRefreshFailure = withInvalidation(
+  async (
+    database: Database,
+    id: string,
+    now: number,
+    refreshLockToken?: string,
+    status?: string
+  ): Promise<void> => {
+    const whereClause = refreshLockToken
+      ? and(
+          eq(providerAccounts.id, id),
+          eq(providerAccounts.refreshLockToken, refreshLockToken),
+          gt(providerAccounts.refreshLockExpiresAt, Date.now())
+        )
+      : eq(providerAccounts.id, id);
 
-  const result = await database
-    .update(providerAccounts)
-    .set(setValues)
-    .where(whereClause);
-  if (result.rowsAffected === 0) {
-    return null;
+    await database
+      .update(providerAccounts)
+      .set({
+        lastRefreshAt: now,
+        lastRefreshStatus: status ?? "failed",
+        updatedAt: now,
+      })
+      .where(whereClause);
   }
-
-  return findProviderAccountById(database, id);
-};
-
-export const recordProviderAccountRefreshFailure = async (
-  database: Database,
-  id: string,
-  now: number,
-  refreshLockToken?: string,
-  status = "failed"
-): Promise<void> => {
-  const whereClause = refreshLockToken
-    ? and(
-        eq(providerAccounts.id, id),
-        eq(providerAccounts.refreshLockToken, refreshLockToken),
-        gt(providerAccounts.refreshLockExpiresAt, Date.now())
-      )
-    : eq(providerAccounts.id, id);
-
-  await database
-    .update(providerAccounts)
-    .set({
-      lastRefreshAt: now,
-      lastRefreshStatus: status,
-      updatedAt: now,
-    })
-    .where(whereClause);
-};
+);
 
 export const hasActiveProviderAccountRefreshLock = (
   account: ProviderAccountRecord,
@@ -529,37 +551,39 @@ type TryAcquireProviderAccountRefreshLockInput = {
   expiresAt: number;
 };
 
-export const tryAcquireProviderAccountRefreshLock = async (
-  database: Database,
-  id: string,
-  input: TryAcquireProviderAccountRefreshLockInput
-): Promise<boolean> => {
-  await database
-    .update(providerAccounts)
-    .set({
-      refreshLockToken: input.token,
-      refreshLockExpiresAt: input.expiresAt,
-      updatedAt: input.now,
-    })
-    .where(
-      and(
-        eq(providerAccounts.id, id),
-        or(
-          isNull(providerAccounts.refreshLockToken),
-          isNull(providerAccounts.refreshLockExpiresAt),
-          lte(providerAccounts.refreshLockExpiresAt, input.now)
+export const tryAcquireProviderAccountRefreshLock = withInvalidation(
+  async (
+    database: Database,
+    id: string,
+    input: TryAcquireProviderAccountRefreshLockInput
+  ): Promise<boolean> => {
+    await database
+      .update(providerAccounts)
+      .set({
+        refreshLockToken: input.token,
+        refreshLockExpiresAt: input.expiresAt,
+        updatedAt: input.now,
+      })
+      .where(
+        and(
+          eq(providerAccounts.id, id),
+          or(
+            isNull(providerAccounts.refreshLockToken),
+            isNull(providerAccounts.refreshLockExpiresAt),
+            lte(providerAccounts.refreshLockExpiresAt, input.now)
+          )
         )
-      )
-    );
+      );
 
-  const account = await findProviderAccountById(database, id);
-  return Boolean(
-    account &&
-      account.refreshLockToken === input.token &&
-      account.refreshLockExpiresAt !== null &&
-      account.refreshLockExpiresAt > input.now
-  );
-};
+    const account = await findProviderAccountById(database, id);
+    return Boolean(
+      account &&
+        account.refreshLockToken === input.token &&
+        account.refreshLockExpiresAt !== null &&
+        account.refreshLockExpiresAt > input.now
+    );
+  }
+);
 
 type ExtendProviderAccountRefreshLockInput = {
   token: string;
@@ -567,183 +591,190 @@ type ExtendProviderAccountRefreshLockInput = {
   expiresAt: number;
 };
 
-export const extendProviderAccountRefreshLock = async (
-  database: Database,
-  id: string,
-  input: ExtendProviderAccountRefreshLockInput
-): Promise<boolean> => {
-  const result = await database
-    .update(providerAccounts)
-    .set({
-      refreshLockExpiresAt: input.expiresAt,
-      updatedAt: input.now,
-    })
-    .where(
-      and(
-        eq(providerAccounts.id, id),
-        eq(providerAccounts.refreshLockToken, input.token),
-        gt(providerAccounts.refreshLockExpiresAt, input.now)
-      )
-    );
-
-  return result.rowsAffected > 0;
-};
-
-export const releaseProviderAccountRefreshLock = async (
-  database: Database,
-  id: string,
-  token: string,
-  now: number
-): Promise<void> => {
-  await database
-    .update(providerAccounts)
-    .set({
-      refreshLockToken: null,
-      refreshLockExpiresAt: null,
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(providerAccounts.id, id),
-        eq(providerAccounts.refreshLockToken, token)
-      )
-    );
-};
-
-export const updateProviderAccountProfile = async (
-  database: Database,
-  id: string,
-  input: {
-    label: string | null;
-    accountId: string | null;
-    metadata: ProviderAccountMetadata | null;
-    now: number;
-  }
-): Promise<ProviderAccountRecord | "account_id_conflict" | null> => {
-  try {
+export const extendProviderAccountRefreshLock = withInvalidation(
+  async (
+    database: Database,
+    id: string,
+    input: ExtendProviderAccountRefreshLockInput
+  ): Promise<boolean> => {
     const result = await database
       .update(providerAccounts)
       .set({
-        label: input.label,
-        accountId: input.accountId,
-        metadataJson: serializeProviderAccountMetadata(input.metadata),
+        refreshLockExpiresAt: input.expiresAt,
         updatedAt: input.now,
       })
+      .where(
+        and(
+          eq(providerAccounts.id, id),
+          eq(providerAccounts.refreshLockToken, input.token),
+          gt(providerAccounts.refreshLockExpiresAt, input.now)
+        )
+      );
+
+    return result.rowsAffected > 0;
+  }
+);
+
+export const releaseProviderAccountRefreshLock = withInvalidation(
+  async (
+    database: Database,
+    id: string,
+    token: string,
+    now: number
+  ): Promise<void> => {
+    await database
+      .update(providerAccounts)
+      .set({
+        refreshLockToken: null,
+        refreshLockExpiresAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(providerAccounts.id, id),
+          eq(providerAccounts.refreshLockToken, token)
+        )
+      );
+  }
+);
+
+export const updateProviderAccountProfile = withInvalidation(
+  async (
+    database: Database,
+    id: string,
+    input: {
+      label: string | null;
+      accountId: string | null;
+      metadata: ProviderAccountMetadata | null;
+      now: number;
+    }
+  ): Promise<ProviderAccountRecord | "account_id_conflict" | null> => {
+    try {
+      const result = await database
+        .update(providerAccounts)
+        .set({
+          label: input.label,
+          accountId: input.accountId,
+          metadataJson: serializeProviderAccountMetadata(input.metadata),
+          updatedAt: input.now,
+        })
+        .where(eq(providerAccounts.id, id));
+      if (result.rowsAffected === 0) {
+        return null;
+      }
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        return "account_id_conflict";
+      }
+      throw error;
+    }
+
+    const updated = await findProviderAccountById(database, id);
+    if (!updated) {
+      throw new Error("Failed to load updated provider account");
+    }
+
+    return updated;
+  }
+);
+
+export const deleteProviderAccount = withInvalidation(
+  async (database: Database, id: string): Promise<boolean> => {
+    const account = await findProviderAccountById(database, id);
+    if (!account) {
+      return false;
+    }
+
+    const result = await database
+      .delete(providerAccounts)
       .where(eq(providerAccounts.id, id));
     if (result.rowsAffected === 0) {
-      return null;
+      return false;
     }
-  } catch (error) {
-    if (isUniqueConstraintError(error)) {
-      return "account_id_conflict";
-    }
-    throw error;
-  }
 
-  const updated = await findProviderAccountById(database, id);
-  if (!updated) {
-    throw new Error("Failed to load updated provider account");
-  }
-
-  return updated;
-};
-
-export const deleteProviderAccount = async (
-  database: Database,
-  id: string
-): Promise<boolean> => {
-  const account = await findProviderAccountById(database, id);
-  if (!account) {
-    return false;
-  }
-
-  const result = await database
-    .delete(providerAccounts)
-    .where(eq(providerAccounts.id, id));
-  if (result.rowsAffected === 0) {
-    return false;
-  }
-
-  if (account.isPrimary) {
-    const currentPrimary = await findPrimaryProviderAccount(
-      database,
-      account.provider
-    );
-    if (!currentPrimary) {
-      const next = await database.query.providerAccounts.findFirst({
-        where: eq(providerAccounts.provider, account.provider),
-        orderBy: desc(providerAccounts.createdAt),
-      });
-      if (next) {
-        await setPrimaryProviderAccount(database, next.id, Date.now());
+    if (account.isPrimary) {
+      const currentPrimary = await findPrimaryProviderAccount(
+        database,
+        account.provider
+      );
+      if (!currentPrimary) {
+        const next = await database.query.providerAccounts.findFirst({
+          where: eq(providerAccounts.provider, account.provider),
+          orderBy: desc(providerAccounts.createdAt),
+        });
+        if (next) {
+          await setPrimaryProviderAccount(database, next.id, Date.now());
+        }
       }
     }
+
+    return true;
   }
+);
 
-  return true;
-};
+export const setPrimaryProviderAccount = withInvalidation(
+  async (
+    database: Database,
+    id: string,
+    now: number
+  ): Promise<ProviderAccountRecord | null> => {
+    const accountChangedMessage =
+      "Provider account changed while setting primary";
 
-export const setPrimaryProviderAccount = async (
-  database: Database,
-  id: string,
-  now: number
-): Promise<ProviderAccountRecord | null> => {
-  const accountChangedMessage =
-    "Provider account changed while setting primary";
+    try {
+      return await database.transaction(async (tx) => {
+        const account = await tx.query.providerAccounts.findFirst({
+          where: eq(providerAccounts.id, id),
+        });
+        if (!account) {
+          return null;
+        }
 
-  try {
-    return await database.transaction(async (tx) => {
-      const account = await tx.query.providerAccounts.findFirst({
-        where: eq(providerAccounts.id, id),
+        await tx
+          .update(providerAccounts)
+          .set({ isPrimary: false, updatedAt: now })
+          .where(
+            and(
+              eq(providerAccounts.provider, account.provider),
+              eq(providerAccounts.isPrimary, true)
+            )
+          );
+
+        const result = await tx
+          .update(providerAccounts)
+          .set({ isPrimary: true, updatedAt: now })
+          .where(
+            and(
+              eq(providerAccounts.id, id),
+              eq(providerAccounts.provider, account.provider)
+            )
+          );
+
+        if (result.rowsAffected === 0) {
+          throw new Error(accountChangedMessage);
+        }
+
+        const row = await tx.query.providerAccounts.findFirst({
+          where: and(
+            eq(providerAccounts.id, id),
+            eq(providerAccounts.provider, account.provider)
+          ),
+        });
+        if (!row) {
+          throw new Error(accountChangedMessage);
+        }
+
+        return toRecord(row);
       });
-      if (!account) {
+    } catch (error) {
+      if (error instanceof Error && error.message === accountChangedMessage) {
         return null;
       }
 
-      await tx
-        .update(providerAccounts)
-        .set({ isPrimary: false, updatedAt: now })
-        .where(
-          and(
-            eq(providerAccounts.provider, account.provider),
-            eq(providerAccounts.isPrimary, true)
-          )
-        );
-
-      const result = await tx
-        .update(providerAccounts)
-        .set({ isPrimary: true, updatedAt: now })
-        .where(
-          and(
-            eq(providerAccounts.id, id),
-            eq(providerAccounts.provider, account.provider)
-          )
-        );
-
-      if (result.rowsAffected === 0) {
-        throw new Error(accountChangedMessage);
-      }
-
-      const row = await tx.query.providerAccounts.findFirst({
-        where: and(
-          eq(providerAccounts.id, id),
-          eq(providerAccounts.provider, account.provider)
-        ),
-      });
-      if (!row) {
-        throw new Error(accountChangedMessage);
-      }
-
-      return toRecord(row);
-    });
-  } catch (error) {
-    if (error instanceof Error && error.message === accountChangedMessage) {
-      return null;
+      throw error;
     }
-
-    throw error;
   }
-};
+);
 
 export type ProviderStatus = {
   provider: Provider;
@@ -774,23 +805,25 @@ export const listProviderStatuses = async (
   });
 };
 
-export const setProviderAccountsEnabled = async (
-  database: Database,
-  provider: Provider,
-  enabled: boolean,
-  now: number
-): Promise<ProviderStatus> => {
-  await database.transaction(async (tx) => {
-    await tx
-      .update(providerAccounts)
-      .set({ enabled, updatedAt: now })
-      .where(eq(providerAccounts.provider, provider));
-  });
+export const setProviderAccountsEnabled = withInvalidation(
+  async (
+    database: Database,
+    provider: Provider,
+    enabled: boolean,
+    now: number
+  ): Promise<ProviderStatus> => {
+    await database.transaction(async (tx) => {
+      await tx
+        .update(providerAccounts)
+        .set({ enabled, updatedAt: now })
+        .where(eq(providerAccounts.provider, provider));
+    });
 
-  const statuses = await listProviderStatuses(database);
-  const status = statuses.find((item) => item.provider === provider);
-  if (!status) {
-    throw new Error(`Unknown provider: ${provider}`);
+    const statuses = await listProviderStatuses(database);
+    const status = statuses.find((item) => item.provider === provider);
+    if (!status) {
+      throw new Error(`Unknown provider: ${provider}`);
+    }
+    return status;
   }
-  return status;
-};
+);

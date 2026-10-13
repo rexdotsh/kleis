@@ -20,6 +20,7 @@ import { getProviderAdapter } from "../../providers/registry";
 import type { ProviderOAuthStartResult } from "../../providers/types";
 import { logWarn } from "../../utils/log";
 import { sleep } from "../../utils/sleep";
+import { createLookupCache } from "../../db/lookup-cache";
 
 const normalizeTokenField = (value: string): string => value.trim();
 
@@ -538,12 +539,21 @@ const pickPreferredProviderAccount = (
   );
 };
 
+const ROUTABLE_ACCOUNT_CACHE_TTL_MS = 15_000;
+const routableAccountCache = createLookupCache<ProviderAccountRecord | null>(
+  ROUTABLE_ACCOUNT_CACHE_TTL_MS
+);
+
 const getPrimaryProviderAccount = async (
   database: Database,
   provider: Provider,
   now: number
 ): Promise<ProviderAccountRecord | null> => {
-  const account = await findPrimaryProviderAccount(database, provider);
+  const account = await routableAccountCache.get(
+    database,
+    `primary:${provider}`,
+    () => findPrimaryProviderAccount(database, provider)
+  );
   if (!account) {
     return null;
   }
@@ -574,10 +584,15 @@ export const getRoutableProviderAccount = async (
     return getPrimaryProviderAccount(database, provider, now);
   }
 
-  const account = pickPreferredProviderAccount(
-    (await findProviderAccountsByIds(database, allowedAccountIds)).filter(
-      (candidate) => candidate.provider === provider && candidate.enabled
-    )
+  const account = await routableAccountCache.get(
+    database,
+    `scoped:${provider}:${[...allowedAccountIds].sort().join(",")}`,
+    async () =>
+      pickPreferredProviderAccount(
+        (await findProviderAccountsByIds(database, allowedAccountIds)).filter(
+          (candidate) => candidate.provider === provider && candidate.enabled
+        )
+      )
   );
   if (!account) {
     return null;

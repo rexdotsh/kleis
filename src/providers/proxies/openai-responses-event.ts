@@ -5,23 +5,25 @@ export type OpenAiResponsesEventShapeIssue = {
   fields: string;
 };
 
+const STRING_FIELDS = ["id", "item_id", "response_id", "call_id", "delta"];
+const INDEX_FIELDS = ["output_index", "content_index", "summary_index"];
+const OBJECT_FIELDS = ["response", "item"] as const;
+
 export const readOpenAiResponsesEventShapeIssue = (
   payload: Record<string, unknown>
 ): OpenAiResponsesEventShapeIssue | null => {
   const issues: string[] = [];
-  const stringFields = ["id", "item_id", "response_id", "call_id", "delta"];
-  const indexFields = ["output_index", "content_index", "summary_index"];
-  for (const field of stringFields) {
+  for (const field of STRING_FIELDS) {
     if (field in payload && typeof payload[field] !== "string") {
       issues.push(`${field}:non-string`);
     }
   }
-  for (const field of indexFields) {
+  for (const field of INDEX_FIELDS) {
     if (field in payload && !Number.isInteger(payload[field])) {
       issues.push(`${field}:non-integer`);
     }
   }
-  for (const field of ["response", "item"] as const) {
+  for (const field of OBJECT_FIELDS) {
     if (field in payload && !isObjectRecord(payload[field])) {
       issues.push(`${field}:non-object`);
     }

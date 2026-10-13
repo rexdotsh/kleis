@@ -164,30 +164,44 @@ const transformClaudeRequestPayload = (
   return transformed;
 };
 
+// Returns the original value when nothing needed renaming, so callers can
+// reuse the upstream text instead of serializing it again.
 const transformClaudeResponsePayload = (
   payload: unknown,
   toolPrefix: string
 ): unknown => {
   if (Array.isArray(payload)) {
-    return payload.map((item) =>
-      transformClaudeResponsePayload(item, toolPrefix)
-    );
+    let changed = false;
+    const items = payload.map((item) => {
+      const next = transformClaudeResponsePayload(item, toolPrefix);
+      changed ||= next !== item;
+      return next;
+    });
+    return changed ? items : payload;
   }
 
   if (!isObjectRecord(payload)) {
     return payload;
   }
 
-  const transformed: JsonObject = {};
+  let transformed: JsonObject | null = null;
   for (const [key, value] of Object.entries(payload)) {
-    transformed[key] = transformClaudeResponsePayload(value, toolPrefix);
+    const next = transformClaudeResponsePayload(value, toolPrefix);
+    if (next !== value) {
+      transformed ??= { ...payload };
+      transformed[key] = next;
+    }
   }
 
-  if (transformed.type === "tool_use" && typeof transformed.name === "string") {
-    transformed.name = stripToolNamePrefix(transformed.name, toolPrefix);
+  if (payload.type === "tool_use" && typeof payload.name === "string") {
+    const name = stripToolNamePrefix(payload.name, toolPrefix);
+    if (name !== payload.name) {
+      transformed ??= { ...payload };
+      transformed.name = name;
+    }
   }
 
-  return transformed;
+  return transformed ?? payload;
 };
 
 const claudeMessagesUpstreamSuffix = requireProxyEndpointRoute({
@@ -291,12 +305,44 @@ const rewriteSseDataLines = (chunk: string, payload: string): string => {
   return `${rewrittenBody}${eventTrailer}`;
 };
 
+// Events that never carry usage, errors or tool names. Text deltas make up
+// almost all of a stream, so they skip JSON parsing entirely.
+const CLAUDE_PASSTHROUGH_EVENTS = new Set([
+  "content_block_delta",
+  "content_block_start",
+  "content_block_stop",
+  "message_stop",
+  "ping",
+]);
+
+const readSseEventName = (chunk: string): string | null => {
+  let start = 6;
+  if (!chunk.startsWith("event:")) {
+    const index = chunk.indexOf("\nevent:");
+    if (index === -1) {
+      return null;
+    }
+    start = index + 7;
+  }
+  const end = chunk.indexOf("\n", start);
+  return chunk.slice(start, end === -1 ? undefined : end).trim();
+};
+
 const transformSseEventChunk = (
   chunk: string,
   toolPrefix: string,
   readStreamUsage: (payload: unknown) => void,
   readStreamAnomaly: (payload: unknown) => void
 ): string => {
+  const eventName = readSseEventName(chunk);
+  if (
+    eventName !== null &&
+    CLAUDE_PASSTHROUGH_EVENTS.has(eventName) &&
+    !chunk.includes('"tool_use"')
+  ) {
+    return chunk;
+  }
+
   const payload = parseSseEventData(chunk);
   if (!payload) {
     return chunk;
@@ -307,7 +353,9 @@ const transformSseEventChunk = (
     readStreamUsage(jsonBody);
     readStreamAnomaly(jsonBody);
     const transformed = transformClaudeResponsePayload(jsonBody, toolPrefix);
-    return rewriteSseDataLines(chunk, JSON.stringify(transformed));
+    return transformed === jsonBody
+      ? chunk
+      : rewriteSseDataLines(chunk, JSON.stringify(transformed));
   } catch {
     return chunk;
   }
@@ -606,6 +654,13 @@ const maybeTransformClaudeJsonResponse = async (
   }
   const headers = new Headers(response.headers);
   headers.delete("content-length");
+  if (transformedBody === jsonBody) {
+    return new Response(bodyText, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
   return Response.json(transformedBody, {
     status: response.status,
     statusText: response.statusText,

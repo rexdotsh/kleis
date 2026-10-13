@@ -7,6 +7,7 @@ import {
   type Provider,
 } from "../schema";
 import type { Database } from "../index";
+import { createLookupCache, invalidateLookupCaches } from "../lookup-cache";
 
 type ScopeList = string[] | null;
 type ProviderScopeList = Provider[] | null;
@@ -160,6 +161,7 @@ export const createApiKey = async (
   };
 
   await database.insert(apiKeys).values(row);
+  invalidateLookupCaches();
   return toRecord({
     ...row,
     modelsDiscoveryToken: row.modelsDiscoveryToken ?? null,
@@ -181,6 +183,7 @@ export const revokeApiKey = async (
     .update(apiKeys)
     .set({ revokedAt: now })
     .where(and(eq(apiKeys.id, id), isNull(apiKeys.revokedAt)));
+  invalidateLookupCaches();
 
   return result.rowsAffected > 0;
 };
@@ -200,6 +203,7 @@ export const updateApiKey = async (
       expiresAt: input.expiresAt,
     })
     .where(eq(apiKeys.id, id));
+  invalidateLookupCaches();
 
   if (result.rowsAffected === 0) {
     return null;
@@ -210,11 +214,11 @@ export const updateApiKey = async (
 
 type DeleteRevokedApiKeyResult = "deleted" | "not_found" | "not_revoked";
 
-export const deleteRevokedApiKey = (
+export const deleteRevokedApiKey = async (
   database: Database,
   id: string
 ): Promise<DeleteRevokedApiKeyResult> => {
-  return database.transaction(async (tx) => {
+  const result = await database.transaction(async (tx) => {
     const key = await tx.query.apiKeys.findFirst({
       columns: {
         id: true,
@@ -236,16 +240,30 @@ export const deleteRevokedApiKey = (
       .where(eq(requestUsageBuckets.apiKeyId, id));
     await tx.delete(apiKeys).where(eq(apiKeys.id, id));
 
-    return "deleted";
+    return "deleted" as const;
   });
+  invalidateLookupCaches();
+  return result;
 };
 
-export const findActiveApiKeyByValue = (
+const API_KEY_CACHE_TTL_MS = 30_000;
+const apiKeyByValueCache = createLookupCache<ApiKeyRecord | null>(
+  API_KEY_CACHE_TTL_MS
+);
+
+const isActiveAt = (record: ApiKeyRecord, now: number): boolean =>
+  record.revokedAt === null &&
+  (record.expiresAt === null || record.expiresAt > now);
+
+export const findActiveApiKeyByValue = async (
   database: Database,
   keyValue: string,
   now: number
 ): Promise<ApiKeyRecord | null> => {
-  return findActiveApiKey(database, eq(apiKeys.key, keyValue), now);
+  const record = await apiKeyByValueCache.get(database, keyValue, () =>
+    findActiveApiKey(database, eq(apiKeys.key, keyValue), now)
+  );
+  return record && isActiveAt(record, now) ? record : null;
 };
 
 const findActiveApiKey = async (

@@ -32,7 +32,7 @@ import {
 
 export const MISSING_PROVIDER_ACCOUNT_ID = "__missing__";
 
-type RecordRequestUsageInput = {
+export type RecordRequestUsageInput = {
   apiKeyId: string;
   providerAccountId: string;
   provider: Provider;
@@ -45,7 +45,7 @@ type RecordRequestUsageInput = {
   tokenUsage?: TokenUsage | null;
 };
 
-type RecordTokenUsageInput = {
+export type RecordTokenUsageInput = {
   apiKeyId: string;
   providerAccountId: string;
   provider: Provider;
@@ -83,16 +83,34 @@ const usageBucketConflictTarget = [
   requestUsageBuckets.model,
 ];
 
-export const recordRequestUsage = async (
-  database: Database,
+export type UsageBucketWrite = typeof requestUsageBuckets.$inferInsert & {
+  requestCount: number;
+  successCount: number;
+  clientErrorCount: number;
+  serverErrorCount: number;
+  authErrorCount: number;
+  rateLimitCount: number;
+  proxyErrorCount: number;
+  upstreamErrorCount: number;
+  totalLatencyMs: number;
+  maxLatencyMs: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  inputTotalTokens: number;
+  reasoningTokens: number;
+  totalTokens: number;
+  lastRequestAt: number;
+};
+
+export const buildRequestUsageRow = (
   input: RecordRequestUsageInput
-): Promise<void> => {
+): UsageBucketWrite => {
   const occurredAt = toNonNegativeInteger(input.occurredAt);
   const durationMs = toNonNegativeInteger(input.durationMs);
   const counters = classifyRequestOutcome(input.statusCode, input.source);
-  const tokens = tokenColumns(input.tokenUsage);
-
-  const row: typeof requestUsageBuckets.$inferInsert = {
+  return {
     bucketStart: toUsageBucketStart(occurredAt),
     apiKeyId: input.apiKeyId,
     providerAccountId: input.providerAccountId,
@@ -109,52 +127,16 @@ export const recordRequestUsage = async (
     upstreamErrorCount: counters.upstreamErrorCount,
     totalLatencyMs: durationMs,
     maxLatencyMs: durationMs,
-    inputTokens: tokens.inputTokens,
-    outputTokens: tokens.outputTokens,
-    cacheReadTokens: tokens.cacheReadTokens,
-    cacheWriteTokens: tokens.cacheWriteTokens,
-    inputTotalTokens: tokens.inputTotalTokens,
-    reasoningTokens: tokens.reasoningTokens,
-    totalTokens: tokens.totalTokens,
+    ...tokenColumns(input.tokenUsage),
     lastRequestAt: occurredAt,
   };
-
-  await database
-    .insert(requestUsageBuckets)
-    .values(row)
-    .onConflictDoUpdate({
-      target: usageBucketConflictTarget,
-      set: {
-        requestCount: sql`${requestUsageBuckets.requestCount} + 1`,
-        successCount: sql`${requestUsageBuckets.successCount} + ${row.successCount}`,
-        clientErrorCount: sql`${requestUsageBuckets.clientErrorCount} + ${row.clientErrorCount}`,
-        serverErrorCount: sql`${requestUsageBuckets.serverErrorCount} + ${row.serverErrorCount}`,
-        authErrorCount: sql`${requestUsageBuckets.authErrorCount} + ${row.authErrorCount}`,
-        rateLimitCount: sql`${requestUsageBuckets.rateLimitCount} + ${row.rateLimitCount}`,
-        proxyErrorCount: sql`${requestUsageBuckets.proxyErrorCount} + ${row.proxyErrorCount}`,
-        upstreamErrorCount: sql`${requestUsageBuckets.upstreamErrorCount} + ${row.upstreamErrorCount}`,
-        totalLatencyMs: sql`${requestUsageBuckets.totalLatencyMs} + ${row.totalLatencyMs}`,
-        maxLatencyMs: sql`max(${requestUsageBuckets.maxLatencyMs}, ${row.maxLatencyMs})`,
-        inputTokens: sql`${requestUsageBuckets.inputTokens} + ${row.inputTokens}`,
-        outputTokens: sql`${requestUsageBuckets.outputTokens} + ${row.outputTokens}`,
-        cacheReadTokens: sql`${requestUsageBuckets.cacheReadTokens} + ${row.cacheReadTokens}`,
-        cacheWriteTokens: sql`${requestUsageBuckets.cacheWriteTokens} + ${row.cacheWriteTokens}`,
-        inputTotalTokens: sql`coalesce(${requestUsageBuckets.inputTotalTokens}, ${requestUsageBuckets.inputTokens} + ${requestUsageBuckets.cacheReadTokens} + ${requestUsageBuckets.cacheWriteTokens}) + ${row.inputTotalTokens}`,
-        reasoningTokens: sql`coalesce(${requestUsageBuckets.reasoningTokens}, 0) + ${row.reasoningTokens}`,
-        totalTokens: sql`coalesce(${requestUsageBuckets.totalTokens}, coalesce(${requestUsageBuckets.inputTotalTokens}, ${requestUsageBuckets.inputTokens} + ${requestUsageBuckets.cacheReadTokens} + ${requestUsageBuckets.cacheWriteTokens}) + ${requestUsageBuckets.outputTokens}) + ${row.totalTokens}`,
-        lastRequestAt: sql`max(${requestUsageBuckets.lastRequestAt}, ${row.lastRequestAt})`,
-      },
-    });
 };
 
-export const recordTokenUsage = async (
-  database: Database,
+export const buildTokenUsageRow = (
   input: RecordTokenUsageInput
-): Promise<void> => {
+): UsageBucketWrite => {
   const occurredAt = toNonNegativeInteger(input.occurredAt);
-  const tokens = tokenColumns(input.tokenUsage);
-
-  const row: typeof requestUsageBuckets.$inferInsert = {
+  return {
     bucketStart: toUsageBucketStart(occurredAt),
     apiKeyId: input.apiKeyId,
     providerAccountId: input.providerAccountId,
@@ -171,33 +153,64 @@ export const recordTokenUsage = async (
     upstreamErrorCount: 0,
     totalLatencyMs: 0,
     maxLatencyMs: 0,
-    inputTokens: tokens.inputTokens,
-    outputTokens: tokens.outputTokens,
-    cacheReadTokens: tokens.cacheReadTokens,
-    cacheWriteTokens: tokens.cacheWriteTokens,
-    inputTotalTokens: tokens.inputTotalTokens,
-    reasoningTokens: tokens.reasoningTokens,
-    totalTokens: tokens.totalTokens,
+    ...tokenColumns(input.tokenUsage),
     lastRequestAt: occurredAt,
   };
-
-  await database
-    .insert(requestUsageBuckets)
-    .values(row)
-    .onConflictDoUpdate({
-      target: usageBucketConflictTarget,
-      set: {
-        inputTokens: sql`${requestUsageBuckets.inputTokens} + ${row.inputTokens}`,
-        outputTokens: sql`${requestUsageBuckets.outputTokens} + ${row.outputTokens}`,
-        cacheReadTokens: sql`${requestUsageBuckets.cacheReadTokens} + ${row.cacheReadTokens}`,
-        cacheWriteTokens: sql`${requestUsageBuckets.cacheWriteTokens} + ${row.cacheWriteTokens}`,
-        inputTotalTokens: sql`coalesce(${requestUsageBuckets.inputTotalTokens}, ${requestUsageBuckets.inputTokens} + ${requestUsageBuckets.cacheReadTokens} + ${requestUsageBuckets.cacheWriteTokens}) + ${row.inputTotalTokens}`,
-        reasoningTokens: sql`coalesce(${requestUsageBuckets.reasoningTokens}, 0) + ${row.reasoningTokens}`,
-        totalTokens: sql`coalesce(${requestUsageBuckets.totalTokens}, coalesce(${requestUsageBuckets.inputTotalTokens}, ${requestUsageBuckets.inputTokens} + ${requestUsageBuckets.cacheReadTokens} + ${requestUsageBuckets.cacheWriteTokens}) + ${requestUsageBuckets.outputTokens}) + ${row.totalTokens}`,
-        lastRequestAt: sql`max(${requestUsageBuckets.lastRequestAt}, ${row.lastRequestAt})`,
-      },
-    });
 };
+
+const USAGE_UPSERT_BATCH_SIZE = 100;
+const buckets = requestUsageBuckets;
+const excluded = (column: { name: string }) =>
+  sql.raw(`excluded."${column.name}"`);
+const addExcluded = (column: { name: string }) =>
+  sql`${column} + ${excluded(column)}`;
+const storedInputTotalTokens = sql`coalesce(${buckets.inputTotalTokens}, ${buckets.inputTokens} + ${buckets.cacheReadTokens} + ${buckets.cacheWriteTokens})`;
+
+// Adds each row to its bucket. Rows from before the token columns existed
+// derive their totals from the legacy input and cache columns.
+export const upsertUsageRows = async (
+  database: Database,
+  rows: readonly UsageBucketWrite[]
+): Promise<void> => {
+  for (let index = 0; index < rows.length; index += USAGE_UPSERT_BATCH_SIZE) {
+    await database
+      .insert(buckets)
+      .values(rows.slice(index, index + USAGE_UPSERT_BATCH_SIZE))
+      .onConflictDoUpdate({
+        target: usageBucketConflictTarget,
+        set: {
+          requestCount: addExcluded(buckets.requestCount),
+          successCount: addExcluded(buckets.successCount),
+          clientErrorCount: addExcluded(buckets.clientErrorCount),
+          serverErrorCount: addExcluded(buckets.serverErrorCount),
+          authErrorCount: addExcluded(buckets.authErrorCount),
+          rateLimitCount: addExcluded(buckets.rateLimitCount),
+          proxyErrorCount: addExcluded(buckets.proxyErrorCount),
+          upstreamErrorCount: addExcluded(buckets.upstreamErrorCount),
+          totalLatencyMs: addExcluded(buckets.totalLatencyMs),
+          maxLatencyMs: sql`max(${buckets.maxLatencyMs}, ${excluded(buckets.maxLatencyMs)})`,
+          inputTokens: addExcluded(buckets.inputTokens),
+          outputTokens: addExcluded(buckets.outputTokens),
+          cacheReadTokens: addExcluded(buckets.cacheReadTokens),
+          cacheWriteTokens: addExcluded(buckets.cacheWriteTokens),
+          inputTotalTokens: sql`${storedInputTotalTokens} + ${excluded(buckets.inputTotalTokens)}`,
+          reasoningTokens: sql`coalesce(${buckets.reasoningTokens}, 0) + ${excluded(buckets.reasoningTokens)}`,
+          totalTokens: sql`coalesce(${buckets.totalTokens}, ${storedInputTotalTokens} + ${buckets.outputTokens}) + ${excluded(buckets.totalTokens)}`,
+          lastRequestAt: sql`max(${buckets.lastRequestAt}, ${excluded(buckets.lastRequestAt)})`,
+        },
+      });
+  }
+};
+
+export const recordRequestUsage = (
+  database: Database,
+  input: RecordRequestUsageInput
+): Promise<void> => upsertUsageRows(database, [buildRequestUsageRow(input)]);
+
+export const recordTokenUsage = (
+  database: Database,
+  input: RecordTokenUsageInput
+): Promise<void> => upsertUsageRows(database, [buildTokenUsageRow(input)]);
 
 type ApiKeyUsageSummary = AveragedUsageTotals & {
   apiKeyId: string;

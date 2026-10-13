@@ -18,6 +18,8 @@ Single OAuth account proxy for coding agents. One base URL that stores OAuth cre
 - **`oauth_states`**: Ephemeral records for in-flight OAuth flows.
 - **`request_usage_buckets`**: Minute-bucketed analytics. Tracks request/success/error counts and latency per key+account+provider+endpoint.
 
+**Proxy hot path**: Turso is ~40ms away, so the proxy keeps API-key and routable-account lookups in memory (`src/db/lookup-cache.ts`). Every write to `api_keys` or `provider_accounts` must go through the repositories so it invalidates them. Usage counters are buffered in memory and flushed every 2s and on shutdown (`src/usage/usage-buffer.ts`).
+
 **Migrations**: Never write migration files by hand. Edit `src/db/schema.ts`, then run `bun db:generate` to create the migration. Only run `bun db:migrate` if explicitly asked.
 
 ## Proxy Routes
