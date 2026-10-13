@@ -30,6 +30,30 @@ There's also minute-bucketed request analytics across both API keys and provider
 
 ---
 
+## Admin panel
+
+Usage, rate limits, and token health for every account and key.
+
+<p align="center">
+  <img src="./assets/screenshots/overview.png" alt="Admin overview with accounts that need attention, request totals, an hourly requests chart, and usage by provider and API key" width="100%" />
+</p>
+
+<details>
+<summary>Accounts, keys, and phone layout</summary>
+<br />
+<p align="center">
+  <img src="./assets/screenshots/accounts.png" alt="Accounts tab with a Claude account expanded to show its rate-limit windows, token status, and usage by key and model" width="100%" />
+</p>
+<p align="center">
+  <img src="./assets/screenshots/keys.png" alt="Keys tab with an API key expanded to show its usage by model and the OpenCode setup snippet" width="100%" />
+</p>
+<p align="center">
+  <img src="./assets/screenshots/phone.png" alt="Admin overview on a phone" width="320" />
+</p>
+</details>
+
+---
+
 ## Setup
 
 ```sh
