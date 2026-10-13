@@ -13,7 +13,6 @@ import {
   formatMetadataForInput,
   formatShortDate,
   dateInputValue,
-  hasUsageMetrics,
   isKeyActive,
   keyById,
   maskKey,
@@ -60,8 +59,6 @@ function quotaTimestamp(value) {
   return null;
 }
 
-const hasTraffic = (usage) => normalizeUsage(usage).requestCount > 0;
-
 const prefersMotion = () =>
   globalThis.matchMedia?.("(prefers-reduced-motion: no-preference)").matches ??
   false;
@@ -107,6 +104,15 @@ const SKELETON_HTML = Array.from(
   (_, index) =>
     `<div class="row skeleton"><span class="bone" style="width:${[46, 38, 52, 34, 44, 40][index]}%"></span></div>`
 ).join("");
+
+const listSkeletonRows = (columns) =>
+  Array.from(
+    { length: 3 },
+    () =>
+      `<div class="row skeleton ${columns}"><span class="bone"></span><span class="l2">&nbsp;</span></div>`
+  ).join("");
+const ACCOUNT_LOADING_HTML = `<div class="row thead t-acc"><span>Account</span><span class="d">Limits</span><span class="num d">Token expires</span><span class="num">Requests</span></div>${PROVIDERS.map((provider) => `<div class="group"><span class="cap">${providerName(provider)}</span></div><div class="group-rows">${listSkeletonRows("t-acc")}</div>`).join("")}`;
+const KEY_LOADING_HTML = `<div class="row thead t-key"><span>Label</span><span class="d">Key</span><span class="d">Scope</span><span class="num">Requests</span><span class="num d">Last used</span></div>${listSkeletonRows("t-key")}${listSkeletonRows("t-key")}`;
 
 const kbd = (key) => `<span class="kbd" aria-hidden="true">${key}</span>`;
 
@@ -366,8 +372,7 @@ function accountRowHtml(account, serving) {
 
 function fact(label, value, subs = [], extra = "") {
   const lines = subs
-    .filter(Boolean)
-    .map((sub) => `<div class="fact-sub">${sub}</div>`)
+    .map((sub) => `<div class="fact-sub">${sub || "&nbsp;"}</div>`)
     .join("");
   return `<div class="fact"><div class="fact-label">${label}</div><div class="fact-value">${value}</div>${lines}${extra}</div>`;
 }
@@ -383,36 +388,30 @@ function resetText(window) {
 
 function limitFacts(account) {
   const quota = account.quota;
-  if (!quota) {
-    return [
-      fact("Rate limits", '<span class="muted">\u2014</span>', [
-        "waiting for the first sync",
-      ]),
-    ];
-  }
-  const facts = accountWindows(account).map((window) => {
-    const severity = limitSeverity(window.percent);
-    return fact(
-      escapeHtml(window.named ? window.label : `${window.label} window`),
-      `<span class="${severity}">${Math.round(window.percent)}%</span>`,
-      [escapeHtml(resetText(window))],
-      `<span class="bar${severity ? ` ${severity}` : ""}"><i style="width:${window.percent}%"></i></span>`
-    );
-  });
-  if (quota.error) {
-    facts.push(
-      `<div class="fact"><div class="fact-label">Limit sync</div><div class="fact-value err">Failed</div><div class="fact-sub clamp" title="${escapeHtml(quota.error)}">${escapeHtml(quota.error)}</div></div>`
-    );
-  } else if (!facts.length) {
-    facts.push(fact("Rate limits", '<span class="muted">None reported</span>'));
-  }
-  return facts;
+  const windows = accountWindows(account);
+  let content = windows
+    .map((window) => {
+      const severity = limitSeverity(window.percent);
+      return `<div class="limit-entry"><div><span class="ellipsis" title="${escapeHtml(window.label)}">${escapeHtml(window.label)}</span><span class="${severity}">${Math.round(window.percent)}%</span></div><div class="fact-sub">${escapeHtml(resetText(window)) || "&nbsp;"}</div></div>`;
+    })
+    .join("");
+  if (!quota)
+    content = `<div class="limit-entry"><span class="bone"></span></div><div class="limit-entry"><span class="bone"></span></div>`;
+  else if (quota.error)
+    content += `<p class="fact-sub err" title="${escapeHtml(quota.error)}">Sync failed: ${escapeHtml(quota.error)}</p>`;
+  else if (!windows.length)
+    content = '<p class="muted small">None reported</p>';
+  return `<div class="fact quota-fact"><div class="fact-label">Rate limits</div><div class="limit-windows" tabindex="0" aria-label="Rate limits">${content}</div></div>`;
 }
 
 function creditsFact(account) {
   const data = account.quota?.data;
-  if (data?.provider !== "codex") return "";
-  const credits = (data.resetCredits?.credits || [])
+  if (account.provider !== "codex") return "";
+  if (!account.quota)
+    return fact("Reset credits", '<span class="bone"></span>', [
+      "waiting for sync",
+    ]);
+  const credits = (data?.resetCredits?.credits || [])
     .filter((credit) => credit.status === "available")
     .sort(
       (a, b) =>
@@ -420,12 +419,12 @@ function creditsFact(account) {
         (quotaTimestamp(b.expiresAt) ?? Number.POSITIVE_INFINITY)
     );
   const available =
-    data.resetCredits?.availableCount ?? data.status?.resetCreditsAvailable;
+    data?.resetCredits?.availableCount ?? data?.status?.resetCreditsAvailable;
   const count = Math.max(
     credits.length,
     typeof available === "number" ? available : 0
   );
-  if (!count) return "";
+  if (!count) return fact("Reset credits", "0", ["none available"]);
   const next = credits[0];
   const expiry = quotaTimestamp(next?.expiresAt);
   const title = next
@@ -474,7 +473,7 @@ function usageFact(rawUsage, windowMs) {
   const usage = normalizeUsage(rawUsage);
   const failed = failedCount(usage);
   const label = `Last ${escapeHtml(usageWindowLabel(windowMs))}`;
-  if (!usage.requestCount) return fact(label, "0 requests", ["no traffic"]);
+  if (!usage.requestCount) return fact(label, "0 requests", ["no traffic", ""]);
   const problems = [
     failed && `${formatCount(failed)} failed`,
     usage.rateLimitCount && `${formatCount(usage.rateLimitCount)} rate-limited`,
@@ -630,20 +629,20 @@ function accountDetailHtml(account) {
     state.enteringDetail === `account:${account.id}` ? " entering" : "";
   return `<div class="detail${entering}" data-detail-for="${account.id}" data-flip="detail:${account.id}">
     <div class="facts">${[
-      ...limitFacts(account),
+      limitFacts(account),
       creditsFact(account),
       tokenFact(account),
       usageFact(accountUsageForId(account.id), state.accountUsageWindowMs),
       accountFact(account),
     ].join("")}</div>
-    ${hasTraffic(accountUsageForId(account.id)) ? `<div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>` : ""}
+    <div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>
     <div class="actions">
-      ${needsReauthorization(account) && supportsOAuth ? button("Reauthorize", "reauthorize-account", "A", "btn btn-primary btn-sm") : ""}
       ${account.isPrimary ? "" : button("Make primary", "set-primary", "P")}
       ${button("Refresh token", "refresh-account", "R")}
       ${button("Edit", "edit-account", "E")}
       ${button("Remove", "delete-account", "Del", "btn btn-ghost btn-sm btn-remove")}
-      <div class="right">${synced}<span>Collapse <span class="kbd">esc</span></span></div>
+      ${supportsOAuth ? `<span class="reauthorize-action${needsReauthorization(account) ? "" : " hidden-action"}">${button("Reauthorize", "reauthorize-account", "A", "btn btn-primary btn-sm")}</span>` : ""}
+      <div class="right"><span class="sync-note">${synced}</span><span>Collapse <span class="kbd">esc</span></span></div>
     </div>
   </div>`;
 }
@@ -721,11 +720,7 @@ function renderAccounts() {
     )
   );
   const expanded = state.expandedAccountId;
-  if (
-    expanded &&
-    expanded !== state.editingAccountId &&
-    hasTraffic(accountUsageForId(expanded))
-  ) {
+  if (expanded && expanded !== state.editingAccountId) {
     requestUsageDetail("account", expanded);
   }
 }
@@ -847,8 +842,10 @@ function keyFacts(key) {
   const usage = normalizeUsage(usageForKey(key.id));
   const cached = cacheReadRate(usage.inputTotalTokens, usage.cacheReadTokens);
   const pinned = (key.accountScopes || [])
-    .map((accountId) => accountById(accountId))
-    .filter(Boolean)
+    .map(
+      (accountId) =>
+        accountById(accountId) || { id: accountId, provider: "Account" }
+    )
     .map(
       (account) =>
         `${escapeHtml(providerName(account.provider))} via ${escapeHtml(accountName(account))}`
@@ -945,11 +942,7 @@ function keyDetailHtml(key) {
   return `<div class="detail${entering}" data-detail-for="${key.id}" data-flip="detail:${key.id}">
     ${keyLine}
     <div class="facts">${keyFacts(key)}</div>
-    ${
-      hasTraffic(usageForKey(key.id)) || snippet
-        ? `<div class="usage-grid">${hasTraffic(usageForKey(key.id)) ? `<div class="usage-slot" data-usage-for="key:${key.id}">${usageSlotHtml("key", key.id)}</div>` : ""}${snippet}</div>`
-        : ""
-    }
+    <div class="usage-grid"><div class="usage-slot" data-usage-for="key:${key.id}">${usageSlotHtml("key", key.id)}</div>${snippet}</div>
     <div class="actions">${actions.join("")}<div class="right"><span>Collapse <span class="kbd">esc</span></span></div></div>
   </div>`;
 }
@@ -1058,12 +1051,7 @@ function renderKeys() {
   if (state.creatingKey) syncScopedAccountAvailability("create");
   if (state.editingKeyId) syncScopedAccountAvailability("edit");
   const expanded = state.expandedKeyId;
-  if (
-    expanded &&
-    expanded !== state.editingKeyId &&
-    visibleIds.has(expanded) &&
-    hasTraffic(usageForKey(expanded))
-  ) {
+  if (expanded && expanded !== state.editingKeyId && visibleIds.has(expanded)) {
     requestUsageDetail("key", expanded);
   }
 }
@@ -1120,27 +1108,32 @@ function menuHtml(kind, id) {
 
 /* Usage inside expanded rows */
 
-const DETAIL_LOADING_HTML =
-  '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
+function usagePanelHtml(label, table, columns, message = "", loading = false) {
+  const placeholder = loading
+    ? Array.from(
+        { length: 4 },
+        () => `<div class="row skeleton"><span class="bone"></span></div>`
+      ).join("")
+    : `<p class="usage-note muted">${escapeHtml(message || "No usage in this window.")}</p>`;
+  return `<div class="usage-panel"><div class="list-label">${label}${message ? `<span class="usage-status err" title="${escapeHtml(message)}">Unavailable</span>` : ""}</div><div class="list usage-table" tabindex="0" aria-label="${label}"><div class="row thead ${columns}">${table.head}</div>${table.body || placeholder}</div></div>`;
+}
+
+const DASHBOARD_LOADING_HTML = `<div class="kpis">${["Requests", "Success", "Tokens", "Cached input", "Avg latency"].map((label) => `<div class="kpi"><div class="kpi-label">${label}</div><div class="val"><span class="bone"></span></div><div class="sub">&nbsp;</div></div>`).join("")}</div><div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><span class="bone chart-bone"></span></div></div><div class="tables">${["By provider", "Top keys"].map((label) => `<div><div class="sh"><h2>${label}</h2></div><div class="list dashboard-table">${SKELETON_HTML}</div></div>`).join("")}</div>`;
 
 function usageSlotHtml(kind, id) {
   const windowMs =
     kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
   const entry = state.usageDetails.get(`${kind}:${id}:${windowMs}`);
-  if (!entry || entry.status === "loading") {
-    return '<p class="usage-note muted"><span class="spinner"></span>Loading usage</p>';
-  }
-  if (entry.status === "error") {
-    return `<p class="usage-note err">${escapeHtml(entry.error)}</p>`;
-  }
-  const { data } = entry;
-  if (!data.totals?.requestCount) return "";
+  const data = entry?.data;
+  const loading = !data && entry?.status !== "error";
+  const message = entry?.status === "error" ? entry.error : "";
   return [
-    kind === "account" ? keyListHtml(data.apiKeys, data.totals) : "",
-    modelListHtml(data.models),
+    kind === "account"
+      ? keyListHtml(data?.apiKeys, data?.totals, message, loading)
+      : "",
+    modelListHtml(data?.models, message, loading),
   ]
     .filter(Boolean)
-    .map((list) => `<div>${list}</div>`)
     .join("");
 }
 
@@ -1149,9 +1142,8 @@ function renderUsageSlot(kind, id) {
   if (slot) slot.innerHTML = usageSlotHtml(kind, id);
 }
 
-function modelListHtml(rows) {
-  if (!rows?.length) return "";
-  const body = [...rows]
+function modelListHtml(rows, message, loading) {
+  const body = [...(rows || [])]
     .sort((a, b) => (b.requestCount ?? 0) - (a.requestCount ?? 0))
     .map((row) => {
       const usage = normalizeUsage(row);
@@ -1162,13 +1154,21 @@ function modelListHtml(rows) {
       return `<div class="row t-model"><span class="name"><span class="mono ellipsis">${escapeHtml(row.model?.trim() || "(unknown)")}</span><span class="tag d">${escapeHtml(`${providerName(row.provider)} \u00b7 ${row.endpoint}`)}</span></span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cached === null ? "\u2014" : `${cached}%`}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
     })
     .join("");
-  return `<div class="list-label">By model</div><div class="list"><div class="row thead t-model"><span>Model</span><span class="num">Requests</span><span class="num">Tokens</span><span class="num d">Cached</span><span class="num d">Latency</span></div>${body}</div>`;
+  return usagePanelHtml(
+    "By model",
+    {
+      head: '<span>Model</span><span class="num">Requests</span><span class="num">Tokens</span><span class="num d">Cached</span><span class="num d">Latency</span>',
+      body,
+    },
+    "t-model",
+    message,
+    loading
+  );
 }
 
-function keyListHtml(rows, totals) {
-  if (!rows?.length) return "";
+function keyListHtml(rows, totals, message, loading) {
   const total = normalizeUsage(totals).requestCount;
-  const body = [...rows]
+  const body = [...(rows || [])]
     .sort((a, b) => (b.requestCount ?? 0) - (a.requestCount ?? 0))
     .map((row) => {
       const usage = normalizeUsage(row);
@@ -1178,7 +1178,16 @@ function keyListHtml(rows, totals) {
       return `<div class="row t-bykey"><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
     })
     .join("");
-  return `<div class="list-label">By key</div><div class="list"><div class="row thead t-bykey"><span>Key</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span></div>${body}</div>`;
+  return usagePanelHtml(
+    "By key",
+    {
+      head: '<span>Key</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
+      body,
+    },
+    "t-bykey",
+    message,
+    loading
+  );
 }
 
 function apiKeyDisplayHtml(apiKeyId) {
@@ -1335,14 +1344,16 @@ function renderAttention() {
   items.sort(
     (a, b) => Number(b.severity === "err") - Number(a.severity === "err")
   );
-  el.innerHTML = items.length
-    ? `<div class="sh"><h2>Needs attention</h2><span class="muted">${items.length}</span></div><div class="list">${items
-        .map(
-          (item) =>
-            `<div class="row attn${item.accountId ? "" : " static"}"${item.accountId ? ` data-account-id="${item.accountId}" tabindex="0" role="button"` : ""}><span class="dot ${item.severity}"></span><span class="ellipsis">${escapeHtml(item.name)}</span><span class="muted ellipsis d">${escapeHtml(item.text)}</span><span class="num muted small">${escapeHtml(item.when)}</span>${item.accountId ? icon("chev") : "<span></span>"}<span class="l2">${escapeHtml(item.text)}</span></div>`
-        )
-        .join("")}</div>`
-    : "";
+  el.innerHTML = `<div class="sh"><h2>Needs attention</h2><span class="muted">${items.length || ""}</span></div><div class="list attention-list" tabindex="0" aria-label="Needs attention">${
+    items.length
+      ? items
+          .map(
+            (item) =>
+              `<div class="row attn${item.accountId ? "" : " static"}"${item.accountId ? ` data-account-id="${item.accountId}" tabindex="0" role="button"` : ""}><span class="dot ${item.severity}"></span><span class="ellipsis">${escapeHtml(item.name)}</span><span class="muted ellipsis d">${escapeHtml(item.text)}</span><span class="num muted small">${escapeHtml(item.when)}</span>${item.accountId ? icon("chev") : "<span></span>"}<span class="l2">${escapeHtml(item.text)}</span></div>`
+          )
+          .join("")
+      : '<p class="list-note muted">No issues reported.</p>'
+  }</div>`;
 }
 
 function deltaText(current, previous) {
@@ -1465,7 +1476,7 @@ function niceCeil(value) {
 function requestChartHtml(data, width) {
   const size = data.bucketSizeMs;
   const buckets = data.buckets || [];
-  if (!size || !buckets.length) return "";
+  if (!size || !buckets.length) return emptyChartHtml();
   const windowMs = data.windowMs ?? state.dashboardWindowMs;
   const end =
     typeof data.now === "number" ? data.now : buckets.at(-1).bucketStart + size;
@@ -1474,7 +1485,7 @@ function requestChartHtml(data, width) {
   const last = Math.floor((end - 1) / size) * size;
   const slots = [];
   for (let at = first; at <= last; at += size) slots.push(at);
-  if (slots.length < 2) return "";
+  if (slots.length < 2) return emptyChartHtml();
 
   const counts = new Map(
     buckets.map((bucket) => [bucket.bucketStart, bucket.requestCount])
@@ -1534,6 +1545,10 @@ function requestChartHtml(data, width) {
   </div>`;
 }
 
+function emptyChartHtml() {
+  return '<div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><p class="usage-note muted">No usage in this window.</p></div></div>';
+}
+
 function showChartHover(plot, clientX) {
   if (chart.slots.length < 2) return;
   const offset = clientX - plot.getBoundingClientRect().left;
@@ -1573,7 +1588,6 @@ function hideChartHover(plot) {
 
 function providerTableHtml(data, metrics) {
   const providers = data.byProvider || [];
-  if (!providers.length) return "";
   const models = new Map();
   for (const row of data.byModel || []) {
     const name = row.model?.trim() || "(unknown)";
@@ -1614,12 +1628,11 @@ function providerTableHtml(data, metrics) {
     })
     .join("");
 
-  return `<div><div class="sh"><h2>By provider</h2></div><div class="list"><div class="row thead t-prov"><span>Provider</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Cached</span></div>${rows}</div></div>`;
+  return `<div><div class="sh"><h2>By provider</h2></div><div class="list dashboard-table" tabindex="0" aria-label="Usage by provider"><div class="row thead t-prov"><span>Provider</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Cached</span></div>${rows || '<p class="list-note muted">No usage in this window.</p>'}</div></div>`;
 }
 
 function topKeysHtml(data, metrics) {
   const rows = (data.byKey || []).slice(0, 5);
-  if (!rows.length) return "";
   const body = rows
     .map((row) => {
       const share = metrics.requestCount
@@ -1628,18 +1641,14 @@ function topKeysHtml(data, metrics) {
       return `<div class="row t-keys" data-key-id="${escapeHtml(row.apiKeyId)}" tabindex="0" role="button"><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${formatCount(row.requestCount)}</span><span class="num muted">${share}%</span></div>`;
     })
     .join("");
-  return `<div><div class="sh"><h2>Top keys</h2><div class="right"><button class="link small" type="button" data-action="go-keys">View all keys</button></div></div><div class="list"><div class="row thead t-keys"><span>Key</span><span class="num">Requests</span><span class="num">Share</span></div>${body}</div></div>`;
+  return `<div><div class="sh"><h2>Top keys</h2><div class="right"><button class="link small" type="button" data-action="go-keys">View all keys</button></div></div><div class="list dashboard-table" tabindex="0" aria-label="Top keys"><div class="row thead t-keys"><span>Key</span><span class="num">Requests</span><span class="num">Share</span></div>${body || '<p class="list-note muted">No usage in this window.</p>'}</div></div>`;
 }
 
-function renderDashboard(data) {
+function renderDashboard(rawData) {
   renderAttention();
   const el = $("#dash-content");
+  const data = rawData || {};
   const metrics = normalizeUsage(data?.totals);
-  if (!data?.totals || !hasUsageMetrics(metrics)) {
-    el.innerHTML =
-      '<div class="empty-state"><p>No usage in this window.</p></div>';
-    return;
-  }
 
   const width = el.clientWidth || 1200;
   const windowLabel = usageWindowLabel(
@@ -1652,7 +1661,7 @@ function renderDashboard(data) {
   ].join("");
 
   const plot = el.querySelector(".plot");
-  if (plot) {
+  if (plot?.querySelector(".plot-svg")) {
     let frame = 0;
     let pointerX = 0;
     plot.addEventListener("pointermove", (event) => {
@@ -1671,7 +1680,9 @@ function renderDashboard(data) {
 }
 
 export {
-  DETAIL_LOADING_HTML,
+  ACCOUNT_LOADING_HTML,
+  DASHBOARD_LOADING_HTML,
+  KEY_LOADING_HTML,
   SKELETON_HTML,
   menuHtml,
   renderAccounts,

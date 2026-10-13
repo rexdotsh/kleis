@@ -128,7 +128,13 @@ function revealDetail(listId, id) {
   if (!detail) return;
   const { bottom } = detail.getBoundingClientRect();
   if (bottom > innerHeight) {
-    detail.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const reduced = globalThis.matchMedia?.(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
+    detail.scrollIntoView({
+      block: "nearest",
+      behavior: reduced ? "instant" : "smooth",
+    });
   }
 }
 
