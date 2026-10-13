@@ -419,7 +419,6 @@ describe("models registry contract", () => {
       apiKeyScopes: {
         providerScopes: ["codex"],
         modelScopes: ["openai/gpt-5.6-luna"],
-        accountProviderScopes: null,
       },
     });
 
@@ -463,7 +462,6 @@ describe("models registry contract", () => {
       apiKeyScopes: {
         providerScopes: ["codex"],
         modelScopes: null,
-        accountProviderScopes: null,
       },
     });
 
@@ -484,65 +482,6 @@ describe("models registry contract", () => {
       "gpt-5.5",
       "gpt-5.6-luna",
       "gpt-6-astra",
-    ]);
-  });
-
-  test("account-scoped mode only narrows the kleis aggregate provider", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
-      baseOrigin: "https://kleis.example/api/kmd_acc123",
-      configuredProviders: ["codex", "claude"],
-      apiKeyScopes: {
-        providerScopes: null,
-        modelScopes: null,
-        accountProviderScopes: ["claude"],
-      },
-    });
-
-    expect(Object.keys(registry).sort()).toEqual([
-      "anthropic",
-      "kleis",
-      "openai",
-    ]);
-
-    const anthropic = registry.anthropic as {
-      env?: string[];
-      models?: Record<string, { id?: string; provider?: { api?: string } }>;
-    };
-    expect(anthropic.env).toEqual(["ANTHROPIC_API_KEY"]);
-    expect(Object.keys(anthropic.models ?? {})).toEqual(["claude-sonnet-4"]);
-    expect(anthropic.models?.["claude-sonnet-4"]?.provider?.api).toBe(
-      "https://api.anthropic.com/v1"
-    );
-
-    const kleis = registry.kleis as {
-      models?: Record<string, unknown>;
-    };
-    expect(Object.keys(kleis.models ?? {})).toEqual([
-      "anthropic/claude-sonnet-4",
-    ]);
-  });
-
-  test("account scopes further narrow the kleis aggregate provider", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
-      baseOrigin: "https://kleis.example/api/kmd_acc456",
-      configuredProviders: ["codex", "claude"],
-      apiKeyScopes: {
-        providerScopes: ["codex", "claude"],
-        modelScopes: null,
-        accountProviderScopes: ["claude"],
-      },
-    });
-
-    expect(registry.openai).toBeDefined();
-    expect(registry.anthropic).toBeDefined();
-
-    const kleis = registry.kleis as {
-      models?: Record<string, unknown>;
-    };
-    expect(Object.keys(kleis.models ?? {})).toEqual([
-      "anthropic/claude-sonnet-4",
     ]);
   });
 });

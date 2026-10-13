@@ -565,6 +565,44 @@ const getPrimaryProviderAccount = async (
   return refreshProviderAccount(database, account.id, now);
 };
 
+const pinnedAccountCache = createLookupCache<ProviderAccountRecord[]>(
+  ROUTABLE_ACCOUNT_CACHE_TTL_MS
+);
+
+const normalizeAccountIds = (
+  accountIds: readonly string[] | null | undefined
+): string[] =>
+  Array.from(
+    new Set(
+      accountIds
+        ?.map((accountId) => accountId.trim())
+        .filter((accountId) => accountId.length > 0) ?? []
+    )
+  ).sort();
+
+// A key's account pins are per provider: only pins for this provider count,
+// enabled or not.
+export const findPinnedProviderAccounts = (
+  database: Database,
+  provider: Provider,
+  accountIds: readonly string[] | null | undefined
+): Promise<ProviderAccountRecord[]> => {
+  const ids = normalizeAccountIds(accountIds);
+  if (!ids.length) {
+    return Promise.resolve([]);
+  }
+  return pinnedAccountCache.get(
+    database,
+    `pinned:${provider}:${ids.join(",")}`,
+    async () =>
+      (await findProviderAccountsByIds(database, ids)).filter(
+        (candidate) => candidate.provider === provider
+      )
+  );
+};
+
+// Requests use the key's pinned account for the provider when it has one, and
+// the provider's primary account otherwise.
 export const getRoutableProviderAccount = async (
   database: Database,
   provider: Provider,
@@ -573,26 +611,17 @@ export const getRoutableProviderAccount = async (
     allowedAccountIds?: readonly string[] | null;
   }
 ): Promise<ProviderAccountRecord | null> => {
-  const allowedAccountIds = Array.from(
-    new Set(
-      input?.allowedAccountIds
-        ?.map((accountId) => accountId.trim())
-        .filter((accountId) => accountId.length > 0) ?? []
-    )
+  const pinned = await findPinnedProviderAccounts(
+    database,
+    provider,
+    input?.allowedAccountIds
   );
-  if (!allowedAccountIds.length) {
+  if (!pinned.length) {
     return getPrimaryProviderAccount(database, provider, now);
   }
 
-  const account = await routableAccountCache.get(
-    database,
-    `scoped:${provider}:${[...allowedAccountIds].sort().join(",")}`,
-    async () =>
-      pickPreferredProviderAccount(
-        (await findProviderAccountsByIds(database, allowedAccountIds)).filter(
-          (candidate) => candidate.provider === provider && candidate.enabled
-        )
-      )
+  const account = pickPreferredProviderAccount(
+    pinned.filter((candidate) => candidate.enabled)
   );
   if (!account) {
     return null;
