@@ -343,12 +343,22 @@
             <h2>API keys</h2>
             <span id="keys-count" class="muted"></span>
             <div class="right">
+              <button
+                id="btn-opencode"
+                class="btn btn-ghost"
+                type="button"
+                aria-expanded="false"
+                aria-controls="opencode-setup"
+              >
+                <span class="wide-only">Use with </span>OpenCode
+              </button>
               <button id="btn-create-key" class="btn btn-primary" type="button">
                 New key
                 <span class="kbd" aria-hidden="true">N</span>
               </button>
             </div>
           </div>
+          <div id="opencode-setup" hidden></div>
           <div id="keys-foot" class="list-foot"></div>
           <div id="keys-list" class="list"></div>
         </section>
@@ -640,6 +650,8 @@
           <dd>Edit</dd>
           <dt><kbd>R</kbd></dt>
           <dd>Rotate</dd>
+          <dt><kbd>U</kbd></dt>
+          <dd>Use with OpenCode</dd>
           <dt><kbd>Del</kbd></dt>
           <dd>Revoke</dd>
         </dl>

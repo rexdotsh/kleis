@@ -1011,25 +1011,12 @@ function keyFacts(key) {
 function keyDetailHtml(key) {
   if (state.editingKeyId === key.id) return keyFormHtml("edit", key);
   const revoked = Boolean(key.revokedAt);
-  const active = isKeyActive(key);
   const revealed = state.revealedKeyIds.has(key.id);
   const button = (label, action, shortcut = "", cls = "btn btn-ghost btn-sm") =>
     `<button class="${cls}" data-action="${action}" data-key-id="${key.id}" type="button">${label}${shortcut ? kbd(shortcut) : ""}</button>`;
   const keyLine = revealed
     ? `<div class="key-line"><code>${escapeHtml(key.key)}</code>${button("Copy", "copy-key")}${button("Hide", "toggle-key")}</div>`
     : "";
-  const snippetOpen = state.openSnippets.has(key.id);
-  const snippet =
-    active && modelsUrlForKey(key)
-      ? `<div class="snippet${snippetOpen ? " open" : ""}">
-          <div class="snippet-head">
-            <button class="snippet-toggle" type="button" data-action="toggle-snippet" data-key-id="${key.id}" aria-expanded="${snippetOpen}">${icon("chev")}Use with OpenCode</button>
-            <button class="link small" type="button" data-action="copy-models-url" data-key-id="${key.id}">Copy URL</button>
-            <button class="link small" type="button" data-action="copy-snippet" data-key-id="${key.id}">Copy snippet</button>
-          </div>
-          <pre class="snippet-block">${escapeHtml(setupSnippet(key, { maskKey: !revealed }))}</pre>
-        </div>`
-      : "";
   const actions = revoked
     ? [
         button("Edit", "edit-key", "E"),
@@ -1056,7 +1043,7 @@ function keyDetailHtml(key) {
   return `<div class="detail${entering}" data-detail-for="${key.id}" data-flip="detail:${key.id}">
     ${keyLine}
     <div class="facts">${keyFacts(key)}</div>
-    ${hasTraffic(usageForKey(key.id)) || snippet ? `<div class="usage-grid">${hasTraffic(usageForKey(key.id)) ? `<div class="usage-slot" data-usage-for="key:${key.id}">${usageSlotHtml("key", key.id)}</div>` : ""}${snippet}</div>` : ""}
+    ${hasTraffic(usageForKey(key.id)) ? `<div class="usage-slot usage-grid" data-usage-for="key:${key.id}">${usageSlotHtml("key", key.id)}</div>` : ""}
     <div class="actions">${actions.join("")}<div class="right"><span>Collapse <span class="kbd">esc</span></span></div></div>
   </div>`;
 }
@@ -1173,6 +1160,7 @@ function renderKeys() {
   ) {
     requestUsageDetail("key", expanded);
   }
+  if (state.setupOpen) renderOpenCodeSetup();
 }
 
 function keyMenuItems(key) {
@@ -1193,6 +1181,12 @@ function keyMenuItems(key) {
     },
     { label: "Edit", action: "edit-key", shortcut: "E" },
     !revoked && { label: "Rotate", action: "rotate-key", shortcut: "R" },
+    active &&
+      modelsUrlForKey(key) && {
+        label: "Use with OpenCode",
+        action: "open-setup",
+        shortcut: "U",
+      },
     "separator",
     revoked
       ? {
@@ -1227,7 +1221,7 @@ function menuHtml(kind, id) {
 
 /* Usage inside expanded rows */
 
-function usagePanelHtml(label, table, columns, message = "", loading = false) {
+function usagePanelHtml(table, columns, message = "", loading = false) {
   const placeholder = loading
     ? Array.from(
         { length: 3 },
@@ -1235,7 +1229,10 @@ function usagePanelHtml(label, table, columns, message = "", loading = false) {
       ).join("")
     : `<p class="usage-note muted">${escapeHtml(message || "No usage in this window.")}</p>`;
   if (!(loading || message || table.body)) return "";
-  return `<div class="usage-panel"><div class="list-label">${label}${message ? `<span class="usage-status err" title="${escapeHtml(message)}">Unavailable</span>` : ""}</div><div class="list usage-table"><div class="row thead ${columns}">${table.head}</div>${table.body || placeholder}</div></div>`;
+  const status = message
+    ? ` <span class="usage-status err" title="${escapeHtml(message)}">Unavailable</span>`
+    : "";
+  return `<div class="usage-panel"><div class="list usage-table"><div class="row thead ${columns}"><span>${table.title}${status}</span>${table.head}</div>${table.body || placeholder}</div></div>`;
 }
 
 const DASHBOARD_LOADING_HTML = `<div class="kpis">${["Requests", "Success", "Tokens", "Cached input", "Avg latency"].map((label) => `<div class="kpi"><div class="kpi-label">${label}</div><div class="val"><span class="bone"></span></div><div class="sub">&nbsp;</div></div>`).join("")}</div><div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><span class="bone chart-bone"></span></div></div><div class="tables">${["By provider", "Top keys"].map((label) => `<div><div class="sh"><h2>${label}</h2></div><div class="list dashboard-table">${SKELETON_HTML}</div></div>`).join("")}</div>`;
@@ -1282,9 +1279,9 @@ function modelListHtml(rows, message, loading) {
     })
     .join("");
   return usagePanelHtml(
-    "By model",
     {
-      head: '<span>Model</span><span class="num">Requests</span><span class="num">Tokens</span><span class="num d">Cached</span><span class="num d">Latency</span>',
+      title: "Model",
+      head: '<span class="num">Requests</span><span class="num">Tokens</span><span class="num d">Cached</span><span class="num d">Latency</span>',
       body,
     },
     "t-model",
@@ -1309,9 +1306,9 @@ function keyListHtml(rows, totals, message, loading) {
     })
     .join("");
   return usagePanelHtml(
-    "By key",
     {
-      head: '<span>Key</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
+      title: "Key",
+      head: '<span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
       body,
     },
     "t-bykey",
@@ -1346,9 +1343,9 @@ function accountListHtml(rows, totals, message, loading) {
     })
     .join("");
   return usagePanelHtml(
-    "By account",
     {
-      head: '<span>Account</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
+      title: "Account",
+      head: '<span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
       body,
     },
     "t-bykey",
@@ -1408,18 +1405,52 @@ function renderPreservingForm(container, html) {
 
 /* OpenCode setup */
 
+// OpenCode v2 reads both from its background service, which provides the
+// kleis provider without /connect.
 function setupSnippet(key, { maskKey: masked = false } = {}) {
   return [
-    "# Terminal",
-    `export OPENCODE_MODELS_URL="${modelsUrlForKey(key)}"`,
-    "opencode models --refresh",
+    `opencode service set env OPENCODE_MODELS_URL "${modelsUrlForKey(key)}"`,
+    `opencode service set env KLEIS_API_KEY "${masked ? maskKey(key.key) : key.key}"`,
     "opencode",
-    "",
-    "# Inside OpenCode",
-    "/connect",
-    "# provider: kleis",
-    `# token: ${masked ? maskKey(key.key) : key.key}`,
   ].join("\n");
+}
+
+const setupKeys = () =>
+  state.keys.filter((key) => isKeyActive(key) && modelsUrlForKey(key));
+
+function renderOpenCodeSetup() {
+  const panel = $("#opencode-setup");
+  $("#btn-opencode")?.setAttribute("aria-expanded", String(state.setupOpen));
+  if (!panel) return;
+  panel.hidden = !state.setupOpen;
+  if (!state.setupOpen) {
+    panel.innerHTML = "";
+    return;
+  }
+  const keys = setupKeys();
+  const key =
+    keys.find((candidate) => candidate.id === state.setupKeyId) ?? keys[0];
+  const options = keys
+    .map(
+      (candidate) =>
+        `<option value="${candidate.id}"${candidate === key ? " selected" : ""}>${escapeHtml(keyName(candidate))}</option>`
+    )
+    .join("");
+  const body = key
+    ? `<pre class="snippet-block">${escapeHtml(setupSnippet(key, { maskKey: !state.revealedKeyIds.has(key.id) }))}</pre>
+      <p class="setup-note">Then choose a <span class="mono">kleis/\u2026</span> model with <span class="mono">/models</span>. Needs OpenCode v2.</p>`
+    : '<p class="setup-note">No active keys yet. Create one first.</p>';
+  panel.innerHTML = `<div class="setup">
+    <div class="setup-head">
+      <span class="setup-title">Use with OpenCode</span>
+      ${keys.length ? `<select id="setup-key" class="field-input" aria-label="Key">${options}</select>` : ""}
+      <div class="right">
+        ${key ? `<button class="link small" type="button" data-action="copy-setup" data-key-id="${key.id}">Copy commands</button>` : ""}
+        <button class="link small" type="button" data-action="close-setup">Close</button>
+      </div>
+    </div>
+    ${body}
+  </div>`;
 }
 
 /* Connect */
@@ -1870,5 +1901,6 @@ export {
   renderKeys,
   renderOAuthFlow,
   renderUsageSlot,
+  renderOpenCodeSetup,
   setupSnippet,
 };

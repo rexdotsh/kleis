@@ -59,7 +59,8 @@ const state = {
   editingKeyId: null,
   editingAccountId: null,
   creatingKey: false,
-  openSnippets: new Set(),
+  setupOpen: false,
+  setupKeyId: null,
   usageDetails: new Map(),
   visibleUsageDetails: new Map(),
   activeOAuth: null,
@@ -1827,7 +1828,8 @@ function logout() {
   state.editingKeyId = null;
   state.editingAccountId = null;
   state.creatingKey = false;
-  state.openSnippets.clear();
+  state.setupOpen = false;
+  state.setupKeyId = null;
   state.usageDetails = new Map();
   state.visibleUsageDetails = new Map();
   for (const timer of prefetchTimers.values()) clearTimeout(timer);

@@ -1738,14 +1738,6 @@ input[type="checkbox"].toggle:checked::after {
   grid-column: 1 / -1;
   font-size: 12px;
 }
-.list-label {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 4px;
-  font-size: 12px;
-  line-height: 16px;
-  color: var(--muted);
-}
 .usage-status {
   font-size: 11px;
 }
@@ -1778,31 +1770,39 @@ input[type="checkbox"].toggle:checked::after {
 :is(#accounts-list, #keys-list) .usage-slot .row[role="button"]:hover {
   background: var(--hover);
 }
-.snippet-head {
+#opencode-setup {
+  margin-top: 16px;
+}
+.setup {
+  padding: 16px;
+  background: var(--surface);
+  border-radius: 8px;
+  animation: detail-in 220ms var(--ease-out);
+}
+.setup-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.setup-title {
+  font-weight: 500;
+}
+.setup-head select {
+  width: auto;
+  min-width: 180px;
+  height: 28px;
+}
+.setup-head .right {
   display: flex;
   gap: 16px;
-  align-items: center;
-  margin-bottom: 4px;
+  margin-left: auto;
 }
-.snippet-toggle {
-  display: inline-flex;
-  gap: 4px;
-  align-items: center;
-  margin-right: auto;
-  padding: 0;
+.setup-note {
+  margin-top: 10px;
   font-size: 12px;
-  line-height: 16px;
   color: var(--muted);
-  background: none;
-  border: 0;
-  pointer-events: none;
-}
-.snippet-toggle svg {
-  display: none;
-  transition: transform 120ms ease;
-}
-.snippet.open .snippet-toggle svg {
-  transform: rotate(90deg);
 }
 .snippet-block {
   padding: 12px;
@@ -2045,6 +2045,12 @@ input[type="checkbox"].toggle:checked::after {
 }
 
 @media (max-width: 640px) {
+  .wide-only {
+    display: none;
+  }
+  .usage-table .thead {
+    display: grid;
+  }
   .access-row {
     grid-template-columns: minmax(0, 1fr) auto;
     row-gap: 8px;
@@ -2229,24 +2235,6 @@ input[type="checkbox"].toggle:checked::after {
   }
   .fact .bar {
     margin: 6px 0 2px;
-  }
-  .snippet-toggle {
-    min-height: 32px;
-    font-size: 13px;
-    pointer-events: auto;
-  }
-  .snippet-toggle svg {
-    display: block;
-  }
-  .snippet:not(.open) .snippet-block {
-    display: none;
-  }
-  .snippet {
-    margin: 0 -16px;
-    padding: 4px 16px;
-  }
-  .snippet.open {
-    padding-bottom: 16px;
   }
   .create-form {
     padding: 16px;

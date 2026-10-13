@@ -51,6 +51,7 @@ import {
 } from "./app-data.js";
 import {
   menuHtml,
+  renderOpenCodeSetup,
   renderAccounts,
   renderDashboard,
   renderKeys,
@@ -85,10 +86,7 @@ const keyActions = {
       toast("Scoped models URL unavailable", "error");
     }
   },
-  "copy-snippet": (id, button) => {
-    const key = keyById(id);
-    if (key) copyToClipboard(setupSnippet(key), button, "Snippet copied");
-  },
+  "open-setup": (id) => openOpenCodeSetup(id),
   "toggle-key": (id) => {
     if (state.revealedKeyIds.has(id)) {
       state.revealedKeyIds.delete(id);
@@ -96,11 +94,6 @@ const keyActions = {
       state.revealedKeyIds.add(id);
       state.expandedKeyId = id;
     }
-    renderKeys();
-  },
-  "toggle-snippet": (id) => {
-    if (state.openSnippets.has(id)) state.openSnippets.delete(id);
-    else state.openSnippets.add(id);
     renderKeys();
   },
   "edit-key": (id) => startEditKey(id),
@@ -545,6 +538,42 @@ $("#dash-content").addEventListener("click", (event) => {
   if (row) showKey(row.dataset.keyId);
 });
 
+function openOpenCodeSetup(id = null) {
+  state.setupKeyId =
+    id ?? state.setupKeyId ?? state.expandedKeyId ?? state.cursorKeyId;
+  state.setupOpen = true;
+  renderOpenCodeSetup();
+  $("#opencode-setup").scrollIntoView({ block: "nearest" });
+}
+
+$("#btn-opencode").addEventListener("click", () => {
+  if (state.setupOpen) {
+    state.setupOpen = false;
+    renderOpenCodeSetup();
+  } else {
+    openOpenCodeSetup();
+  }
+});
+
+$("#opencode-setup").addEventListener("change", (event) => {
+  if (event.target.id !== "setup-key") return;
+  state.setupKeyId = event.target.value;
+  renderOpenCodeSetup();
+});
+
+$("#opencode-setup").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  if (button.dataset.action === "close-setup") {
+    state.setupOpen = false;
+    renderOpenCodeSetup();
+    $("#btn-opencode").focus();
+    return;
+  }
+  const key = keyById(button.dataset.keyId);
+  if (key) copyToClipboard(setupSnippet(key), button, "Commands copied");
+});
+
 $("#keys-foot").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-action]");
   if (!button) return;
@@ -726,6 +755,7 @@ const KEY_SHORTCUTS = {
   s: "toggle-key",
   e: "edit-key",
   r: "rotate-key",
+  u: "open-setup",
   Backspace: "revoke-key",
   Delete: "revoke-key",
 };
