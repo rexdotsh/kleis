@@ -156,8 +156,10 @@ async function setExpandedAccount(id) {
   if (state.editingAccountId !== id) state.editingAccountId = null;
   if (id) state.cursorAccountId = id;
   state.enteringDetail = id ? `account:${id}` : null;
+  state.motionAnchor = id ? `account:${id}` : null;
   renderAccounts();
   state.enteringDetail = null;
+  state.motionAnchor = null;
   if (id) revealDetail("#accounts-list", id);
   return true;
 }
@@ -179,8 +181,10 @@ async function setExpandedKey(id) {
   if (state.editingKeyId !== id) state.editingKeyId = null;
   if (id) state.cursorKeyId = id;
   state.enteringDetail = id ? `key:${id}` : null;
+  state.motionAnchor = id ? `key:${id}` : null;
   renderKeys();
   state.enteringDetail = null;
+  state.motionAnchor = null;
   if (id) revealDetail("#keys-list", id);
   return true;
 }

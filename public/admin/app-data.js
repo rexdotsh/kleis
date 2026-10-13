@@ -56,6 +56,7 @@ const state = {
   cursorAccountId: null,
   cursorKeyId: null,
   enteringDetail: null,
+  motionAnchor: null,
   editingKeyId: null,
   editingAccountId: null,
   creatingKey: false,

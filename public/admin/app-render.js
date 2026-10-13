@@ -67,7 +67,16 @@ const detailResizes = new WeakMap();
 
 // Re-renders replace the list's HTML, so rows are moved from where they were
 // to where they now are (FLIP); rows that are new simply appear.
-function renderWithMotion(container, update) {
+const flipAnimations = new WeakMap();
+
+// `anchor` names a row (its data-flip key) that should stay put on screen;
+// the page scrolls to absorb height changes above it.
+function renderWithMotion(container, update, { anchor = null } = {}) {
+  const anchorTop = anchor
+    ? container
+        .querySelector?.(`[data-flip="${anchor}"]`)
+        ?.getBoundingClientRect().top
+    : undefined;
   const before = new Map();
   const details = new Map();
   const animate = prefersMotion() && container.querySelectorAll;
@@ -97,7 +106,21 @@ function renderWithMotion(container, update) {
     detailResizes.get(detail)?.();
   }
   update();
+  if (anchorTop !== undefined) {
+    const top = container
+      .querySelector(`[data-flip="${anchor}"]`)
+      ?.getBoundingClientRect().top;
+    if (top !== undefined && Math.abs(top - anchorTop) >= 1) {
+      window.scrollBy({ top: top - anchorTop, behavior: "instant" });
+    }
+  }
   if (!(animate && before.size)) return;
+  // Positions were read mid-slide; stop those slides so the new layout is
+  // measured where it really is, and the next slide starts from where the
+  // element was shown.
+  for (const element of container.querySelectorAll("[data-flip]")) {
+    flipAnimations.get(element)?.cancel();
+  }
   let resizing = false;
   for (const detail of container.querySelectorAll(
     ".detail:not(.inline-form)"
@@ -107,23 +130,32 @@ function renderWithMotion(container, update) {
   }
   let lead = null;
   let leadDistance = 0;
+  const offsets = new Map();
   for (const element of container.querySelectorAll("[data-flip]")) {
     const top = before.get(element.dataset.flip);
-    if (top === undefined) continue;
-    const offset = top - element.getBoundingClientRect().top;
+    // A newly opened detail travels with the row it belongs to.
+    const offset =
+      top === undefined
+        ? (offsets.get(element.previousElementSibling) ?? 0)
+        : top - element.getBoundingClientRect().top;
     if (Math.abs(offset) < 1) continue;
+    offsets.set(element, offset);
     // Moving rows are opaque so they slide over the rows they pass.
     element.classList.add("flipping");
-    const done = () => element.classList.remove("flipping", "flipping-lead");
-    element
-      .animate(
-        [{ transform: `translateY(${offset}px)` }, { transform: "none" }],
-        {
-          duration: resizing ? 200 : 260,
-          easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
-        }
-      )
-      .finished.then(done, done);
+    const slide = element.animate(
+      [{ transform: `translateY(${offset}px)` }, { transform: "none" }],
+      {
+        duration: resizing ? 200 : 260,
+        easing: "cubic-bezier(0.2, 0.8, 0.2, 1)",
+      }
+    );
+    flipAnimations.set(element, slide);
+    const done = () => {
+      if (flipAnimations.get(element) !== slide) return;
+      flipAnimations.delete(element);
+      element.classList.remove("flipping", "flipping-lead");
+    };
+    slide.finished.then(done, done);
     if (Math.abs(offset) > leadDistance) {
       lead = element;
       leadDistance = Math.abs(offset);
@@ -161,6 +193,9 @@ function animateDetailResize(detail, previous) {
   }
   // The temporary shell keeps sibling FLIP motion compositor-only while the
   // detail itself grows; it is removed as soon as the resize finishes.
+  // Moving the detail into the shell would replay its opening animation; the
+  // height animation below continues the reveal instead.
+  detail.classList.remove("entering");
   const shell = document.createElement("div");
   shell.className = "detail-resize";
   shell.style.height = `${height}px`;
@@ -200,7 +235,12 @@ const listSkeletonRows = (columns) =>
     () =>
       `<div class="row skeleton ${columns}"><span class="bone"></span><span class="l2">&nbsp;</span></div>`
   ).join("");
-const ACCOUNT_LOADING_HTML = `<div class="row thead t-acc"><span>Account</span><span class="d">Limits</span><span class="num d">Token expires</span><span class="num">Requests</span></div>${PROVIDERS.map((provider) => `<div class="group"><span class="cap">${providerName(provider)}</span></div><div class="group-rows">${listSkeletonRows("t-acc")}</div>`).join("")}`;
+const accountColumnsHtml = (requests = "Requests") =>
+  `<span class="col d">Limits</span><span class="col num d">Token expires</span><span class="col num">${requests}</span><span></span>`;
+const ACCOUNT_LOADING_HTML = PROVIDERS.map(
+  (provider) =>
+    `<div class="group t-acc"><span class="group-name"><span class="cap">${providerName(provider)}</span></span>${accountColumnsHtml()}</div><div class="group-rows">${listSkeletonRows("t-acc")}</div>`
+).join("");
 const KEY_LOADING_HTML = `<div class="row thead t-key"><span>Label</span><span class="d">Key</span><span class="d">Access</span><span class="num">Requests</span><span class="num d">Last used</span></div>${listSkeletonRows("t-key")}${listSkeletonRows("t-key")}`;
 
 const kbd = (key) => `<span class="kbd" aria-hidden="true">${key}</span>`;
@@ -736,11 +776,13 @@ function accountMatches(account, filter) {
   ].some((value) => value && String(value).toLowerCase().includes(filter));
 }
 
+// Each provider's heading row also labels the columns below it.
 function groupHtml(provider, status, count) {
   const enabled = status?.enabled !== false;
   const name = providerName(provider);
-  return `<div class="group" data-flip="group:${provider}"><span class="cap">${escapeHtml(name)}</span><span class="muted small">${count}</span>
-    <div class="right">${enabled ? "Enabled" : "Disabled"}<button class="switch" type="button" role="switch" aria-checked="${enabled}" aria-label="${escapeHtml(name)} enabled" data-action="toggle-provider" data-provider="${provider}" data-enabled="${enabled ? "false" : "true"}"></button></div>
+  return `<div class="group t-acc" data-flip="group:${provider}">
+    <span class="group-name"><span class="cap">${escapeHtml(name)}</span><span class="muted small">${count}</span><button class="switch" type="button" role="switch" aria-checked="${enabled}" aria-label="${escapeHtml(name)} enabled" title="${enabled ? "Enabled" : "Disabled"}" data-action="toggle-provider" data-provider="${provider}" data-enabled="${enabled ? "false" : "true"}"></button>${enabled ? "" : '<span class="tag">Disabled</span>'}</span>
+    ${accountColumnsHtml(`Requests ${escapeHtml(usageWindowLabel(state.accountUsageWindowMs))}`)}
   </div>`;
 }
 
@@ -792,12 +834,9 @@ function renderAccounts() {
     .join("");
 
   const list = $("#accounts-list");
-  renderWithMotion(list, () =>
-    renderPreservingForm(
-      list,
-      `<div class="row thead t-acc"><span>Account</span><span class="d">Limits</span><span class="num d">Token expires</span><span class="num">Requests ${escapeHtml(usageWindowLabel(state.accountUsageWindowMs))}</span><span></span></div>${groups}`
-    )
-  );
+  renderWithMotion(list, () => renderPreservingForm(list, groups), {
+    anchor: state.motionAnchor,
+  });
   const expanded = state.expandedAccountId;
   if (
     expanded &&
@@ -1146,8 +1185,12 @@ function renderKeys() {
   }
 
   const list = $("#keys-list");
-  renderWithMotion(list, () =>
-    renderPreservingForm(list, `${createForm}${body}`)
+  renderWithMotion(
+    list,
+    () => renderPreservingForm(list, `${createForm}${body}`),
+    {
+      anchor: state.motionAnchor,
+    }
   );
   if (state.creatingKey) syncScopedAccountAvailability("create");
   if (state.editingKeyId) syncScopedAccountAvailability("edit");

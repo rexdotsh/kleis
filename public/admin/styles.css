@@ -884,26 +884,25 @@ button.row:hover {
   background: var(--err);
 }
 .group {
-  display: flex;
+  display: grid;
+  gap: 16px;
   align-items: center;
-  gap: 8px;
   height: 40px;
   padding: 0 12px;
 }
 .group-rows + .group {
   margin-top: 16px;
 }
-.cap {
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.group .right {
+.group-name {
   display: flex;
-  align-items: center;
   gap: 8px;
-  margin-left: auto;
+  align-items: center;
+  min-width: 0;
+}
+.group-name .switch {
+  margin-left: 4px;
+}
+.group .col {
   font-size: 12px;
   color: var(--muted);
 }
@@ -2045,6 +2044,12 @@ input[type="checkbox"].toggle:checked::after {
 }
 
 @media (max-width: 640px) {
+  .group {
+    display: flex;
+  }
+  .group .col {
+    display: none;
+  }
   .wide-only {
     display: none;
   }
@@ -2123,7 +2128,7 @@ input[type="checkbox"].toggle:checked::after {
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  :is(.t-acc, .t-key, .attn):not(.thead) {
+  :is(.t-acc, .t-key, .attn):not(.thead, .group) {
     align-content: center;
     row-gap: 2px;
     height: auto;
