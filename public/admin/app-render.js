@@ -62,6 +62,54 @@ function quotaTimestamp(value) {
 
 const hasTraffic = (usage) => normalizeUsage(usage).requestCount > 0;
 
+const prefersMotion = () =>
+  globalThis.matchMedia?.("(prefers-reduced-motion: no-preference)").matches ??
+  false;
+
+// Re-renders replace the list's HTML, so rows are moved from where they were
+// to where they now are (FLIP); rows that are new simply appear.
+function renderWithMotion(container, update) {
+  const before = new Map();
+  const animate = prefersMotion() && container.querySelectorAll;
+  if (animate) {
+    for (const element of container.querySelectorAll("[data-flip]")) {
+      before.set(element.dataset.flip, element.getBoundingClientRect().top);
+    }
+  }
+  update();
+  if (!(animate && before.size)) return;
+  let lead = null;
+  let leadDistance = 0;
+  for (const element of container.querySelectorAll("[data-flip]")) {
+    const top = before.get(element.dataset.flip);
+    if (top === undefined) continue;
+    const offset = top - element.getBoundingClientRect().top;
+    if (Math.abs(offset) < 1) continue;
+    // Moving rows are opaque so they slide over the rows they pass.
+    element.classList.add("flipping");
+    const done = () => element.classList.remove("flipping", "flipping-lead");
+    element
+      .animate(
+        [{ transform: `translateY(${offset}px)` }, { transform: "none" }],
+        { duration: 260, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" }
+      )
+      .finished.then(done, done);
+    if (Math.abs(offset) > leadDistance) {
+      lead = element;
+      leadDistance = Math.abs(offset);
+    }
+  }
+  lead?.classList.add("flipping-lead");
+}
+
+const SKELETON_HTML = Array.from(
+  { length: 6 },
+  (_, index) =>
+    `<div class="row skeleton"><span class="bone" style="width:${[46, 38, 52, 34, 44, 40][index]}%"></span></div>`
+).join("");
+
+const kbd = (key) => `<span class="kbd" aria-hidden="true">${key}</span>`;
+
 function failedCount(metrics) {
   return (
     metrics.proxyErrorCount +
@@ -247,30 +295,68 @@ function tokenCell(account) {
   return { text: untilText(account.expiresAt), cls: "muted" };
 }
 
+// Rows show the main windows (5h, 7d); model-specific windows stay in the
+// expanded row.
+const mainWindows = (account) =>
+  accountWindows(account)
+    .filter((window) => !window.named)
+    .slice(0, 2);
+
+function limitMetersHtml(account) {
+  const windows = mainWindows(account);
+  if (!windows.length) {
+    if (account.quota?.error) return '<span class="warn">Sync failed</span>';
+    return account.quota
+      ? '<span class="muted">\u2014</span>'
+      : '<span class="meter-pending" aria-label="Loading limits"></span>';
+  }
+  return windows
+    .map((window) => {
+      const severity = limitSeverity(window.percent);
+      const percent = Math.round(window.percent);
+      const reset =
+        window.resetsAt && window.resetsAt > Date.now()
+          ? `, resets ${untilText(window.resetsAt)}`
+          : "";
+      return `<span class="meter${severity ? ` ${severity}` : ""}" title="${escapeHtml(`${window.label} window at ${percent}%${reset}`)}"><span class="meter-label">${escapeHtml(window.label)}</span><span class="meter-bar"><i style="width:${window.percent}%"></i></span><span class="meter-pct">${percent}%</span></span>`;
+    })
+    .join("");
+}
+
+function limitSummaryText(account) {
+  const windows = mainWindows(account);
+  if (!windows.length) {
+    return account.quota?.error ? '<span class="warn">sync failed</span>' : "";
+  }
+  return windows
+    .map((window) => {
+      const severity = limitSeverity(window.percent);
+      const text = `${escapeHtml(window.label)} ${Math.round(window.percent)}%`;
+      return severity ? `<span class="${severity}">${text}</span>` : text;
+    })
+    .join(" \u00b7 ");
+}
+
 function accountRowHtml(account, serving) {
   const name = accountName(account);
   const open = state.expandedAccountId === account.id;
   const issues = serving ? accountIssues(account) : [];
-  const dot = serving ? issues[0]?.severity || "" : "off";
-  const tightest = tightestWindow(account);
-  const limitClass = tightest ? limitSeverity(tightest.percent) || "muted" : "";
-  const limitText = tightest
-    ? `${escapeHtml(tightest.label)} ${Math.round(tightest.percent)}%`
-    : account.quota?.error
-      ? "Sync failed"
-      : "\u2014";
+  let dot = "off";
+  if (serving)
+    dot = issues[0]?.severity || (account.isPrimary ? "primary" : "");
   const token = tokenCell(account);
   const usage = accountUsageForId(account.id);
   const phoneParts = [
-    `<span class="${limitClass || (account.quota?.error ? "warn" : "")}">${limitText}</span>`,
+    limitSummaryText(account),
     token.cls === "err"
       ? '<span class="err">token expired</span>'
       : `expires ${escapeHtml(token.text)}`,
-  ];
+  ].filter(Boolean);
+  const cursor = state.cursorAccountId === account.id ? " cursor" : "";
 
-  return `<div class="row t-acc${open ? " open" : ""}${serving ? "" : " dim"}" data-account-id="${account.id}" tabindex="0" role="button" aria-expanded="${open}">
-    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag">Primary</span>' : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}</span>
-    <span class="num d ${limitClass || (account.quota?.error ? "warn" : "muted")}">${limitText}</span>
+  return `<div class="row t-acc${open ? " open" : ""}${serving ? "" : " dim"}${cursor}" data-account-id="${account.id}" data-flip="account:${account.id}" tabindex="0" role="button" aria-expanded="${open}">
+    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag tag-primary">Primary</span>' : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}</span>
+    <span class="meters d">${limitMetersHtml(account)}</span>
     <span class="num d ${token.cls}">${escapeHtml(token.text)}</span>
     <span class="num">${requestsCellHtml(usage)}</span>
     <button class="more" type="button" data-menu="account" data-account-id="${account.id}" aria-label="Actions for ${escapeHtml(name)}" aria-haspopup="menu" aria-expanded="false">${icon("more")}</button>
@@ -535,12 +621,14 @@ function accountDetailHtml(account) {
   if (state.editingAccountId === account.id) return accountEditHtml(account);
   const supportsOAuth =
     account.provider === "codex" || account.provider === "claude";
-  const button = (label, action, cls = "btn btn-ghost btn-sm") =>
-    `<button class="${cls}" data-action="${action}" data-account-id="${account.id}" type="button">${label}</button>`;
+  const button = (label, action, shortcut, cls = "btn btn-ghost btn-sm") =>
+    `<button class="${cls}" data-action="${action}" data-account-id="${account.id}" type="button">${label}${kbd(shortcut)}</button>`;
   const synced = account.quota?.fetchedAt
     ? `<span>Limits synced ${escapeHtml(relativeTime(account.quota.fetchedAt))}</span>`
     : "";
-  return `<div class="detail" data-detail-for="${account.id}">
+  const entering =
+    state.enteringDetail === `account:${account.id}` ? " entering" : "";
+  return `<div class="detail${entering}" data-detail-for="${account.id}" data-flip="detail:${account.id}">
     <div class="facts">${[
       ...limitFacts(account),
       creditsFact(account),
@@ -550,11 +638,11 @@ function accountDetailHtml(account) {
     ].join("")}</div>
     ${hasTraffic(accountUsageForId(account.id)) ? `<div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>` : ""}
     <div class="actions">
-      ${needsReauthorization(account) && supportsOAuth ? button("Reauthorize", "reauthorize-account", "btn btn-primary btn-sm") : ""}
-      ${button("Refresh token", "refresh-account")}
-      ${account.isPrimary ? "" : button("Make primary", "set-primary")}
-      ${button("Edit", "edit-account")}
-      ${button("Remove", "delete-account", "btn btn-ghost btn-sm btn-remove")}
+      ${needsReauthorization(account) && supportsOAuth ? button("Reauthorize", "reauthorize-account", "A", "btn btn-primary btn-sm") : ""}
+      ${account.isPrimary ? "" : button("Make primary", "set-primary", "P")}
+      ${button("Refresh token", "refresh-account", "R")}
+      ${button("Edit", "edit-account", "E")}
+      ${button("Remove", "delete-account", "Del", "btn btn-ghost btn-sm btn-remove")}
       <div class="right">${synced}<span>Collapse <span class="kbd">esc</span></span></div>
     </div>
   </div>`;
@@ -573,7 +661,7 @@ function accountMatches(account, filter) {
 function groupHtml(provider, status, count) {
   const enabled = status?.enabled !== false;
   const name = providerName(provider);
-  return `<div class="group"><span class="cap">${escapeHtml(name)}</span><span class="muted small">${count}</span>
+  return `<div class="group" data-flip="group:${provider}"><span class="cap">${escapeHtml(name)}</span><span class="muted small">${count}</span>
     <div class="right">${enabled ? "Enabled" : "Disabled"}<button class="switch" type="button" role="switch" aria-checked="${enabled}" aria-label="${escapeHtml(name)} enabled" data-action="toggle-provider" data-provider="${provider}" data-enabled="${enabled ? "false" : "true"}"></button></div>
   </div>`;
 }
@@ -625,9 +713,12 @@ function renderAccounts() {
     })
     .join("");
 
-  renderPreservingForm(
-    $("#accounts-list"),
-    `<div class="row thead t-acc"><span>Account</span><span class="num d">Tightest limit</span><span class="num d">Token expires</span><span class="num">Requests ${escapeHtml(usageWindowLabel(state.accountUsageWindowMs))}</span><span></span></div>${groups}`
+  const list = $("#accounts-list");
+  renderWithMotion(list, () =>
+    renderPreservingForm(
+      list,
+      `<div class="row thead t-acc"><span>Account</span><span class="d">Limits</span><span class="num d">Token expires</span><span class="num">Requests ${escapeHtml(usageWindowLabel(state.accountUsageWindowMs))}</span><span></span></div>${groups}`
+    )
   );
   const expanded = state.expandedAccountId;
   if (
@@ -643,23 +734,23 @@ function accountMenuItems(account) {
   const supportsOAuth =
     account.provider === "codex" || account.provider === "claude";
   return [
+    !account.isPrimary && {
+      label: "Make primary",
+      action: "set-primary",
+      shortcut: "P",
+    },
     { label: "Refresh token", action: "refresh-account", shortcut: "R" },
     supportsOAuth && {
       label: "Reauthorize",
       action: "reauthorize-account",
       shortcut: "A",
     },
-    !account.isPrimary && {
-      label: "Make primary",
-      action: "set-primary",
-      shortcut: "P",
-    },
     { label: "Edit", action: "edit-account", shortcut: "E" },
     "separator",
     {
       label: "Remove",
       action: "delete-account",
-      shortcut: "\u232b",
+      shortcut: "Del",
       danger: true,
     },
   ];
@@ -811,8 +902,8 @@ function keyDetailHtml(key) {
   const revoked = Boolean(key.revokedAt);
   const active = isKeyActive(key);
   const revealed = state.revealedKeyIds.has(key.id);
-  const button = (label, action, cls = "btn btn-ghost btn-sm") =>
-    `<button class="${cls}" data-action="${action}" data-key-id="${key.id}" type="button">${label}</button>`;
+  const button = (label, action, shortcut = "", cls = "btn btn-ghost btn-sm") =>
+    `<button class="${cls}" data-action="${action}" data-key-id="${key.id}" type="button">${label}${shortcut ? kbd(shortcut) : ""}</button>`;
   const keyLine = revealed
     ? `<div class="key-line"><code>${escapeHtml(key.key)}</code>${button("Copy", "copy-key")}${button("Hide", "toggle-key")}</div>`
     : "";
@@ -830,17 +921,28 @@ function keyDetailHtml(key) {
       : "";
   const actions = revoked
     ? [
-        button("Edit", "edit-key"),
-        button("Delete", "delete-key", "btn btn-ghost btn-sm btn-remove"),
+        button("Edit", "edit-key", "E"),
+        button(
+          "Delete",
+          "delete-key",
+          "Del",
+          "btn btn-ghost btn-sm btn-remove"
+        ),
       ]
     : [
-        button("Copy key", "copy-key"),
-        button(revealed ? "Hide key" : "Show key", "toggle-key"),
-        button("Edit", "edit-key"),
-        button("Rotate", "rotate-key"),
-        button("Revoke", "revoke-key", "btn btn-ghost btn-sm btn-remove"),
+        button("Copy key", "copy-key", "C"),
+        button(revealed ? "Hide key" : "Show key", "toggle-key", "S"),
+        button("Edit", "edit-key", "E"),
+        button("Rotate", "rotate-key", "R"),
+        button(
+          "Revoke",
+          "revoke-key",
+          "Del",
+          "btn btn-ghost btn-sm btn-remove"
+        ),
       ];
-  return `<div class="detail" data-detail-for="${key.id}">
+  const entering = state.enteringDetail === `key:${key.id}` ? " entering" : "";
+  return `<div class="detail${entering}" data-detail-for="${key.id}" data-flip="detail:${key.id}">
     ${keyLine}
     <div class="facts">${keyFacts(key)}</div>
     ${
@@ -871,8 +973,9 @@ function keyRowHtml(key) {
     ? relativeTime(metrics.lastRequestAt)
     : "\u2014";
   const name = keyName(key);
+  const cursor = state.cursorKeyId === key.id ? " cursor" : "";
 
-  return `<div class="row t-key${open ? " open" : ""}${active || open ? "" : " dim"}" data-key-id="${key.id}" tabindex="0" role="button" aria-expanded="${open}">
+  return `<div class="row t-key${open ? " open" : ""}${active || open ? "" : " dim"}${cursor}" data-key-id="${key.id}" data-flip="key:${key.id}" tabindex="0" role="button" aria-expanded="${open}">
     <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${tag ? `<span class="tag${expiringSoon ? " warn" : ""}">${escapeHtml(tag)}</span>` : ""}</span>
     <span class="mono muted ellipsis d">${escapeHtml(maskKey(key.key))}</span>
     <span class="ellipsis d">${keyScopeHtml(key)}</span>
@@ -948,7 +1051,10 @@ function renderKeys() {
       : '<div class="empty-state"><p>No active API keys.</p><button class="btn btn-primary btn-sm" type="button" data-action="open-create-key">Create a key</button></div>';
   }
 
-  renderPreservingForm($("#keys-list"), `${createForm}${body}`);
+  const list = $("#keys-list");
+  renderWithMotion(list, () =>
+    renderPreservingForm(list, `${createForm}${body}`)
+  );
   if (state.creatingKey) syncScopedAccountAvailability("create");
   if (state.editingKeyId) syncScopedAccountAvailability("edit");
   const expanded = state.expandedKeyId;
@@ -985,13 +1091,13 @@ function keyMenuItems(key) {
       ? {
           label: "Delete",
           action: "delete-key",
-          shortcut: "\u232b",
+          shortcut: "Del",
           danger: true,
         }
       : {
           label: "Revoke",
           action: "revoke-key",
-          shortcut: "\u232b",
+          shortcut: "Del",
           danger: true,
         },
   ];
@@ -1006,7 +1112,7 @@ function menuHtml(kind, id) {
   return items
     .map((item) => {
       if (item === "separator") return "<hr>";
-      const shortcut = item.shortcut === "\u232b" ? "Backspace" : item.shortcut;
+      const shortcut = item.shortcut === "Del" ? "Backspace" : item.shortcut;
       return `<button class="menu-item${item.danger ? " danger" : ""}" type="button" role="menuitem" data-action="${item.action}" data-${kind}-id="${id}" data-shortcut="${shortcut}"><span>${item.label}</span><span class="kbd">${item.shortcut}</span></button>`;
     })
     .join("");
@@ -1566,6 +1672,7 @@ function renderDashboard(data) {
 
 export {
   DETAIL_LOADING_HTML,
+  SKELETON_HTML,
   menuHtml,
   renderAccounts,
   renderAttention,

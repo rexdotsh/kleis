@@ -1,5 +1,6 @@
 import {
   DETAIL_LOADING_HTML,
+  SKELETON_HTML,
   renderAccounts,
   renderDashboard,
   renderKeys,
@@ -44,6 +45,9 @@ const state = {
   expandedAccountId: null,
   showAllReauthorize: false,
   expandedKeyId: null,
+  cursorAccountId: null,
+  cursorKeyId: null,
+  enteringDetail: null,
   editingKeyId: null,
   editingAccountId: null,
   creatingKey: false,
@@ -105,15 +109,29 @@ async function api(path, options = {}) {
   return body;
 }
 
-function toast(message, type = "success") {
+function toast(message, type = "success", action = null) {
   const el = document.createElement("div");
   el.className = `toast ${type}`;
-  el.textContent = message;
-  $("#toast-container").appendChild(el);
-  setTimeout(() => {
+  const text = document.createElement("span");
+  text.textContent = message;
+  el.append(text);
+  const dismiss = () => {
     el.classList.add("removing");
-    setTimeout(() => el.remove(), 150);
-  }, 3500);
+    setTimeout(() => el.remove(), 180);
+  };
+  if (action) {
+    const button = document.createElement("button");
+    button.className = "toast-action";
+    button.type = "button";
+    button.textContent = action.label;
+    button.addEventListener("click", () => {
+      dismiss();
+      action.run();
+    });
+    el.append(button);
+  }
+  $("#toast-container").appendChild(el);
+  setTimeout(dismiss, action ? 6000 : 3500);
 }
 
 let confirmResolve = null;
@@ -420,9 +438,8 @@ function switchToTab(name) {
 
 function showLoading(containerId) {
   const el = $(`#${containerId}`);
-  if (el && !el.querySelector(".loading-indicator")) {
-    el.innerHTML =
-      '<div class="loading-indicator"><span class="spinner spinner-lg"></span></div>';
+  if (el && !el.querySelector(".skeleton")) {
+    el.innerHTML = SKELETON_HTML;
   }
 }
 
@@ -812,21 +829,42 @@ async function loadKeys() {
   }
 }
 
-async function setPrimary(id) {
-  const account = accountById(id);
-  const name = account?.label || account?.accountId || id;
-  const confirmed = await showConfirm(
-    "Make primary account?",
-    `Route ${providerLabel(account?.provider)} requests to "${name}" unless a key pins another account.`,
-    "Make primary"
-  );
-  if (!confirmed) return;
+const markPrimary = (provider, id) => {
+  for (const account of state.accounts) {
+    if (account.provider === provider) account.isPrimary = account.id === id;
+  }
+};
 
+// Switches at once and rolls back if the server refuses; the toast offers
+// an undo instead of asking first.
+async function setPrimary(id, { isUndo = false } = {}) {
+  const account = accountById(id);
+  if (!account || account.isPrimary) return;
+  const previous = state.accounts.find(
+    (candidate) =>
+      candidate.provider === account.provider && candidate.isPrimary
+  );
+  const name = account.label || account.accountId || id;
+  markPrimary(account.provider, id);
+  renderAccounts();
+  document
+    .querySelector(`#accounts-list [data-account-id="${id}"] .dot.primary`)
+    ?.classList.add("pop");
   try {
     await api(`/admin/accounts/${id}/primary`, { method: "POST" });
-    toast("Account set as primary");
-    await loadAccounts();
+    toast(
+      `${name} is now the primary ${providerLabel(account.provider)} account`,
+      "success",
+      previous && !isUndo
+        ? {
+            label: "Undo",
+            run: () => setPrimary(previous.id, { isUndo: true }),
+          }
+        : null
+    );
   } catch (e) {
+    markPrimary(account.provider, previous?.id ?? null);
+    renderAccounts();
     toast(e.message, "error");
   }
 }
@@ -842,10 +880,17 @@ async function toggleProvider(provider, enabled) {
     if (!confirmed) return;
   }
 
-  const btn = document.querySelector(
-    `[data-action="toggle-provider"][data-provider="${provider}"]`
+  const status = state.providerStatuses.find(
+    (entry) => entry.provider === provider
   );
-  if (btn) btn.disabled = true;
+  const previous = status?.enabled;
+  if (status) status.enabled = enabled;
+  document
+    .querySelector(
+      `[data-action="toggle-provider"][data-provider="${provider}"]`
+    )
+    ?.setAttribute("aria-checked", String(enabled));
+  setTimeout(renderAccounts, 180);
   try {
     await api(`/admin/accounts/providers/${provider}`, {
       method: "PATCH",
@@ -854,8 +899,9 @@ async function toggleProvider(provider, enabled) {
     toast(`${providerLabel(provider)} ${enabled ? "enabled" : "disabled"}`);
     await loadAccounts();
   } catch (e) {
+    if (status) status.enabled = previous;
+    renderAccounts();
     toast(e.message, "error");
-    if (btn) btn.disabled = false;
   }
 }
 
@@ -1602,6 +1648,8 @@ function logout() {
   state.expandedAccountId = null;
   state.showAllReauthorize = false;
   state.expandedKeyId = null;
+  state.cursorAccountId = null;
+  state.cursorKeyId = null;
   state.editingKeyId = null;
   state.editingAccountId = null;
   state.creatingKey = false;
