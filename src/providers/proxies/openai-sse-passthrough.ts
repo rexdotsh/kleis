@@ -1,6 +1,7 @@
 import type { TokenUsage } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord } from "../../utils/object";
+import { createReasoningItemCloser } from "./openai-reasoning-items";
 import {
   normalizeOpenAiResponsesEvent,
   type OpenAiResponsesEventShapeIssue,
@@ -14,70 +15,6 @@ import {
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
 type SseUsageExtractor = (payload: unknown) => TokenUsage | null;
-
-type ReasoningEventState = {
-  eventNumber: number;
-  active: { id: string; outputIndex: number | null; addedAt: number } | null;
-  overlapLogged: boolean;
-};
-
-const trackReasoningEvents = (
-  payload: Record<string, unknown>,
-  state: ReasoningEventState,
-  onOverlap: (fields: Record<string, number | null>) => void
-): void => {
-  state.eventNumber++;
-  if (payload.type === "response.created") {
-    state.active = null;
-    state.overlapLogged = false;
-    return;
-  }
-  if (
-    payload.type === "response.completed" ||
-    payload.type === "response.incomplete" ||
-    payload.type === "response.failed" ||
-    payload.type === "response.done"
-  ) {
-    state.active = null;
-    return;
-  }
-
-  const item = isObjectRecord(payload.item) ? payload.item : null;
-  const outputIndex = Number.isInteger(payload.output_index)
-    ? (payload.output_index as number)
-    : null;
-  if (payload.type === "response.output_item.done") {
-    if (
-      state.active &&
-      ((typeof item?.id === "string" && item.id === state.active.id) ||
-        (typeof payload.item_id === "string" &&
-          payload.item_id === state.active.id) ||
-        (outputIndex !== null && outputIndex === state.active.outputIndex))
-    ) {
-      state.active = null;
-    }
-    return;
-  }
-  if (
-    payload.type !== "response.output_item.added" ||
-    item?.type !== "reasoning" ||
-    typeof item.id !== "string"
-  ) {
-    return;
-  }
-  if (state.active?.id === item.id) {
-    return;
-  }
-  if (state.active && !state.overlapLogged) {
-    onOverlap({
-      previousOutputIndex: state.active.outputIndex,
-      nextOutputIndex: outputIndex,
-      eventsSincePreviousAdded: state.eventNumber - state.active.addedAt,
-    });
-    state.overlapLogged = true;
-  }
-  state.active = { id: item.id, outputIndex, addedAt: state.eventNumber };
-};
 
 type OpenAiSsePassthroughInput = {
   response: Response;
@@ -145,8 +82,9 @@ const transformSseEvent = (
   extractUsage: SseUsageExtractor,
   onInvalidJson: (input: { bytes: number; lines: number }) => void,
   onInvalidShape: (issue: OpenAiResponsesEventShapeIssue) => void,
-  reasoningState: ReasoningEventState,
-  onReasoningOverlap: (fields: Record<string, number | null>) => void
+  closeReasoningItems: (
+    payload: Record<string, unknown>
+  ) => Record<string, unknown>[]
 ): string => {
   const payloadText = readSseData(chunk);
   if (!payloadText) {
@@ -166,7 +104,6 @@ const transformSseEvent = (
   if (shapeIssue) {
     onInvalidShape(shapeIssue);
   }
-  trackReasoningEvents(jsonPayload, reasoningState, onReasoningOverlap);
   const normalized = state.sawTerminal
     ? jsonPayload
     : normalizeOpenAiResponsesEvent(jsonPayload);
@@ -184,13 +121,20 @@ const transformSseEvent = (
   if (usage) {
     state.latestUsage = usage;
   }
-  return normalized === jsonPayload
-    ? chunk
-    : replaceSseData(
-        chunk,
-        JSON.stringify(normalized),
-        String(normalized.type)
-      );
+  let output = "";
+  for (const event of closeReasoningItems(normalized)) {
+    output += `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`;
+  }
+  return (
+    output +
+    (normalized === jsonPayload
+      ? chunk
+      : replaceSseData(
+          chunk,
+          JSON.stringify(normalized),
+          String(normalized.type)
+        ))
+  );
 };
 
 export const createOpenAiSseUsagePassthrough = (
@@ -223,11 +167,6 @@ export const createOpenAiSseUsagePassthrough = (
     }
     usageReported = true;
     input.onTokenUsage?.(usageState.latestUsage);
-  };
-  const reasoningState: ReasoningEventState = {
-    eventNumber: 0,
-    active: null,
-    overlapLogged: false,
   };
   let bytes = 0;
   let chunks = 0;
@@ -278,11 +217,9 @@ export const createOpenAiSseUsagePassthrough = (
     });
   };
 
-  const reportReasoningOverlap = (
-    fields: Record<string, number | null>
-  ): void => {
-    logStreamAnomaly("openai_sse_upstream_reasoning_overlap", fields);
-  };
+  const closeReasoningItems = createReasoningItemCloser((closure) => {
+    logStreamAnomaly("openai_sse_reasoning_item_closed", closure);
+  });
 
   const transformEvent = (event: string): string =>
     transformSseEvent(
@@ -291,8 +228,7 @@ export const createOpenAiSseUsagePassthrough = (
       input.extractUsage,
       reportInvalidJson,
       reportInvalidShape,
-      reasoningState,
-      reportReasoningOverlap
+      closeReasoningItems
     );
   const transformEvents = (events: string[]): string => {
     let output = "";

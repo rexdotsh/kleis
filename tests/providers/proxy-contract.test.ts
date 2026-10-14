@@ -1128,28 +1128,40 @@ describe("proxy contract: codex", () => {
     expect(warnings.join("\n")).not.toContain(secret);
   });
 
-  test("logs upstream overlapping reasoning items without exposing item IDs", async () => {
-    const events = [
+  test("closes a reasoning item left open by a restarted response", async () => {
+    const abandonedItem = {
+      type: "reasoning",
+      id: "private-reasoning-1",
+      summary: [],
+      encrypted_content: "private-encrypted-1",
+    };
+    const restart = [
+      { type: "response.created", sequence_number: 0, response: { id: "r2" } },
+      { type: "response.in_progress", sequence_number: 1 },
       {
         type: "response.output_item.added",
+        sequence_number: 2,
         output_index: 0,
-        item: { id: "private-reasoning-1", type: "reasoning" },
+        item: { type: "reasoning", id: "private-reasoning-2", summary: [] },
+      },
+    ];
+    const events = [
+      { type: "response.created", sequence_number: 0, response: { id: "r1" } },
+      {
+        type: "response.output_item.added",
+        sequence_number: 1,
+        output_index: 0,
+        item: abandonedItem,
       },
       {
         type: "response.reasoning_summary_text.delta",
+        sequence_number: 2,
         item_id: "private-reasoning-1",
+        output_index: 0,
+        summary_index: 0,
         delta: "private reasoning text",
       },
-      {
-        type: "response.output_item.added",
-        output_index: 1,
-        item: { id: "private-reasoning-2", type: "reasoning" },
-      },
-      {
-        type: "response.output_item.added",
-        output_index: 2,
-        item: { id: "private-reasoning-3", type: "reasoning" },
-      },
+      ...restart,
     ];
     const source = createSseResponse(events);
     source.headers.set("x-request-id", "upstream-request-1");
@@ -1168,17 +1180,69 @@ describe("proxy contract: codex", () => {
       console.warn = originalWarn;
     }
 
-    expect(output).toBe(await createSseResponse(events).text());
+    const closingDone = {
+      type: "response.output_item.done",
+      output_index: 0,
+      item: abandonedItem,
+    };
+    expect(output).toBe(
+      [
+        await createSseResponse(events.slice(0, -1)).text(),
+        `event: response.output_item.done\ndata: ${JSON.stringify(closingDone)}\n\n`,
+        await createSseResponse(events.slice(-1)).text(),
+      ].join("")
+    );
     expect(warnings).toHaveLength(1);
     expect(JSON.parse(warnings[0] ?? "{}")).toMatchObject({
-      event: "openai_sse_upstream_reasoning_overlap",
+      event: "openai_sse_reasoning_item_closed",
       requestId: "upstream-request-1",
-      previousOutputIndex: 0,
-      nextOutputIndex: 1,
-      eventsSincePreviousAdded: 2,
+      closedOutputIndex: 0,
+      nextOutputIndex: 0,
+      nextSequenceNumber: 2,
+      eventsSinceClosedAdded: 4,
+      responseRestarted: true,
     });
-    expect(warnings[0]).not.toContain("private-reasoning");
-    expect(warnings[0]).not.toContain("private reasoning text");
+    expect(warnings[0]).not.toContain("private-");
+  });
+
+  test("closes a reasoning item whose done event names another item", async () => {
+    const openItem = { type: "reasoning", id: "reasoning-1" };
+    const events = [
+      { type: "response.output_item.added", output_index: 0, item: openItem },
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { type: "reasoning", id: "reasoning-other" },
+      },
+      {
+        type: "response.output_item.added",
+        output_index: 1,
+        item: { type: "reasoning", id: "reasoning-2" },
+      },
+    ];
+    const originalWarn = console.warn;
+    console.warn = (): void => undefined;
+    let output: string;
+    try {
+      output = await createOpenAiSseUsagePassthrough({
+        response: createSseResponse(events),
+        extractUsage: () => null,
+      }).text();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(output).toBe(
+      [
+        await createSseResponse(events.slice(0, -1)).text(),
+        `event: response.output_item.done\ndata: ${JSON.stringify({
+          type: "response.output_item.done",
+          output_index: 0,
+          item: openItem,
+        })}\n\n`,
+        await createSseResponse(events.slice(-1)).text(),
+      ].join("")
+    );
   });
 
   test("does not flag reasoning items closed by their output item done events", async () => {
@@ -1555,6 +1619,67 @@ describe("proxy contract: codex", () => {
     );
     expect(responseText).not.toContain('"type":"response.done"');
     expect(responseText?.match(/data: \[DONE\]/gu)).toHaveLength(1);
+  });
+
+  test("closes a websocket reasoning item left open by a restarted response", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const abandonedItem = {
+      type: "reasoning",
+      id: "rs_1",
+      summary: [],
+      encrypted_content: "encrypted-1",
+    };
+    const nextAdded = {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { type: "reasoning", id: "rs_2", summary: [] },
+    };
+    const originalWarn = console.warn;
+    console.warn = (): void => undefined;
+    let responseText: string | undefined;
+    try {
+      const responsePromise = tryProxyCodexWebSocket({
+        headers: new Headers({ authorization: "Bearer codex-access" }),
+        bodyJson: {
+          model: "gpt-5.6-sol",
+          stream: true,
+          input: [{ role: "user", content: "hello" }],
+        },
+        accountKey: "key-1:restart-account",
+      });
+      await waitFor(() => sockets.length === 1 && sentBodies.length === 1);
+      for (const event of [
+        { type: "response.created", response: { id: "resp-1" } },
+        {
+          type: "response.output_item.added",
+          output_index: 0,
+          item: abandonedItem,
+        },
+        { type: "response.created", response: { id: "resp-2" } },
+        nextAdded,
+        {
+          type: "response.completed",
+          response: { id: "resp-2", status: "completed" },
+        },
+      ]) {
+        sockets[0]?.dispatch("message", { data: JSON.stringify(event) });
+      }
+      responseText = await (await responsePromise)?.text();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(responseText).toContain(
+      [
+        `data: ${JSON.stringify({
+          type: "response.output_item.done",
+          output_index: 0,
+          item: abandonedItem,
+        })}`,
+        `data: ${JSON.stringify(nextAdded)}`,
+      ].join("\n\n")
+    );
   });
 
   test("uses websocket cached delta transport for streaming requests", async () => {

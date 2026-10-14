@@ -20,6 +20,7 @@ import type { TokenUsage } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
+import { createReasoningItemCloser } from "./openai-reasoning-items";
 import {
   normalizeOpenAiResponsesEvent,
   readOpenAiResponsesEventShapeIssue,
@@ -1365,10 +1366,19 @@ export const tryProxyCodexWebSocket = async (
     return Response.json(first, { status: readPayloadStatus(first) });
   }
 
+  const closeReasoningItems = createReasoningItemCloser((closure) => {
+    logStreamAnomaly("codex_websocket_reasoning_item_closed", closure);
+  });
+
   const processPayload = (
     payload: Record<string, unknown>,
     controller: ReadableStreamDefaultController<Uint8Array>
   ): void => {
+    for (const event of closeReasoningItems(payload)) {
+      responseItems.push(event.item);
+      controller.enqueue(encodeSse(event));
+    }
+
     const usage = readOpenAiResponsesUsageFromSseEvent(payload);
     if (usage) {
       input.onTokenUsage?.(usage);
