@@ -3,7 +3,7 @@ import { CLAUDE_TOOL_PREFIX } from "../constants";
 
 // Claude Code's tool name limit.
 const MAX_TOOL_NAME_LENGTH = 64;
-const DIGEST_LENGTH = 8;
+const DIGEST_LENGTH = 16;
 
 // Upstream name -> client name for every custom tool name in the request.
 export type ClaudeToolNames = ReadonlyMap<string, string>;
@@ -12,8 +12,7 @@ export type ClaudeToolNames = ReadonlyMap<string, string>;
 // https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L214-L239
 // The name alone decides the result, so a tool keeps its upstream name across
 // turns. Lowercase-initial names get `mcp_` + an uppercase letter and all
-// others `mcp__`, and only digest-suffixed names reach the length limit, so
-// distinct names collide only if their digests do.
+// others `mcp__`, and only digest-suffixed names reach the length limit.
 export const toUpstreamToolName = (name: string): string => {
   const upstream = /^[a-z]/u.test(name)
     ? `${CLAUDE_TOOL_PREFIX}${name.charAt(0).toUpperCase()}${name.slice(1)}`
@@ -22,7 +21,10 @@ export const toUpstreamToolName = (name: string): string => {
     return upstream;
   }
 
-  const digest = Bun.hash.crc32(name).toString(16).padStart(DIGEST_LENGTH, "0");
+  const digest = new Bun.CryptoHasher("sha256")
+    .update(name)
+    .digest("hex")
+    .slice(0, DIGEST_LENGTH);
   return `${upstream.slice(0, MAX_TOOL_NAME_LENGTH - DIGEST_LENGTH - 1)}_${digest}`;
 };
 
@@ -55,6 +57,12 @@ export const mapClaudeRequestToolNames = (
       return record;
     }
     const upstream = toUpstreamToolName(name);
+    const existing = toolNames.get(upstream);
+    if (existing !== undefined && existing !== name) {
+      throw new Error(
+        `Tools "${existing}" and "${name}" map to the same upstream name`
+      );
+    }
     toolNames.set(upstream, name);
     return withField(record, key, upstream);
   };
@@ -74,7 +82,7 @@ export const mapClaudeRequestToolNames = (
       return block;
     }
     // Toolset members (browser, computer) keep their fixed names.
-    if (block.type === "tool_use" && block.toolset_name === undefined) {
+    if (block.type === "tool_use" && typeof block.toolset_name !== "string") {
       return rename(block, "name");
     }
     if (block.type === "tool_result") {

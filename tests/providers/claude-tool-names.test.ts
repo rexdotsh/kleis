@@ -7,9 +7,18 @@ import {
 
 const tool = (name: string) => ({ name, input_schema: { type: "object" } });
 
+type Named = { name: string };
+type MappedRequest = {
+  tools: Named[];
+  tool_choice: Named;
+  messages: {
+    content: (Named & { content: { tool_name: string }[] })[];
+  }[];
+};
+
 const mapRequest = (payload: unknown) => {
   const { payload: mapped, toolNames } = mapClaudeRequestToolNames(payload);
-  return { mapped: mapped as Record<string, any>, toolNames };
+  return { mapped: mapped as MappedRequest, toolNames };
 };
 
 describe("claude tool names", () => {
@@ -26,7 +35,7 @@ describe("claude tool names", () => {
       tools: [tool("mcp_Shell"), tool("Shell"), tool("shell")],
     }).mapped;
     expect(alone.tools[0].name).toBe("mcp_Shell");
-    expect(crowded.tools.map((entry: { name: string }) => entry.name)).toEqual([
+    expect(crowded.tools.map((entry) => entry.name)).toEqual([
       "mcp_Mcp_Shell",
       "mcp__Shell",
       "mcp_Shell",
@@ -62,7 +71,7 @@ describe("claude tool names", () => {
     ]) {
       const upstream = toUpstreamToolName(name);
       expect(upstream).toHaveLength(64);
-      expect(upstream).toMatch(/_[0-9a-f]{8}$/u);
+      expect(upstream).toMatch(/_[0-9a-f]{16}$/u);
     }
   });
 
@@ -86,20 +95,29 @@ describe("claude tool names", () => {
               name: "navigate",
               input: {},
             },
+            {
+              type: "tool_use",
+              id: "t-3",
+              toolset_name: null,
+              name: "browser",
+              input: {},
+            },
           ],
         },
       ],
     });
 
-    expect(mapped.tools.map((entry: { name: string }) => entry.name)).toEqual([
+    expect(mapped.tools.map((entry) => entry.name)).toEqual([
       "web_search",
       "bash",
       "mcp_Browser",
     ]);
     expect(mapped.tool_choice.name).toBe("bash");
-    expect(
-      mapped.messages[0].content.map((block: { name: string }) => block.name)
-    ).toEqual(["bash", "navigate"]);
+    expect(mapped.messages[0].content.map((block) => block.name)).toEqual([
+      "bash",
+      "navigate",
+      "mcp_Browser",
+    ]);
     expect([...toolNames]).toEqual([["mcp_Browser", "browser"]]);
   });
 
@@ -126,5 +144,22 @@ describe("claude tool names", () => {
     expect(mapped.messages[0].content[0].name).toBe("mcp_Search");
     expect(mapped.messages[1].content[0].content[0].tool_name).toBe("mcp_Read");
     expect(toolNames.get("mcp_Read")).toBe("read");
+  });
+
+  test("rejects two tools whose shortened names collide", () => {
+    const original = Bun.CryptoHasher.prototype.digest;
+    expect(() =>
+      mapRequest({ tools: [tool("a".repeat(70)), tool("a".repeat(71))] })
+    ).not.toThrow();
+    Bun.CryptoHasher.prototype.digest = function (this: Bun.CryptoHasher) {
+      return "0".repeat(64);
+    } as typeof original;
+    try {
+      expect(() =>
+        mapRequest({ tools: [tool("a".repeat(70)), tool("a".repeat(71))] })
+      ).toThrow("map to the same upstream name");
+    } finally {
+      Bun.CryptoHasher.prototype.digest = original;
+    }
   });
 });
