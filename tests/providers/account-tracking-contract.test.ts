@@ -129,7 +129,8 @@ describe("Claude account tracking contracts", () => {
     ["claude_max", "default_claude_max_20x", "max_20x", "Max 20x"],
     ["claude_max", null, "max", "Max"],
     ["claude_max", "future_max_tier", "max", "Max"],
-    ["claude_team", "default_claude_max_5x", "team", "Team"],
+    ["claude_team", "default_claude_max_5x", "team_premium", "Team Premium"],
+    ["claude_team", "default_raven", "team", "Team"],
     ["claude_enterprise", "default_claude_max_20x", "enterprise", "Enterprise"],
   ])("maps %s / %s to %s (%s)", (organizationType, tier, type, label) => {
     expect(
@@ -141,6 +142,23 @@ describe("Claude account tracking contracts", () => {
           rate_limit_tier: tier,
           billing_type: "stripe_subscription",
           future_field: true,
+        },
+      })
+    ).toEqual({ type, label });
+  });
+
+  // Seat tiers as reported for live Team accounts.
+  test.each([
+    ["team_standard", "default_raven", "team_standard", "Team Standard"],
+    ["team_tier_1", "default_claude_max_5x", "team_premium", "Team Premium"],
+    ["team_future_seat", "default_raven", "team", "Team"],
+  ])("maps the Team %s seat (%s) to %s (%s)", (seatTier, tier, type, label) => {
+    expect(
+      decodeClaudeSubscriptionPlan({
+        organization: {
+          organization_type: "claude_team",
+          rate_limit_tier: tier,
+          seat_tier: seatTier,
         },
       })
     ).toEqual({ type, label });
