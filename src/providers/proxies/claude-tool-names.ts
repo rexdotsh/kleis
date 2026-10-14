@@ -76,12 +76,8 @@ const allocateUpstreamName = (
   return candidate;
 };
 
-// Request: prefix tool names so they match Claude Code's expected format.
-// Response: map names back so the client sees its original names.
+// Upstream names carry Claude Code's mcp_ prefix, as in
 // https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L214-L239
-// https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L276-L294
-// pi-mono uses case-normalized Claude Code tool names instead of a prefix:
-// https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L64-L93
 // Kept names are reserved first, so `Shell`, `shell` and `mcp_Shell` in one
 // request get distinct upstream names.
 export const createClaudeToolNames = (payload: unknown): ClaudeToolNames => {
