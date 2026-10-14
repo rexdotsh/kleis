@@ -194,9 +194,9 @@ const restoreMessageToolNames = (
     : message;
 };
 
-// Tool names only appear on tool_use content blocks; tool inputs may contain
-// look-alike objects that must reach the client unchanged. Returns the same
-// object when nothing changed, so callers can forward the upstream text.
+// Only tool_use blocks are renamed: look-alikes inside tool inputs must reach
+// the client as sent. Returning the same object when nothing changed lets
+// callers forward the upstream bytes.
 const transformClaudeResponsePayload = (
   payload: unknown,
   toolPrefix: string
