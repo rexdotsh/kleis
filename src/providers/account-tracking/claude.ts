@@ -11,6 +11,72 @@ import {
 import { fetchTrackingJson } from "./http";
 
 const CLAUDE_USAGE_TIMEOUT_MS = 10_000;
+const CLAUDE_PROFILE_TIMEOUT_MS = 5000;
+
+const CLAUDE_PLAN_LABELS = {
+  pro: "Pro",
+  max: "Max",
+  max_5x: "Max 5x",
+  max_20x: "Max 20x",
+  team: "Team",
+  enterprise: "Enterprise",
+} as const;
+
+type ClaudePlanType = keyof typeof CLAUDE_PLAN_LABELS;
+
+export type ClaudeSubscriptionPlan = { type: ClaudePlanType; label: string };
+
+// The organization decides the plan: Team seats can carry Max rate tiers too.
+const readClaudePlanType = (
+  organizationType: string | null,
+  rateLimitTier: string | null
+): ClaudePlanType | null => {
+  switch (organizationType) {
+    case "claude_pro":
+      return "pro";
+    case "claude_max":
+      if (rateLimitTier === "default_claude_max_20x") return "max_20x";
+      if (rateLimitTier === "default_claude_max_5x") return "max_5x";
+      return "max";
+    case "claude_team":
+      return "team";
+    case "claude_enterprise":
+      return "enterprise";
+    default:
+      return null;
+  }
+};
+
+export const decodeClaudeSubscriptionPlan = (
+  value: unknown
+): ClaudeSubscriptionPlan | null => {
+  const input = requireObject(
+    value,
+    "Claude OAuth profile response is malformed"
+  );
+  const organization = readObject(input.organization);
+  const type = readClaudePlanType(
+    readString(organization?.organization_type),
+    readString(organization?.rate_limit_tier)
+  );
+  return type ? { type, label: CLAUDE_PLAN_LABELS[type] } : null;
+};
+
+export const fetchClaudeSubscriptionPlan = async (accessToken: string) => {
+  const data = await fetchTrackingJson({
+    url: `${ANTHROPIC_API_BASE_URL}/api/oauth/profile`,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+      "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
+      "anthropic-version": "2023-06-01",
+      "User-Agent": "Kleis/1 account-usage",
+    },
+    timeoutMs: CLAUDE_PROFILE_TIMEOUT_MS,
+    errorPrefix: "Claude OAuth profile request failed",
+  });
+  return decodeClaudeSubscriptionPlan(data);
+};
 
 const decodeUsageWindow = (value: unknown) =>
   decodeFields(value, {

@@ -8,7 +8,10 @@ import {
   decodeCodexUsageProfile,
   decodeCodexUsageStatus,
 } from "../../src/providers/account-tracking/codex";
-import { decodeClaudeSubscriptionUsage } from "../../src/providers/account-tracking/claude";
+import {
+  decodeClaudeSubscriptionPlan,
+  decodeClaudeSubscriptionUsage,
+} from "../../src/providers/account-tracking/claude";
 
 describe("Codex account tracking contracts", () => {
   test("builds both supported private route styles", () => {
@@ -119,6 +122,54 @@ describe("Codex account tracking contracts", () => {
 });
 
 describe("Claude account tracking contracts", () => {
+  // Synthetic profiles modeled on Claude Code 2.1.63's fetchProfileInfo contract.
+  test.each([
+    ["claude_pro", "default_claude_pro", "pro", "Pro"],
+    ["claude_max", "default_claude_max_5x", "max_5x", "Max 5x"],
+    ["claude_max", "default_claude_max_20x", "max_20x", "Max 20x"],
+    ["claude_max", null, "max", "Max"],
+    ["claude_max", "future_max_tier", "max", "Max"],
+    ["claude_team", "default_claude_max_5x", "team", "Team"],
+    ["claude_enterprise", "default_claude_max_20x", "enterprise", "Enterprise"],
+  ])("maps %s / %s to %s (%s)", (organizationType, tier, type, label) => {
+    expect(
+      decodeClaudeSubscriptionPlan({
+        account: { uuid: "fake-user", email: "alex@northwind.dev" },
+        organization: {
+          uuid: "fake-org",
+          organization_type: organizationType,
+          rate_limit_tier: tier,
+          billing_type: "stripe_subscription",
+          future_field: true,
+        },
+      })
+    ).toEqual({ type, label });
+  });
+
+  test.each([
+    {},
+    { organization: null },
+    { organization: { organization_type: "claude_free" } },
+    { organization: { organization_type: "api" } },
+    { organization: { organization_type: "claude_future" } },
+    { organization: { organization_type: 123 } },
+    { organization: { rate_limit_tier: "default_claude_max_20x" } },
+    { account: { has_claude_max: true, has_claude_pro: true } },
+    { account: { has_claude_max: false, has_claude_pro: false } },
+  ])("does not guess a subscription for %j", (profile) => {
+    expect(decodeClaudeSubscriptionPlan(profile)).toBeNull();
+  });
+
+  test.each([
+    { value: null },
+    { value: [] },
+    { value: "not a profile" },
+  ])("rejects malformed profile %j", ({ value }) => {
+    expect(() => decodeClaudeSubscriptionPlan(value)).toThrow(
+      "Claude OAuth profile response is malformed"
+    );
+  });
+
   test("keeps subscription, scoped limit, and overage data separate", () => {
     const result = decodeClaudeSubscriptionUsage({
       five_hour: { utilization: 10, resets_at: "2026-08-17T16:30:00Z" },

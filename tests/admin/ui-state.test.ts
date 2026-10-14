@@ -124,6 +124,52 @@ describe("admin UI request state", () => {
     expect(escapeHtml(undefined)).toBe("");
   });
 
+  test("renders a known Claude plan in place of the sign-in fact", () => {
+    const account = {
+      id: "claude-plan-preview",
+      provider: "claude",
+      label: "alex@northwind.dev",
+      metadata: { oauthMode: "max" },
+      quota: {
+        data: {
+          provider: "claude",
+          plan: { type: "max_20x", label: "Max 20x" },
+          subscription: { extraUsage: { isEnabled: true, utilization: 12 } },
+        },
+      },
+    };
+    state.accounts = [account];
+    state.accountsById = new Map([[account.id, account]]);
+    state.expandedAccountId = account.id;
+    renderAccounts();
+    const html = element("#accounts-list").innerHTML;
+    expect(html).toContain('Plan</div><div class="fact-value">Max 20x</div>');
+    expect(html).toContain("claude.ai");
+    expect(html).toContain("extra usage on");
+  });
+
+  test.each([
+    "max",
+    "console",
+  ])("keeps the %s sign-in fact when the Claude plan is unknown", (mode) => {
+    const account = {
+      id: "claude-unknown-plan",
+      provider: "claude",
+      label: "sam@northwind.dev",
+      metadata: { oauthMode: mode },
+      quota: { data: { provider: "claude", plan: null } },
+    };
+    state.accounts = [account];
+    state.accountsById = new Map([[account.id, account]]);
+    state.expandedAccountId = account.id;
+    renderAccounts();
+    const html = element("#accounts-list").innerHTML;
+    expect(html).toContain(
+      `Sign-in</div><div class="fact-value">${mode === "console" ? "Console" : "claude.ai"}</div>`
+    );
+    expect(html).not.toContain('fact-label">Plan</div>');
+  });
+
   test("editing a key preserves an account scope missing from the loaded list", async () => {
     const keyId = "key-scoped";
     const accountId = "missing-account";
