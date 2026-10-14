@@ -4,6 +4,7 @@ import {
   KEY_LOADING_HTML,
   renderAccounts,
   renderAttention,
+  renderDailyTokens,
   renderDashboard,
   renderKeys,
   renderOAuthFlow,
@@ -13,6 +14,7 @@ import {
 
 const DEFAULT_KEY_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const USAGE_DETAIL_TTL_MS = 30_000;
+const DAILY_TOKEN_DAYS = 30;
 const ADMIN_TOKEN_STORAGE_KEY = "kleis_admin_token";
 const PROVIDER_ORDER = ["codex", "claude"];
 
@@ -764,10 +766,7 @@ function pruneUsageDetails(kind, ids) {
   }
 }
 
-function requestUsageDetail(kind, id, { notify = true } = {}) {
-  const windowMs =
-    kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
-  const cacheKey = `${kind}:${id}:${windowMs}`;
+function requestCachedDetail(cacheKey, path, render, notify) {
   const previous = state.usageDetails.get(cacheKey);
   if (previous?.status === "loading") {
     if (!notify) previous.notify = false;
@@ -781,9 +780,7 @@ function requestUsageDetail(kind, id, { notify = true } = {}) {
   pending.promise = (async () => {
     let entry;
     try {
-      const data = await api(
-        `/admin/${kind === "account" ? "accounts" : "keys"}/${id}/usage?windowMs=${windowMs}`
-      );
+      const data = await api(path);
       entry = { status: "ready", data, updatedAt: Date.now() };
     } catch (e) {
       entry = {
@@ -796,10 +793,53 @@ function requestUsageDetail(kind, id, { notify = true } = {}) {
     if (token !== state.token || state.usageDetails.get(cacheKey) !== pending)
       return;
     state.usageDetails.set(cacheKey, entry);
-    if (pending.notify) renderUsageSlot(kind, id);
+    if (pending.notify) render();
     return entry;
   })();
   return pending.promise;
+}
+
+function requestUsageDetail(kind, id, { notify = true } = {}) {
+  const windowMs =
+    kind === "account" ? state.accountUsageWindowMs : state.keyUsageWindowMs;
+  return requestCachedDetail(
+    `${kind}:${id}:${windowMs}`,
+    `/admin/${kind === "account" ? "accounts" : "keys"}/${id}/usage?windowMs=${windowMs}`,
+    () => renderUsageSlot(kind, id),
+    notify
+  );
+}
+
+// Anthropic has no usage history for subscription accounts, so Claude
+// accounts chart the tokens Kleis itself has proxied for them.
+const hasDailyTokens = (id) => accountById(id)?.provider === "claude";
+
+function requestDailyTokens(id, { notify = true } = {}) {
+  return requestCachedDetail(
+    `daily:${id}`,
+    `/admin/accounts/${id}/daily-tokens?days=${DAILY_TOKEN_DAYS}`,
+    () => renderDailyTokens(id),
+    notify
+  );
+}
+
+async function settleWithin(pending, timeoutMs) {
+  let timer;
+  await Promise.race([
+    pending,
+    new Promise((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    }),
+  ]);
+  clearTimeout(timer);
+}
+
+async function waitForDailyTokens(id, timeoutMs = 300) {
+  if (!hasDailyTokens(id)) return;
+  const cached = state.usageDetails.get(`daily:${id}`);
+  const pending = requestDailyTokens(id);
+  if (cached?.data) return;
+  await settleWithin(pending, timeoutMs);
 }
 
 function usageHasTraffic(kind, id) {
@@ -816,28 +856,23 @@ async function waitForUsageDetail(kind, id, timeoutMs = 300) {
   const cached = state.usageDetails.get(`${kind}:${id}:${windowMs}`);
   const pending = requestUsageDetail(kind, id);
   if (cached?.data) return;
-  let timer;
-  await Promise.race([
-    pending,
-    new Promise((resolve) => {
-      timer = setTimeout(resolve, timeoutMs);
-    }),
-  ]);
-  clearTimeout(timer);
+  await settleWithin(pending, timeoutMs);
 }
 
 const prefetchTimers = new Map();
 function scheduleUsagePrefetch(kind, id) {
   clearTimeout(prefetchTimers.get(kind));
   prefetchTimers.delete(kind);
-  if (!id || !usageHasTraffic(kind, id)) return;
+  const daily = kind === "account" && hasDailyTokens(id);
+  if (!(id && (usageHasTraffic(kind, id) || daily))) return;
   const token = state.token;
   prefetchTimers.set(
     kind,
     setTimeout(() => {
       prefetchTimers.delete(kind);
-      if (token === state.token && usageHasTraffic(kind, id))
-        requestUsageDetail(kind, id);
+      if (token !== state.token) return;
+      if (usageHasTraffic(kind, id)) requestUsageDetail(kind, id);
+      if (daily) requestDailyTokens(id);
     }, 120)
   );
 }
@@ -845,6 +880,7 @@ function scheduleUsagePrefetch(kind, id) {
 async function loadAccounts() {
   const requestSeq = ++state.accountsRequestSeq;
   invalidateUsageDetails("account");
+  invalidateUsageDetails("daily");
   if (!state.accounts.length) showLoading("accounts-list");
   try {
     const [accountsResult, usageResult] = await Promise.allSettled([
@@ -866,6 +902,7 @@ async function loadAccounts() {
     }));
     state.accountsById = usageMapFromList(state.accounts, "id");
     pruneUsageDetails("account", state.accountsById);
+    pruneUsageDetails("daily", state.accountsById);
     state.providerStatuses = accountsResult.value.providers || [];
 
     if (usageResult.status === "fulfilled") {
@@ -1886,7 +1923,11 @@ function logout() {
 }
 
 export {
+  DAILY_TOKEN_DAYS,
+  hasDailyTokens,
+  requestDailyTokens,
   scheduleUsagePrefetch,
+  waitForDailyTokens,
   usageHasTraffic,
   waitForUsageDetail,
   $,

@@ -1822,6 +1822,59 @@ input[type="checkbox"].toggle:checked::after {
 .usage-slot:empty {
   display: none;
 }
+.daily-tokens {
+  padding-bottom: 20px;
+}
+.daily-head,
+.daily-axis {
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+.daily-total {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.daily-plot {
+  position: relative;
+  display: flex;
+  gap: 3px;
+  align-items: flex-end;
+  height: 48px;
+  margin-top: 8px;
+  border-bottom: 1px solid var(--line);
+  cursor: default;
+  touch-action: pan-y;
+}
+.daily-bar {
+  flex: 1;
+  min-height: 2px;
+  background: var(--muted);
+  border-radius: 1px 1px 0 0;
+  opacity: 0.55;
+}
+.daily-bar.zero {
+  background: var(--line-strong);
+  opacity: 1;
+}
+.daily-bar.on {
+  background: var(--accent);
+  opacity: 1;
+}
+.daily-plot .tip {
+  top: auto;
+  bottom: calc(100% + 6px);
+  z-index: 1;
+}
+.daily-axis {
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--muted);
+}
 .usage-slot:not(.usage-grid) > .usage-panel + .usage-panel {
   margin-top: 20px;
 }
@@ -2290,6 +2343,13 @@ input[type="checkbox"].toggle:checked::after {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px 20px;
     padding: 0 0 12px;
+  }
+  .daily-tokens {
+    padding: 4px 0 16px;
+  }
+  .daily-plot {
+    gap: 2px;
+    height: 40px;
   }
   .fact {
     padding: 0;

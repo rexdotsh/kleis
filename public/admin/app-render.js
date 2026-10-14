@@ -5,6 +5,7 @@ import {
   cacheReadRate,
   cancelOAuthFlow,
   completeOAuth,
+  DAILY_TOKEN_DAYS,
   copyToClipboard,
   escapeHtml,
   formatCompact,
@@ -12,6 +13,7 @@ import {
   formatMetadataForInput,
   formatShortDate,
   dateInputValue,
+  hasDailyTokens,
   isKeyActive,
   keyAccessHtml,
   keyById,
@@ -19,6 +21,7 @@ import {
   modelsUrlForKey,
   normalizeUsage,
   relativeTime,
+  requestDailyTokens,
   requestUsageDetail,
   state,
   syncScopedAccountAvailability,
@@ -91,7 +94,7 @@ function renderWithMotion(container, update, { anchor = null } = {}) {
         height: detail.getBoundingClientRect().height,
         children: new Map(
           Array.from(
-            detail.querySelectorAll(".facts > .fact, .usage-grid, .actions"),
+            detail.querySelectorAll(DETAIL_MOTION_SELECTOR),
             (element) => [
               detailMotionKey(element),
               element.getBoundingClientRect().top,
@@ -164,12 +167,14 @@ function renderWithMotion(container, update, { anchor = null } = {}) {
   lead?.classList.add("flipping-lead");
 }
 
+const DETAIL_MOTION_SELECTOR =
+  ".facts > .fact, .daily-tokens, .usage-grid, .actions";
+
 function detailMotionKey(element) {
-  return element.classList.contains("fact")
-    ? `fact:${element.querySelector(".fact-label").textContent}`
-    : element.classList.contains("actions")
-      ? "actions"
-      : "usage";
+  if (element.classList.contains("fact"))
+    return `fact:${element.querySelector(".fact-label").textContent}`;
+  if (element.classList.contains("actions")) return "actions";
+  return element.classList.contains("daily-tokens") ? "daily" : "usage";
 }
 
 function animateDetailResize(detail, previous) {
@@ -177,9 +182,7 @@ function animateDetailResize(detail, previous) {
   if (Math.abs(height - previous.height) < 1) return;
   const timing = { duration: 200, easing: "cubic-bezier(0.2, 0.8, 0.2, 1)" };
   const animations = [];
-  for (const element of detail.querySelectorAll(
-    ".facts > .fact, .usage-grid, .actions"
-  )) {
+  for (const element of detail.querySelectorAll(DETAIL_MOTION_SELECTOR)) {
     const top = previous.children.get(detailMotionKey(element));
     if (top === undefined) continue;
     const offset = top - element.getBoundingClientRect().top;
@@ -850,6 +853,7 @@ function accountDetailHtml(account) {
       usageFact(accountUsageForId(account.id), state.accountUsageWindowMs),
       accountFact(account),
     ].join("")}</div>
+    ${hasDailyTokens(account.id) ? `<div class="daily-tokens" data-daily-for="${account.id}">${dailyTokensBodyHtml(account.id)}</div>` : ""}
     ${hasTraffic(accountUsageForId(account.id)) ? `<div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>` : ""}
     <div class="actions">
       ${(needsReauthorization(account) || reauthorizeDeadline(account)) && supportsOAuth ? button("Reauthorize", "reauthorize-account", "A", "btn btn-primary btn-sm") : ""}
@@ -940,6 +944,13 @@ function renderAccounts() {
     hasTraffic(accountUsageForId(expanded))
   ) {
     requestUsageDetail("account", expanded);
+  }
+  if (
+    expanded &&
+    expanded !== state.editingAccountId &&
+    hasDailyTokens(expanded)
+  ) {
+    requestDailyTokens(expanded);
   }
 }
 
@@ -1500,6 +1511,88 @@ function apiKeyDisplayHtml(apiKeyId) {
   return `<span class="mono muted">${escapeHtml(apiKeyId.slice(0, 8))}\u2026</span>`;
 }
 
+/* Daily tokens chart inside expanded Claude accounts */
+
+const utcDayFormat = new Intl.DateTimeFormat("en-US", {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+});
+const utcShortDateFormat = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+});
+
+function dailyTokensBodyHtml(id) {
+  const entry = state.usageDetails.get(`daily:${id}`);
+  const days = entry?.data?.daily || [];
+  const peak = Math.max(0, ...days.map((day) => day.totalTokens || 0));
+  const bars = days.length
+    ? days.map(
+        (day) =>
+          `<span class="daily-bar${day.totalTokens ? "" : " zero"}" style="height:${peak ? ((day.totalTokens || 0) / peak) * 100 : 0}%"></span>`
+      )
+    : Array.from(
+        { length: DAILY_TOKEN_DAYS },
+        () => '<span class="daily-bar zero"></span>'
+      );
+  let summary = "&nbsp;";
+  if (entry?.data) {
+    const total = entry.data.totals?.totalTokens || 0;
+    summary = `${escapeHtml(formatCompact(total))} tokens \u00b7 ${days.length} days`;
+  } else if (entry?.status === "error") {
+    summary = `<span class="err" title="${escapeHtml(entry.error)}">Unavailable</span>`;
+  }
+  const first = days[0]?.dayStart;
+  const label = entry?.data
+    ? `Tokens per UTC day through Kleis over the last ${days.length} days`
+    : "Loading tokens per day through Kleis";
+  return `<div class="daily-head"><span class="fact-label">Daily tokens via Kleis</span><span class="daily-total">${summary}</span></div>
+    <div class="daily-plot" role="img" aria-label="${label}">${bars.join("")}<div class="tip" hidden></div></div>
+    <div class="daily-axis"><span>${first === undefined ? "&nbsp;" : escapeHtml(utcShortDateFormat.format(first))}</span><span>Today (UTC)</span></div>`;
+}
+
+function renderDailyTokens(id) {
+  const slot = document.querySelector(`[data-daily-for="${id}"]`);
+  if (slot) slot.innerHTML = dailyTokensBodyHtml(id);
+}
+
+function showDailyTokensTip(plot, clientX) {
+  const id = plot.closest("[data-daily-for]")?.dataset.dailyFor;
+  const days = state.usageDetails.get(`daily:${id}`)?.data?.daily;
+  if (!days?.length) return;
+  const rect = plot.getBoundingClientRect();
+  const index = Math.max(
+    0,
+    Math.min(
+      days.length - 1,
+      Math.floor(((clientX - rect.left) / rect.width) * days.length)
+    )
+  );
+  const bars = plot.querySelectorAll(".daily-bar");
+  for (const [barIndex, bar] of bars.entries())
+    bar.classList.toggle("on", barIndex === index);
+  const day = days[index];
+  const tip = plot.querySelector(".tip");
+  tip.innerHTML = `<span class="muted">${escapeHtml(utcDayFormat.format(day.dayStart))}</span><span>${escapeHtml(formatCount(day.totalTokens || 0))} tokens</span><span class="muted">${escapeHtml(formatCount(day.requestCount || 0))} req</span>`;
+  tip.hidden = false;
+  const center = ((index + 0.5) / days.length) * rect.width;
+  const left = Math.min(
+    Math.max(0, center - tip.offsetWidth / 2),
+    rect.width - tip.offsetWidth
+  );
+  tip.style.left = `${Math.max(0, left)}px`;
+}
+
+function hideDailyTokensTip() {
+  for (const tip of document.querySelectorAll(".daily-plot .tip:not([hidden])"))
+    tip.hidden = true;
+  for (const bar of document.querySelectorAll(".daily-bar.on"))
+    bar.classList.remove("on");
+}
+
 /* Inline forms survive list re-renders */
 
 function fieldKey(input) {
@@ -2040,7 +2133,10 @@ function renderDashboard(rawData) {
 }
 
 export {
+  hideDailyTokensTip,
+  renderDailyTokens,
   renderOAuthLoading,
+  showDailyTokensTip,
   ACCOUNT_LOADING_HTML,
   DASHBOARD_LOADING_HTML,
   KEY_LOADING_HTML,

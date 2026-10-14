@@ -417,6 +417,69 @@ describe("admin UI request state", () => {
     state.expandedAccountId = null;
   });
 
+  test("expanded Claude accounts chart daily tokens via Kleis; Codex accounts do not", async () => {
+    const claude = { id: "claude-daily", provider: "claude", label: "Preview" };
+    const codex = { id: "codex-daily", provider: "codex", label: "Preview" };
+    state.token = "mock";
+    state.accounts = [claude, codex];
+    state.accountsById = new Map([
+      [claude.id, claude],
+      [codex.id, codex],
+    ]);
+    const daily = Array.from({ length: 30 }, (_, index) => ({
+      date: `day-${index}`,
+      dayStart: Date.UTC(2026, 8, 15) + index * 86_400_000,
+      requestCount: index,
+      totalTokens: index === 29 ? 2_000_000 : index * 1000,
+    }));
+    const calls: string[] = [];
+    globalThis.fetch = ((url: RequestInfo | URL) => {
+      calls.push(String(url));
+      return Promise.resolve(
+        Response.json({ daily, totals: { totalTokens: 2_435_000 } })
+      );
+    }) as typeof fetch;
+
+    state.expandedAccountId = claude.id;
+    renderAccounts();
+    let html = element("#accounts-list").innerHTML;
+    expect(html).toContain("Daily tokens via Kleis");
+    expect(html.match(/daily-bar zero/g)).toHaveLength(30);
+    expect(calls).toEqual([
+      `/admin/accounts/${claude.id}/daily-tokens?days=30`,
+    ]);
+
+    await state.usageDetails.get(`daily:${claude.id}`)?.promise;
+    renderAccounts();
+    html = element("#accounts-list").innerHTML;
+    expect(html).toContain("2.4M tokens \u00b7 30 days");
+    expect(html).toContain("Sep 15");
+    expect(html).toContain('style="height:100%"');
+    expect(html.match(/class="daily-bar/g)).toHaveLength(30);
+    expect(html.match(/daily-bar zero/g)).toHaveLength(1);
+
+    state.expandedAccountId = codex.id;
+    renderAccounts();
+    expect(element("#accounts-list").innerHTML).not.toContain("daily-tokens");
+    expect(calls).toHaveLength(1);
+  });
+
+  test("prefetch loads daily tokens for a Claude account without recent traffic", async () => {
+    const account = { id: "claude-quiet", provider: "claude" };
+    state.token = "mock";
+    state.accountsById = new Map([[account.id, account]]);
+    const calls: string[] = [];
+    globalThis.fetch = ((url: RequestInfo | URL) => {
+      calls.push(String(url));
+      return Promise.resolve(Response.json({ daily: [] }));
+    }) as typeof fetch;
+    scheduleUsagePrefetch("account", account.id);
+    await Bun.sleep(150);
+    expect(calls).toEqual([
+      `/admin/accounts/${account.id}/daily-tokens?days=30`,
+    ]);
+  });
+
   test("prefetch debounces targets, ignores no-traffic rows, and uses the cache", async () => {
     state.token = "mock";
     state.accountUsageWindowMs = 86_400_000;
