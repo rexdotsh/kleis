@@ -3112,6 +3112,30 @@ describe("proxy contract: claude", () => {
     ]);
   });
 
+  test("adds fine-grained tool streaming only when the caller asks for it", () => {
+    expect(CLAUDE_REQUIRED_BETA_HEADERS).not.toContain(
+      "fine-grained-tool-streaming-2025-05-14"
+    );
+    const headers = new Headers({
+      "anthropic-beta": "fine-grained-tool-streaming-2025-05-14",
+    });
+    prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers,
+      bodyText: "{}",
+      bodyJson: {},
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    expect(headers.get("anthropic-beta")).toBe(
+      [
+        ...CLAUDE_REQUIRED_BETA_HEADERS,
+        "fine-grained-tool-streaming-2025-05-14",
+      ].join(",")
+    );
+  });
+
   test("strips tool prefix in non-streaming JSON response payload", async () => {
     const capture = createUsageCapture();
     const result = prepareClaudeUsageRequest(capture.onTokenUsage);
