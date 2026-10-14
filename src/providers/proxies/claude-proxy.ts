@@ -253,13 +253,12 @@ const readClaudeErrorLogFields = (
   errorStatus: readClaudeErrorField(payload, "status"),
 });
 
-// Events that never carry usage, errors or tool names. Text deltas make up
-// almost all of a stream, so they skip JSON parsing entirely.
+// Events that never carry usage, errors, tool names or the end of the stream.
+// Text deltas make up almost all of a stream, so they skip JSON parsing.
 const CLAUDE_PASSTHROUGH_EVENTS = new Set([
   "content_block_delta",
   "content_block_start",
   "content_block_stop",
-  "message_stop",
   "ping",
 ]);
 
@@ -309,17 +308,28 @@ const transformSseEventChunk = (
   }
 };
 
+// 529 is Anthropic's overloaded status.
+const readStreamErrorStatus = (payload: Record<string, unknown>): number => {
+  const type = isObjectRecord(payload.error) ? payload.error.type : null;
+  if (type === "rate_limit_error") {
+    return 429;
+  }
+  return type === "overloaded_error" ? 529 : 502;
+};
+
+export const isEventStreamResponse = (response: Response): boolean =>
+  response.body !== null &&
+  (response.headers.get("content-type") ?? "")
+    .toLowerCase()
+    .includes("text/event-stream");
+
 const maybeTransformClaudeStreamResponse = (
   response: Response,
   toolNames: ClaudeToolNames,
-  onTokenUsage?: ((usage: TokenUsage) => void) | null
+  onTokenUsage?: ((usage: TokenUsage) => void) | null,
+  onStreamEnd?: ((statusCode: number) => void) | null
 ): Response => {
   if (!response.body) {
-    return response;
-  }
-
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("text/event-stream")) {
     return response;
   }
 
@@ -332,6 +342,7 @@ const maybeTransformClaudeStreamResponse = (
   let lastChunkAt = startedAt;
   let lastWriteAt = startedAt;
   let closed = false;
+  let endStatus: number | null = response.ok ? null : response.status;
   let clearKeepAlive: (() => void) | null = null;
 
   const logStreamAnomaly = (
@@ -366,6 +377,14 @@ const maybeTransformClaudeStreamResponse = (
     }
     usageReported = true;
     onTokenUsage?.({ ...streamUsage });
+  };
+
+  // Usage goes first so the request recorded at the end includes it.
+  const finishStream = (fallbackStatus: number): void => {
+    closed = true;
+    clearKeepAlive?.();
+    reportStreamUsage();
+    onStreamEnd?.(endStatus ?? fallbackStatus);
   };
 
   const readOptionalUsageToken = (
@@ -446,7 +465,13 @@ const maybeTransformClaudeStreamResponse = (
       return;
     }
 
+    if (payload.type === "message_stop") {
+      endStatus ??= 200;
+      return;
+    }
+
     if (payload.type === "error") {
+      endStatus ??= readStreamErrorStatus(payload);
       logStreamAnomaly(
         "claude_sse_error_event",
         readClaudeErrorLogFields(payload)
@@ -503,9 +528,14 @@ const maybeTransformClaudeStreamResponse = (
               controller.enqueue(encoder.encode(output));
               lastWriteAt = Date.now();
             }
-            reportStreamUsage();
-            closed = true;
-            clearKeepAlive?.();
+            // Forwarded as is: OpenCode treats an EOF without message_stop as
+            // an interrupted stream and can continue from the partial output.
+            if (endStatus === null) {
+              logStreamAnomaly("claude_sse_missing_message_stop", {
+                truncatedEvent: rest.trim().length > 0,
+              });
+            }
+            finishStream(502);
             controller.close();
             return;
           }
@@ -535,18 +565,17 @@ const maybeTransformClaudeStreamResponse = (
           clearKeepAlive?.();
           return;
         }
-        closed = true;
-        clearKeepAlive?.();
-        reportStreamUsage();
+        finishStream(502);
         logStreamAnomaly("claude_sse_stream_failed", {}, error);
         reader.cancel(error).catch(() => undefined);
         controller.error(error);
       }
     },
     cancel(reason): Promise<void> {
-      closed = true;
-      clearKeepAlive?.();
-      reportStreamUsage();
+      if (!closed) {
+        // 499: the client closed the request.
+        finishStream(499);
+      }
       return reader.cancel(reason);
     },
   });
@@ -604,17 +633,21 @@ const maybeTransformClaudeJsonResponse = async (
 const transformClaudeResponse = (
   response: Response,
   toolNames: ClaudeToolNames,
-  onTokenUsage?: ((usage: TokenUsage) => void) | null
+  onTokenUsage?: ((usage: TokenUsage) => void) | null,
+  onStreamEnd?: ((statusCode: number) => void) | null
 ): Promise<Response> => {
+  if (isEventStreamResponse(response)) {
+    return Promise.resolve(
+      maybeTransformClaudeStreamResponse(
+        response,
+        toolNames,
+        onTokenUsage,
+        onStreamEnd
+      )
+    );
+  }
   if (!response.body) {
     return Promise.resolve(response);
-  }
-
-  const contentType = response.headers.get("content-type") ?? "";
-  if (contentType.toLowerCase().includes("text/event-stream")) {
-    return Promise.resolve(
-      maybeTransformClaudeStreamResponse(response, toolNames, onTokenUsage)
-    );
   }
 
   return maybeTransformClaudeJsonResponse(response, toolNames, onTokenUsage);
@@ -636,6 +669,8 @@ type ClaudeProxyPreparationInput = {
   accessToken: string;
   metadata: ClaudeAccountMetadata | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
+  // Called once when an SSE response ends, with the status to record for it.
+  onStreamEnd?: ((statusCode: number) => void) | null;
 };
 
 type ClaudeProxyPreparationResult = {
@@ -677,6 +712,11 @@ export const prepareClaudeProxyRequest = (
     upstreamUrl: buildUpstreamUrl(input.requestUrl.search),
     bodyText,
     transformResponse: (response: Response): Promise<Response> =>
-      transformClaudeResponse(response, toolNames, input.onTokenUsage),
+      transformClaudeResponse(
+        response,
+        toolNames,
+        input.onTokenUsage,
+        input.onStreamEnd
+      ),
   };
 };
