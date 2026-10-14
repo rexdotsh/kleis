@@ -18,6 +18,11 @@ import {
   type ClaudeToolNames,
   createClaudeToolNames,
 } from "./claude-tool-names";
+import {
+  createSseEventFramer,
+  readSseData,
+  replaceSseData,
+} from "./sse-events";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
 // Anthropic OAuth sessions reject the feedback repo path used in OpenCode's
@@ -217,38 +222,6 @@ const buildUpstreamUrl = (search: string): string => {
   return upstream.toString();
 };
 
-const findSseEventBoundary = (
-  buffer: string
-): { index: number; length: number } | null => {
-  const match = /\r\n\r\n|\n\n|\n\r\n|\r\n\n/u.exec(buffer);
-  if (!match || match.index === undefined) {
-    return null;
-  }
-
-  return {
-    index: match.index,
-    length: match[0].length,
-  };
-};
-
-const parseSseEventData = (chunk: string): string | null => {
-  const dataLines = chunk
-    .replace(/\r\n/gu, "\n")
-    .split("\n")
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart());
-  if (!dataLines.length) {
-    return null;
-  }
-
-  const data = dataLines.join("\n").trim();
-  if (!data || data === "[DONE]") {
-    return null;
-  }
-
-  return data;
-};
-
 const truncateLogValue = (value: string): string => {
   const trimmed = value.trim();
   return trimmed.length > 500 ? `${trimmed.slice(0, 500)}...` : trimmed;
@@ -279,25 +252,6 @@ const readClaudeErrorLogFields = (
   errorParam: readClaudeErrorField(payload, "param"),
   errorStatus: readClaudeErrorField(payload, "status"),
 });
-
-const rewriteSseDataLines = (chunk: string, payload: string): string => {
-  const boundary = findSseEventBoundary(chunk);
-  const eventTrailer =
-    boundary && boundary.index + boundary.length === chunk.length
-      ? chunk.slice(boundary.index)
-      : "";
-  const chunkBody = eventTrailer ? chunk.slice(0, -eventTrailer.length) : chunk;
-  const rewrittenBody = chunkBody.replace(
-    /((?:^|\r\n|\n))(?:data:.*(?:\r\n|\n)?)+$/u,
-    (_, separator: string) => `${separator}data: ${payload}`
-  );
-
-  if (rewrittenBody === chunkBody) {
-    return chunk;
-  }
-
-  return `${rewrittenBody}${eventTrailer}`;
-};
 
 // Events that never carry usage, errors or tool names. Text deltas make up
 // almost all of a stream, so they skip JSON parsing entirely.
@@ -337,7 +291,7 @@ const transformSseEventChunk = (
     return chunk;
   }
 
-  const payload = parseSseEventData(chunk);
+  const payload = readSseData(chunk);
   if (!payload) {
     return chunk;
   }
@@ -349,7 +303,7 @@ const transformSseEventChunk = (
     const transformed = transformClaudeResponsePayload(jsonBody, toolNames);
     return transformed === jsonBody
       ? chunk
-      : rewriteSseDataLines(chunk, JSON.stringify(transformed));
+      : replaceSseData(chunk, JSON.stringify(transformed));
   } catch {
     return chunk;
   }
@@ -371,9 +325,8 @@ const maybeTransformClaudeStreamResponse = (
 
   const reader = response.body.getReader();
   const encoder = new TextEncoder();
-  const decoder = new TextDecoder();
+  const framer = createSseEventFramer();
   const startedAt = Date.now();
-  let buffer = "";
   let bytes = 0;
   let chunks = 0;
   let lastChunkAt = startedAt;
@@ -511,6 +464,19 @@ const maybeTransformClaudeStreamResponse = (
     }
   };
 
+  const transformEvents = (events: string[]): string => {
+    let output = "";
+    for (const event of events) {
+      output += transformSseEventChunk(
+        event,
+        toolNames,
+        readStreamUsage,
+        readStreamAnomaly
+      );
+    }
+    return output;
+  };
+
   const stream = new ReadableStream<Uint8Array>({
     start(controller): void {
       clearKeepAlive = createSseKeepAlive(controller, {
@@ -531,20 +497,11 @@ const maybeTransformClaudeStreamResponse = (
               clearKeepAlive?.();
               return;
             }
-            buffer += decoder.decode();
-            if (buffer) {
-              controller.enqueue(
-                encoder.encode(
-                  transformSseEventChunk(
-                    buffer,
-                    toolNames,
-                    readStreamUsage,
-                    readStreamAnomaly
-                  )
-                )
-              );
+            const { events, rest } = framer.end();
+            const output = transformEvents(rest ? [...events, rest] : events);
+            if (output) {
+              controller.enqueue(encoder.encode(output));
               lastWriteAt = Date.now();
-              buffer = "";
             }
             reportStreamUsage();
             closed = true;
@@ -560,35 +517,18 @@ const maybeTransformClaudeStreamResponse = (
           bytes += value.byteLength;
           chunks++;
           lastChunkAt = Date.now();
-          buffer += decoder.decode(value, { stream: true });
-
-          let enqueued = false;
-          let boundary = findSseEventBoundary(buffer);
-          while (boundary) {
-            const chunk = buffer.slice(0, boundary.index + boundary.length);
-            buffer = buffer.slice(boundary.index + boundary.length);
-            try {
-              controller.enqueue(
-                encoder.encode(
-                  transformSseEventChunk(
-                    chunk,
-                    toolNames,
-                    readStreamUsage,
-                    readStreamAnomaly
-                  )
-                )
-              );
-              lastWriteAt = Date.now();
-              enqueued = true;
-            } catch (error) {
-              logStreamAnomaly("claude_sse_enqueue_failed", {}, error);
-              throw error;
-            }
-            boundary = findSseEventBoundary(buffer);
+          const events = framer.push(value);
+          if (!events.length) {
+            continue;
           }
-          if (enqueued) {
-            return;
+          try {
+            controller.enqueue(encoder.encode(transformEvents(events)));
+          } catch (error) {
+            logStreamAnomaly("claude_sse_enqueue_failed", {}, error);
+            throw error;
           }
+          lastWriteAt = Date.now();
+          return;
         }
       } catch (error) {
         if (closed) {
@@ -599,6 +539,7 @@ const maybeTransformClaudeStreamResponse = (
         clearKeepAlive?.();
         reportStreamUsage();
         logStreamAnomaly("claude_sse_stream_failed", {}, error);
+        reader.cancel(error).catch(() => undefined);
         controller.error(error);
       }
     },

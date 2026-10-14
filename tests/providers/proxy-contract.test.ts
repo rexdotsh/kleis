@@ -752,6 +752,36 @@ describe("proxy contract: codex", () => {
     });
   });
 
+  test("normalizes response.done when every read ends inside a CRLF", async () => {
+    const payload = JSON.stringify({
+      type: "response.done",
+      response: { status: "completed" },
+    });
+    const body = `event: response.done\r\ndata: ${payload}\r\n\r\n`;
+    const encoder = new TextEncoder();
+    const response = createOpenAiSseUsagePassthrough({
+      response: new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller): void {
+            for (const part of body.split(/(?<=\r)/u)) {
+              controller.enqueue(encoder.encode(part));
+            }
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } }
+      ),
+      extractUsage: () => null,
+    });
+
+    expect(await response.text()).toBe(
+      `event: response.completed\r\ndata: ${JSON.stringify({
+        ...JSON.parse(payload),
+        type: "response.completed",
+      })}\r\n\r\n`
+    );
+  });
+
   test("retains observed Codex stream usage after downstream cancellation", async () => {
     const capture = createUsageCapture();
     const result = prepareCodexUsageRequest(
@@ -3561,6 +3591,60 @@ describe("proxy contract: claude", () => {
     );
   });
 
+  test("rewrites tool names when every read ends inside a CRLF", async () => {
+    const result = prepareClaudeUsageRequest();
+    const encoder = new TextEncoder();
+    const original =
+      'event: content_block_start\r\ndata: {"type":"content_block_start",\r\ndata: "content_block":{"type":"tool_use","name":"mcp_shell"}}\r\n\r\n' +
+      'event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n';
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          for (const part of original.split(/(?<=\r)/u)) {
+            controller.enqueue(encoder.encode(part));
+          }
+          controller.close();
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+
+    const transformedResponse = await result.transformResponse(sourceResponse);
+
+    expect(await transformedResponse.text()).toBe(
+      'event: content_block_start\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\r\n\r\n' +
+        'event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n'
+    );
+  });
+
+  test("cancels upstream when a Claude SSE event exceeds the buffer limit", async () => {
+    const result = prepareClaudeUsageRequest();
+    let cancelled = false;
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(
+            new TextEncoder().encode(`data: ${"x".repeat(4 * 1024 * 1024)}`)
+          );
+        },
+        cancel(): void {
+          cancelled = true;
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+    const originalWarn = console.warn;
+    console.warn = (): void => undefined;
+    try {
+      const transformedResponse =
+        await result.transformResponse(sourceResponse);
+      await expect(transformedResponse.text()).rejects.toThrow("buffer limit");
+      await waitFor(() => cancelled);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
   const claudeStreamUsageCases = [
     {
       name: "extracts usage from claude streaming message events",
@@ -3667,6 +3751,27 @@ describe("proxy contract: claude", () => {
       outputTokens: 2,
       cacheReadTokens: 100,
       cacheWriteTokens: 5,
+    });
+  });
+
+  test("reads and rewrites a final event that has no closing blank line", async () => {
+    const capture = createUsageCapture();
+    const result = prepareClaudeUsageRequest(capture.onTokenUsage);
+    const transformedResponse = await result.transformResponse(
+      new Response(
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":1}}}\n\n' +
+          'data: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_shell"}}\n\n' +
+          'data: {"type":"message_delta","usage":{"output_tokens":9}}\n',
+        { headers: { "content-type": "text/event-stream" } }
+      )
+    );
+
+    expect(await transformedResponse.text()).toContain('"name":"shell"');
+    expect(capture.read()).toEqual({
+      inputTokens: 3,
+      outputTokens: 9,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
     });
   });
 
