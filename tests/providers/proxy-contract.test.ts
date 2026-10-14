@@ -3147,15 +3147,30 @@ describe("proxy contract: claude", () => {
         cache_read_input_tokens: 4,
         cache_creation_input_tokens: 2,
       },
-      content: [{ type: "tool_use", name: "mcp_shell", id: "t-1", input: {} }],
+      type: "message",
+      content: [
+        {
+          type: "tool_use",
+          name: "mcp_shell",
+          id: "t-1",
+          input: { call: { type: "tool_use", name: "mcp_shell" } },
+        },
+      ],
     });
 
     const transformedResponse = await result.transformResponse(sourceResponse);
     const transformed = (await transformedResponse.json()) as {
-      content: Array<{ type: string; name: string }>;
+      content: Array<{ name: string; input: unknown }>;
     };
 
-    expect(transformed.content[0]?.name).toBe("shell");
+    expect(transformed.content).toEqual([
+      {
+        type: "tool_use",
+        name: "shell",
+        id: "t-1",
+        input: { call: { type: "tool_use", name: "mcp_shell" } },
+      },
+    ]);
     expect(capture.read()).toEqual({
       inputTokens: 33,
       outputTokens: 8,
@@ -3172,9 +3187,11 @@ describe("proxy contract: claude", () => {
       new ReadableStream<Uint8Array>({
         start(controller): void {
           controller.enqueue(
-            encoder.encode('data: {"type":"tool_use","name":"mcp_')
+            encoder.encode(
+              'data: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_'
+            )
           );
-          controller.enqueue(encoder.encode('shell"}\n'));
+          controller.enqueue(encoder.encode('shell"}}\n'));
           controller.enqueue(encoder.encode("\n"));
           controller.close();
         },
@@ -3294,8 +3311,12 @@ describe("proxy contract: claude", () => {
       new ReadableStream<Uint8Array>({
         start(controller): void {
           controller.enqueue(encoder.encode("event: message\n"));
-          controller.enqueue(encoder.encode('data: {"type":"tool_use",\n'));
-          controller.enqueue(encoder.encode('data: "name":"mcp_shell"}\n\n'));
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"content_block_start","content_block":{"type":"tool_use",\n'
+            )
+          );
+          controller.enqueue(encoder.encode('data: "name":"mcp_shell"}}\n\n'));
           controller.close();
         },
       }),
@@ -3310,7 +3331,7 @@ describe("proxy contract: claude", () => {
     const transformedText = await transformedResponse.text();
 
     expect(transformedText).toBe(
-      'event: message\ndata: {"type":"tool_use","name":"shell"}\n\n'
+      'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\n\n'
     );
   });
 
@@ -3323,7 +3344,7 @@ describe("proxy contract: claude", () => {
         start(controller): void {
           controller.enqueue(
             encoder.encode(
-              'event: message\r\ndata: {"type":"tool_use","name":"mcp_shell"}\r\n\r\n'
+              'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_shell"}}\r\n\r\n'
             )
           );
           controller.close();
@@ -3340,7 +3361,7 @@ describe("proxy contract: claude", () => {
     const transformedText = await transformedResponse.text();
 
     expect(transformedText).toBe(
-      'event: message\r\ndata: {"type":"tool_use","name":"shell"}\r\n\r\n'
+      'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\r\n\r\n'
     );
   });
 
@@ -3353,12 +3374,12 @@ describe("proxy contract: claude", () => {
         start(controller): void {
           controller.enqueue(
             encoder.encode(
-              'event: message\ndata: {"type":"tool_use","name":"mcp_shell"}\n\r\n'
+              'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_shell"}}\n\r\n'
             )
           );
           controller.enqueue(
             encoder.encode(
-              'event: message\r\ndata: {"type":"tool_use","name":"mcp_browser"}\r\n\n'
+              'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_browser"}}\r\n\n'
             )
           );
           controller.close();
@@ -3375,8 +3396,8 @@ describe("proxy contract: claude", () => {
     const transformedText = await transformedResponse.text();
 
     expect(transformedText).toBe(
-      'event: message\ndata: {"type":"tool_use","name":"shell"}\n\r\n' +
-        'event: message\r\ndata: {"type":"tool_use","name":"browser"}\r\n\n'
+      'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\n\r\n' +
+        'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"browser"}}\r\n\n'
     );
   });
 
@@ -3388,8 +3409,14 @@ describe("proxy contract: claude", () => {
       new ReadableStream<Uint8Array>({
         start(controller): void {
           controller.enqueue(encoder.encode("event: message\r\n"));
-          controller.enqueue(encoder.encode('data: {"type":"tool_use",\n'));
-          controller.enqueue(encoder.encode('data: "name":"mcp_shell"}\n\r\n'));
+          controller.enqueue(
+            encoder.encode(
+              'data: {"type":"content_block_start","content_block":{"type":"tool_use",\n'
+            )
+          );
+          controller.enqueue(
+            encoder.encode('data: "name":"mcp_shell"}}\n\r\n')
+          );
           controller.close();
         },
       }),
@@ -3404,7 +3431,7 @@ describe("proxy contract: claude", () => {
     const transformedText = await transformedResponse.text();
 
     expect(transformedText).toBe(
-      'event: message\r\ndata: {"type":"tool_use","name":"shell"}\n\r\n'
+      'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\n\r\n'
     );
   });
 
@@ -3417,8 +3444,8 @@ describe("proxy contract: claude", () => {
         start(controller): void {
           controller.enqueue(
             encoder.encode(
-              'event: message\ndata: {"type":"tool_use","name":"mcp_shell"}\n\n' +
-                'event: message\ndata: {"type":"tool_use","name":"mcp_browser"}\n\n'
+              'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_shell"}}\n\n' +
+                'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_browser"}}\n\n'
             )
           );
           controller.close();
@@ -3435,8 +3462,8 @@ describe("proxy contract: claude", () => {
     const transformedText = await transformedResponse.text();
 
     expect(transformedText).toBe(
-      'event: message\ndata: {"type":"tool_use","name":"shell"}\n\n' +
-        'event: message\ndata: {"type":"tool_use","name":"browser"}\n\n'
+      'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\n\n' +
+        'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"browser"}}\n\n'
     );
   });
 
@@ -3622,6 +3649,19 @@ describe("proxy contract: claude", () => {
       cacheReadTokens: 11,
       cacheWriteTokens: 7,
     });
+  });
+
+  test("leaves tool_use look-alikes outside content blocks byte-for-byte", async () => {
+    const result = prepareClaudeUsageRequest();
+    const events =
+      'event: future_event\ndata: { "type": "future_event", "item": {"type":"tool_use","name":"mcp_shell"} }\n\n' +
+      'event: message_delta\ndata: { "type": "message_delta", "delta": {"stop_reason":"tool_use"} }\n\n';
+
+    const response = await result.transformResponse(
+      new Response(events, { headers: { "content-type": "text/event-stream" } })
+    );
+
+    expect(await response.text()).toBe(events);
   });
 
   test("does not rewrite non-tool SSE name fields", async () => {
