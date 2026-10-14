@@ -366,6 +366,10 @@ function needsReauthorization(account) {
   );
 }
 
+// The provider asked us to slow down, but the last limits are still shown.
+const isRateLimitedWithData = (quota) =>
+  quota?.errorStatus === 429 && Boolean(quota.fetchedAt);
+
 function accountIssues(account) {
   const issues = [];
   if (tokenStatus(account.expiresAt).class === "expired") {
@@ -391,7 +395,7 @@ function accountIssues(account) {
       text: `provider rejected the token (${quota.errorStatus}), reauthorize`,
       when: "",
     });
-  } else if (quota?.error) {
+  } else if (quota?.error && !isRateLimitedWithData(quota)) {
     issues.push({ severity: "warn", text: "limit sync failed", when: "" });
   }
   const tightest = tightestWindow(account);
@@ -533,7 +537,13 @@ function limitFacts(account) {
       `<span class="bar${severity ? ` ${severity}` : ""}"><i style="width:${window.percent}%"></i></span>`
     );
   });
-  if (quota.error)
+  if (isRateLimitedWithData(quota))
+    facts.push(
+      fact("Limit sync", '<span class="warn">Rate limited</span>', [
+        `showing limits from ${escapeHtml(relativeTime(quota.fetchedAt))}`,
+      ])
+    );
+  else if (quota.error)
     facts.push(
       `<div class="fact"><div class="fact-label">Limit sync</div><div class="fact-value err">Failed</div><div class="fact-sub clamp" title="${escapeHtml(quota.error)}">${escapeHtml(quota.error)}</div></div>`
     );

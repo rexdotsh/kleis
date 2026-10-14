@@ -25,6 +25,10 @@ import { errorLogFields, logWarn } from "../../utils/log";
 import { refreshProviderAccount } from "./provider-service";
 
 const CACHE_MS = 60_000;
+const CLAUDE_CACHE_MS = 3 * 60_000;
+const CLAUDE_RATE_LIMIT_BACKOFF_MS = [2, 4, 8, 15].map(
+  (minutes) => minutes * 60_000
+);
 const CLAUDE_PLAN_CACHE_MS = 60 * 60 * 1000;
 const CLAUDE_PLAN_RETRY_MS = 5 * 60 * 1000;
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
@@ -56,6 +60,29 @@ export type AccountQuota = {
 };
 
 const cache = new Map<string, { expiresAt: number; quota: AccountQuota }>();
+
+// Anthropic rate-limits the usage endpoint per client, not per account: one
+// 429 pauses usage checks for every Claude account, backing off until a check
+// succeeds again. Retry-After is usually 0, so it can't be relied on.
+const claudeRateLimit = { strikes: 0, until: 0 };
+
+const noteClaudeUsageResult = (errors: unknown[]): void => {
+  if (errors.some((error) => errorStatus(error) === 429)) {
+    const backoff =
+      CLAUDE_RATE_LIMIT_BACKOFF_MS[
+        Math.min(
+          claudeRateLimit.strikes,
+          CLAUDE_RATE_LIMIT_BACKOFF_MS.length - 1
+        )
+      ] ?? CACHE_MS;
+    claudeRateLimit.strikes++;
+    claudeRateLimit.until =
+      Date.now() + Math.max(backoff, cacheDuration(errors));
+  } else if (!errors.length) {
+    claudeRateLimit.strikes = 0;
+    claudeRateLimit.until = 0;
+  }
+};
 const inFlight = new Map<string, Promise<AccountQuota | null>>();
 const generations = new Map<string, number>();
 
@@ -216,16 +243,22 @@ const fetchAccountData = async (
   return result;
 };
 
+// A failed check keeps whatever the last successful one returned, with its
+// original time, so a transient failure never blanks the limits.
 const toQuota = (
   data: TrackingData,
   errors: unknown[],
-  now: number
+  now: number,
+  previous?: AccountQuota
 ): AccountQuota => ({
-  fetchedAt: errors.length ? null : now,
+  fetchedAt: errors.length ? (previous?.fetchedAt ?? null) : now,
   error: errors.length ? errors.map(errorMessage).join("; ") : null,
   errorStatus:
     errors.map(errorStatus).find((status) => status !== null) ?? null,
-  data,
+  data:
+    errors.length && previous?.data.provider === data.provider
+      ? ({ ...previous.data, ...data } as TrackingData)
+      : data,
 });
 
 // Quotas belong to the provider identity, so a row whose OAuth identity changes
@@ -253,24 +286,46 @@ const fetchProviderAccountQuota = async (
   generation: number
 ): Promise<AccountQuota | null> => {
   const now = Date.now();
-  const publish = (quota: AccountQuota, errors: unknown[]): AccountQuota => {
+  const previous = cache.get(key)?.quota;
+  const publish = (quota: AccountQuota, expiresAt: number): AccountQuota => {
     // A lookup started later, or an invalidation, owns the cache entry.
     if (generations.get(key) === generation) {
-      cache.set(key, { expiresAt: now + cacheDuration(errors), quota });
+      cache.set(key, { expiresAt, quota });
     }
     return quota;
   };
+  const baseMs = stored.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS;
+  if (stored.provider === "claude" && claudeRateLimit.until > now) {
+    const paused = new AccountTrackingHttpError(
+      "Claude subscription usage request failed (429)",
+      429,
+      null
+    );
+    return publish(
+      toQuota({ provider: "claude" }, [paused], now, previous),
+      claudeRateLimit.until
+    );
+  }
   try {
     const account = await resolveAccount(database, stored);
     if (!account) {
       return null;
     }
     const result = await fetchAccountData(database, account);
-    return publish(toQuota(result.data, result.errors, now), result.errors);
+    let expiresAt = now + Math.max(baseMs, cacheDuration(result.errors));
+    if (account.provider === "claude") {
+      noteClaudeUsageResult(result.errors);
+      if (claudeRateLimit.until > now) expiresAt = claudeRateLimit.until;
+    }
+    return publish(
+      toQuota(result.data, result.errors, now, previous),
+      expiresAt
+    );
   } catch (error) {
-    return publish(toQuota({ provider: stored.provider }, [error], now), [
-      error,
-    ]);
+    return publish(
+      toQuota({ provider: stored.provider }, [error], now, previous),
+      now + Math.max(baseMs, cacheDuration([error]))
+    );
   }
 };
 

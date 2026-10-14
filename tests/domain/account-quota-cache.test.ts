@@ -108,7 +108,7 @@ describe("account quota cache", () => {
     expect(fiveHourUtilization(cached.get(account.id))).toBe(10);
     expect(calls).toBe(1);
 
-    setSystemTime(new Date(startedAt + 61_000));
+    setSystemTime(new Date(startedAt + 181_000));
     const stale = await listProviderAccountQuotas(database, [account]);
     expect(fiveHourUtilization(stale.get(account.id))).toBe(10);
     expect(calls).toBe(2);
@@ -205,7 +205,7 @@ describe("account quota cache", () => {
     expect(profileHeaders.get("authorization")).toBe("Bearer claude-access");
     expect(profileHeaders.get("anthropic-beta")).not.toBeNull();
 
-    setSystemTime(new Date(startedAt + 61_000));
+    setSystemTime(new Date(startedAt + 181_000));
     await listProviderAccountQuotas(database, [account]);
     await Bun.sleep(0);
     expect(profileCalls).toBe(1);
@@ -273,7 +273,7 @@ describe("account quota cache", () => {
       });
       expect(profileCalls).toBe(2);
 
-      setSystemTime(new Date(startedAt + 3_662_000));
+      setSystemTime(new Date(startedAt + 3_782_000));
       await listProviderAccountQuotas(database, [account]);
       await Bun.sleep(0);
       expect(profileCalls).toBe(2);
@@ -298,5 +298,55 @@ describe("account quota cache", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  test("a rate limit keeps the last numbers and pauses every Claude account until checks succeed", async () => {
+    let rateLimited = false;
+    let usageCalls = 0;
+    globalThis.fetch = trackingFetch(() => {
+      usageCalls++;
+      return rateLimited
+        ? Response.json(
+            { error: { type: "rate_limit_error" } },
+            { status: 429, headers: { "Retry-After": "0" } }
+          )
+        : Response.json({ five_hour: { utilization: 30 } });
+    });
+    const first = claudeAccount();
+    const second = claudeAccount();
+    const startedAt = Date.now();
+    await listProviderAccountQuotas(database, [first, second]);
+    expect(usageCalls).toBe(2);
+
+    rateLimited = true;
+    first.expiresAt = startedAt + 7_200_000;
+    second.expiresAt = startedAt + 7_200_000;
+    setSystemTime(new Date(startedAt + 181_000));
+    await listProviderAccountQuotas(database, [first]);
+    await Bun.sleep(0);
+    const limited = await listProviderAccountQuotas(database, [first]);
+    expect(limited.get(first.id)).toMatchObject({
+      errorStatus: 429,
+      fetchedAt: startedAt,
+      data: { subscription: { fiveHour: { utilization: 30 } } },
+    });
+    expect(usageCalls).toBe(3);
+
+    await listProviderAccountQuotas(database, [second]);
+    await Bun.sleep(0);
+    const paused = await listProviderAccountQuotas(database, [second]);
+    expect(paused.get(second.id)).toMatchObject({
+      errorStatus: 429,
+      data: { subscription: { fiveHour: { utilization: 30 } } },
+    });
+    expect(usageCalls).toBe(3);
+
+    rateLimited = false;
+    setSystemTime(new Date(startedAt + 181_000 + 121_000));
+    await listProviderAccountQuotas(database, [first]);
+    await Bun.sleep(0);
+    const recovered = await listProviderAccountQuotas(database, [first]);
+    expect(recovered.get(first.id)).toMatchObject({ error: null });
+    expect(usageCalls).toBe(4);
   });
 });
