@@ -455,9 +455,7 @@ const maybeTransformClaudeStreamResponse = (
       }
 
       sawStreamUsage = true;
-      streamUsage.inputTokens = usage.inputTokens;
-      streamUsage.cacheReadTokens = usage.cacheReadTokens;
-      streamUsage.cacheWriteTokens = usage.cacheWriteTokens;
+      Object.assign(streamUsage, usage);
       return;
     }
 

@@ -3514,7 +3514,7 @@ describe("proxy contract: claude", () => {
     });
   }
 
-  test("retains observed Claude input and cache usage after cancellation", async () => {
+  test("retains observed Claude message_start usage after cancellation", async () => {
     const capture = createUsageCapture();
     const result = prepareClaudeUsageRequest(capture.onTokenUsage);
     const event = JSON.stringify({
@@ -3522,6 +3522,7 @@ describe("proxy contract: claude", () => {
       message: {
         usage: {
           input_tokens: 7,
+          output_tokens: 2,
           cache_read_input_tokens: 100,
           cache_creation_input_tokens: 5,
         },
@@ -3542,7 +3543,7 @@ describe("proxy contract: claude", () => {
 
     expect(capture.read()).toEqual({
       inputTokens: 7,
-      outputTokens: 0,
+      outputTokens: 2,
       cacheReadTokens: 100,
       cacheWriteTokens: 5,
     });
