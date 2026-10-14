@@ -289,6 +289,29 @@ describe("admin mutation and session guards", () => {
     expect(calls).toBe(2);
   });
 
+  test("clicking Import shows it busy until the import settles", async () => {
+    const response = deferred();
+    let calls = 0;
+    globals.fetch = () => {
+      calls++;
+      return response.respond();
+    };
+    $("#import-access-token").value = "fake-access";
+    $("#import-refresh-token").value = "fake-refresh";
+    const button = $("#btn-import-account");
+    button.click();
+    await tick();
+    expect(button.disabled).toBe(true);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    button.click();
+    await tick();
+    expect(calls).toBe(1);
+    response.release(failure());
+    await tick();
+    await tick();
+    expect(button.disabled).toBe(false);
+  });
+
   test("a successful mutation stays locked through its reload", async () => {
     const reload = deferred();
     let calls = 0;

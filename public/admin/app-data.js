@@ -2005,7 +2005,11 @@ const completeOAuth = mutation(
   completeOAuthAction,
   () => state.activeOAuth?.state
 );
-const importAccount = mutation("import-account", importAccountAction);
+const importAccount = mutation(
+  "import-account",
+  importAccountAction,
+  () => null
+);
 
 export {
   mutationAttributes,
