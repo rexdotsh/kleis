@@ -4,11 +4,22 @@ import type { Provider } from "../db/schema";
 
 // Strip legacy, unused fields when reading/importing metadata. OAuth refresh
 // will persist the normalized shape without requiring a database migration.
+const optionalText = z.string().nullable().optional();
+const optionalTimestamp = z.number().nullable().optional();
+
+// Identity fields come from token responses and claims, so rows written before
+// they existed parse unchanged and gain them on the next refresh.
 const codexMetadataSchema = z.object({
   provider: z.literal("codex"),
   scope: z.string().nullable().default(null),
   chatgptAccountId: z.string().nullable(),
   email: z.string().nullable(),
+  chatgptUserId: optionalText,
+  planTypeClaim: optionalText,
+  subscriptionActiveStart: optionalTimestamp,
+  subscriptionActiveUntil: optionalTimestamp,
+  subscriptionLastChecked: optionalTimestamp,
+  isFedramp: z.boolean().nullable().optional(),
 });
 
 const claudeMetadataSchema = z.object({
@@ -20,6 +31,13 @@ const claudeMetadataSchema = z.object({
     "console.anthropic.com",
     "platform.claude.com",
   ]),
+  accountUuid: optionalText,
+  email: optionalText,
+  organizationUuid: optionalText,
+  organizationName: optionalText,
+  workspaceId: optionalText,
+  workspaceName: optionalText,
+  refreshTokenExpiresAt: optionalTimestamp,
 });
 
 export const providerAccountMetadataSchema = z.discriminatedUnion("provider", [

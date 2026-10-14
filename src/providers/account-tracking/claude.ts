@@ -81,20 +81,83 @@ export const decodeClaudeSubscriptionPlan = (
   return type ? { type, label: CLAUDE_PLAN_LABELS[type] } : null;
 };
 
-export const fetchClaudeSubscriptionPlan = async (accessToken: string) => {
-  const data = await fetchTrackingJson({
-    url: `${ANTHROPIC_API_BASE_URL}/api/oauth/profile`,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-      "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
-      "anthropic-version": "2023-06-01",
-      "User-Agent": CLAUDE_CLI_USER_AGENT,
-    },
-    timeoutMs: CLAUDE_PROFILE_TIMEOUT_MS,
-    errorPrefix: "Claude OAuth profile request failed",
-  });
-  return decodeClaudeSubscriptionPlan(data);
+// Everything Kleis keeps from /api/oauth/profile; the plan is derived the
+// same way as decodeClaudeSubscriptionPlan.
+export const decodeClaudeAccountProfile = (value: unknown) => {
+  const input = requireObject(
+    value,
+    "Claude OAuth profile response is malformed"
+  );
+  const account = readObject(input.account);
+  const organization = readObject(input.organization);
+  return {
+    plan: decodeClaudeSubscriptionPlan(input),
+    displayName: readString(account?.display_name),
+    fullName: readString(account?.full_name),
+    organizationUuid: readString(organization?.uuid),
+    organizationName: readString(organization?.name),
+    organizationType: readString(organization?.organization_type),
+    rateLimitTier: readString(organization?.rate_limit_tier),
+    seatTier: readString(organization?.seat_tier),
+    billingType: readString(organization?.billing_type),
+    subscriptionStatus: readString(organization?.subscription_status),
+    subscriptionCreatedAt: readString(organization?.subscription_created_at),
+    trialEndsAt: readString(organization?.claude_code_trial_ends_at),
+    hasExtraUsageEnabled: readBoolean(organization?.has_extra_usage_enabled),
+  };
+};
+
+export type ClaudeAccountProfile = ReturnType<
+  typeof decodeClaudeAccountProfile
+> & { organizationRole: string | null; workspaceRole: string | null };
+
+const claudeOAuthHeaders = (accessToken: string) => ({
+  Authorization: `Bearer ${accessToken}`,
+  Accept: "application/json",
+  "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
+  "anthropic-version": "2023-06-01",
+  "User-Agent": CLAUDE_CLI_USER_AGENT,
+});
+
+export const decodeClaudeRoles = (value: unknown) => {
+  const input = requireObject(value, "Claude roles response is malformed");
+  return {
+    organizationRole: readString(input.organization_role),
+    workspaceRole: readString(input.workspace_role),
+  };
+};
+
+export const fetchClaudeRoles = async (accessToken: string) =>
+  decodeClaudeRoles(
+    await fetchTrackingJson({
+      url: `${ANTHROPIC_API_BASE_URL}/api/oauth/claude_cli/roles`,
+      headers: claudeOAuthHeaders(accessToken),
+      timeoutMs: CLAUDE_PROFILE_TIMEOUT_MS,
+      errorPrefix: "Claude roles request failed",
+    })
+  );
+
+// The role is extra detail: when its lookup fails the profile still counts,
+// with the previously known role.
+export const fetchClaudeAccountProfile = async (
+  accessToken: string,
+  previous: ClaudeAccountProfile | null
+): Promise<ClaudeAccountProfile> => {
+  const [profile, roles] = await Promise.all([
+    fetchTrackingJson({
+      url: `${ANTHROPIC_API_BASE_URL}/api/oauth/profile`,
+      headers: claudeOAuthHeaders(accessToken),
+      timeoutMs: CLAUDE_PROFILE_TIMEOUT_MS,
+      errorPrefix: "Claude OAuth profile request failed",
+    }),
+    fetchClaudeRoles(accessToken).catch(() => null),
+  ]);
+  return {
+    ...decodeClaudeAccountProfile(profile),
+    organizationRole:
+      roles?.organizationRole ?? previous?.organizationRole ?? null,
+    workspaceRole: roles?.workspaceRole ?? previous?.workspaceRole ?? null,
+  };
 };
 
 const decodeUsageWindow = (value: unknown) =>
@@ -174,13 +237,7 @@ export type ClaudeSubscriptionUsage = ReturnType<
 export const fetchClaudeSubscriptionUsage = async (accessToken: string) => {
   const data = await fetchTrackingJson({
     url: `${ANTHROPIC_API_BASE_URL}/api/oauth/usage`,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-      "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
-      "anthropic-version": "2023-06-01",
-      "User-Agent": CLAUDE_CLI_USER_AGENT,
-    },
+    headers: claudeOAuthHeaders(accessToken),
     timeoutMs: CLAUDE_USAGE_TIMEOUT_MS,
     errorPrefix: "Claude subscription usage request failed",
   });

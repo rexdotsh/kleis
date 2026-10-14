@@ -39,8 +39,14 @@ type ClaudeTokenResponse = {
   access_token?: string;
   refresh_token?: string;
   expires_in?: number;
+  refresh_token_expires_in?: number;
   scope?: string;
+  account?: { uuid?: unknown; email_address?: unknown };
+  organization?: { uuid?: unknown; name?: unknown };
+  workspace?: { id?: unknown; name?: unknown };
 };
+
+export const CLAUDE_ACCOUNT_ON_HOLD = "account_on_hold";
 
 export class ClaudeOAuthError extends Error {
   readonly status: number;
@@ -56,6 +62,36 @@ export class ClaudeOAuthError extends Error {
   }
 }
 
+// Only allowlisted codes leave this function; the rest of the provider text is
+// dropped. A suspended account is reported only through error_uri.
+const readClaudeOAuthErrorCode = (text: string): string | null => {
+  if (text.includes(CLAUDE_ACCOUNT_ON_HOLD)) {
+    return CLAUDE_ACCOUNT_ON_HOLD;
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object" || !("error" in raw)) {
+    return null;
+  }
+  const value = raw.error;
+  const candidate =
+    typeof value === "string"
+      ? value
+      : value && typeof value === "object" && "type" in value
+        ? value.type
+        : null;
+  return typeof candidate === "string" &&
+    /^(invalid_grant|invalid_client|invalid_scope|rate_limit_error|temporarily_unavailable)$/u.test(
+      candidate
+    )
+    ? candidate
+    : null;
+};
+
 const requestClaudeTokens = async (
   body: Record<string, string>
 ): Promise<ClaudeTokenResponse> => {
@@ -70,30 +106,10 @@ const requestClaudeTokens = async (
     redirect: "error",
   });
   if (!response.ok) {
-    let code: string | null = null;
-    try {
-      const raw: unknown = await response.json();
-      if (raw && typeof raw === "object" && "error" in raw) {
-        const value = raw.error;
-        const candidate =
-          typeof value === "string"
-            ? value
-            : value && typeof value === "object" && "type" in value
-              ? value.type
-              : null;
-        if (
-          typeof candidate === "string" &&
-          /^(invalid_grant|invalid_client|invalid_scope|rate_limit_error|temporarily_unavailable)$/u.test(
-            candidate
-          )
-        ) {
-          code = candidate;
-        }
-      }
-    } catch {
-      // Ignore provider text and preserve only an allowlisted OAuth code.
-    }
-    throw new ClaudeOAuthError(response.status, code);
+    throw new ClaudeOAuthError(
+      response.status,
+      readClaudeOAuthErrorCode(await response.text().catch(() => ""))
+    );
   }
 
   const value: unknown = await response.json();
@@ -149,22 +165,47 @@ const refreshClaudeTokens = async (
   return tokens;
 };
 
+const readText = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() ? value : null;
+
+// Refresh responses normally repeat the identity, but a missing field never
+// erases a known value.
 const buildClaudeMetadata = (input: {
-  scope: string | null;
+  tokens: ClaudeTokenResponse;
   mode: "max" | "console";
   host: "claude.ai" | "console.anthropic.com" | "platform.claude.com";
-}): ClaudeAccountMetadata => ({
-  provider: "claude",
-  scope: input.scope,
-  oauthMode: input.mode,
-  oauthHost: input.host,
-});
+  existing: ClaudeAccountMetadata | null;
+  now: number;
+}): ClaudeAccountMetadata => {
+  const { tokens, existing } = input;
+  const refreshLifetime = tokens.refresh_token_expires_in;
+  return {
+    provider: "claude",
+    scope: tokens.scope ?? existing?.scope ?? null,
+    oauthMode: input.mode,
+    oauthHost: input.host,
+    accountUuid: readText(tokens.account?.uuid) ?? existing?.accountUuid,
+    email: readText(tokens.account?.email_address) ?? existing?.email,
+    organizationUuid:
+      readText(tokens.organization?.uuid) ?? existing?.organizationUuid,
+    organizationName:
+      readText(tokens.organization?.name) ?? existing?.organizationName,
+    workspaceId: readText(tokens.workspace?.id) ?? existing?.workspaceId,
+    workspaceName: readText(tokens.workspace?.name) ?? existing?.workspaceName,
+    refreshTokenExpiresAt:
+      typeof refreshLifetime === "number" &&
+      Number.isFinite(refreshLifetime) &&
+      refreshLifetime > 0
+        ? input.now + refreshLifetime * 1000
+        : existing?.refreshTokenExpiresAt,
+  };
+};
 
 const buildTokenResult = (input: {
   tokens: ClaudeTokenResponse;
   mode: "max" | "console";
   host: "claude.ai" | "console.anthropic.com" | "platform.claude.com";
-  fallbackScope?: string | null;
+  existing: ClaudeAccountMetadata | null;
   fallbackRefreshToken: string | null;
   fallbackAccountId?: string | null;
 }): ProviderTokenResult => {
@@ -173,10 +214,13 @@ const buildTokenResult = (input: {
     throw new Error("Claude OAuth response is missing access_token");
   }
 
+  const now = Date.now();
   const metadata = buildClaudeMetadata({
-    scope: input.tokens.scope ?? input.fallbackScope ?? null,
+    tokens: input.tokens,
     mode: input.mode,
     host: input.host,
+    existing: input.existing,
+    now,
   });
   const refreshToken = input.tokens.refresh_token ?? input.fallbackRefreshToken;
   if (!refreshToken) {
@@ -187,14 +231,14 @@ const buildTokenResult = (input: {
     accessToken,
     refreshToken,
     expiresAt:
-      Date.now() +
-      (input.tokens.expires_in ?? 0) * 1000 -
-      CLAUDE_EXPIRY_SKEW_MS,
+      now + (input.tokens.expires_in ?? 0) * 1000 - CLAUDE_EXPIRY_SKEW_MS,
     // A Claude user UUID is shared across Max/Console and organizations. It
     // cannot be used as the unique provider account identity in our schema.
     accountId: input.fallbackAccountId || null,
     metadata,
-    label: metadata.oauthMode === "max" ? "claude-max" : "claude-console",
+    label:
+      metadata.email ??
+      (metadata.oauthMode === "max" ? "claude-max" : "claude-console"),
   };
 };
 
@@ -287,6 +331,7 @@ export const claudeAdapter: ProviderAdapter = {
         tokens,
         mode: stateMetadata.mode,
         host: stateMetadata.host,
+        existing: null,
         fallbackRefreshToken: null,
       }),
       ...(stateMetadata.replaceAccountId
@@ -306,7 +351,7 @@ export const claudeAdapter: ProviderAdapter = {
       tokens,
       mode: existing?.oauthMode ?? "max",
       host: existing?.oauthHost ?? "claude.ai",
-      fallbackScope: existing?.scope ?? null,
+      existing,
       fallbackRefreshToken: account.refreshToken,
       fallbackAccountId: account.accountId,
     });

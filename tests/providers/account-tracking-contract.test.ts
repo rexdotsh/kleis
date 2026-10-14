@@ -138,6 +138,33 @@ describe("Codex account tracking contracts", () => {
         default_account_id: "account-1",
       }).accounts[0]?.id
     ).toBe("account-1");
+    // Shape of a live /wham/accounts/check response for a workspace seat.
+    expect(
+      decodeCodexAccounts({
+        accounts: [
+          {
+            id: "account-2",
+            account_user_id: "user-2__account-2",
+            account_user_role: "account-owner",
+            structure: "workspace",
+            plan_type: "self_serve_business_prolite",
+            is_deactivated: false,
+            name: "Example Workspace",
+            profile_picture_url: null,
+          },
+        ],
+        default_account_id: "account-2",
+        account_ordering: ["account-2"],
+      }).accounts[0]
+    ).toEqual({
+      id: "account-2",
+      name: "Example Workspace",
+      profilePictureUrl: null,
+      structure: "workspace",
+      planType: "self_serve_business_prolite",
+      role: "account-owner",
+      isDeactivated: false,
+    });
     expect(
       decodeCodexThreadUsage({
         threads: [

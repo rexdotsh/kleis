@@ -100,6 +100,7 @@ describe("Claude refresh lifecycle", () => {
       scope: null,
       oauthMode: "console",
       oauthHost: "platform.claude.com",
+      accountUuid: "same-claude-account",
     });
   });
 

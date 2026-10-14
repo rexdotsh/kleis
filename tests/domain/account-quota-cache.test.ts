@@ -1,5 +1,6 @@
 import {
   afterEach,
+  beforeEach,
   describe,
   expect,
   setSystemTime,
@@ -12,6 +13,7 @@ import type { ProviderAccountRecord } from "../../src/db/repositories/provider-a
 import {
   listProviderAccountQuotas,
   peekProviderAccountQuotas,
+  setAccountSnapshotStore,
 } from "../../src/domain/providers/provider-account-tracking";
 
 const claudeAccount = (
@@ -46,6 +48,8 @@ const fiveHourUtilization = (quota: unknown): unknown =>
     }
   ).data.subscription?.fiveHour?.utilization;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 // Quota reads never refresh tokens for unexpired accounts, so no database
 // access happens in these tests.
 const database = {} as Database;
@@ -54,13 +58,22 @@ const trackingFetch = (
   usage: () => Response | Promise<Response>,
   profile: () => Response | Promise<Response> = () => Response.json({})
 ): typeof fetch =>
-  ((input: string | URL | Request) =>
-    Promise.resolve(
-      String(input).endsWith("/api/oauth/profile") ? profile() : usage()
-    )) as unknown as typeof fetch;
+  ((input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith("/api/oauth/claude_cli/roles")) {
+      return Promise.resolve(Response.json({ organization_role: "user" }));
+    }
+    return Promise.resolve(
+      url.endsWith("/api/oauth/profile") ? profile() : usage()
+    );
+  }) as unknown as typeof fetch;
 
 describe("account quota cache", () => {
   const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    setAccountSnapshotStore(null);
+  });
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
@@ -181,7 +194,7 @@ describe("account quota cache", () => {
   const profile = (organization: Record<string, string>) => () =>
     Response.json({ organization });
 
-  test("looks up the plan with usage and refreshes it hourly, not every sync", async () => {
+  test("looks up the plan with usage and refreshes it daily, not every sync", async () => {
     let profileCalls = 0;
     let tier = "default_claude_max_5x";
     let profileHeaders = new Headers();
@@ -211,9 +224,14 @@ describe("account quota cache", () => {
     await Bun.sleep(0);
     expect(profileCalls).toBe(1);
 
-    tier = "default_claude_max_20x";
-    account.expiresAt = startedAt + 7_200_000;
+    account.expiresAt = startedAt + 3 * DAY_MS;
     setSystemTime(new Date(startedAt + 3_601_000));
+    await listProviderAccountQuotas(database, [account]);
+    await Bun.sleep(0);
+    expect(profileCalls).toBe(1);
+
+    tier = "default_claude_max_20x";
+    setSystemTime(new Date(startedAt + DAY_MS + 1000));
     await listProviderAccountQuotas(database, [account]);
     await Bun.sleep(0);
     const later = await listProviderAccountQuotas(database, [account]);
@@ -256,8 +274,8 @@ describe("account quota cache", () => {
       await listProviderAccountQuotas(database, [account]);
 
       failProfile = true;
-      account.expiresAt = startedAt + 7_200_000;
-      setSystemTime(new Date(startedAt + 3_601_000));
+      account.expiresAt = startedAt + 3 * DAY_MS;
+      setSystemTime(new Date(startedAt + DAY_MS + 1000));
       await listProviderAccountQuotas(database, [account]);
       await Bun.sleep(0);
       const quotas = await listProviderAccountQuotas(database, [account]);
@@ -274,7 +292,7 @@ describe("account quota cache", () => {
       });
       expect(profileCalls).toBe(2);
 
-      setSystemTime(new Date(startedAt + 3_782_000));
+      setSystemTime(new Date(startedAt + DAY_MS + 182_000));
       await listProviderAccountQuotas(database, [account]);
       await Bun.sleep(0);
       expect(profileCalls).toBe(2);

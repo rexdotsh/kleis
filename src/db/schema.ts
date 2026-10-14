@@ -176,3 +176,23 @@ export const codexResetCreditRedemptions = sqliteTable(
     index("codex_reset_redemptions_account_idx").on(table.providerAccountId),
   ]
 );
+
+// The last known profile and limits per account, kept out of
+// provider_accounts so these frequent writes never clear the proxy's routing
+// lookups. account_identity is the provider account ID the data belongs to.
+export const providerAccountSnapshots = sqliteTable(
+  "provider_account_snapshots",
+  {
+    providerAccountId: text("provider_account_id")
+      .primaryKey()
+      .references(() => providerAccounts.id, { onDelete: "cascade" }),
+    accountIdentity: text("account_identity").notNull().default(""),
+    profileJson: text("profile_json"),
+    profileFetchedAt: integer("profile_fetched_at", { mode: "number" }),
+    quotaJson: text("quota_json"),
+    quotaFetchedAt: integer("quota_fetched_at", { mode: "number" }),
+    lastError: text("last_error"),
+    lastErrorStatus: integer("last_error_status", { mode: "number" }),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull(),
+  }
+);

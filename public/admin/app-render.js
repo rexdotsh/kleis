@@ -357,6 +357,19 @@ function limitSeverity(percent) {
   return percent >= 75 ? "warn" : "";
 }
 
+const ACCOUNT_ON_HOLD = "account_on_hold";
+const REAUTHORIZE_WARNING_MS = 7 * DAY_MS;
+const isOnHold = (account) => account.lastRefreshStatus === ACCOUNT_ON_HOLD;
+
+// Claude sign-ins last about a month; within a week of the end the account
+// needs a new sign-in before the refresh token stops working.
+function reauthorizeDeadline(account) {
+  const at = account.metadata?.refreshTokenExpiresAt;
+  return typeof at === "number" && at - Date.now() < REAUTHORIZE_WARNING_MS
+    ? at
+    : null;
+}
+
 function needsReauthorization(account) {
   return (
     tokenStatus(account.expiresAt).class !== "active" ||
@@ -383,6 +396,12 @@ function accountIssues(account) {
       text: "token expired, reauthorize",
       when: `expired ${relativeTime(account.expiresAt)}`,
     });
+  } else if (isOnHold(account)) {
+    issues.push({
+      severity: "err",
+      text: "account on hold",
+      when: account.lastRefreshAt ? relativeTime(account.lastRefreshAt) : "",
+    });
   } else if (
     account.lastRefreshStatus &&
     account.lastRefreshStatus !== "success"
@@ -391,6 +410,14 @@ function accountIssues(account) {
       severity: "err",
       text: `token refresh failed (${account.lastRefreshStatus})`,
       when: account.lastRefreshAt ? relativeTime(account.lastRefreshAt) : "",
+    });
+  }
+  const deadline = reauthorizeDeadline(account);
+  if (deadline && tokenStatus(account.expiresAt).class !== "expired") {
+    issues.push({
+      severity: "warn",
+      text: "sign-in ends soon, reauthorize",
+      when: `by ${shortDate(deadline)}`,
     });
   }
   const quota = account.quota;
@@ -614,6 +641,8 @@ function tokenFact(account) {
   let value = "Active";
   if (account.enabled === false) value = "Disabled";
   else if (expired) value = '<span class="err">Expired</span>';
+  else if (isOnHold(account))
+    value = '<span class="err">Account on hold</span>';
   else if (needsReauthorization(account)) {
     value = '<span class="err">Needs reauthorization</span>';
   }
@@ -629,7 +658,13 @@ function tokenFact(account) {
   } else if (account.lastRefreshAt) {
     refresh = `refreshed ${escapeHtml(relativeTime(account.lastRefreshAt))}`;
   }
-  return fact("Token", value, [escapeHtml(expiry), refresh]);
+  const deadline = reauthorizeDeadline(account);
+  return fact("Token", value, [
+    escapeHtml(expiry),
+    refresh,
+    deadline &&
+      `<span class="warn">reauthorize by ${escapeHtml(shortDate(deadline))}</span>`,
+  ]);
 }
 
 function usageFact(rawUsage, windowMs) {
@@ -654,21 +689,49 @@ function usageFact(rawUsage, windowMs) {
   );
 }
 
+// Personal Claude organizations are named after the email, which is already
+// shown on its own line.
+function organizationLine(name, email, role) {
+  const org = name && !(email && name.includes(email)) ? name : "";
+  return [org, role?.replaceAll("_", " ")]
+    .filter(Boolean)
+    .map(escapeHtml)
+    .join(" \u00b7 ");
+}
+
 function accountFact(account) {
   const data = account.quota?.data;
+  const metadata = account.metadata || {};
+  const profile = account.profile?.data;
   const added = account.createdAt
     ? `added ${shortDate(account.createdAt)}`
     : "";
   const id = account.accountId
     ? `<span class="mono" title="${escapeHtml(account.accountId)}">${escapeHtml(account.accountId)}</span>`
     : "";
+  const email =
+    metadata.email && metadata.email !== account.label
+      ? escapeHtml(metadata.email)
+      : "";
   if (account.provider === "claude") {
     const extra = data?.subscription?.extraUsage;
-    const plan = data?.plan?.label;
-    const signIn =
-      account.metadata?.oauthMode === "console" ? "Console" : "claude.ai";
+    const plan = data?.plan?.label || profile?.plan?.label;
+    const signIn = metadata.oauthMode === "console" ? "Console" : "claude.ai";
+    const checked = account.profile?.fetchedAt
+      ? `checked ${relativeTime(account.profile.fetchedAt)}`
+      : "";
     return fact(plan ? "Plan" : "Sign-in", escapeHtml(plan || signIn), [
-      plan && signIn,
+      escapeHtml(
+        [plan && signIn, plan && checked].filter(Boolean).join(" \u00b7 ")
+      ),
+      email,
+      organizationLine(
+        metadata.workspaceName ||
+          metadata.organizationName ||
+          profile?.organizationName,
+        metadata.email,
+        profile?.organizationRole
+      ),
       extra?.isEnabled &&
         (typeof extra.utilization === "number"
           ? `extra usage on \u00b7 ${Math.round(extra.utilization)}% used`
@@ -677,10 +740,14 @@ function accountFact(account) {
       added,
     ]);
   }
-  const plan =
-    CODEX_PLAN_LABELS[data?.status?.planType] || data?.status?.planType;
+  const planType = data?.status?.planType || profile?.planType;
+  const plan = CODEX_PLAN_LABELS[planType] || planType;
   const lifetime = data?.profile?.lifetimeTokens;
   return fact("Plan", escapeHtml(plan || "Unknown"), [
+    profile?.structure === "workspace" &&
+      profile.workspaceName &&
+      escapeHtml(profile.workspaceName),
+    email,
     typeof lifetime === "number" &&
       `${formatCompact(lifetime)} lifetime tokens`,
     id,
@@ -785,7 +852,7 @@ function accountDetailHtml(account) {
     ].join("")}</div>
     ${hasTraffic(accountUsageForId(account.id)) ? `<div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>` : ""}
     <div class="actions">
-      ${needsReauthorization(account) && supportsOAuth ? button("Reauthorize", "reauthorize-account", "A", "btn btn-primary btn-sm") : ""}
+      ${(needsReauthorization(account) || reauthorizeDeadline(account)) && supportsOAuth ? button("Reauthorize", "reauthorize-account", "A", "btn btn-primary btn-sm") : ""}
       ${account.isPrimary ? "" : button("Make primary", "set-primary", "P")}
       ${button("Refresh token", "refresh-account", "R")}
       ${button("Edit", "edit-account", "E")}
@@ -907,6 +974,7 @@ function reauthorizeReason(account) {
   if (tokenStatus(account.expiresAt).class === "expired") {
     return `expired ${relativeTime(account.expiresAt)}`;
   }
+  if (isOnHold(account)) return "on hold";
   if (account.lastRefreshStatus && account.lastRefreshStatus !== "success") {
     return "refresh failed";
   }

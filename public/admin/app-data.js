@@ -862,6 +862,7 @@ async function loadAccounts() {
     state.accounts = accounts.map((account) => ({
       ...account,
       quota: account.quota || state.accountsById.get(account.id)?.quota,
+      profile: account.profile || state.accountsById.get(account.id)?.profile,
     }));
     state.accountsById = usageMapFromList(state.accounts, "id");
     pruneUsageDetails("account", state.accountsById);
@@ -917,13 +918,18 @@ async function loadMissingQuotas(requestSeq, missingQuotas) {
   );
   if (!missing) return;
   try {
-    const { quotas } = await api("/admin/accounts/quotas");
+    const { quotas, profiles } = await api("/admin/accounts/quotas");
     if (requestSeq !== state.accountsRequestSeq) return;
     let changed = false;
     for (const account of state.accounts) {
       const quota = quotas?.[account.id];
       if (quota) {
         account.quota = quota;
+        changed = true;
+      }
+      const profile = profiles?.[account.id];
+      if (profile) {
+        account.profile = profile;
         changed = true;
       }
     }

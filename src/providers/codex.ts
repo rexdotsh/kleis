@@ -17,6 +17,7 @@ import {
 } from "./oauth-utils";
 import { parseOAuthStateMetadata } from "./oauth-state";
 import { sleep } from "../utils/sleep";
+import { toMillisecondsTimestamp } from "../utils/timestamp";
 import type {
   ProviderAdapter,
   ProviderOAuthCompleteInput,
@@ -69,8 +70,16 @@ type CodexTokenResponse = {
 type IdTokenClaims = {
   chatgpt_account_id?: string;
   email?: string;
+  "https://api.openai.com/profile"?: { email?: unknown };
   "https://api.openai.com/auth"?: {
     chatgpt_account_id?: string;
+    chatgpt_user_id?: unknown;
+    user_id?: unknown;
+    chatgpt_plan_type?: unknown;
+    chatgpt_subscription_active_start?: unknown;
+    chatgpt_subscription_active_until?: unknown;
+    chatgpt_subscription_last_checked?: unknown;
+    chatgpt_account_is_fedramp?: unknown;
   };
 };
 
@@ -341,6 +350,21 @@ const refreshCodexTokens = async (
   return parseTokenResponse(response);
 };
 
+const readClaimText = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() ? value : null;
+
+// Subscription claims arrive as ISO strings or epoch seconds.
+const readClaimTimestamp = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return toMillisecondsTimestamp(value);
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
 const buildCodexMetadata = (input: {
   tokens: CodexTokenResponse;
   fallbackAccountId: string | null;
@@ -356,11 +380,36 @@ const buildCodexMetadata = (input: {
     input.fallbackAccountId ??
     input.existing?.chatgptAccountId ??
     null;
+  const auth = claims?.["https://api.openai.com/auth"];
+  const existing = input.existing;
   return {
     provider: "codex",
-    scope: input.tokens.scope ?? input.existing?.scope ?? null,
+    scope: input.tokens.scope ?? existing?.scope ?? null,
     chatgptAccountId,
-    email: claims?.email ?? input.existing?.email ?? null,
+    email:
+      readClaimText(claims?.email) ??
+      readClaimText(claims?.["https://api.openai.com/profile"]?.email) ??
+      existing?.email ??
+      null,
+    chatgptUserId:
+      readClaimText(auth?.chatgpt_user_id) ??
+      readClaimText(auth?.user_id) ??
+      existing?.chatgptUserId,
+    planTypeClaim:
+      readClaimText(auth?.chatgpt_plan_type) ?? existing?.planTypeClaim,
+    subscriptionActiveStart:
+      readClaimTimestamp(auth?.chatgpt_subscription_active_start) ??
+      existing?.subscriptionActiveStart,
+    subscriptionActiveUntil:
+      readClaimTimestamp(auth?.chatgpt_subscription_active_until) ??
+      existing?.subscriptionActiveUntil,
+    subscriptionLastChecked:
+      readClaimTimestamp(auth?.chatgpt_subscription_last_checked) ??
+      existing?.subscriptionLastChecked,
+    isFedramp:
+      typeof auth?.chatgpt_account_is_fedramp === "boolean"
+        ? auth.chatgpt_account_is_fedramp
+        : existing?.isFedramp,
   };
 };
 
