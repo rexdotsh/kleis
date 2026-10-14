@@ -45,7 +45,6 @@ const isTextBlock = (
   block.type === "text" &&
   typeof block.text === "string";
 
-// Anthropic OAuth requests need the Claude Code identity in the system prompt.
 const withClaudeSystemIdentity = (
   system: unknown,
   systemIdentity: string
