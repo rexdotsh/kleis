@@ -38,6 +38,37 @@ const sanitizeClaudeSystemText = (text: string): string =>
     .replace("follow .md cross-references", "follow cross-references")
     .replace("pi packages (docs/packages.md)", "packages (docs/packages.md)");
 
+const isTextBlock = (
+  block: unknown
+): block is JsonObject & { type: "text"; text: string } =>
+  isObjectRecord(block) &&
+  block.type === "text" &&
+  typeof block.text === "string";
+
+const withClaudeSystemIdentity = (
+  system: unknown,
+  systemIdentity: string
+): unknown => {
+  let blocks = system ?? [];
+  if (typeof blocks === "string") {
+    blocks = [{ type: "text", text: blocks }];
+  }
+  if (!Array.isArray(blocks)) {
+    return system;
+  }
+
+  const sanitized = blocks.map((block: unknown) =>
+    isTextBlock(block)
+      ? { ...block, text: sanitizeClaudeSystemText(block.text) }
+      : block
+  );
+  return sanitized.some(
+    (block) => isTextBlock(block) && block.text === systemIdentity
+  )
+    ? sanitized
+    : [{ type: "text", text: systemIdentity }, ...sanitized];
+};
+
 const toClaudeToolName = (name: string, prefix: string): string => {
   if (name.startsWith(prefix)) {
     return name;
@@ -80,36 +111,10 @@ const transformClaudeRequestPayload = (
     return payload;
   }
 
-  const transformed: JsonObject = { ...payload };
-
-  if (typeof transformed.system === "string") {
-    const sanitizedSystem = sanitizeClaudeSystemText(transformed.system);
-    const systemBlocks: Array<{ type: string; text: string }> = [
-      { type: "text", text: systemIdentity },
-    ];
-    if (sanitizedSystem !== systemIdentity) {
-      systemBlocks.push({ type: "text", text: sanitizedSystem });
-    }
-    transformed.system = systemBlocks;
-  } else if (Array.isArray(transformed.system)) {
-    const systemBlocks: unknown[] = [{ type: "text", text: systemIdentity }];
-    for (const block of transformed.system) {
-      if (
-        isObjectRecord(block) &&
-        block.type === "text" &&
-        typeof block.text === "string"
-      ) {
-        systemBlocks.push({
-          ...block,
-          text: sanitizeClaudeSystemText(block.text),
-        });
-        continue;
-      }
-
-      systemBlocks.push(block);
-    }
-    transformed.system = systemBlocks;
-  }
+  const transformed: JsonObject = {
+    ...payload,
+    system: withClaudeSystemIdentity(payload.system, systemIdentity),
+  };
 
   if (Array.isArray(transformed.tools)) {
     transformed.tools = transformed.tools.map((tool) => {
