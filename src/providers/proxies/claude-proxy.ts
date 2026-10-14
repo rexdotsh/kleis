@@ -216,10 +216,7 @@ const buildUpstreamUrl = (search: string): string => {
     `${claudeMessagesUpstreamSuffix}${search}`,
     ANTHROPIC_API_BASE_URL
   );
-  if (!upstream.searchParams.has("beta")) {
-    upstream.searchParams.set("beta", "true");
-  }
-
+  upstream.searchParams.set("beta", "true");
   return upstream.toString();
 };
 
