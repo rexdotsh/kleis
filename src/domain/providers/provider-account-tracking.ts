@@ -38,7 +38,10 @@ import type {
   AccountSnapshotStore,
   QuotaSignature,
 } from "./account-snapshot-store";
-import { refreshProviderAccount } from "./provider-service";
+import {
+  refreshProviderAccount,
+  refreshProviderAccountAfterAuthFailure,
+} from "./provider-service";
 
 const CACHE_MS = 60_000;
 const CLAUDE_CACHE_MS = 3 * 60_000;
@@ -134,13 +137,9 @@ const cacheDuration = (errors: unknown[]): number =>
 
 const resolveAccount = async (
   database: Database,
-  account: TrackingAccount,
-  forceRefresh = false
+  account: TrackingAccount
 ): Promise<TrackingAccount | null> => {
-  if (
-    !forceRefresh &&
-    account.expiresAt > Date.now() + TOKEN_EXPIRY_MARGIN_MS
-  ) {
+  if (account.expiresAt > Date.now() + TOKEN_EXPIRY_MARGIN_MS) {
     return account;
   }
   const refreshed = await refreshProviderAccount(
@@ -150,6 +149,22 @@ const resolveAccount = async (
     { force: true }
   );
   return refreshed && isTrackingAccount(refreshed) ? refreshed : null;
+};
+
+const replaceRejectedAccount = async (
+  database: Database,
+  account: TrackingAccount
+): Promise<TrackingAccount | null> => {
+  const refreshed = await refreshProviderAccountAfterAuthFailure(
+    database,
+    account.id,
+    account.accessToken
+  );
+  return refreshed &&
+    refreshed.accessToken !== account.accessToken &&
+    isTrackingAccount(refreshed)
+    ? refreshed
+    : null;
 };
 
 const retryAfter401 = async <T>(
@@ -163,7 +178,7 @@ const retryAfter401 = async <T>(
     if (errorStatus(error) !== 401) {
       throw error;
     }
-    const refreshed = await resolveAccount(database, account, true);
+    const refreshed = await replaceRejectedAccount(database, account);
     if (!refreshed) {
       throw error;
     }
@@ -392,7 +407,7 @@ const fetchAccountData = async (
   let current = account;
   let result = await fetchCodexData(account);
   if (result.errors.some((error) => errorStatus(error) === 401)) {
-    const refreshed = await resolveAccount(database, account, true);
+    const refreshed = await replaceRejectedAccount(database, account);
     if (refreshed) {
       current = refreshed;
       result = await fetchCodexData(refreshed);

@@ -21,7 +21,7 @@ import {
 } from "../../providers/claude";
 import { getProviderAdapter } from "../../providers/registry";
 import type { ProviderOAuthStartResult } from "../../providers/types";
-import { logWarn } from "../../utils/log";
+import { errorLogFields, logWarn } from "../../utils/log";
 import { sleep } from "../../utils/sleep";
 import { createLookupCache } from "../../db/lookup-cache";
 
@@ -35,6 +35,10 @@ const CLAUDE_REFRESH_WAIT_TIMEOUT_MS = 30_000;
 const CLAUDE_TRANSIENT_REFRESH_COOLDOWN_MS = 30_000;
 const CLAUDE_ON_HOLD_REFRESH_COOLDOWN_MS = 30 * 60_000;
 const REFRESH_WAIT_POLL_INTERVAL_MS = 150;
+// A token rejected this soon after it was issued is reported as the upstream
+// 401 instead of being rotated, so a persistent 401 rotates at most once a
+// minute.
+const AUTH_FAILURE_MIN_TOKEN_AGE_MS = 60_000;
 
 const assertExpiresAt = (expiresAt: number, now: number): number => {
   if (!Number.isFinite(expiresAt) || expiresAt <= now) {
@@ -44,18 +48,92 @@ const assertExpiresAt = (expiresAt: number, now: number): number => {
   return expiresAt;
 };
 
+// After losing ownership of a refresh, only another writer's newer, still
+// valid credential is safe to use.
+const isNewerUnexpiredCredential = (
+  current: ProviderAccountRecord,
+  previousAccessToken: string
+): boolean =>
+  current.accessToken !== previousAccessToken && current.expiresAt > Date.now();
+
+const isRecentlyIssued = (account: ProviderAccountRecord): boolean => {
+  const now = Date.now();
+  return (
+    account.lastRefreshStatus === "success" &&
+    account.lastRefreshAt !== null &&
+    now - account.lastRefreshAt < AUTH_FAILURE_MIN_TOKEN_AGE_MS &&
+    account.expiresAt > now
+  );
+};
+
+const inFlightRefreshes = new Map<
+  string,
+  Promise<ProviderAccountRecord | null>
+>();
+
+const shareInFlightRefresh = (
+  accountId: string,
+  start: () => Promise<ProviderAccountRecord | null>
+): Promise<ProviderAccountRecord | null> => {
+  const pending = inFlightRefreshes.get(accountId);
+  if (pending) {
+    return pending;
+  }
+  const attempt = start().finally(() => {
+    inFlightRefreshes.delete(accountId);
+  });
+  inFlightRefreshes.set(accountId, attempt);
+  return attempt;
+};
+
+const unlessAborted = <T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined
+): Promise<T> => {
+  if (!signal) {
+    return promise;
+  }
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", onAbort));
+  });
+};
+
 const startRefreshLockHeartbeat = (
   database: Database,
-  accountId: string,
+  account: ProviderAccountRecord,
   lockToken: string
 ): (() => void) => {
-  const timer = setInterval(() => {
+  const timer = setInterval(async () => {
     const now = Date.now();
-    extendProviderAccountRefreshLock(database, accountId, {
-      token: lockToken,
-      now,
-      expiresAt: now + REFRESH_LOCK_LEASE_MS,
-    }).catch(() => undefined);
+    try {
+      const extended = await extendProviderAccountRefreshLock(
+        database,
+        account.id,
+        {
+          token: lockToken,
+          now,
+          expiresAt: now + REFRESH_LOCK_LEASE_MS,
+        }
+      );
+      if (!extended) {
+        clearInterval(timer);
+        logWarn("provider_refresh_lock_lost", {
+          accountId: account.id,
+          provider: account.provider,
+        });
+      }
+    } catch (error) {
+      logWarn("provider_refresh_lock_heartbeat_failed", {
+        accountId: account.id,
+        provider: account.provider,
+        ...errorLogFields(error),
+      });
+    }
   }, REFRESH_LOCK_HEARTBEAT_MS);
 
   return () => {
@@ -68,15 +146,12 @@ const waitForInFlightRefresh = async (
   accountId: string,
   now: number,
   forceRefresh: boolean,
-  timeoutMs = REFRESH_WAIT_TIMEOUT_MS,
-  signal?: AbortSignal
+  timeoutMs = REFRESH_WAIT_TIMEOUT_MS
 ): Promise<ProviderAccountRecord | null> => {
-  signal?.throwIfAborted();
   const deadline = Date.now() + timeoutMs;
   let account = await findProviderAccountById(database, accountId);
 
   while (account && Date.now() < deadline) {
-    signal?.throwIfAborted();
     if (!forceRefresh && account.expiresAt > now) {
       return account;
     }
@@ -86,7 +161,6 @@ const waitForInFlightRefresh = async (
     }
 
     await sleep(REFRESH_WAIT_POLL_INTERVAL_MS);
-    signal?.throwIfAborted();
     account = await findProviderAccountById(database, accountId);
   }
 
@@ -124,7 +198,7 @@ const refreshProviderAccountWithLock = async (
 
     const stopRefreshLockHeartbeat = startRefreshLockHeartbeat(
       database,
-      account.id,
+      account,
       lockToken
     );
     try {
@@ -143,9 +217,7 @@ const refreshProviderAccountWithLock = async (
         accountId: tokens.accountId,
         metadata: tokens.metadata,
         refreshLockToken: lockToken,
-        ...(account.provider === "claude"
-          ? { expectedRefreshToken: account.refreshToken }
-          : {}),
+        expectedRefreshToken: account.refreshToken,
         lastRefreshStatus: "success" as const,
         now: refreshNow,
       };
@@ -166,18 +238,20 @@ const refreshProviderAccountWithLock = async (
       if (!updated) {
         const current = await findProviderAccountById(database, account.id);
         if (
-          account.provider !== "claude" ||
-          (current &&
-            current.accessToken !== account.accessToken &&
-            current.expiresAt > Date.now())
+          current &&
+          isNewerUnexpiredCredential(current, account.accessToken)
         ) {
           return current;
         }
-        throw new Error("Claude refresh lost its credential lock");
+        throw new Error(
+          `${account.provider === "claude" ? "Claude" : "Codex"} refresh lost its credential lock`
+        );
       }
 
       return updated;
     } catch (error) {
+      // Without an OAuth error response, Anthropic may have rotated the
+      // refresh token before the failure, so the outcome is indeterminate.
       const status =
         account.provider === "claude" && error instanceof ClaudeOAuthError
           ? error.code === "invalid_grant"
@@ -188,7 +262,7 @@ const refreshProviderAccountWithLock = async (
                 ? "rate_limited"
                 : "transient"
           : account.provider === "claude"
-            ? "transient"
+            ? "indeterminate"
             : "failed";
       await recordProviderAccountRefreshFailure(
         database,
@@ -221,6 +295,8 @@ const refreshProviderAccountWithLock = async (
   }
 };
 
+// Concurrent callers in this process share one attempt; each stops waiting when
+// its own request disconnects.
 export const refreshProviderAccountAfterAuthFailure = async (
   database: Database,
   accountId: string,
@@ -228,9 +304,33 @@ export const refreshProviderAccountAfterAuthFailure = async (
   signal?: AbortSignal
 ): Promise<ProviderAccountRecord | null> => {
   signal?.throwIfAborted();
+  const pending = inFlightRefreshes.get(accountId);
+  if (pending) {
+    const shared = await unlessAborted(pending, signal);
+    if (shared?.accessToken !== failedAccessToken) {
+      return shared;
+    }
+    signal?.throwIfAborted();
+  }
+  return unlessAborted(
+    shareInFlightRefresh(accountId, () =>
+      refreshRejectedProviderAccount(database, accountId, failedAccessToken)
+    ),
+    signal
+  );
+};
+
+const refreshRejectedProviderAccount = async (
+  database: Database,
+  accountId: string,
+  failedAccessToken: string
+): Promise<ProviderAccountRecord | null> => {
   const account = await findProviderAccountById(database, accountId);
-  signal?.throwIfAborted();
-  if (!account || account.accessToken !== failedAccessToken) {
+  if (
+    !account ||
+    account.accessToken !== failedAccessToken ||
+    isRecentlyIssued(account)
+  ) {
     return account;
   }
   if (account.provider === "claude") {
@@ -264,13 +364,12 @@ export const refreshProviderAccountAfterAuthFailure = async (
     account.id,
     Date.now(),
     true,
-    AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS,
-    signal
+    AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS
   );
   if (!waited) {
     return null;
   }
-  if (waited.accessToken !== failedAccessToken) {
+  if (isNewerUnexpiredCredential(waited, failedAccessToken)) {
     return waited;
   }
 
@@ -346,7 +445,8 @@ const assertClaudeRefreshAllowed = (account: ProviderAccountRecord): void => {
   }
   if (
     (account.lastRefreshStatus === "rate_limited" ||
-      account.lastRefreshStatus === "transient") &&
+      account.lastRefreshStatus === "transient" ||
+      account.lastRefreshStatus === "indeterminate") &&
     account.lastRefreshAt !== null &&
     Date.now() - account.lastRefreshAt < CLAUDE_TRANSIENT_REFRESH_COOLDOWN_MS
   ) {
@@ -442,15 +542,24 @@ export const importProviderAccount = (
   });
 };
 
-export const refreshProviderAccount = async (
+export const refreshProviderAccount = (
   database: Database,
   accountId: string,
   now: number,
   input?: {
     force?: boolean;
   }
+): Promise<ProviderAccountRecord | null> =>
+  shareInFlightRefresh(accountId, () =>
+    refreshProviderAccountOnce(database, accountId, now, input?.force ?? false)
+  );
+
+const refreshProviderAccountOnce = async (
+  database: Database,
+  accountId: string,
+  now: number,
+  forceRefresh: boolean
 ): Promise<ProviderAccountRecord | null> => {
-  const forceRefresh = input?.force ?? false;
   const account = await findProviderAccountById(database, accountId);
   if (!account) {
     return null;
@@ -493,11 +602,7 @@ export const refreshProviderAccount = async (
     return null;
   }
 
-  if (
-    account.provider === "claude" &&
-    waited.refreshToken !== account.refreshToken &&
-    waited.expiresAt > Date.now()
-  ) {
+  if (isNewerUnexpiredCredential(waited, account.accessToken)) {
     return waited;
   }
 

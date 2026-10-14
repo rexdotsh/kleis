@@ -28,6 +28,7 @@ const CLAUDE_SCOPE =
 const CLAUDE_STATE_TTL_MS = 15 * 60 * 1000;
 const CLAUDE_TOKEN_TIMEOUT_MS = 15_000;
 const CLAUDE_EXPIRY_SKEW_MS = 60_000;
+const CLAUDE_MIN_TOKEN_LIFETIME_MS = 60_000;
 
 const claudeStateMetadataSchema = z.strictObject({
   mode: z.enum(["max", "console"]),
@@ -117,13 +118,7 @@ const requestClaudeTokens = async (
     throw new Error("Claude OAuth response is not an object");
   }
   const tokens = value as ClaudeTokenResponse;
-  if (
-    typeof tokens.access_token !== "string" ||
-    !tokens.access_token.trim() ||
-    typeof tokens.expires_in !== "number" ||
-    !Number.isFinite(tokens.expires_in) ||
-    tokens.expires_in <= 60
-  ) {
+  if (typeof tokens.access_token !== "string" || !tokens.access_token.trim()) {
     throw new Error("Claude OAuth response has invalid token fields");
   }
   return tokens;
@@ -148,22 +143,14 @@ const exchangeCodeForTokens = async (input: {
   return tokens;
 };
 
-const refreshClaudeTokens = async (
+const refreshClaudeTokens = (
   refreshToken: string
-): Promise<ClaudeTokenResponse> => {
-  const tokens = await requestClaudeTokens({
+): Promise<ClaudeTokenResponse> =>
+  requestClaudeTokens({
     grant_type: "refresh_token",
     client_id: CLAUDE_CLIENT_ID,
     refresh_token: refreshToken,
   });
-  if (
-    typeof tokens.refresh_token !== "string" ||
-    !tokens.refresh_token.trim()
-  ) {
-    throw new Error("Claude refresh response is missing refresh_token");
-  }
-  return tokens;
-};
 
 const readText = (value: unknown): string | null =>
   typeof value === "string" && value.trim() ? value : null;
@@ -222,16 +209,29 @@ const buildTokenResult = (input: {
     existing: input.existing,
     now,
   });
-  const refreshToken = input.tokens.refresh_token ?? input.fallbackRefreshToken;
+  // Claude Code 2.1.299 keeps the current refresh token when a refresh
+  // response omits it, and derives expiry from expires_in without validating it.
+  // An unusable expiry gets a short lifetime so a rotated token is still kept.
+  const refreshToken =
+    readText(input.tokens.refresh_token) ?? input.fallbackRefreshToken;
   if (!refreshToken) {
     throw new Error("Claude OAuth response is missing refresh_token");
   }
+  const expiresIn = input.tokens.expires_in;
+  const lifetimeMs =
+    typeof expiresIn === "number" && Number.isFinite(expiresIn)
+      ? expiresIn * 1000
+      : 0;
 
   return {
     accessToken,
     refreshToken,
     expiresAt:
-      now + (input.tokens.expires_in ?? 0) * 1000 - CLAUDE_EXPIRY_SKEW_MS,
+      now +
+      Math.max(
+        lifetimeMs - CLAUDE_EXPIRY_SKEW_MS,
+        CLAUDE_MIN_TOKEN_LIFETIME_MS
+      ),
     // A Claude user UUID is shared across Max/Console and organizations. It
     // cannot be used as the unique provider account identity in our schema.
     accountId: input.fallbackAccountId || null,
