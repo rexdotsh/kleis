@@ -3635,7 +3635,7 @@ describe("proxy contract: claude", () => {
     const result = prepareClaudeUsageRequest();
     const encoder = new TextEncoder();
     const original =
-      'event: content_block_start\r\ndata: {"type":"content_block_start",\r\ndata: "content_block":{"type":"tool_use","name":"mcp_shell"}}\r\n\r\n' +
+      'event: content_block_start\r\ndata: {"type":"content_block_start",\r\ndata: "content_block":{"type":"tool_use","name":"mcp_Shell"}}\r\n\r\n' +
       'event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n';
     const sourceResponse = new Response(
       new ReadableStream<Uint8Array>({
@@ -3800,7 +3800,7 @@ describe("proxy contract: claude", () => {
     const transformedResponse = await result.transformResponse(
       new Response(
         'data: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":1}}}\n\n' +
-          'data: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_shell"}}\n\n' +
+          'data: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_Shell"}}\n\n' +
           'data: {"type":"message_delta","usage":{"output_tokens":9}}\n',
         { headers: { "content-type": "text/event-stream" } }
       )
