@@ -13,7 +13,7 @@ const { upsertProviderAccount, updateProviderAccountTokens } = await import(
   "../../src/db/repositories/provider-accounts"
 );
 const { requestUsageBuckets } = await import("../../src/db/schema");
-const { proxyRoutes, flushProxyUsage } = await import(
+const { proxyRoutes, flushProxyUsage, flushProxyFailureLogs } = await import(
   "../../src/http/routes/proxy"
 );
 
@@ -262,7 +262,12 @@ test("100 identical Claude 429s do not flood the logs or change client responses
     },
   };
   globalThis.fetch = (() =>
-    Promise.resolve(Response.json(body, { status: 429 }))) as typeof fetch;
+    Promise.resolve(
+      Response.json(body, {
+        status: 429,
+        headers: { "x-request-id": "PRIVATESECRETTOKEN" },
+      })
+    )) as typeof fetch;
   try {
     for (let index = 0; index < 100; index++) {
       const response = await request();
@@ -277,6 +282,16 @@ test("100 identical Claude 429s do not flood the logs or change client responses
       errorCode: "rate_limit_exceeded",
     });
     expect(line).not.toContain("PRIVATESECRETTOKEN");
+    await flushProxyFailureLogs();
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(log.mock.calls[1]?.[0]))).toMatchObject({
+      suppressedCount: 99,
+      summaryReason: "shutdown",
+      errorCode: "rate_limit_exceeded",
+    });
+    expect(String(log.mock.calls[1]?.[0])).not.toContain("PRIVATESECRETTOKEN");
+    await flushProxyFailureLogs();
+    expect(log).toHaveBeenCalledTimes(2);
   } finally {
     log.mockRestore();
     globalThis.fetch = originalFetch;

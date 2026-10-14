@@ -10,7 +10,11 @@ import { adminUsageRoutes } from "./http/routes/admin-usage";
 import { cronRoutes } from "./http/routes/cron";
 import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
-import { flushProxyUsage, proxyRoutes } from "./http/routes/proxy";
+import {
+  flushProxyFailureLogs,
+  flushProxyUsage,
+  proxyRoutes,
+} from "./http/routes/proxy";
 import { db } from "./db";
 import { createAccountSnapshotStore } from "./domain/providers/account-snapshot-store";
 import {
@@ -51,6 +55,7 @@ const restoredAccounts = restoreProviderAccountSnapshots(db, accountSnapshots);
 
 gracefulShutdown.beforeExit(flushProxyUsage);
 gracefulShutdown.beforeExit(accountSnapshots.flush);
+gracefulShutdown.beforeExit(flushProxyFailureLogs);
 gracefulShutdown.install();
 
 setTimeout(() => {

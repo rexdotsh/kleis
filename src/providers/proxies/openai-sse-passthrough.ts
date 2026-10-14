@@ -1,8 +1,9 @@
 import type { TokenUsage } from "../../usage/token-usage";
-import { errorLogFields, logError, logWarn } from "../../utils/log";
+import { errorLogFields, hashLogId, logError, logWarn } from "../../utils/log";
 import { isObjectRecord } from "../../utils/object";
 import { createCodexStreamDiagnostics } from "./codex-stream-diagnostics";
 import { readUpstreamErrorFields } from "./upstream-error";
+import { readOpenAiResponseStatus } from "./openai-event-types";
 import {
   normalizeOpenAiResponsesEvent,
   type OpenAiResponsesEventShapeIssue,
@@ -44,7 +45,7 @@ const readSseTerminalAnomaly = (
     }
     return {
       terminalAnomaly: "response.incomplete",
-      responseStatus: "incomplete",
+      responseStatus: readOpenAiResponseStatus(response?.status),
       incompleteReason:
         incompleteDetails?.reason === "content_filter"
           ? "content_filter"
@@ -55,7 +56,7 @@ const readSseTerminalAnomaly = (
     const response = isObjectRecord(payload.response) ? payload.response : null;
     return {
       terminalAnomaly: String(payload.type),
-      responseStatus: response?.status === "failed" ? "failed" : "unknown",
+      responseStatus: readOpenAiResponseStatus(response?.status),
       ...readUpstreamErrorFields(payload),
     };
   }
@@ -185,10 +186,10 @@ export const createOpenAiSseUsagePassthrough = (
       provider: "codex",
       providerAccountId: input.providerAccountId,
       transport: "sse",
-      requestId:
+      requestIdHash: hashLogId(
         input.response.headers.get("x-request-id") ??
-        input.response.headers.get("request-id") ??
-        null,
+          input.response.headers.get("request-id")
+      ),
       elapsedMs: Date.now() - startedAt,
       idleMs: Date.now() - lastChunkAt,
       downstreamIdleMs: Date.now() - lastWriteAt,

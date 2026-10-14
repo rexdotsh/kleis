@@ -84,6 +84,18 @@ const ITEM_TYPES = new Set([
   "compaction",
 ]);
 
+const RESPONSE_STATUSES = new Set([
+  "queued",
+  "in_progress",
+  "completed",
+  "failed",
+  "incomplete",
+  "cancelled",
+]);
+
+export const readOpenAiResponseStatus = (value: unknown): string =>
+  typeof value === "string" && RESPONSE_STATUSES.has(value) ? value : "other";
+
 export const readOpenAiEventType = (value: unknown): string =>
   typeof value === "string" && EVENT_TYPES.has(value) ? value : "other";
 

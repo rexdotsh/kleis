@@ -10,6 +10,11 @@ type LogValue =
   | { readonly [key: string]: LogValue };
 export type LogFields = Record<string, LogValue>;
 
+export const hashLogId = (value: unknown): string | null =>
+  typeof value === "string"
+    ? Bun.CryptoHasher.hash("sha256", value, "hex").slice(0, 8)
+    : null;
+
 const writeLog = (
   level: "info" | "warn" | "error",
   event: string,

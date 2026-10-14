@@ -1,4 +1,4 @@
-import { logWarn } from "../../utils/log";
+import { hashLogId, logWarn } from "../../utils/log";
 import { isObjectRecord } from "../../utils/object";
 import { readOpenAiEventType, readOpenAiItemType } from "./openai-event-types";
 
@@ -21,11 +21,6 @@ type EventSummary = {
   responseIdHash: string | null;
   elapsedMs: number;
 };
-
-const hashId = (value: unknown): string | null =>
-  typeof value === "string"
-    ? Bun.CryptoHasher.hash("sha256", value, "hex").slice(0, 8)
-    : null;
 
 const readInteger = (value: unknown): number | null =>
   typeof value === "number" && Number.isSafeInteger(value) ? value : null;
@@ -53,7 +48,7 @@ export const createCodexStreamDiagnostics = (input: {
     const item = isObjectRecord(payload.item) ? payload.item : null;
     const response = isObjectRecord(payload.response) ? payload.response : null;
     const itemId = item?.id ?? payload.item_id;
-    const nextResponseIdHash = hashId(response?.id ?? payload.response_id);
+    const nextResponseIdHash = hashLogId(response?.id ?? payload.response_id);
     responseIdHash =
       payload.type === "response.created"
         ? nextResponseIdHash
@@ -63,7 +58,7 @@ export const createCodexStreamDiagnostics = (input: {
       sequenceNumber: readInteger(payload.sequence_number),
       outputIndex: readInteger(payload.output_index),
       itemType: item ? readOpenAiItemType(item.type) : null,
-      itemIdHash: hashId(itemId),
+      itemIdHash: hashLogId(itemId),
       responseIdHash,
       elapsedMs: Date.now() - input.startedAt,
     };
@@ -100,7 +95,7 @@ export const createCodexStreamDiagnostics = (input: {
       logWarn("codex_reasoning_overlap", {
         provider: "codex",
         providerAccountId: input.providerAccountId,
-        requestId: input.requestId,
+        requestIdHash: hashLogId(input.requestId),
         transport: input.transport,
         elapsedMs: Date.now() - input.startedAt,
         openItem,

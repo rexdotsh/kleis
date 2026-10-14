@@ -35,6 +35,7 @@ import {
   type TokenUsage,
 } from "../../usage/token-usage";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
+import { hashLogId } from "../../utils/log";
 import { sendWithAuthReplay } from "../auth-replay";
 import { createUpstreamProxyHeaders } from "../proxy-headers";
 import { createUpstreamFailureLogger } from "../upstream-failure-log";
@@ -79,7 +80,7 @@ const createCodexSseHeaderTimeout = (): {
 };
 
 const usageBuffer = createUsageBuffer(db);
-const logUpstreamFailure = createUpstreamFailureLogger();
+const upstreamFailureLogger = createUpstreamFailureLogger();
 
 const logUpstreamResponse = async (
   response: Response,
@@ -91,20 +92,23 @@ const logUpstreamResponse = async (
     return;
   }
   const fields = await readUpstreamResponseError(response);
-  logUpstreamFailure({
+  upstreamFailureLogger.log({
     provider: route.provider,
     providerAccountId,
     endpoint: route.endpoint,
     status: response.status,
     elapsedMs: Date.now() - startedAt,
-    requestId:
-      response.headers.get("x-request-id") ??
-      response.headers.get("request-id"),
+    requestIdHash: hashLogId(
+      response.headers.get("x-request-id") ?? response.headers.get("request-id")
+    ),
     ...fields,
   });
 };
 
 export const flushProxyUsage = (): Promise<void> => usageBuffer.flush();
+
+export const flushProxyFailureLogs = (): Promise<void> =>
+  Promise.resolve(upstreamFailureLogger.flush());
 
 type BunFetchRequestInit = RequestInit & {
   timeout?: number | false;

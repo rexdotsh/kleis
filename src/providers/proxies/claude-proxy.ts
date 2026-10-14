@@ -12,7 +12,7 @@ import {
   readAnthropicUsageObject,
   type TokenUsage,
 } from "../../usage/token-usage";
-import { errorLogFields, logError, logWarn } from "../../utils/log";
+import { errorLogFields, hashLogId, logError, logWarn } from "../../utils/log";
 import { isObjectRecord, type JsonObject, withField } from "../../utils/object";
 import {
   type ClaudeToolNames,
@@ -266,9 +266,10 @@ const maybeTransformClaudeStreamResponse = (
     log(event, {
       provider: "claude",
       providerAccountId,
-      requestId:
+      requestIdHash: hashLogId(
         response.headers.get("request-id") ??
-        response.headers.get("x-request-id"),
+          response.headers.get("x-request-id")
+      ),
       transport: "sse_transform",
       elapsedMs: Date.now() - startedAt,
       idleMs: Date.now() - lastChunkAt,

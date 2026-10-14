@@ -17,7 +17,7 @@ import {
 } from "./codex-proxy";
 import { readOpenAiResponsesUsageFromSseEvent } from "../../usage/token-usage";
 import type { TokenUsage } from "../../usage/token-usage";
-import { errorLogFields, logError, logWarn } from "../../utils/log";
+import { logError, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 import {
@@ -26,6 +26,13 @@ import {
 } from "./openai-responses-event";
 import { createCodexStreamDiagnostics } from "./codex-stream-diagnostics";
 import { readUpstreamErrorFields } from "./upstream-error";
+import { readOpenAiResponseStatus } from "./openai-event-types";
+import {
+  extractWebSocketCloseError,
+  extractWebSocketError,
+  readWebSocketCloseCode,
+  webSocketErrorLogFields,
+} from "./codex-websocket-errors";
 
 const SESSION_SOCKET_TTL_MS = 5 * 60 * 1000;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -35,7 +42,6 @@ const CONNECTION_LIMIT_RETRIES = 5;
 const STREAM_FAILURE_RETRIES = 5;
 const MAX_TRACKED_FAILURE_SESSIONS = 1000;
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
-const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const MAX_RELAY_QUEUE_FRAMES = 8192;
 const MAX_RELAY_QUEUE_BYTES = 4 * 1024 * 1024;
 const textEncoder = new TextEncoder();
@@ -66,10 +72,6 @@ export const setCodexWebSocketConstructorForTests = (
   webSocketConstructor: WebSocketConstructor | null
 ): void => {
   webSocketConstructorOverride = webSocketConstructor;
-};
-
-type WebSocketCloseError = Error & {
-  webSocketCloseCode?: number;
 };
 
 type CodexWebSocketInput = {
@@ -182,57 +184,6 @@ const terminateSocket = (socket: WebSocketLike): void => {
   } catch {
     // Ignore termination failures from already-closed sockets.
   }
-};
-
-const extractWebSocketError = (event: unknown): Error => {
-  if (isObjectRecord(event)) {
-    const message = readString(event.message);
-    if (message) {
-      return new Error(message);
-    }
-
-    const nestedError = event.error;
-    if (nestedError instanceof Error && nestedError.message) {
-      return nestedError;
-    }
-    if (isObjectRecord(nestedError)) {
-      const nestedMessage = readString(nestedError.message);
-      if (nestedMessage) {
-        return new Error(nestedMessage);
-      }
-    }
-  }
-
-  return new Error("WebSocket error");
-};
-
-const extractWebSocketCloseError = (event: unknown): Error => {
-  if (!isObjectRecord(event)) {
-    return new Error("WebSocket closed");
-  }
-
-  const code = typeof event.code === "number" ? event.code : null;
-  const reason = readString(event.reason);
-  const codeText = code === null ? "" : ` ${code}`;
-  const reasonText =
-    reason ??
-    (code === WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE ? "message too big" : null);
-  const error = new Error(
-    `WebSocket closed${codeText}${reasonText ? ` ${reasonText}` : ""}`.trim()
-  ) as WebSocketCloseError;
-  if (code !== null) {
-    error.webSocketCloseCode = code;
-  }
-  return error;
-};
-
-const readWebSocketCloseCode = (error: unknown): number | null => {
-  if (!(error instanceof Error)) {
-    return null;
-  }
-
-  const closeCode = (error as WebSocketCloseError).webSocketCloseCode;
-  return typeof closeCode === "number" ? closeCode : null;
 };
 
 const clearSessionFallback = (key: string): void => {
@@ -370,7 +321,7 @@ const connectWebSocket = (
         headers: headersToRecord(headers),
       });
     } catch (error) {
-      reject(error instanceof Error ? error : new Error(String(error)));
+      reject(extractWebSocketError(error));
       return;
     }
 
@@ -1016,13 +967,13 @@ export const tryProxyCodexWebSocket = async (
           return;
         }
         if (error) {
-          fail("send_failed", error);
+          fail("send_failed", extractWebSocketError(error));
           return;
         }
         resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
       });
     } catch (error) {
-      fail("send_failed", error);
+      fail("send_failed", extractWebSocketError(error));
     }
   };
 
@@ -1098,7 +1049,7 @@ export const tryProxyCodexWebSocket = async (
         failureCount,
         immediateFallback,
         webSocketCloseCode,
-        ...errorLogFields(error),
+        ...webSocketErrorLogFields(error),
         ...fields,
       });
     }
@@ -1367,14 +1318,14 @@ export const tryProxyCodexWebSocket = async (
       if (payload.type === "response.incomplete") {
         keepSocket = false;
         logStreamAnomaly("codex_websocket_response_incomplete", {
-          responseStatus: finalResponseStatus,
+          responseStatus: readOpenAiResponseStatus(finalResponseStatus),
         });
       }
       if (isErrorPayload(payload)) {
         keepSocket = false;
         if (!isExpectedUsageLimitPayload(payload)) {
           logStreamAnomaly("codex_websocket_error_payload", {
-            responseStatus: finalResponseStatus,
+            responseStatus: readOpenAiResponseStatus(finalResponseStatus),
             ...readUpstreamErrorFields(payload),
           });
         }

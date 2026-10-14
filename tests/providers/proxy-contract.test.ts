@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import {
   CLAUDE_CLI_USER_AGENT,
@@ -1101,6 +1101,45 @@ describe("proxy contract: codex", () => {
     });
   });
 
+  test.each([
+    "response.incomplete",
+    "response.failed",
+    "error",
+  ])("SSE %s diagnostics allowlist provider metadata and hash request headers", async (type) => {
+    const secret = "PRIVATESECRETTOKEN";
+    const event = {
+      type,
+      response: {
+        status: secret,
+        incomplete_details: { reason: secret },
+        error: { type: secret, code: secret, message: secret },
+      },
+      error: { type: secret, code: secret, message: secret },
+    };
+    const source = createSseResponse([event]);
+    source.headers.set("request-id", secret);
+    const log = spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const response = createOpenAiSseUsagePassthrough({
+        response: source,
+        extractUsage: () => null,
+      });
+      expect(await response.text()).toBe(
+        await createSseResponse([event]).text()
+      );
+      expect(log).toHaveBeenCalledTimes(1);
+      const line = String(log.mock.calls[0]?.[0]);
+      expect(JSON.parse(line)).toMatchObject({
+        event: "openai_sse_terminal_anomaly",
+        responseStatus: "other",
+        requestIdHash: expect.stringMatching(/^[a-f0-9]{8}$/),
+      });
+      expect(line).not.toContain(secret);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   test("logs malformed SSE diagnostics without exposing frame content", async () => {
     const secret = "private prompt text";
     const malformed = `data: {"type":"response.output_text.delta","delta":"${secret}"\n\n`;
@@ -1192,7 +1231,11 @@ describe("proxy contract: codex", () => {
       event: "codex_reasoning_overlap",
       provider: "codex",
       providerAccountId: "fake-account-1",
-      requestId: "upstream-request-1",
+      requestIdHash: Bun.CryptoHasher.hash(
+        "sha256",
+        "upstream-request-1",
+        "hex"
+      ).slice(0, 8),
       history: expect.arrayContaining([
         {
           type: "response.output_item.added",
@@ -1216,6 +1259,7 @@ describe("proxy contract: codex", () => {
     expect(warnings[0]).not.toContain("private-reasoning");
     expect(warnings[0]).not.toContain("private reasoning text");
     expect(warnings[0]).not.toContain("private-response");
+    expect(warnings[0]).not.toContain("upstream-request-1");
   });
 
   test("does not flag reasoning items closed by their output item done events", async () => {
@@ -1459,6 +1503,141 @@ describe("proxy contract: codex", () => {
       expect(warnings[0]).not.toContain("private");
     } finally {
       console.warn = originalWarn;
+    }
+  });
+
+  test.each([
+    false,
+    true,
+  ])("websocket close diagnostics redact response IDs in messages and stacks (after output=%s)", async (afterOutput) => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const pending = tryProxyCodexWebSocket({
+        headers: new Headers(),
+        bodyJson: { model: "gpt-fake", stream: true },
+        accountKey: "fake-account",
+      });
+      await waitFor(() => sentBodies.length === 1);
+      let response: Response | null = null;
+      if (afterOutput) {
+        sockets[0]?.dispatch("message", {
+          data: JSON.stringify({
+            type: "response.created",
+            response: { id: "resp_PRIVATE_RESPONSE_ID" },
+          }),
+        });
+        response = await pending;
+        expect(response).not.toBeNull();
+      }
+      const reason = "Invalid previous_response_id: resp_PRIVATE_RESPONSE_ID";
+      sockets[0]?.dispatch("close", { code: 1008, reason });
+      if (afterOutput) {
+        await expect(response?.text()).rejects.toThrow(
+          "invalid_previous_response_id"
+        );
+      } else {
+        expect(await pending).toBeNull();
+      }
+      const calls = afterOutput ? error.mock.calls : warn.mock.calls;
+      expect(calls).toHaveLength(1);
+      const line = String(calls[0]?.[0]);
+      expect(JSON.parse(line)).toMatchObject({
+        event: "codex_websocket_stream_failed",
+        stage: "socket_closed_before_terminal",
+        webSocketCloseCode: 1008,
+        closeReason: "invalid_previous_response_id",
+        closeReasonBytes: Buffer.byteLength(reason),
+        errorMessage: expect.stringContaining("invalid_previous_response_id"),
+        errorStack: expect.stringContaining("WebSocketCloseError"),
+      });
+      expect(line).not.toContain("PRIVATE_RESPONSE_ID");
+      expect(sockets[0]?.terminated).toBe(true);
+    } finally {
+      warn.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  test("websocket error diagnostics do not copy nested provider messages or stacks", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const log = spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const pending = tryProxyCodexWebSocket({
+        headers: new Headers(),
+        bodyJson: { model: "gpt-fake", stream: true },
+        accountKey: "fake-account",
+      });
+      await waitFor(() => sentBodies.length === 1);
+      sockets[0]?.dispatch("error", { error: new Error("PRIVATESECRETTOKEN") });
+      expect(await pending).toBeNull();
+      expect(log).toHaveBeenCalledTimes(1);
+      const line = String(log.mock.calls[0]?.[0]);
+      expect(JSON.parse(line)).toMatchObject({
+        event: "codex_websocket_stream_failed",
+        stage: "socket_error",
+        errorName: "WebSocketError",
+        errorStack: expect.stringContaining(
+          "WebSocket error (other, 18 bytes)"
+        ),
+      });
+      expect(line).not.toContain("PRIVATESECRETTOKEN");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test.each([
+    "response.incomplete",
+    "response.failed",
+  ])("websocket %s diagnostics allowlist statuses without rewriting provider data", async (type) => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const log = spyOn(console, "warn").mockImplementation(() => undefined);
+    const event = {
+      type,
+      response: {
+        status: "PRIVATESECRETTOKEN",
+        error: {
+          type: "PRIVATESECRETTOKEN",
+          code: "PRIVATESECRETTOKEN",
+          message: "PRIVATESECRETTOKEN",
+        },
+      },
+    };
+    try {
+      const pending = tryProxyCodexWebSocket({
+        headers: new Headers(),
+        bodyJson: { model: "gpt-fake", stream: true },
+        accountKey: "fake-account",
+      });
+      await waitFor(() => sentBodies.length === 1);
+      const created = {
+        type: "response.created",
+        response: { id: "resp_PRIVATE_RESPONSE_ID" },
+      };
+      let response: Response | null;
+      if (type === "response.failed") {
+        sockets[0]?.dispatch("message", { data: JSON.stringify(created) });
+        response = await pending;
+        sockets[0]?.dispatch("message", { data: JSON.stringify(event) });
+      } else {
+        sockets[0]?.dispatch("message", { data: JSON.stringify(event) });
+        response = await pending;
+      }
+      const events = type === "response.failed" ? [created, event] : [event];
+      expect(await response?.text()).toBe(
+        `${events.map((payload) => `data: ${JSON.stringify(payload)}\n\n`).join("")}data: [DONE]\n\n`
+      );
+      expect(log).toHaveBeenCalledTimes(1);
+      const line = String(log.mock.calls[0]?.[0]);
+      expect(JSON.parse(line)).toMatchObject({ responseStatus: "other" });
+      expect(line).not.toContain("PRIVATESECRETTOKEN");
+    } finally {
+      log.mockRestore();
     }
   });
 
@@ -3589,6 +3768,38 @@ describe("proxy contract: claude", () => {
     expect(warning.errorType).toBe("overloaded_error");
     expect(warning.errorMessage).toBeUndefined();
     expect(warnings[0]).not.toContain("Anthropic is overloaded");
+  });
+
+  test("Claude SSE diagnostics do not expose provider metadata or request headers", async () => {
+    const event = {
+      type: "error",
+      error: {
+        type: "PRIVATESECRETTOKEN",
+        code: "PRIVATESECRETTOKEN",
+        message: "PRIVATESECRETTOKEN",
+      },
+    };
+    const source = createSseResponse([event]);
+    source.headers.set("request-id", "PRIVATESECRETTOKEN");
+    const log = spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const response =
+        await prepareClaudeUsageRequest().transformResponse(source);
+      expect(await response.text()).toBe(
+        await createSseResponse([event]).text()
+      );
+      expect(log).toHaveBeenCalledTimes(1);
+      const line = String(log.mock.calls[0]?.[0]);
+      expect(JSON.parse(line)).toMatchObject({
+        event: "claude_sse_error_event",
+        errorType: null,
+        errorCode: null,
+        requestIdHash: expect.stringMatching(/^[a-f0-9]{8}$/),
+      });
+      expect(line).not.toContain("PRIVATESECRETTOKEN");
+    } finally {
+      log.mockRestore();
+    }
   });
 
   test("rewrites fragmented multiline SSE events at event boundaries", async () => {
