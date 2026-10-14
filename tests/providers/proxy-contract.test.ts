@@ -3040,6 +3040,38 @@ describe("proxy contract: claude", () => {
     expect(transformed.system[1]?.text).toContain("</directories>");
   });
 
+  test("adds the Claude Code identity only when the system prompt lacks it", () => {
+    const prepareSystem = (requestBody: Record<string, unknown>) =>
+      (
+        JSON.parse(
+          prepareClaudeProxyRequest({
+            requestUrl: new URL("https://kleis.local/v1/messages"),
+            headers: new Headers(),
+            bodyText: JSON.stringify(requestBody),
+            bodyJson: requestBody,
+            accessToken: "claude-token",
+            metadata: null,
+          }).bodyText
+        ) as { system: unknown }
+      ).system;
+    const identity = { type: "text", text: CLAUDE_SYSTEM_IDENTITY };
+    const cachedIdentity = {
+      ...identity,
+      cache_control: { type: "ephemeral" },
+    };
+    const custom = { type: "text", text: "Custom system prompt" };
+
+    expect(prepareSystem({ messages: [] })).toEqual([identity]);
+    expect(prepareSystem({ system: null })).toEqual([identity]);
+    expect(prepareSystem({ system: CLAUDE_SYSTEM_IDENTITY })).toEqual([
+      identity,
+    ]);
+    expect(prepareSystem({ system: [custom, cachedIdentity] })).toEqual([
+      custom,
+      cachedIdentity,
+    ]);
+  });
+
   test("ignores Claude wire configuration left in legacy account metadata", () => {
     const requestBody = {
       system: "Custom system prompt",
