@@ -4,6 +4,7 @@ import {
   loadDashboard,
   loadKeys,
   resolveConfirm,
+  runAction,
   state,
   toast,
 } from "./app-data.js";
@@ -39,9 +40,9 @@ const isIdle = () =>
 
 function refreshAll() {
   if (!state.sessionActive) return;
-  loadDashboard();
-  loadAccounts();
-  loadKeys();
+  runAction(loadDashboard());
+  runAction(loadAccounts());
+  runAction(loadKeys());
 }
 
 /* Service worker and updates */
@@ -347,7 +348,7 @@ function pullToRefresh(refresh) {
       reset();
     }
   };
-  window.addEventListener("touchend", finish);
+  window.addEventListener("touchend", () => runAction(finish()));
   window.addEventListener("touchcancel", () => {
     pull = null;
     reset();

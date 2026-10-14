@@ -31,6 +31,7 @@
     "happy-dom": "^21.0.1",
     "lefthook": "^2.1.1",
     "oxfmt": "0.73.0",
-    "oxlint": "1.88.0"
+    "oxlint": "1.88.0",
+    "oxlint-tsgolint": "7.0.2004"
   }
 }

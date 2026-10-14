@@ -95,6 +95,8 @@ const unlessAborted = <T>(
   }
   signal.throwIfAborted();
   return new Promise<T>((resolve, reject) => {
+    // AbortSignal reasons are caller-defined; cancellation must preserve them.
+    // oxlint-disable-next-line typescript/prefer-promise-reject-errors
     const onAbort = () => reject(signal.reason);
     signal.addEventListener("abort", onAbort, { once: true });
     promise
@@ -108,32 +110,33 @@ const startRefreshLockHeartbeat = (
   account: ProviderAccountRecord,
   lockToken: string
 ): (() => void) => {
-  const timer = setInterval(async () => {
+  const heartbeat = async () => {
     const now = Date.now();
-    try {
-      const extended = await extendProviderAccountRefreshLock(
-        database,
-        account.id,
-        {
-          token: lockToken,
-          now,
-          expiresAt: now + REFRESH_LOCK_LEASE_MS,
-        }
-      );
-      if (!extended) {
-        clearInterval(timer);
-        logWarn("provider_refresh_lock_lost", {
-          providerAccountId: account.id,
-          provider: account.provider,
-        });
+    const extended = await extendProviderAccountRefreshLock(
+      database,
+      account.id,
+      {
+        token: lockToken,
+        now,
+        expiresAt: now + REFRESH_LOCK_LEASE_MS,
       }
-    } catch (error) {
+    );
+    if (!extended) {
+      clearInterval(timer);
+      logWarn("provider_refresh_lock_lost", {
+        providerAccountId: account.id,
+        provider: account.provider,
+      });
+    }
+  };
+  const timer = setInterval(() => {
+    heartbeat().catch((error: unknown) => {
       logWarn("provider_refresh_lock_heartbeat_failed", {
         providerAccountId: account.id,
         provider: account.provider,
         ...errorLogFields(error),
       });
-    }
+    });
   }, REFRESH_LOCK_HEARTBEAT_MS);
 
   return () => {

@@ -183,6 +183,12 @@ function setButtonBusy(button, busy) {
   button.setAttribute?.("aria-busy", String(busy));
 }
 
+function runAction(result) {
+  Promise.resolve(result).catch((error) => {
+    toast(error?.message || "Something went wrong", "error");
+  });
+}
+
 const mutationKey = (operation, target) =>
   JSON.stringify([operation, String(target ?? "")]);
 
@@ -980,7 +986,10 @@ async function loadAccounts() {
       api(`/admin/accounts/usage?windowMs=${state.accountUsageWindowMs}`),
     ]);
 
-    if (accountsResult.status !== "fulfilled") throw accountsResult.reason;
+    if (accountsResult.status !== "fulfilled") {
+      const error = accountsResult.reason;
+      throw error instanceof Error ? error : new Error(String(error));
+    }
     if (requestSeq !== state.accountsRequestSeq) return;
 
     const accounts = accountsResult.value.accounts || [];
@@ -1018,7 +1027,7 @@ async function loadAccounts() {
     if (state.keysLoaded) {
       renderKeys();
     }
-    finishAccountLoad(requestSeq, missingQuotas);
+    runAction(finishAccountLoad(requestSeq, missingQuotas));
   } catch (e) {
     if (requestSeq !== state.accountsRequestSeq) return;
     if (!state.accounts.length)
@@ -1127,7 +1136,10 @@ async function loadKeys() {
       api(`/admin/keys/usage?windowMs=${state.keyUsageWindowMs}`),
     ]);
 
-    if (keysResult.status !== "fulfilled") throw keysResult.reason;
+    if (keysResult.status !== "fulfilled") {
+      const error = keysResult.reason;
+      throw error instanceof Error ? error : new Error(String(error));
+    }
     if (requestSeq !== state.keysRequestSeq) return;
 
     state.keys = keysResult.value.keys || [];
@@ -1909,9 +1921,9 @@ function enterApp() {
   syncAccountWindowButtons();
   syncKeyWindowButtons();
   renderAttention();
-  loadDashboard();
-  loadAccounts();
-  loadKeys();
+  runAction(loadDashboard());
+  runAction(loadAccounts());
+  runAction(loadKeys());
 }
 
 function logout() {
@@ -2012,6 +2024,7 @@ const importAccount = mutation(
 );
 
 export {
+  runAction,
   mutationAttributes,
   syncMutationControls,
   DAILY_TOKEN_DAYS,

@@ -167,13 +167,22 @@ describe("admin mutation and session guards", () => {
   afterEach(async () => {
     data.logout();
     await tick();
-    window.happyDOM.cancelAsync();
+    await window.happyDOM.cancelAsync();
     for (const [name, descriptor] of originals) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
       else Reflect.deleteProperty(globalThis, name);
     }
   });
   afterAll(() => window.happyDOM.cancelAsync());
+
+  test("background actions report unexpected rejections", async () => {
+    data.runAction(Promise.reject(new Error("Background action failed")));
+    await tick();
+    expect($("#toast-container").textContent).toContain(
+      "Background action failed"
+    );
+    expect($("#toast-container .toast.error")).not.toBeNull();
+  });
 
   const entries: {
     name: string;

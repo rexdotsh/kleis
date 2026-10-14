@@ -2822,7 +2822,7 @@ describe("proxy contract: codex", () => {
     sockets[0]?.dispatch("close", { code: 1000 });
 
     let response: Response | null | undefined;
-    responsePromise.then((value) => {
+    const observedResponse = responsePromise.then((value) => {
       response = value;
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2837,7 +2837,7 @@ describe("proxy contract: codex", () => {
         createdBytes.byteOffset + createdBytes.byteLength
       )
     );
-    await waitFor(() => response !== undefined);
+    await observedResponse;
     if (!response) {
       throw new Error("Expected websocket response");
     }
