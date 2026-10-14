@@ -27,13 +27,14 @@ import {
   readCodexSessionId,
 } from "../../providers/proxies/codex-proxy";
 import { tryProxyCodexWebSocket } from "../../providers/proxies/codex-websocket";
+import { readUpstreamResponseError } from "../../providers/proxies/upstream-error";
 import type { UsageRequestSource } from "../../usage/request-outcome";
 import { createUsageBuffer } from "../../usage/usage-buffer";
 import {
   isTokenUsagePopulated,
   type TokenUsage,
 } from "../../usage/token-usage";
-import { errorLogFields, logWarn } from "../../utils/log";
+import { logError, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 import { sendWithAuthReplay } from "../auth-replay";
 import { createUpstreamProxyHeaders } from "../proxy-headers";
@@ -78,6 +79,30 @@ const createCodexSseHeaderTimeout = (): {
 };
 
 const usageBuffer = createUsageBuffer(db);
+
+const logUpstreamResponse = async (
+  response: Response,
+  route: ProxyRoute,
+  providerAccountId: string,
+  startedAt: number
+): Promise<void> => {
+  if (response.ok) {
+    return;
+  }
+  const fields = await readUpstreamResponseError(response);
+  const log = response.status >= 500 ? logError : logWarn;
+  log("proxy_upstream_response_failed", {
+    provider: route.provider,
+    providerAccountId,
+    endpoint: route.endpoint,
+    status: response.status,
+    elapsedMs: Date.now() - startedAt,
+    requestId:
+      response.headers.get("x-request-id") ??
+      response.headers.get("request-id"),
+    ...fields,
+  });
+};
 
 export const flushProxyUsage = (): Promise<void> => usageBuffer.flush();
 
@@ -204,6 +229,10 @@ const proxyRequest = async (
   route: ProxyRoute
 ): Promise<Response> => {
   const startedAt = Date.now();
+  context.set("proxyLogContext", {
+    provider: route.provider,
+    endpoint: route.endpoint,
+  });
   const apiKeyId = context.get("proxyApiKeyId");
   const accountScopeIds = context.get("proxyApiKeyAccountScopeIds");
   let providerAccountId = MISSING_PROVIDER_ACCOUNT_ID;
@@ -274,6 +303,11 @@ const proxyRequest = async (
   }
 
   providerAccountId = account.id;
+  context.set("proxyLogContext", {
+    provider: route.provider,
+    endpoint: route.endpoint,
+    providerAccountId,
+  });
 
   const headers = createUpstreamProxyHeaders(context.req.raw.headers);
 
@@ -301,6 +335,7 @@ const proxyRequest = async (
           headers: attemptHeaders,
           accessToken: attemptAccount.accessToken,
           accountId: attemptAccount.accountId,
+          providerAccountId: attemptAccount.id,
           metadata:
             attemptAccount.metadata?.provider === "codex"
               ? attemptAccount.metadata
@@ -316,6 +351,7 @@ const proxyRequest = async (
             headers: attemptHeaders,
             bodyJson: codexProxy.bodyJson,
             accountKey: `${apiKeyId}:${attemptAccount.id}`,
+            providerAccountId: attemptAccount.id,
             sessionId: codexSessionId,
             upstreamSessionId: codexUpstreamSessionId,
             onTokenUsage: usageRecorder.onTokenUsage,
@@ -363,25 +399,12 @@ const proxyRequest = async (
         if (context.req.raw.signal.aborted) {
           throw error;
         }
-        logWarn("proxy_upstream_request_failed", {
-          provider: route.provider,
-          endpoint: route.endpoint,
-          elapsedMs: Date.now() - startedAt,
-          aborted: false,
-          ...errorLogFields(error),
-        });
         usageRecorder.recordImmediate(500);
         throw error;
       }
       account = result.account;
-      if (result.refreshFailed) {
-        logWarn("codex_auth_refresh_replay_failed", {
-          accountId: account.id,
-          elapsedMs: Date.now() - startedAt,
-          upstreamStatus: result.attempt.response.status,
-        });
-      }
       const { attempt } = result;
+      await logUpstreamResponse(attempt.response, route, account.id, startedAt);
       recordProviderAccountLiveLimits(
         account,
         readCodexLiveLimits(attempt.response.headers)
@@ -393,12 +416,10 @@ const proxyRequest = async (
           responseToClient = await attempt.transformResponse(attempt.response);
           responseToClient.headers.delete("content-encoding");
         } catch (error) {
-          logWarn("proxy_response_transform_failed", {
-            provider: route.provider,
-            endpoint: route.endpoint,
-            status: attempt.response.status,
-            elapsedMs: Date.now() - startedAt,
-            ...errorLogFields(error),
+          context.set("proxyLogContext", {
+            ...context.get("proxyLogContext"),
+            stage: "response_transform",
+            upstreamStatus: attempt.response.status,
           });
           usageRecorder.recordImmediate(500);
           throw error;
@@ -421,6 +442,7 @@ const proxyRequest = async (
           bodyText: requestBody,
           bodyJson: requestBodyJson,
           accessToken: attemptAccount.accessToken,
+          providerAccountId: attemptAccount.id,
           metadata:
             attemptAccount.metadata?.provider === "claude"
               ? attemptAccount.metadata
@@ -465,25 +487,12 @@ const proxyRequest = async (
         if (context.req.raw.signal.aborted) {
           throw error;
         }
-        logWarn("proxy_upstream_request_failed", {
-          provider: route.provider,
-          endpoint: route.endpoint,
-          elapsedMs: Date.now() - startedAt,
-          aborted: false,
-          ...errorLogFields(error),
-        });
         usageRecorder.recordImmediate(500);
         throw error;
       }
       account = result.account;
-      if (result.refreshFailed) {
-        logWarn("claude_auth_refresh_replay_failed", {
-          accountId: account.id,
-          elapsedMs: Date.now() - startedAt,
-          upstreamStatus: result.attempt.response.status,
-        });
-      }
       const { attempt } = result;
+      await logUpstreamResponse(attempt.response, route, account.id, startedAt);
       recordProviderAccountLiveLimits(
         account,
         readClaudeLiveLimits(attempt.response.headers)
@@ -493,12 +502,10 @@ const proxyRequest = async (
         responseToClient = await attempt.transformResponse(attempt.response);
         responseToClient.headers.delete("content-encoding");
       } catch (error) {
-        logWarn("proxy_response_transform_failed", {
-          provider: route.provider,
-          endpoint: route.endpoint,
-          status: attempt.response.status,
-          elapsedMs: Date.now() - startedAt,
-          ...errorLogFields(error),
+        context.set("proxyLogContext", {
+          ...context.get("proxyLogContext"),
+          stage: "response_transform",
+          upstreamStatus: attempt.response.status,
         });
         usageRecorder.recordImmediate(500);
         throw error;

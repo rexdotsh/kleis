@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { HTTPException } from "hono/http-exception";
+import { installErrorHandler } from "./http/error-handler";
 
 import { requireAdminAuth } from "./http/middleware/bearer-env-auth";
 import { requireProxyApiKey } from "./http/middleware/api-key-auth";
@@ -25,25 +25,7 @@ const QUOTA_WARMUP_DELAY_MS = 3000;
 
 const app = new Hono();
 
-app.onError((error, context) => {
-  if (error instanceof HTTPException) {
-    return context.json(
-      {
-        error: "request_error",
-        message: error.message,
-      },
-      error.status
-    );
-  }
-
-  return context.json(
-    {
-      error: "internal_error",
-      message: error.message,
-    },
-    500
-  );
-});
+installErrorHandler(app);
 
 app.get("/", (context) => context.redirect("/admin"));
 

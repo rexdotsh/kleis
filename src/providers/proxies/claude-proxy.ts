@@ -12,7 +12,7 @@ import {
   readAnthropicUsageObject,
   type TokenUsage,
 } from "../../usage/token-usage";
-import { errorLogFields, logWarn } from "../../utils/log";
+import { errorLogFields, logError, logWarn } from "../../utils/log";
 import { isObjectRecord, type JsonObject, withField } from "../../utils/object";
 import {
   type ClaudeToolNames,
@@ -24,6 +24,7 @@ import {
   replaceSseData,
 } from "./sse-events";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
+import { readUpstreamErrorFields } from "./upstream-error";
 
 // Anthropic OAuth sessions reject the feedback repo path used in OpenCode's
 // prompt URL and the opening `<directories>` wrapper emitted by OpenCode's
@@ -163,37 +164,6 @@ const buildUpstreamUrl = (search: string): string => {
   return upstream.toString();
 };
 
-const truncateLogValue = (value: string): string => {
-  const trimmed = value.trim();
-  return trimmed.length > 500 ? `${trimmed.slice(0, 500)}...` : trimmed;
-};
-
-const readClaudeErrorField = (
-  payload: Record<string, unknown>,
-  key: string
-): string | number | boolean | null => {
-  const error = isObjectRecord(payload.error) ? payload.error : null;
-  const value = error?.[key] ?? payload[key];
-  if (typeof value === "string") {
-    return truncateLogValue(value);
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return value;
-  }
-  return null;
-};
-
-const readClaudeErrorLogFields = (
-  payload: Record<string, unknown>
-): Record<string, string | number | boolean | null> => ({
-  payloadType: String(payload.type),
-  errorType: readClaudeErrorField(payload, "type"),
-  errorCode: readClaudeErrorField(payload, "code"),
-  errorMessage: readClaudeErrorField(payload, "message"),
-  errorParam: readClaudeErrorField(payload, "param"),
-  errorStatus: readClaudeErrorField(payload, "status"),
-});
-
 // Events that never carry usage, errors, tool names or the end of the stream.
 // Text deltas make up almost all of a stream, so they skip JSON parsing.
 const CLAUDE_PASSTHROUGH_EVENTS = new Set([
@@ -268,7 +238,8 @@ const maybeTransformClaudeStreamResponse = (
   response: Response,
   toolNames: ClaudeToolNames,
   onTokenUsage?: ((usage: TokenUsage) => void) | null,
-  onStreamEnd?: ((statusCode: number) => void) | null
+  onStreamEnd?: ((statusCode: number) => void) | null,
+  providerAccountId?: string
 ): Response => {
   if (!response.body) {
     return response;
@@ -291,8 +262,13 @@ const maybeTransformClaudeStreamResponse = (
     fields: Record<string, string | number | boolean | null> = {},
     error?: unknown
   ): void => {
-    logWarn(event, {
+    const log = error === undefined ? logWarn : logError;
+    log(event, {
       provider: "claude",
+      providerAccountId,
+      requestId:
+        response.headers.get("request-id") ??
+        response.headers.get("x-request-id"),
       transport: "sse_transform",
       elapsedMs: Date.now() - startedAt,
       idleMs: Date.now() - lastChunkAt,
@@ -413,20 +389,13 @@ const maybeTransformClaudeStreamResponse = (
 
     if (payload.type === "error") {
       endStatus ??= readStreamErrorStatus(payload);
-      logStreamAnomaly(
-        "claude_sse_error_event",
-        readClaudeErrorLogFields(payload)
-      );
+      if (response.ok) {
+        logStreamAnomaly("claude_sse_error_event", {
+          status: readStreamErrorStatus(payload),
+          ...readUpstreamErrorFields(payload),
+        });
+      }
       return;
-    }
-
-    if (payload.type !== "message_delta") {
-      return;
-    }
-    const delta = isObjectRecord(payload.delta) ? payload.delta : null;
-    const stopReason = delta?.stop_reason;
-    if (stopReason === "max_tokens") {
-      logStreamAnomaly("claude_sse_max_tokens_stop");
     }
   };
 
@@ -446,9 +415,6 @@ const maybeTransformClaudeStreamResponse = (
   const stream = new ReadableStream<Uint8Array>({
     start(controller): void {
       clearKeepAlive = createSseKeepAlive(controller, {
-        provider: "claude",
-        transport: "sse_transform",
-        getElapsedMs: () => Date.now() - startedAt,
         onKeepAlive: () => {
           lastWriteAt = Date.now();
         },
@@ -492,12 +458,7 @@ const maybeTransformClaudeStreamResponse = (
           if (!events.length) {
             continue;
           }
-          try {
-            controller.enqueue(encoder.encode(transformEvents(events)));
-          } catch (error) {
-            logStreamAnomaly("claude_sse_enqueue_failed", {}, error);
-            throw error;
-          }
+          controller.enqueue(encoder.encode(transformEvents(events)));
           lastWriteAt = Date.now();
           return;
         }
@@ -575,7 +536,8 @@ const transformClaudeResponse = (
   response: Response,
   toolNames: ClaudeToolNames,
   onTokenUsage?: ((usage: TokenUsage) => void) | null,
-  onStreamEnd?: ((statusCode: number) => void) | null
+  onStreamEnd?: ((statusCode: number) => void) | null,
+  providerAccountId?: string
 ): Promise<Response> => {
   if (isEventStreamResponse(response)) {
     return Promise.resolve(
@@ -583,7 +545,8 @@ const transformClaudeResponse = (
         response,
         toolNames,
         onTokenUsage,
-        onStreamEnd
+        onStreamEnd,
+        providerAccountId
       )
     );
   }
@@ -608,6 +571,7 @@ type ClaudeProxyPreparationInput = {
   bodyText: string;
   bodyJson: unknown;
   accessToken: string;
+  providerAccountId?: string;
   metadata: ClaudeAccountMetadata | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
   // Called once when an SSE response ends, with the status to record for it.
@@ -661,7 +625,8 @@ export const prepareClaudeProxyRequest = (
         response,
         toolNames,
         input.onTokenUsage,
-        input.onStreamEnd
+        input.onStreamEnd,
+        input.providerAccountId
       ),
   };
 };

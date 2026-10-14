@@ -1,5 +1,3 @@
-import { errorLogFields, logWarn } from "../../utils/log";
-
 const SSE_KEEPALIVE_INTERVAL_MS = 25_000;
 const SSE_KEEPALIVE_BYTES = new TextEncoder().encode(": kleis-keepalive\n\n");
 
@@ -16,9 +14,6 @@ export const createSseResponseHeaders = (source?: HeadersInit): Headers => {
 };
 
 type SseKeepAliveInput = {
-  provider: string;
-  transport: string;
-  getElapsedMs: () => number;
   onKeepAlive?: () => void;
   intervalMs?: number;
 };
@@ -36,15 +31,9 @@ export const createSseKeepAlive = (
     try {
       controller.enqueue(SSE_KEEPALIVE_BYTES);
       input.onKeepAlive?.();
-    } catch (error) {
+    } catch {
       active = false;
       clearInterval(timer);
-      logWarn("sse_keepalive_enqueue_failed", {
-        provider: input.provider,
-        transport: input.transport,
-        elapsedMs: input.getElapsedMs(),
-        ...errorLogFields(error),
-      });
     }
   }, input.intervalMs ?? SSE_KEEPALIVE_INTERVAL_MS);
 

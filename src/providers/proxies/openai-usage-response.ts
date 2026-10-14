@@ -5,6 +5,7 @@ type UsageExtractor = (payload: unknown) => TokenUsage | null;
 
 type TransformOpenAiUsageResponseInput = {
   response: Response;
+  providerAccountId?: string | undefined;
   extractSseUsage: UsageExtractor;
   extractJsonUsage: UsageExtractor;
   onTokenUsage?: ((usage: TokenUsage) => void) | null | undefined;
@@ -64,6 +65,7 @@ export const transformOpenAiUsageResponse = (
     return Promise.resolve(
       createOpenAiSseUsagePassthrough({
         response: input.response,
+        providerAccountId: input.providerAccountId,
         extractUsage: input.extractSseUsage,
         onTokenUsage: input.onTokenUsage,
       })

@@ -1,4 +1,4 @@
-import { errorLogFields, logWarn } from "../utils/log";
+import { errorLogFields, logError, logInfo, logWarn } from "../utils/log";
 
 // Longer than Caddy's 2s health-check interval.
 const DRAIN_GRACE_MS = 6000;
@@ -62,12 +62,13 @@ export const createGracefulShutdown = () => {
         }
         const graceMs = readDurationMs("DRAIN_GRACE_MS", DRAIN_GRACE_MS);
         const timeoutMs = readDurationMs("DRAIN_TIMEOUT_MS", DRAIN_TIMEOUT_MS);
-        logWarn("server_draining", { graceMs, timeoutMs });
+        logInfo("server_draining", { graceMs, timeoutMs });
         const outcome = await drain({ graceMs, timeoutMs });
-        logWarn("server_drained", { outcome });
+        const log = outcome === "drained" ? logInfo : logWarn;
+        log("server_drained", { outcome });
         for (const hook of beforeExitHooks) {
           await hook().catch((error: unknown) => {
-            logWarn("server_exit_hook_failed", errorLogFields(error));
+            logError("server_exit_hook_failed", errorLogFields(error));
           });
         }
         await Bun.sleep(EXIT_FLUSH_DELAY_MS);

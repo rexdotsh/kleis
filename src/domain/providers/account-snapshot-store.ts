@@ -3,7 +3,7 @@ import {
   type ProviderAccountSnapshotWrite,
   upsertProviderAccountSnapshots,
 } from "../../db/repositories/provider-account-snapshots";
-import { errorLogFields, logWarn } from "../../utils/log";
+import { errorLogFields, logError } from "../../utils/log";
 
 const MIN_WRITE_INTERVAL_MS = 5 * 60_000;
 const FLUSH_TICK_MS = 30_000;
@@ -68,7 +68,7 @@ export const createAccountSnapshotStore = (
       return;
     } catch (error) {
       if (rows.length === 1) {
-        logWarn("account_snapshot_write_failed", {
+        logError("account_snapshot_write_failed", {
           providerAccountId: rows[0]?.providerAccountId,
           ...errorLogFields(error),
         });

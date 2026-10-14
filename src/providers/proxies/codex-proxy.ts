@@ -151,7 +151,8 @@ const transformCodexCompactionBodyJson = (
 const transformCodexResponse = (
   response: Response,
   onTokenUsage: ((usage: TokenUsage) => void) | null | undefined,
-  isStreamingRequest: boolean
+  isStreamingRequest: boolean,
+  providerAccountId: string | undefined
 ): Promise<Response> =>
   transformOpenAiUsageResponse({
     response,
@@ -159,6 +160,7 @@ const transformCodexResponse = (
     extractJsonUsage: readOpenAiResponsesUsageFromResponse,
     onTokenUsage,
     isStreamingRequest,
+    providerAccountId,
   });
 
 type CodexProxyPreparationInput = {
@@ -166,6 +168,7 @@ type CodexProxyPreparationInput = {
   headers: Headers;
   accessToken: string;
   accountId: string | null;
+  providerAccountId?: string;
   metadata: CodexAccountMetadata | null;
   bodyText: string;
   bodyJson: unknown;
@@ -223,6 +226,11 @@ export const prepareCodexProxyRequest = (
     bodyJson,
     bodyText: bodyJson ? JSON.stringify(bodyJson) : input.bodyText,
     transformResponse: (response: Response): Promise<Response> =>
-      transformCodexResponse(response, input.onTokenUsage, isStreamingRequest),
+      transformCodexResponse(
+        response,
+        input.onTokenUsage,
+        isStreamingRequest,
+        input.providerAccountId
+      ),
   };
 };

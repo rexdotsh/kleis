@@ -1069,7 +1069,7 @@ describe("proxy contract: codex", () => {
     );
   });
 
-  test("logs OpenAI incomplete reasons", async () => {
+  test("logs unexpected OpenAI incomplete reasons", async () => {
     const warnings: string[] = [];
     const originalWarn = console.warn;
     console.warn = (message?: unknown): void => {
@@ -1082,7 +1082,7 @@ describe("proxy contract: codex", () => {
             type: "response.incomplete",
             response: {
               status: "incomplete",
-              incomplete_details: { reason: "max_output_tokens" },
+              incomplete_details: { reason: "content_filter" },
             },
           },
         ]),
@@ -1097,7 +1097,7 @@ describe("proxy contract: codex", () => {
       event: "openai_sse_terminal_anomaly",
       terminalAnomaly: "response.incomplete",
       responseStatus: "incomplete",
-      incompleteReason: "max_output_tokens",
+      incompleteReason: "content_filter",
     });
   });
 
@@ -1131,7 +1131,13 @@ describe("proxy contract: codex", () => {
   test("logs upstream overlapping reasoning items without exposing item IDs", async () => {
     const events = [
       {
+        type: "response.created",
+        sequence_number: 0,
+        response: { id: "private-response-1" },
+      },
+      {
         type: "response.output_item.added",
+        sequence_number: 2,
         output_index: 0,
         item: { id: "private-reasoning-1", type: "reasoning" },
       },
@@ -1141,8 +1147,19 @@ describe("proxy contract: codex", () => {
         delta: "private reasoning text",
       },
       {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { id: "different-private-id", type: "message" },
+      },
+      {
+        type: "response.created",
+        sequence_number: 0,
+        response: { id: "private-response-2" },
+      },
+      {
         type: "response.output_item.added",
-        output_index: 1,
+        sequence_number: 2,
+        output_index: 0,
         item: { id: "private-reasoning-2", type: "reasoning" },
       },
       {
@@ -1162,6 +1179,7 @@ describe("proxy contract: codex", () => {
     try {
       output = await createOpenAiSseUsagePassthrough({
         response: source,
+        providerAccountId: "fake-account-1",
         extractUsage: () => null,
       }).text();
     } finally {
@@ -1171,14 +1189,33 @@ describe("proxy contract: codex", () => {
     expect(output).toBe(await createSseResponse(events).text());
     expect(warnings).toHaveLength(1);
     expect(JSON.parse(warnings[0] ?? "{}")).toMatchObject({
-      event: "openai_sse_upstream_reasoning_overlap",
+      event: "codex_reasoning_overlap",
+      provider: "codex",
+      providerAccountId: "fake-account-1",
       requestId: "upstream-request-1",
-      previousOutputIndex: 0,
-      nextOutputIndex: 1,
-      eventsSincePreviousAdded: 2,
+      history: expect.arrayContaining([
+        {
+          type: "response.output_item.added",
+          sequenceNumber: 2,
+          outputIndex: 0,
+          itemType: "reasoning",
+          itemIdHash: Bun.CryptoHasher.hash(
+            "sha256",
+            "private-reasoning-2",
+            "hex"
+          ).slice(0, 8),
+          responseIdHash: Bun.CryptoHasher.hash(
+            "sha256",
+            "private-response-2",
+            "hex"
+          ).slice(0, 8),
+          elapsedMs: expect.any(Number),
+        },
+      ]),
     });
     expect(warnings[0]).not.toContain("private-reasoning");
     expect(warnings[0]).not.toContain("private reasoning text");
+    expect(warnings[0]).not.toContain("private-response");
   });
 
   test("does not flag reasoning items closed by their output item done events", async () => {
@@ -1375,6 +1412,56 @@ describe("proxy contract: codex", () => {
     expect(warnings).toHaveLength(0);
   });
 
+  test("websocket reasoning diagnostics observe upstream events without rewriting them", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    const events = [
+      {
+        type: "response.output_item.added",
+        item: { id: "private-item-1", type: "reasoning" },
+      },
+      { type: "response.created", response: { id: "private-response" } },
+      {
+        type: "response.output_item.added",
+        sequence_number: 2,
+        output_index: 0,
+        item: { id: "private-item-2", type: "reasoning" },
+      },
+      { type: "response.completed", response: { status: "completed" } },
+    ];
+    try {
+      const pending = tryProxyCodexWebSocket({
+        headers: new Headers(),
+        bodyJson: { model: "gpt-fake", stream: true },
+        accountKey: "fake-key:fake-account",
+        providerAccountId: "fake-account",
+      });
+      await waitFor(() => sentBodies.length === 1);
+      for (const event of events) {
+        sockets[0]?.dispatch("message", { data: JSON.stringify(event) });
+      }
+      const response = await pending;
+      expect(await response?.text()).toBe(
+        `${events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("")}data: [DONE]\n\n`
+      );
+      expect(warnings).toHaveLength(1);
+      expect(JSON.parse(warnings[0] ?? "{}")).toMatchObject({
+        event: "codex_reasoning_overlap",
+        providerAccountId: "fake-account",
+        transport: "websocket",
+        history: expect.any(Array),
+      });
+      expect(warnings[0]).not.toContain("private");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
   test("falls back when the websocket relay frame bound is exceeded", async () => {
     const warnings: string[] = [];
     const originalWarn = console.warn;
@@ -1407,11 +1494,12 @@ describe("proxy contract: codex", () => {
         warnings.some((warning) => {
           const fields = JSON.parse(warning) as Record<string, unknown>;
           return (
-            fields.event === "codex_websocket_queue_overflow" &&
+            fields.event === "codex_websocket_stream_failed" &&
             fields.reason === "frames"
           );
         })
       ).toBe(true);
+      expect(warnings).toHaveLength(1);
     } finally {
       console.warn = originalWarn;
     }
@@ -2648,8 +2736,8 @@ describe("proxy contract: codex", () => {
     const failedResponse = await failedResponsePromise;
     const failedText = failedResponse?.text();
     const warnings: string[] = [];
-    const originalWarn = console.warn;
-    console.warn = (message?: unknown): void => {
+    const originalWarn = console.error;
+    console.error = (message?: unknown): void => {
       warnings.push(String(message));
     };
     let streamFailed: boolean | undefined;
@@ -2663,7 +2751,7 @@ describe("proxy contract: codex", () => {
         () => true
       );
     } finally {
-      console.warn = originalWarn;
+      console.error = originalWarn;
     }
     expect(streamFailed).toBe(true);
     expect(warnings).toHaveLength(1);
@@ -3499,7 +3587,8 @@ describe("proxy contract: claude", () => {
     const warning = JSON.parse(warnings[0] ?? "{}") as Record<string, unknown>;
     expect(warning.event).toBe("claude_sse_error_event");
     expect(warning.errorType).toBe("overloaded_error");
-    expect(warning.errorMessage).toBe("Anthropic is overloaded");
+    expect(warning.errorMessage).toBeUndefined();
+    expect(warnings[0]).not.toContain("Anthropic is overloaded");
   });
 
   test("rewrites fragmented multiline SSE events at event boundaries", async () => {

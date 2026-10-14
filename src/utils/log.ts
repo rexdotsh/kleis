@@ -1,4 +1,14 @@
-type LogFields = Record<string, string | number | boolean | null | undefined>;
+import { DrizzleQueryError } from "drizzle-orm/errors";
+
+type LogValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | readonly LogValue[]
+  | { readonly [key: string]: LogValue };
+export type LogFields = Record<string, LogValue>;
 
 const writeLog = (
   level: "info" | "warn" | "error",
@@ -41,11 +51,16 @@ export const logError = (event: string, fields: LogFields = {}): void => {
 
 export const errorLogFields = (
   error: unknown
-): { errorName: string; errorMessage: string } => {
+): { errorName: string; errorMessage: string; errorStack?: string } => {
+  // Drizzle's wrapper includes SQL parameters; the cause retains the DB error.
+  if (error instanceof DrizzleQueryError && error.cause) {
+    return errorLogFields(error.cause);
+  }
   if (error instanceof Error) {
     return {
       errorName: error.name,
       errorMessage: error.message,
+      ...(error.stack ? { errorStack: error.stack } : {}),
     };
   }
 

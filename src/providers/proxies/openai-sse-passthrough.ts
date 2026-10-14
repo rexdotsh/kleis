@@ -1,6 +1,8 @@
 import type { TokenUsage } from "../../usage/token-usage";
-import { errorLogFields, logWarn } from "../../utils/log";
+import { errorLogFields, logError, logWarn } from "../../utils/log";
 import { isObjectRecord } from "../../utils/object";
+import { createCodexStreamDiagnostics } from "./codex-stream-diagnostics";
+import { readUpstreamErrorFields } from "./upstream-error";
 import {
   normalizeOpenAiResponsesEvent,
   type OpenAiResponsesEventShapeIssue,
@@ -15,78 +17,15 @@ import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
 type SseUsageExtractor = (payload: unknown) => TokenUsage | null;
 
-type ReasoningEventState = {
-  eventNumber: number;
-  active: { id: string; outputIndex: number | null; addedAt: number } | null;
-  overlapLogged: boolean;
-};
-
-const trackReasoningEvents = (
-  payload: Record<string, unknown>,
-  state: ReasoningEventState,
-  onOverlap: (fields: Record<string, number | null>) => void
-): void => {
-  state.eventNumber++;
-  if (payload.type === "response.created") {
-    state.active = null;
-    state.overlapLogged = false;
-    return;
-  }
-  if (
-    payload.type === "response.completed" ||
-    payload.type === "response.incomplete" ||
-    payload.type === "response.failed" ||
-    payload.type === "response.done"
-  ) {
-    state.active = null;
-    return;
-  }
-
-  const item = isObjectRecord(payload.item) ? payload.item : null;
-  const outputIndex = Number.isInteger(payload.output_index)
-    ? (payload.output_index as number)
-    : null;
-  if (payload.type === "response.output_item.done") {
-    if (
-      state.active &&
-      ((typeof item?.id === "string" && item.id === state.active.id) ||
-        (typeof payload.item_id === "string" &&
-          payload.item_id === state.active.id) ||
-        (outputIndex !== null && outputIndex === state.active.outputIndex))
-    ) {
-      state.active = null;
-    }
-    return;
-  }
-  if (
-    payload.type !== "response.output_item.added" ||
-    item?.type !== "reasoning" ||
-    typeof item.id !== "string"
-  ) {
-    return;
-  }
-  if (state.active?.id === item.id) {
-    return;
-  }
-  if (state.active && !state.overlapLogged) {
-    onOverlap({
-      previousOutputIndex: state.active.outputIndex,
-      nextOutputIndex: outputIndex,
-      eventsSincePreviousAdded: state.eventNumber - state.active.addedAt,
-    });
-    state.overlapLogged = true;
-  }
-  state.active = { id: item.id, outputIndex, addedAt: state.eventNumber };
-};
-
 type OpenAiSsePassthroughInput = {
   response: Response;
+  providerAccountId?: string | undefined;
   extractUsage: SseUsageExtractor;
   onTokenUsage?: ((usage: TokenUsage) => void) | null | undefined;
   keepAliveIntervalMs?: number;
 };
 
-type SseTerminalAnomaly = Record<string, string | number | boolean>;
+type SseTerminalAnomaly = Record<string, string | number | boolean | null>;
 
 const readSseTerminalAnomaly = (
   payload: unknown
@@ -100,27 +39,24 @@ const readSseTerminalAnomaly = (
     const incompleteDetails = isObjectRecord(response?.incomplete_details)
       ? response.incomplete_details
       : null;
+    if (incompleteDetails?.reason === "max_output_tokens") {
+      return null;
+    }
     return {
       terminalAnomaly: "response.incomplete",
-      ...(typeof response?.status === "string"
-        ? { responseStatus: response.status }
-        : {}),
-      ...(typeof incompleteDetails?.reason === "string"
-        ? { incompleteReason: incompleteDetails.reason }
-        : {}),
+      responseStatus: "incomplete",
+      incompleteReason:
+        incompleteDetails?.reason === "content_filter"
+          ? "content_filter"
+          : "unknown",
     };
   }
   if (payload.type === "response.failed" || payload.type === "error") {
     const response = isObjectRecord(payload.response) ? payload.response : null;
-    const nestedError = isObjectRecord(response?.error) ? response.error : null;
-    const error = isObjectRecord(payload.error) ? payload.error : nestedError;
-    const errorCode = error?.code ?? payload.code;
     return {
       terminalAnomaly: String(payload.type),
-      ...(typeof response?.status === "string"
-        ? { responseStatus: response.status }
-        : {}),
-      ...(typeof errorCode === "string" ? { errorCode } : {}),
+      responseStatus: response?.status === "failed" ? "failed" : "unknown",
+      ...readUpstreamErrorFields(payload),
     };
   }
 
@@ -145,8 +81,7 @@ const transformSseEvent = (
   extractUsage: SseUsageExtractor,
   onInvalidJson: (input: { bytes: number; lines: number }) => void,
   onInvalidShape: (issue: OpenAiResponsesEventShapeIssue) => void,
-  reasoningState: ReasoningEventState,
-  onReasoningOverlap: (fields: Record<string, number | null>) => void
+  trackDiagnostics: (payload: Record<string, unknown>) => void
 ): string => {
   const payloadText = readSseData(chunk);
   if (!payloadText) {
@@ -166,7 +101,7 @@ const transformSseEvent = (
   if (shapeIssue) {
     onInvalidShape(shapeIssue);
   }
-  trackReasoningEvents(jsonPayload, reasoningState, onReasoningOverlap);
+  trackDiagnostics(jsonPayload);
   const normalized = state.sawTerminal
     ? jsonPayload
     : normalizeOpenAiResponsesEvent(jsonPayload);
@@ -224,11 +159,14 @@ export const createOpenAiSseUsagePassthrough = (
     usageReported = true;
     input.onTokenUsage?.(usageState.latestUsage);
   };
-  const reasoningState: ReasoningEventState = {
-    eventNumber: 0,
-    active: null,
-    overlapLogged: false,
-  };
+  const trackDiagnostics = createCodexStreamDiagnostics({
+    providerAccountId: input.providerAccountId,
+    requestId:
+      input.response.headers.get("x-request-id") ??
+      input.response.headers.get("request-id"),
+    transport: "sse",
+    startedAt,
+  });
   let bytes = 0;
   let chunks = 0;
   let lastChunkAt = startedAt;
@@ -242,8 +180,10 @@ export const createOpenAiSseUsagePassthrough = (
     fields: Record<string, string | number | boolean | null> = {},
     error?: unknown
   ): void => {
-    logWarn(event, {
-      provider: "openai",
+    const log = error === undefined ? logWarn : logError;
+    log(event, {
+      provider: "codex",
+      providerAccountId: input.providerAccountId,
       transport: "sse",
       requestId:
         input.response.headers.get("x-request-id") ??
@@ -278,12 +218,6 @@ export const createOpenAiSseUsagePassthrough = (
     });
   };
 
-  const reportReasoningOverlap = (
-    fields: Record<string, number | null>
-  ): void => {
-    logStreamAnomaly("openai_sse_upstream_reasoning_overlap", fields);
-  };
-
   const transformEvent = (event: string): string =>
     transformSseEvent(
       event,
@@ -291,8 +225,7 @@ export const createOpenAiSseUsagePassthrough = (
       input.extractUsage,
       reportInvalidJson,
       reportInvalidShape,
-      reasoningState,
-      reportReasoningOverlap
+      trackDiagnostics
     );
   const transformEvents = (events: string[]): string => {
     let output = "";
@@ -308,9 +241,6 @@ export const createOpenAiSseUsagePassthrough = (
         return;
       }
       clearKeepAlive = createSseKeepAlive(controller, {
-        provider: "openai",
-        transport: "sse",
-        getElapsedMs: () => Date.now() - startedAt,
         onKeepAlive: () => {
           lastWriteAt = Date.now();
         },
@@ -356,7 +286,7 @@ export const createOpenAiSseUsagePassthrough = (
               controller.enqueue(encoder.encode(output));
             }
             reportUsage();
-            if (usageState.terminalAnomaly) {
+            if (input.response.ok && usageState.terminalAnomaly) {
               logStreamAnomaly(
                 "openai_sse_terminal_anomaly",
                 usageState.terminalAnomaly

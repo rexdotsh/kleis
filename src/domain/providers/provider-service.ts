@@ -123,13 +123,13 @@ const startRefreshLockHeartbeat = (
       if (!extended) {
         clearInterval(timer);
         logWarn("provider_refresh_lock_lost", {
-          accountId: account.id,
+          providerAccountId: account.id,
           provider: account.provider,
         });
       }
     } catch (error) {
       logWarn("provider_refresh_lock_heartbeat_failed", {
-        accountId: account.id,
+        providerAccountId: account.id,
         provider: account.provider,
         ...errorLogFields(error),
       });
@@ -228,11 +228,9 @@ const refreshProviderAccountWithLock = async (
           account.id,
           updateInput
         );
-      } catch {
-        // libSQL errors can include the UPDATE parameters, including tokens.
-        throw new Error(
-          `${account.provider === "claude" ? "Claude" : "Codex"} credential update failed`
-        );
+      } catch (error) {
+        // Credential-write errors also reach admin responses, without SQL parameters.
+        throw new Error(errorLogFields(error).errorMessage);
       }
 
       if (!updated) {
@@ -264,6 +262,15 @@ const refreshProviderAccountWithLock = async (
           : account.provider === "claude"
             ? "indeterminate"
             : "failed";
+      logWarn("provider_oauth_refresh_failed", {
+        provider: account.provider,
+        providerAccountId: account.id,
+        status: error instanceof ClaudeOAuthError ? error.status : null,
+        errorCode: error instanceof ClaudeOAuthError ? error.code : null,
+        classification: status,
+        elapsedMs: Date.now() - refreshNow,
+        ...errorLogFields(error),
+      });
       await recordProviderAccountRefreshFailure(
         database,
         account.id,
@@ -271,16 +278,6 @@ const refreshProviderAccountWithLock = async (
         lockToken,
         status
       );
-      if (account.provider === "claude") {
-        logWarn("claude_oauth_refresh_failed", {
-          accountId: account.id,
-          endpoint: "platform.claude.com/v1/oauth/token",
-          status: error instanceof ClaudeOAuthError ? error.status : null,
-          oauthCode: error instanceof ClaudeOAuthError ? error.code : null,
-          classification: status,
-          elapsedMs: Date.now() - refreshNow,
-        });
-      }
       throw error;
     } finally {
       stopRefreshLockHeartbeat();
