@@ -13,10 +13,10 @@ import {
   type TokenUsage,
 } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
-import { isObjectRecord, type JsonObject } from "../../utils/object";
+import { isObjectRecord, type JsonObject, withField } from "../../utils/object";
 import {
   type ClaudeToolNames,
-  createClaudeToolNames,
+  mapClaudeRequestToolNames,
 } from "./claude-tool-names";
 import {
   createSseEventFramer,
@@ -79,76 +79,17 @@ const withClaudeSystemIdentity = (
 
 const transformClaudeRequestPayload = (
   payload: unknown,
-  toolNames: ClaudeToolNames,
   systemIdentity: string
 ): unknown => {
   if (!isObjectRecord(payload)) {
     return payload;
   }
 
-  const transformed: JsonObject = {
+  return {
     ...payload,
     system: withClaudeSystemIdentity(payload.system, systemIdentity),
   };
-
-  if (Array.isArray(transformed.tools)) {
-    transformed.tools = transformed.tools.map((tool) => {
-      if (!isObjectRecord(tool) || typeof tool.name !== "string") {
-        return tool;
-      }
-
-      return {
-        ...tool,
-        name: toolNames.toUpstream(tool.name),
-      };
-    });
-  }
-
-  if (
-    isObjectRecord(transformed.tool_choice) &&
-    transformed.tool_choice.type === "tool" &&
-    typeof transformed.tool_choice.name === "string"
-  ) {
-    transformed.tool_choice = {
-      ...transformed.tool_choice,
-      name: toolNames.toUpstream(transformed.tool_choice.name),
-    };
-  }
-
-  if (Array.isArray(transformed.messages)) {
-    transformed.messages = transformed.messages.map((message) => {
-      if (!isObjectRecord(message) || !Array.isArray(message.content)) {
-        return message;
-      }
-
-      return {
-        ...message,
-        content: message.content.map((block) => {
-          if (
-            !isObjectRecord(block) ||
-            block.type !== "tool_use" ||
-            typeof block.name !== "string"
-          ) {
-            return block;
-          }
-
-          return {
-            ...block,
-            name: toolNames.toUpstream(block.name),
-          };
-        }),
-      };
-    });
-  }
-
-  return transformed;
 };
-
-const withField = (
-  record: JsonObject,
-  key: string,
-  value: unknown
-): JsonObject => (value === record[key] ? record : { ...record, [key]: value });
 
 const restoreToolUseName = (
   block: unknown,
@@ -157,7 +98,7 @@ const restoreToolUseName = (
   isObjectRecord(block) &&
   block.type === "tool_use" &&
   typeof block.name === "string"
-    ? withField(block, "name", toolNames.toClient(block.name))
+    ? withField(block, "name", toolNames.get(block.name) ?? block.name)
     : block;
 
 const restoreMessageToolNames = (
@@ -697,10 +638,9 @@ export const prepareClaudeProxyRequest = (
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
   input.headers.set("x-app", "cli");
 
-  const toolNames = createClaudeToolNames(input.bodyJson);
+  const { payload, toolNames } = mapClaudeRequestToolNames(input.bodyJson);
   const transformedPayload = transformClaudeRequestPayload(
-    input.bodyJson,
-    toolNames,
+    payload,
     systemIdentity
   );
   const bodyText =

@@ -1,107 +1,112 @@
-import { isObjectRecord, type JsonObject } from "../../utils/object";
+import { isObjectRecord, type JsonObject, withField } from "../../utils/object";
 import { CLAUDE_TOOL_PREFIX } from "../constants";
 
-// Anthropic custom tool names must match ^[a-zA-Z0-9_-]{1,64}$.
+// Claude Code's tool name limit.
 const MAX_TOOL_NAME_LENGTH = 64;
+const DIGEST_LENGTH = 16;
 
-export type ClaudeToolNames = {
-  toUpstream(name: string): string;
-  toClient(name: string): string;
-};
-
-const fromClaudeToolName = (name: string): string => {
-  if (!name.startsWith(CLAUDE_TOOL_PREFIX)) {
-    return name;
-  }
-
-  const rest = name.slice(CLAUDE_TOOL_PREFIX.length);
-  return `${rest.charAt(0).toLowerCase()}${rest.slice(1)}`;
-};
-
-// Server tools such as `web_search_20250305` declare a versioned type and must
-// keep their documented names, as must names the client already prefixed.
-const readRequestToolNames = (
-  payload: JsonObject
-): { kept: string[]; renamed: string[] } => {
-  const kept: string[] = [];
-  const renamed: string[] = [];
-  const add = (name: string, isServerTool: boolean): void => {
-    const list =
-      isServerTool || name.startsWith(CLAUDE_TOOL_PREFIX) ? kept : renamed;
-    list.push(name);
-  };
-
-  const tools: unknown[] = Array.isArray(payload.tools) ? payload.tools : [];
-  for (const tool of tools) {
-    if (isObjectRecord(tool) && typeof tool.name === "string") {
-      add(tool.name, typeof tool.type === "string" && tool.type !== "custom");
-    }
-  }
-
-  const messages: unknown[] = Array.isArray(payload.messages)
-    ? payload.messages
-    : [];
-  for (const message of messages) {
-    if (!(isObjectRecord(message) && Array.isArray(message.content))) {
-      continue;
-    }
-    for (const block of message.content) {
-      if (
-        isObjectRecord(block) &&
-        block.type === "tool_use" &&
-        typeof block.name === "string"
-      ) {
-        add(block.name, false);
-      }
-    }
-  }
-
-  return { kept, renamed };
-};
-
-const allocateUpstreamName = (
-  name: string,
-  taken: ReadonlyMap<string, string>
-): string => {
-  const base =
-    `${CLAUDE_TOOL_PREFIX}${name.charAt(0).toUpperCase()}${name.slice(1)}`.slice(
-      0,
-      MAX_TOOL_NAME_LENGTH
-    );
-  let candidate = base;
-  for (let index = 2; taken.has(candidate); index++) {
-    const suffix = `_${index}`;
-    candidate = `${base.slice(0, MAX_TOOL_NAME_LENGTH - suffix.length)}${suffix}`;
-  }
-  return candidate;
-};
+// Upstream name -> client name for every custom tool name in the request.
+export type ClaudeToolNames = ReadonlyMap<string, string>;
 
 // Upstream names carry Claude Code's mcp_ prefix, as in
 // https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L214-L239
-// Kept names are reserved first, so `Shell`, `shell` and `mcp_Shell` in one
-// request get distinct upstream names.
-export const createClaudeToolNames = (payload: unknown): ClaudeToolNames => {
-  const upstreamNames = new Map<string, string>();
-  const clientNames = new Map<string, string>();
-  const assign = (name: string, upstream: string): void => {
-    upstreamNames.set(name, upstream);
-    clientNames.set(upstream, name);
-  };
+// The name alone decides the result, so a tool keeps its upstream name across
+// turns. Lowercase-initial names get `mcp_` + an uppercase letter and all
+// others `mcp__`, and only digest-suffixed names reach the length limit.
+export const toUpstreamToolName = (name: string): string => {
+  const upstream = /^[a-z]/u.test(name)
+    ? `${CLAUDE_TOOL_PREFIX}${name.charAt(0).toUpperCase()}${name.slice(1)}`
+    : `${CLAUDE_TOOL_PREFIX}_${name}`;
+  if (upstream.length < MAX_TOOL_NAME_LENGTH) {
+    return upstream;
+  }
 
-  if (isObjectRecord(payload)) {
-    const { kept, renamed } = readRequestToolNames(payload);
-    for (const name of kept) {
-      assign(name, name);
-    }
-    for (const name of renamed) {
-      if (!upstreamNames.has(name)) {
-        assign(name, allocateUpstreamName(name, clientNames));
-      }
+  const digest = new Bun.CryptoHasher("sha256")
+    .update(name)
+    .digest("hex")
+    .slice(0, DIGEST_LENGTH);
+  return `${upstream.slice(0, MAX_TOOL_NAME_LENGTH - DIGEST_LENGTH - 1)}_${digest}`;
+};
+
+// Anthropic-defined tools (web_search, bash, computer, ...) keep their names.
+const isFixedNameTool = (tool: JsonObject): boolean =>
+  typeof tool.type === "string" && tool.type !== "custom";
+
+const mapList = (value: unknown, map: (item: unknown) => unknown): unknown =>
+  Array.isArray(value) ? value.map(map) : value;
+
+export const mapClaudeRequestToolNames = (
+  payload: unknown
+): { payload: unknown; toolNames: ClaudeToolNames } => {
+  const toolNames = new Map<string, string>();
+  if (!isObjectRecord(payload)) {
+    return { payload, toolNames };
+  }
+
+  const tools: unknown[] = Array.isArray(payload.tools) ? payload.tools : [];
+  const fixedNames = new Set<unknown>();
+  for (const tool of tools) {
+    if (isObjectRecord(tool) && isFixedNameTool(tool)) {
+      fixedNames.add(tool.name);
     }
   }
 
-  return {
-    toUpstream: (name) => upstreamNames.get(name) ?? name,
-    toClient: (name) => clientNames.get(name) ?? fromClaudeToolName(name),
+  const rename = (record: JsonObject, key: string): JsonObject => {
+    const name = record[key];
+    if (typeof name !== "string" || fixedNames.has(name)) {
+      return record;
+    }
+    const upstream = toUpstreamToolName(name);
+    const existing = toolNames.get(upstream);
+    if (existing !== undefined && existing !== name) {
+      throw new Error(
+        `Tools "${existing}" and "${name}" map to the same upstream name`
+      );
+    }
+    toolNames.set(upstream, name);
+    return withField(record, key, upstream);
   };
+
+  const mapTool = (tool: unknown): unknown =>
+    isObjectRecord(tool) && !isFixedNameTool(tool)
+      ? rename(tool, "name")
+      : tool;
+
+  const mapToolResultItem = (item: unknown): unknown =>
+    isObjectRecord(item) && item.type === "tool_reference"
+      ? rename(item, "tool_name")
+      : item;
+
+  const mapBlock = (block: unknown): unknown => {
+    if (!isObjectRecord(block)) {
+      return block;
+    }
+    // Toolset members (browser, computer) keep their fixed names.
+    if (block.type === "tool_use" && typeof block.toolset_name !== "string") {
+      return rename(block, "name");
+    }
+    if (block.type === "tool_result") {
+      return withField(
+        block,
+        "content",
+        mapList(block.content, mapToolResultItem)
+      );
+    }
+    return block;
+  };
+
+  const mapMessage = (message: unknown): unknown =>
+    isObjectRecord(message)
+      ? withField(message, "content", mapList(message.content, mapBlock))
+      : message;
+
+  const toolChoice =
+    isObjectRecord(payload.tool_choice) && payload.tool_choice.type === "tool"
+      ? rename(payload.tool_choice, "name")
+      : payload.tool_choice;
+
+  let mapped = withField(payload, "tools", mapList(payload.tools, mapTool));
+  mapped = withField(mapped, "tool_choice", toolChoice);
+  mapped = withField(mapped, "messages", mapList(payload.messages, mapMessage));
+  return { payload: mapped, toolNames };
 };
