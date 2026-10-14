@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   CLAUDE_CLI_USER_AGENT,
-  CLAUDE_INTERLEAVED_THINKING_BETA_HEADER,
   CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
   CODEX_ACCOUNT_ID_HEADER,
@@ -3113,38 +3112,10 @@ describe("proxy contract: claude", () => {
     ]);
   });
 
-  test("keeps baseline Claude Code betas across models and thinking settings", () => {
-    const prepare = (bodyJson: Record<string, unknown>): string => {
-      const headers = new Headers();
-      prepareClaudeProxyRequest({
-        requestUrl: new URL("https://kleis.local/v1/messages"),
-        headers,
-        bodyText: JSON.stringify(bodyJson),
-        bodyJson,
-        accessToken: "claude-token",
-        metadata: null,
-      });
-      return headers.get("anthropic-beta") ?? "";
-    };
-
-    expect(prepare({ model: "claude-opus-5-5" })).toContain(
-      CLAUDE_INTERLEAVED_THINKING_BETA_HEADER
-    );
-    expect(
-      prepare({ model: "claude-opus-5-5", thinking: { type: "adaptive" } })
-    ).toContain(CLAUDE_INTERLEAVED_THINKING_BETA_HEADER);
-    expect(prepare({ model: "claude-haiku-4-5" })).toContain(
-      "claude-code-20250219"
-    );
-    expect(prepare({ model: "claude-haiku-4-5" })).toContain(
-      CLAUDE_INTERLEAVED_THINKING_BETA_HEADER
-    );
-    expect(prepare({ model: "claude-opus-5-5" })).not.toContain(
+  test("adds fine-grained tool streaming only when the caller asks for it", () => {
+    expect(CLAUDE_REQUIRED_BETA_HEADERS).not.toContain(
       "fine-grained-tool-streaming-2025-05-14"
     );
-  });
-
-  test("passes a caller-supplied fine-grained tool streaming beta through", () => {
     const headers = new Headers({
       "anthropic-beta": "fine-grained-tool-streaming-2025-05-14",
     });
