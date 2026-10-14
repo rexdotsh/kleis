@@ -32,6 +32,8 @@ function clearPersistedToken() {
 const state = {
   token: readPersistedToken(),
   sessionActive: false,
+  sessionRequestSeq: 0,
+  pendingMutations: new Map(),
   dashboardAbort: null,
   accountUsageRequestSeq: 0,
   keyUsageRequestSeq: 0,
@@ -93,6 +95,7 @@ function escapeHtml(str) {
 }
 
 async function api(path, options = {}) {
+  const requestSeq = state.sessionRequestSeq;
   const headers = new Headers(options.headers || {});
   headers.set("Content-Type", "application/json");
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
@@ -107,7 +110,11 @@ async function api(path, options = {}) {
         : "Could not reach Kleis"
     );
   }
-  if (res.status === 401 && state.sessionActive) {
+  if (
+    requestSeq === state.sessionRequestSeq &&
+    res.status === 401 &&
+    state.sessionActive
+  ) {
     logout();
     $("#login-error").textContent = "Your session ended. Sign in again.";
   }
@@ -174,6 +181,88 @@ function setButtonBusy(button, busy) {
   if (busy) button.classList.add("is-busy");
   else button.classList.remove("is-busy");
   button.setAttribute?.("aria-busy", String(busy));
+}
+
+const mutationKey = (operation, target) =>
+  JSON.stringify([operation, String(target ?? "")]);
+
+function mutationAttributes(operations, target = null) {
+  const names = [operations].flat();
+  const busy = names.some((name) =>
+    state.pendingMutations.has(mutationKey(name, target))
+  );
+  return `data-mutation="${names.join(" ")}" data-mutation-target="${escapeHtml(target ?? "")}" aria-busy="${busy}"${busy ? " disabled" : ""}`;
+}
+
+function syncMutationControls() {
+  for (const button of $$("[data-mutation]")) {
+    const busy = button.dataset.mutation
+      .split(" ")
+      .some((operation) =>
+        state.pendingMutations.has(
+          mutationKey(operation, button.dataset.mutationTarget)
+        )
+      );
+    setButtonBusy(button, busy);
+  }
+}
+
+function sessionRequest() {
+  const requestSeq = state.sessionRequestSeq;
+  const isCurrent = () => requestSeq === state.sessionRequestSeq;
+  const check = () => {
+    if (!isCurrent()) throw new Error("Session changed");
+  };
+  const wait = async (promise) => {
+    const value = await promise;
+    check();
+    return value;
+  };
+  const request = (...args) => {
+    check();
+    return wait(api(...args));
+  };
+  request.confirm = (...args) => {
+    check();
+    return wait(showConfirm(...args));
+  };
+  request.wait = wait;
+  request.isCurrent = isCurrent;
+  return request;
+}
+
+function runMutation(operation, target, run) {
+  const key = mutationKey(operation, target);
+  const existing = state.pendingMutations.get(key);
+  if (existing) return existing.promise;
+  const pending = {};
+  state.pendingMutations.set(key, pending);
+  syncMutationControls();
+  pending.promise = (async () => {
+    try {
+      return await run();
+    } finally {
+      // The next session can start the same operation before this one settles.
+      if (state.pendingMutations.get(key) === pending) {
+        state.pendingMutations.delete(key);
+        syncMutationControls();
+      }
+    }
+  })();
+  return pending.promise;
+}
+
+function mutation(operation, run, targetOf = (id) => id) {
+  return async (...args) => {
+    const request = sessionRequest();
+    try {
+      return await runMutation(operation, targetOf(...args), () =>
+        run(request, ...args)
+      );
+    } catch (error) {
+      if (request.isCurrent()) toast(error.message, "error");
+    }
+  };
 }
 
 let confirmResolve = null;
@@ -776,7 +865,7 @@ function requestCachedDetail(cacheKey, path, render, notify) {
     return Promise.resolve(previous);
   const pending = { status: "loading", data: previous?.data, notify };
   state.usageDetails.set(cacheKey, pending);
-  const token = state.token;
+  const requestSeq = state.sessionRequestSeq;
   pending.promise = (async () => {
     let entry;
     try {
@@ -790,7 +879,10 @@ function requestCachedDetail(cacheKey, path, render, notify) {
         updatedAt: Date.now(),
       };
     }
-    if (token !== state.token || state.usageDetails.get(cacheKey) !== pending)
+    if (
+      requestSeq !== state.sessionRequestSeq ||
+      state.usageDetails.get(cacheKey) !== pending
+    )
       return;
     state.usageDetails.set(cacheKey, entry);
     if (pending.notify) render();
@@ -865,12 +957,12 @@ function scheduleUsagePrefetch(kind, id) {
   prefetchTimers.delete(kind);
   const daily = kind === "account" && hasDailyTokens(id);
   if (!(id && (usageHasTraffic(kind, id) || daily))) return;
-  const token = state.token;
+  const requestSeq = state.sessionRequestSeq;
   prefetchTimers.set(
     kind,
     setTimeout(() => {
       prefetchTimers.delete(kind);
-      if (token !== state.token) return;
+      if (requestSeq !== state.sessionRequestSeq) return;
       if (usageHasTraffic(kind, id)) requestUsageDetail(kind, id);
       if (daily) requestDailyTokens(id);
     }, 120)
@@ -1080,7 +1172,7 @@ const markPrimary = (provider, id) => {
 
 // Switches at once and rolls back if the server refuses; the toast offers
 // an undo instead of asking first.
-async function setPrimary(id, { isUndo = false } = {}) {
+async function setPrimaryAction(request, id, { isUndo = false } = {}) {
   const account = accountById(id);
   if (!account || account.isPrimary) return;
   const previous = state.accounts.find(
@@ -1094,7 +1186,7 @@ async function setPrimary(id, { isUndo = false } = {}) {
     .querySelector(`#accounts-list [data-account-id="${id}"] .dot.primary`)
     ?.classList.add("pop");
   try {
-    await api(`/admin/accounts/${id}/primary`, { method: "POST" });
+    await request(`/admin/accounts/${id}/primary`, { method: "POST" });
     toast(
       `${name} is now the primary ${providerLabel(account.provider)} account`,
       "success",
@@ -1106,15 +1198,16 @@ async function setPrimary(id, { isUndo = false } = {}) {
         : null
     );
   } catch (e) {
+    if (!request.isCurrent()) return;
     markPrimary(account.provider, previous?.id ?? null);
     renderAccounts();
     toast(e.message, "error");
   }
 }
 
-async function toggleProvider(provider, enabled) {
+async function toggleProviderAction(request, provider, enabled) {
   if (!enabled) {
-    const confirmed = await showConfirm(
+    const confirmed = await request.confirm(
       `Disable ${providerLabel(provider)}?`,
       `All ${providerLabel(provider)} accounts stop receiving proxy traffic and its models disappear from model registries. You can re-enable it at any time.`,
       "Disable",
@@ -1133,25 +1226,28 @@ async function toggleProvider(provider, enabled) {
       `[data-action="toggle-provider"][data-provider="${provider}"]`
     )
     ?.setAttribute("aria-checked", String(enabled));
-  setTimeout(renderAccounts, 180);
+  setTimeout(() => {
+    if (request.isCurrent()) renderAccounts();
+  }, 180);
   try {
-    await api(`/admin/accounts/providers/${provider}`, {
+    await request(`/admin/accounts/providers/${provider}`, {
       method: "PATCH",
       body: JSON.stringify({ enabled }),
     });
     toast(`${providerLabel(provider)} ${enabled ? "enabled" : "disabled"}`);
     await loadAccounts();
   } catch (e) {
+    if (!request.isCurrent()) return;
     if (status) status.enabled = previous;
     renderAccounts();
     toast(e.message, "error");
   }
 }
 
-async function deleteAccount(id) {
+async function deleteAccountAction(request, id) {
   const account = accountById(id);
   const name = account?.label || account?.accountId || id;
-  const confirmed = await showConfirm(
+  const confirmed = await request.confirm(
     "Remove account?",
     `Remove "${name}" and its stored tokens. This cannot be undone.`,
     "Remove",
@@ -1159,29 +1255,15 @@ async function deleteAccount(id) {
   );
   if (!confirmed) return;
 
-  try {
-    await api(`/admin/accounts/${id}`, { method: "DELETE" });
-    toast("Account removed");
-    await loadAccounts();
-  } catch (e) {
-    toast(e.message, "error");
-  }
+  await request(`/admin/accounts/${id}`, { method: "DELETE" });
+  toast("Account removed");
+  await loadAccounts();
 }
 
-async function refreshAccount(id) {
-  const btn = document.querySelector(
-    `[data-action="refresh-account"][data-account-id="${id}"]`
-  );
-  setButtonBusy(btn, true);
-  try {
-    await api(`/admin/accounts/${id}/refresh`, { method: "POST" });
-    toast("Token refreshed");
-    await loadAccounts();
-  } catch (e) {
-    toast(e.message, "error");
-  } finally {
-    setButtonBusy(btn, false);
-  }
+async function refreshAccountAction(request, id) {
+  await request(`/admin/accounts/${id}/refresh`, { method: "POST" });
+  toast("Token refreshed");
+  await loadAccounts();
 }
 
 function resetResultToast(result) {
@@ -1212,16 +1294,16 @@ function resetResultToast(result) {
   }
 }
 
-async function redeemResetCredit(accountId, creditId) {
+async function redeemResetCreditAction(request, accountId, creditId) {
+  const redemptionKey = `${accountId}:${creditId || "auto"}`;
   const account = accountById(accountId);
   const label = account?.label || account?.accountId || accountId;
-  const redemptionKey = `${accountId}:${creditId || "auto"}`;
   const existingRequestId = state.pendingResetRedemptions.get(redemptionKey);
   const credit = account?.quota?.data?.resetCredits?.credits?.find(
     (entry) => entry.id === creditId
   );
   const creditName = credit?.title ? `"${credit.title}"` : "a reset credit";
-  const confirmed = await showConfirm(
+  const confirmed = await request.confirm(
     "Reset Codex limits?",
     existingRequestId
       ? `Retry the pending reset for "${label}" with the same idempotency key?`
@@ -1234,7 +1316,7 @@ async function redeemResetCredit(accountId, creditId) {
     const body = {};
     if (creditId) body.creditId = creditId;
     if (existingRequestId) body.redeemRequestId = existingRequestId;
-    const response = await api(
+    const response = await request(
       `/admin/accounts/${accountId}/tracking/codex/reset-credits/consume`,
       { method: "POST", body: JSON.stringify(body) }
     );
@@ -1243,6 +1325,7 @@ async function redeemResetCredit(accountId, creditId) {
     toast(message, type);
     await loadAccounts();
   } catch (e) {
+    if (!request.isCurrent()) return;
     const redeemRequestId = e.body?.redeemRequestId;
     if (redeemRequestId) {
       state.pendingResetRedemptions.set(redemptionKey, redeemRequestId);
@@ -1272,8 +1355,7 @@ function cancelEditAccount() {
   renderAccounts();
 }
 
-async function saveAccountEdits() {
-  const saveButton = $("#btn-save-account");
+async function saveAccountEditsAction(request) {
   const accountId = state.editingAccountId;
   if (!accountId) {
     toast("Account was not found", "error");
@@ -1292,24 +1374,13 @@ async function saveAccountEdits() {
     return;
   }
 
-  setButtonBusy(saveButton, true);
-  try {
-    await api(`/admin/accounts/${accountId}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        label,
-        accountId: editableAccountId,
-        metadata,
-      }),
-    });
-    state.editingAccountId = null;
-    toast("Account updated");
-    await loadAccounts();
-  } catch (e) {
-    toast(e.message, "error");
-  } finally {
-    setButtonBusy(saveButton, false);
-  }
+  await request(`/admin/accounts/${accountId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ label, accountId: editableAccountId, metadata }),
+  });
+  state.editingAccountId = null;
+  toast("Account updated");
+  await loadAccounts();
 }
 
 function startCreateKey() {
@@ -1323,9 +1394,7 @@ function cancelCreateKey() {
   renderKeys();
 }
 
-async function createKey() {
-  const btn = $("#btn-submit-key");
-  if (btn.disabled) return;
+async function createKeyAction(request) {
   const label = trimmedOrNull($("#key-label").value);
   const providerScopes = selectedProviderScopes("create");
   if (providerScopes?.length === 0) {
@@ -1341,22 +1410,15 @@ async function createKey() {
     ...(modelScopes.length ? { modelScopes } : {}),
   };
 
-  setButtonBusy(btn, true);
-  try {
-    const data = await api("/admin/keys", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    state.creatingKey = false;
-    state.expandedKeyId = data.key.id;
-    state.revealedKeyIds.add(data.key.id);
-    toast("API key created");
-    await loadKeys();
-  } catch (e) {
-    toast(e.message, "error");
-  } finally {
-    setButtonBusy(btn, false);
-  }
+  const data = await request("/admin/keys", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  state.creatingKey = false;
+  state.expandedKeyId = data.key.id;
+  state.revealedKeyIds.add(data.key.id);
+  toast("API key created");
+  await loadKeys();
 }
 
 function startEditKey(id) {
@@ -1378,8 +1440,7 @@ function cancelEditKey() {
   renderKeys();
 }
 
-async function saveKeyEdits() {
-  const saveButton = $("#btn-save-key");
+async function saveKeyEditsAction(request) {
   const keyId = state.editingKeyId;
   const existing = keyById(keyId);
   if (!existing) {
@@ -1421,23 +1482,16 @@ async function saveKeyEdits() {
     }
   }
 
-  setButtonBusy(saveButton, true);
-  try {
-    await api(`/admin/keys/${keyId}`, {
-      method: "PATCH",
-      body: JSON.stringify(body),
-    });
-    state.editingKeyId = null;
-    toast("API key updated");
-    await loadKeys();
-  } catch (e) {
-    toast(e.message, "error");
-  } finally {
-    setButtonBusy(saveButton, false);
-  }
+  await request(`/admin/keys/${keyId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+  state.editingKeyId = null;
+  toast("API key updated");
+  await loadKeys();
 }
 
-async function rotateKey(id, button) {
+async function rotateKeyAction(request, id) {
   const existing = keyById(id);
   if (!existing) {
     toast("API key was not found", "error");
@@ -1445,7 +1499,7 @@ async function rotateKey(id, button) {
   }
 
   const label = existing.label || maskKey(existing.key);
-  const confirmed = await showConfirm(
+  const confirmed = await request.confirm(
     "Rotate API key?",
     `Create a new key with the same settings as "${label}".`,
     "Rotate",
@@ -1472,42 +1526,46 @@ async function rotateKey(id, button) {
     payload.expiresAt = existing.expiresAt;
   }
 
-  setButtonBusy(button, true);
   const revokeOld = $("#rotate-revoke-old")?.checked ?? false;
   let keyCreated = false;
   try {
-    const data = await api("/admin/keys", {
+    const data = await request("/admin/keys", {
       method: "POST",
       body: JSON.stringify(payload),
     });
     keyCreated = true;
     state.expandedKeyId = data.key.id;
     state.revealedKeyIds.add(data.key.id);
-    if (revokeOld) {
-      await api(`/admin/keys/${id}/revoke`, { method: "POST" });
-    }
+    if (revokeOld) await request.wait(revokeKeyRequest(id));
     toast(
       revokeOld ? "API key rotated and previous key revoked" : "API key rotated"
     );
     await loadKeys();
   } catch (e) {
-    if (keyCreated && revokeOld) {
-      toast(
-        `New key created, but old key revoke failed: ${e.message}`,
-        "error"
-      );
-    } else {
-      toast(e.message, "error");
-    }
-  } finally {
-    setButtonBusy(button, false);
+    if (!request.isCurrent()) return;
+    toast(
+      keyCreated && revokeOld
+        ? `New key created, but old key revoke failed: ${e.message}`
+        : e.message,
+      "error"
+    );
   }
 }
 
-async function revokeKey(id) {
+function revokeKeyRequest(id) {
+  const request = sessionRequest();
+  return runMutation("revoke-key-request", id, async () => {
+    if (keyById(id)?.revokedAt) return;
+    await request(`/admin/keys/${id}/revoke`, { method: "POST" });
+    const key = keyById(id);
+    if (key) key.revokedAt = Date.now();
+  });
+}
+
+async function revokeKeyAction(request, id) {
   const key = keyById(id);
   const label = key?.label || maskKey(key?.key || id);
-  const confirmed = await showConfirm(
+  const confirmed = await request.confirm(
     "Revoke API key?",
     `Clients using "${label}" stop working immediately. This cannot be undone.`,
     "Revoke",
@@ -1515,19 +1573,15 @@ async function revokeKey(id) {
   );
   if (!confirmed) return;
 
-  try {
-    await api(`/admin/keys/${id}/revoke`, { method: "POST" });
-    toast("Key revoked");
-    await loadKeys();
-  } catch (e) {
-    toast(e.message, "error");
-  }
+  await request.wait(revokeKeyRequest(id));
+  toast("Key revoked");
+  await loadKeys();
 }
 
-async function deleteKey(id) {
+async function deleteKeyAction(request, id) {
   const key = keyById(id);
   const label = key?.label || maskKey(key?.key || id);
-  const confirmed = await showConfirm(
+  const confirmed = await request.confirm(
     "Delete revoked key?",
     `Delete "${label}" and its usage history permanently. This cannot be undone.`,
     "Delete",
@@ -1535,14 +1589,10 @@ async function deleteKey(id) {
   );
   if (!confirmed) return;
 
-  try {
-    await api(`/admin/keys/${id}`, { method: "DELETE" });
-    state.revealedKeyIds.delete(id);
-    toast("Key deleted");
-    await loadKeys();
-  } catch (e) {
-    toast(e.message, "error");
-  }
+  await request(`/admin/keys/${id}`, { method: "DELETE" });
+  state.revealedKeyIds.delete(id);
+  toast("Key deleted");
+  await loadKeys();
 }
 
 async function copyToClipboard(text, btn, confirmation = "Copied") {
@@ -1598,11 +1648,11 @@ function updateOAuthProviderUI() {
   $("#oauth-claude-opts").style.display = p === "claude" ? "block" : "none";
 }
 
-async function reauthorizeAccount(id) {
+async function reauthorizeAccountAction(request, id) {
   const account = accountById(id);
   if (!account || !["codex", "claude"].includes(account.provider)) return;
   if (state.activeOAuth) {
-    const confirmed = await showConfirm(
+    const confirmed = await request.confirm(
       "Replace active OAuth flow?",
       "The current authorization code will no longer work in this form.",
       "Start over"
@@ -1633,6 +1683,7 @@ async function reauthorizeAccount(id) {
 
 function cancelOAuthFlow() {
   state.oauthRequestSeq++;
+  $("#btn-oauth-start").dataset.mutationTarget = String(state.oauthRequestSeq);
   state.activeOAuth = null;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
@@ -1641,13 +1692,11 @@ function cancelOAuthFlow() {
   clearReauthorization();
 }
 
-async function startOAuth() {
-  if (state.activeOAuth || $("#btn-oauth-start").disabled) return;
-  const requestSeq = ++state.oauthRequestSeq;
+async function startOAuthAction(request) {
+  if (state.activeOAuth) return;
+  const requestSeq = state.oauthRequestSeq;
   const provider = $("#oauth-provider").value;
-  const btn = $("#btn-oauth-start");
-  setButtonBusy(btn, true);
-  btn.style.display = "none";
+  $("#btn-oauth-start").style.display = "none";
   const flow = $("#oauth-flow-active");
   flow.style.display = "block";
   renderOAuthLoading(
@@ -1657,24 +1706,22 @@ async function startOAuth() {
 
   try {
     const body = {};
-    if (provider === "codex") {
+    if (provider === "codex")
       body.options = { mode: $("#oauth-codex-mode").value };
-    } else if (provider === "claude") {
+    else if (provider === "claude")
       body.options = { mode: $("#oauth-claude-mode").value };
-    }
 
     if (state.reauthorizeAccountId) {
       const target = accountById(state.reauthorizeAccountId);
-      if (target?.provider !== provider) {
+      if (target?.provider !== provider)
         throw new Error("Reauthorization target does not match provider");
-      }
       body.options = {
         ...body.options,
         replaceAccountId: state.reauthorizeAccountId,
       };
     }
 
-    const data = await api(`/admin/accounts/${provider}/oauth/start`, {
+    const data = await request(`/admin/accounts/${provider}/oauth/start`, {
       method: "POST",
       body: JSON.stringify(body),
     });
@@ -1694,23 +1741,16 @@ async function startOAuth() {
     syncConnectControls();
     renderOAuthFlow(data, provider);
   } catch (e) {
-    if (requestSeq !== state.oauthRequestSeq) return;
+    if (!request.isCurrent() || requestSeq !== state.oauthRequestSeq) return;
     toast(e.message, "error");
     flow.innerHTML = `<div class="flow"><p class="err">${escapeHtml(e.message)}</p><button id="btn-oauth-retry" class="btn btn-ghost" type="button">Start over</button></div>`;
     $("#btn-oauth-retry").addEventListener?.("click", cancelOAuthFlow);
-  } finally {
-    if (requestSeq === state.oauthRequestSeq) {
-      setButtonBusy(btn, Boolean(state.activeOAuth));
-    }
   }
 }
 
-async function completeOAuth() {
+async function completeOAuthAction(request) {
   if (!state.activeOAuth) return;
   const requestSeq = state.oauthRequestSeq;
-  const btn = $("#btn-oauth-complete");
-  setButtonBusy(btn, true);
-
   try {
     const body = { state: state.activeOAuth.state };
     const codeInput = $("#oauth-code");
@@ -1719,10 +1759,13 @@ async function completeOAuth() {
       if (!code) throw new Error("Authorization code is required");
       body.code = code;
     }
-    await api(`/admin/accounts/${state.activeOAuth.provider}/oauth/complete`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    await request(
+      `/admin/accounts/${state.activeOAuth.provider}/oauth/complete`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    );
     if (requestSeq !== state.oauthRequestSeq) return;
     toast(
       state.reauthorizeAccountId ? "Account reauthorized" : "Account connected"
@@ -1731,15 +1774,14 @@ async function completeOAuth() {
     switchToTab("accounts");
     await loadAccounts();
   } catch (e) {
-    if (requestSeq !== state.oauthRequestSeq) return;
+    if (!request.isCurrent() || requestSeq !== state.oauthRequestSeq) return;
     const error = $("#oauth-flow-error");
     error.textContent = `${e.message}. If this code was consumed or the flow expired, cancel and start over.`;
     error.hidden = false;
-    setButtonBusy(btn, false);
   }
 }
 
-async function importAccount() {
+async function importAccountAction(request) {
   const provider = $("#import-provider").value;
   const accessToken = $("#import-access-token").value.trim();
   const refreshToken = $("#import-refresh-token").value.trim();
@@ -1774,36 +1816,43 @@ async function importAccount() {
   if (label) body.label = label;
   if (metadata) body.metadata = metadata;
 
-  const btn = $("#btn-import-account");
-  setButtonBusy(btn, true);
-  try {
-    await api(`/admin/accounts/${provider}/import`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    toast("Account imported");
-    for (const id of [
-      "import-access-token",
-      "import-refresh-token",
-      "import-expires-at",
-      "import-account-id",
-      "import-label",
-      "import-metadata",
-    ]) {
-      $(`#${id}`).value = "";
-    }
-    switchToTab("accounts");
-    await loadAccounts();
-  } catch (e) {
-    toast(e.message, "error");
-  } finally {
-    setButtonBusy(btn, false);
+  await request(`/admin/accounts/${provider}/import`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  toast("Account imported");
+  for (const id of [
+    "import-access-token",
+    "import-refresh-token",
+    "import-expires-at",
+    "import-account-id",
+    "import-label",
+    "import-metadata",
+  ]) {
+    $(`#${id}`).value = "";
   }
+  switchToTab("accounts");
+  await loadAccounts();
 }
 
-async function verifyToken(token) {
-  state.token = token;
-  await api("/admin/session");
+function invalidateSessionRequests() {
+  state.sessionRequestSeq++;
+  state.dashboardAbort?.abort();
+  state.dashboardRequestSeq++;
+  state.accountsRequestSeq++;
+  state.keysRequestSeq++;
+  state.accountUsageRequestSeq++;
+  state.keyUsageRequestSeq++;
+  state.pendingMutations.clear();
+  syncMutationControls();
+  state.pendingResetRedemptions.clear();
+  state.usageDetails.clear();
+  state.visibleUsageDetails.clear();
+  for (const timer of prefetchTimers.values()) clearTimeout(timer);
+  prefetchTimers.clear();
+  setButtonBusy($("#login-btn"), false);
+  cancelOAuthFlow();
+  resolveConfirm(false);
 }
 
 // A saved token opens the app at once; the check runs alongside the data
@@ -1812,6 +1861,7 @@ async function verifyToken(token) {
 async function restoreSession() {
   const saved = readPersistedToken();
   if (!saved) return;
+  invalidateSessionRequests();
   state.token = saved;
   enterApp();
   await api("/admin/session").catch(() => undefined);
@@ -1823,14 +1873,19 @@ async function handleLogin() {
     $("#login-error").textContent = "Token is required";
     return;
   }
+  invalidateSessionRequests();
+  const requestSeq = state.sessionRequestSeq;
+  state.token = token;
   const btn = $("#login-btn");
   setButtonBusy(btn, true);
   $("#login-error").textContent = "";
   try {
-    await verifyToken(token);
+    await api("/admin/session");
+    if (requestSeq !== state.sessionRequestSeq) return;
     persistToken(token);
     enterApp();
   } catch (e) {
+    if (requestSeq !== state.sessionRequestSeq) return;
     $("#login-error").textContent =
       e?.status === 401
         ? "Invalid admin token"
@@ -1840,7 +1895,7 @@ async function handleLogin() {
     clearPersistedToken();
     state.token = "";
   } finally {
-    setButtonBusy(btn, false);
+    if (requestSeq === state.sessionRequestSeq) setButtonBusy(btn, false);
   }
 }
 
@@ -1861,12 +1916,7 @@ function enterApp() {
 
 function logout() {
   state.sessionActive = false;
-  state.dashboardAbort?.abort();
-  state.dashboardRequestSeq++;
-  state.accountsRequestSeq++;
-  state.keysRequestSeq++;
-  cancelOAuthFlow();
-  resolveConfirm(false);
+  invalidateSessionRequests();
   clearPersistedToken();
   state.token = "";
   state.accounts = [];
@@ -1896,10 +1946,6 @@ function logout() {
   state.creatingKey = false;
   state.setupOpen = false;
   state.setupKeyId = null;
-  state.usageDetails = new Map();
-  state.visibleUsageDetails = new Map();
-  for (const timer of prefetchTimers.values()) clearTimeout(timer);
-  prefetchTimers.clear();
   state.activeOAuth = null;
   state.reauthorizeAccountId = null;
   state.revealedKeyIds.clear();
@@ -1922,7 +1968,52 @@ function logout() {
   $("#login-error").textContent = "";
 }
 
+const setPrimary = mutation("set-primary", setPrimaryAction);
+const toggleProvider = mutation("toggle-provider", toggleProviderAction);
+const deleteAccount = mutation("delete-account", deleteAccountAction);
+const refreshAccount = mutation("refresh-account", refreshAccountAction);
+const redeemResetCredit = mutation(
+  "redeem-reset-credit",
+  redeemResetCreditAction,
+  (accountId, creditId) => `${accountId}:${creditId || "auto"}`
+);
+const saveAccountEdits = mutation(
+  "save-account",
+  saveAccountEditsAction,
+  () => state.editingAccountId
+);
+const createKey = mutation("submit-key", createKeyAction);
+const saveKeyEdits = mutation(
+  "save-key",
+  saveKeyEditsAction,
+  () => state.editingKeyId
+);
+const rotateKey = mutation("rotate-key", rotateKeyAction);
+const revokeKey = mutation("revoke-key", revokeKeyAction);
+const deleteKey = mutation("delete-key", deleteKeyAction);
+const reauthorizeAccount = mutation(
+  "reauthorize-account",
+  reauthorizeAccountAction
+);
+const startOAuth = mutation(
+  "start-oauth",
+  startOAuthAction,
+  () => state.oauthRequestSeq
+);
+const completeOAuth = mutation(
+  "complete-oauth",
+  completeOAuthAction,
+  () => state.activeOAuth?.state
+);
+const importAccount = mutation(
+  "import-account",
+  importAccountAction,
+  () => null
+);
+
 export {
+  mutationAttributes,
+  syncMutationControls,
   DAILY_TOKEN_DAYS,
   hasDailyTokens,
   requestDailyTokens,
@@ -2000,5 +2091,4 @@ export {
   updateOAuthProviderUI,
   usageForKey,
   usageWindowLabel,
-  verifyToken,
 };
