@@ -7,6 +7,9 @@ const LINE_SPLIT = /(\r\n|\r|\n)/u;
 const isDataLine = (line: string): boolean =>
   line === "data" || line.startsWith("data:");
 
+const isEventLine = (line: string): boolean =>
+  line === "event" || line.startsWith("event:");
+
 // Splits a byte stream into SSE events, each ending with the blank line that
 // terminates it. Each read is scanned once and only joined with earlier reads
 // when an event completes, so large events stay linear.
@@ -102,20 +105,29 @@ export const readSseData = (event: string): string | null => {
   return data;
 };
 
-// Replaces an event's data lines with a single line carrying `data`, keeping
-// its other fields and line endings as they are.
-export const replaceSseData = (event: string, data: string): string => {
+// Replaces an event's data lines with a single line carrying `data`, and its
+// event name when one is given, keeping other fields and line endings as they
+// are.
+export const replaceSseData = (
+  event: string,
+  data: string,
+  eventName?: string
+): string => {
   const parts = event.split(LINE_SPLIT);
   let output = "";
   let replaced = false;
   for (let index = 0; index < parts.length; index += 2) {
     const line = parts[index] ?? "";
     const ending = parts[index + 1] ?? "";
-    if (!isDataLine(line)) {
+    if (isDataLine(line)) {
+      if (!replaced) {
+        output += `data: ${data}${ending}`;
+        replaced = true;
+      }
+    } else if (eventName !== undefined && isEventLine(line)) {
+      output += `event: ${eventName}${ending}`;
+    } else {
       output += `${line}${ending}`;
-    } else if (!replaced) {
-      output += `data: ${data}${ending}`;
-      replaced = true;
     }
   }
   return output;

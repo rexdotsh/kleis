@@ -6,10 +6,14 @@ import {
   type OpenAiResponsesEventShapeIssue,
   readOpenAiResponsesEventShapeIssue,
 } from "./openai-responses-event";
+import {
+  createSseEventFramer,
+  readSseData,
+  replaceSseData,
+} from "./sse-events";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
 type SseUsageExtractor = (payload: unknown) => TokenUsage | null;
-const MAX_SSE_EVENT_BYTES = 4 * 1024 * 1024;
 
 type ReasoningEventState = {
   eventNumber: number;
@@ -131,87 +135,6 @@ const tryParseJson = (value: string): unknown | null => {
   }
 };
 
-const findSseEventBoundary = (
-  buffer: string
-): { index: number; length: number } | null => {
-  // A CRLF is one line ending, not two. The single-CR and single-LF cases
-  // must not backtrack into the two halves of a CRLF pair.
-  const match = /(?:\r\n|\r(?!\n)|(?<!\r)\n){2}/u.exec(buffer);
-  if (!match || match.index === undefined) {
-    return null;
-  }
-  return { index: match.index, length: match[0].length };
-};
-
-// Streams that use CR line endings take the regex path, which keeps a CRLF
-// from being read as two line breaks.
-const findLfEventBoundary = (
-  buffer: string,
-  from: number
-): { index: number; length: number } | null => {
-  const index = buffer.indexOf("\n\n", from);
-  return index === -1 ? null : { index, length: 2 };
-};
-
-const readSseDataLines = (chunk: string): string[] => {
-  if (chunk.includes("\r")) {
-    return chunk
-      .replace(/\r\n|\r/gu, "\n")
-      .split("\n")
-      .filter((line) => line === "data" || line.startsWith("data:"))
-      .map((line) => (line === "data" ? "" : line.slice(5).trimStart()));
-  }
-  const lines: string[] = [];
-  let start = 0;
-  while (start < chunk.length) {
-    const newline = chunk.indexOf("\n", start);
-    const end = newline === -1 ? chunk.length : newline;
-    if (chunk.startsWith("data", start)) {
-      if (end === start + 4) {
-        lines.push("");
-      } else if (chunk[start + 4] === ":") {
-        lines.push(chunk.slice(start + 5, end).trimStart());
-      }
-    }
-    start = end + 1;
-  }
-  return lines;
-};
-
-const rewriteSseData = (
-  chunk: string,
-  payload: Record<string, unknown>
-): string => {
-  const boundary = findSseEventBoundary(chunk);
-  if (!boundary || boundary.index + boundary.length !== chunk.length) {
-    return chunk;
-  }
-
-  const body = chunk.slice(0, boundary.index);
-  const newline = body.includes("\r\n")
-    ? "\r\n"
-    : body.includes("\r")
-      ? "\r"
-      : "\n";
-  let wroteData = false;
-  const lines: string[] = [];
-  for (const line of body.split(/\r\n|\r|\n/u)) {
-    if (line === "data" || line.startsWith("data:")) {
-      if (!wroteData) {
-        lines.push(`data: ${JSON.stringify(payload)}`);
-        wroteData = true;
-      }
-      continue;
-    }
-    if (line === "event" || line.startsWith("event:")) {
-      lines.push(`event: ${String(payload.type)}`);
-      continue;
-    }
-    lines.push(line);
-  }
-  return `${lines.join(newline)}${chunk.slice(boundary.index)}`;
-};
-
 const transformSseEvent = (
   chunk: string,
   state: {
@@ -225,20 +148,16 @@ const transformSseEvent = (
   reasoningState: ReasoningEventState,
   onReasoningOverlap: (fields: Record<string, number | null>) => void
 ): string => {
-  const dataLines = readSseDataLines(chunk);
-  if (!dataLines.length) {
-    return chunk;
-  }
-  const payloadText = dataLines.join("\n");
-  if (!payloadText || payloadText === "[DONE]") {
+  const payloadText = readSseData(chunk);
+  if (!payloadText) {
     return chunk;
   }
 
   const jsonPayload = tryParseJson(payloadText);
   if (!isObjectRecord(jsonPayload)) {
     onInvalidJson({
-      bytes: new TextEncoder().encode(payloadText).byteLength,
-      lines: dataLines.length,
+      bytes: Buffer.byteLength(payloadText),
+      lines: payloadText.split("\n").length,
     });
     return chunk;
   }
@@ -265,7 +184,13 @@ const transformSseEvent = (
   if (usage) {
     state.latestUsage = usage;
   }
-  return normalized === jsonPayload ? chunk : rewriteSseData(chunk, normalized);
+  return normalized === jsonPayload
+    ? chunk
+    : replaceSseData(
+        chunk,
+        JSON.stringify(normalized),
+        String(normalized.type)
+      );
 };
 
 export const createOpenAiSseUsagePassthrough = (
@@ -276,7 +201,7 @@ export const createOpenAiSseUsagePassthrough = (
   }
 
   const reader = input.response.body.getReader();
-  const decoder = new TextDecoder();
+  const framer = createSseEventFramer();
   const validationDecoder = new TextDecoder("utf-8", { fatal: true });
   const encoder = new TextEncoder();
   const startedAt = Date.now();
@@ -304,15 +229,12 @@ export const createOpenAiSseUsagePassthrough = (
     active: null,
     overlapLogged: false,
   };
-  let pendingText = "";
-  let pendingBytes = 0;
   let bytes = 0;
   let chunks = 0;
   let lastChunkAt = startedAt;
   let lastWriteAt = startedAt;
   let closed = false;
   let utf8ValidationEnabled = true;
-  let sawCarriageReturn = false;
   let clearKeepAlive: (() => void) | null = null;
 
   const logStreamAnomaly = (
@@ -362,6 +284,24 @@ export const createOpenAiSseUsagePassthrough = (
     logStreamAnomaly("openai_sse_upstream_reasoning_overlap", fields);
   };
 
+  const transformEvent = (event: string): string =>
+    transformSseEvent(
+      event,
+      usageState,
+      input.extractUsage,
+      reportInvalidJson,
+      reportInvalidShape,
+      reasoningState,
+      reportReasoningOverlap
+    );
+  const transformEvents = (events: string[]): string => {
+    let output = "";
+    for (const event of events) {
+      output += transformEvent(event);
+    }
+    return output;
+  };
+
   const stream = new ReadableStream<Uint8Array>({
     start(controller): void {
       if (!isSseBody) {
@@ -392,7 +332,7 @@ export const createOpenAiSseUsagePassthrough = (
               clearKeepAlive?.();
               return;
             }
-            pendingText += decoder.decode();
+            const { events, rest } = framer.end();
             if (utf8ValidationEnabled) {
               try {
                 validationDecoder.decode();
@@ -402,31 +342,18 @@ export const createOpenAiSseUsagePassthrough = (
                 });
               }
             }
-            if (isSseBody && pendingText.trim()) {
-              const suffix = pendingText.endsWith("\r\n")
-                ? "\r\n"
-                : pendingText.endsWith("\n")
-                  ? "\n"
-                  : pendingText.endsWith("\r")
-                    ? "\r"
-                    : "\n\n";
-              const framed = transformSseEvent(
-                `${pendingText}${suffix}`,
-                usageState,
-                input.extractUsage,
-                reportInvalidJson,
-                reportInvalidShape,
-                reasoningState,
-                reportReasoningOverlap
-              );
-              pendingText = framed.slice(0, -suffix.length);
+            let output = transformEvents(events);
+            if (isSseBody && rest.trim()) {
+              output += transformEvent(rest);
               logStreamAnomaly("openai_sse_truncated_event", {
-                pendingBytes,
+                pendingBytes: Buffer.byteLength(rest),
                 parseCategory: "truncated_event",
               });
+            } else {
+              output += rest;
             }
-            if (pendingText) {
-              controller.enqueue(encoder.encode(pendingText));
+            if (output) {
+              controller.enqueue(encoder.encode(output));
             }
             reportUsage();
             if (usageState.terminalAnomaly) {
@@ -451,7 +378,6 @@ export const createOpenAiSseUsagePassthrough = (
             return;
           }
 
-          pendingBytes += value.byteLength;
           if (utf8ValidationEnabled) {
             try {
               validationDecoder.decode(value, { stream: true });
@@ -463,54 +389,9 @@ export const createOpenAiSseUsagePassthrough = (
               });
             }
           }
-          const decoded = decoder.decode(value, { stream: true });
-          sawCarriageReturn ||= decoded.includes("\r");
-          pendingText += decoded;
-          let output = "";
-          const transformEvent = (eventText: string): string =>
-            transformSseEvent(
-              eventText,
-              usageState,
-              input.extractUsage,
-              reportInvalidJson,
-              reportInvalidShape,
-              reasoningState,
-              reportReasoningOverlap
-            );
-          if (sawCarriageReturn) {
-            let boundary = findSseEventBoundary(pendingText);
-            while (boundary) {
-              const eventEnd = boundary.index + boundary.length;
-              output += transformEvent(pendingText.slice(0, eventEnd));
-              pendingText = pendingText.slice(eventEnd);
-              boundary = findSseEventBoundary(pendingText);
-            }
-          } else {
-            let cursor = 0;
-            let boundary = findLfEventBoundary(pendingText, cursor);
-            while (boundary) {
-              const eventEnd = boundary.index + boundary.length;
-              output += transformEvent(pendingText.slice(cursor, eventEnd));
-              cursor = eventEnd;
-              boundary = findLfEventBoundary(pendingText, cursor);
-            }
-            if (cursor) {
-              pendingText = pendingText.slice(cursor);
-            }
-          }
-          if (output) {
-            pendingBytes = Buffer.byteLength(pendingText);
-          }
-          if (pendingBytes > MAX_SSE_EVENT_BYTES) {
-            logStreamAnomaly("openai_sse_event_too_large", {
-              pendingBytes,
-              maxEventBytes: MAX_SSE_EVENT_BYTES,
-              parseCategory: "event_size_limit",
-            });
-            throw new Error("OpenAI SSE event exceeds the proxy buffer limit");
-          }
-          if (output) {
-            controller.enqueue(encoder.encode(output));
+          const events = framer.push(value);
+          if (events.length) {
+            controller.enqueue(encoder.encode(transformEvents(events)));
             lastWriteAt = Date.now();
             return;
           }

@@ -752,6 +752,36 @@ describe("proxy contract: codex", () => {
     });
   });
 
+  test("normalizes response.done when every read ends inside a CRLF", async () => {
+    const payload = JSON.stringify({
+      type: "response.done",
+      response: { status: "completed" },
+    });
+    const body = `event: response.done\r\ndata: ${payload}\r\n\r\n`;
+    const encoder = new TextEncoder();
+    const response = createOpenAiSseUsagePassthrough({
+      response: new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller): void {
+            for (const part of body.split(/(?<=\r)/u)) {
+              controller.enqueue(encoder.encode(part));
+            }
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } }
+      ),
+      extractUsage: () => null,
+    });
+
+    expect(await response.text()).toBe(
+      `event: response.completed\r\ndata: ${JSON.stringify({
+        ...JSON.parse(payload),
+        type: "response.completed",
+      })}\r\n\r\n`
+    );
+  });
+
   test("retains observed Codex stream usage after downstream cancellation", async () => {
     const capture = createUsageCapture();
     const result = prepareCodexUsageRequest(
