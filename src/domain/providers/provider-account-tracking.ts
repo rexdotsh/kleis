@@ -33,7 +33,7 @@ import {
   mergeClaudeLiveLimits,
   mergeCodexLiveLimits,
 } from "../../providers/account-tracking/live-limits";
-import { errorLogFields, logInfo, logWarn } from "../../utils/log";
+import { errorLogFields, logWarn } from "../../utils/log";
 import type {
   AccountSnapshotStore,
   QuotaSignature,
@@ -288,6 +288,8 @@ const getClaudeProfile = async (
     return profile;
   } catch (error) {
     logWarn("claude_account_plan_fetch_failed", {
+      provider: account.provider,
+      status: errorStatus(error),
       providerAccountId: account.id,
       ...errorLogFields(error),
     });
@@ -357,6 +359,8 @@ const updateCodexProfile = async (
       expiresAt = profileExpiry(fetchedAt);
     } catch (error) {
       logWarn("codex_account_profile_fetch_failed", {
+        provider: account.provider,
+        status: errorStatus(error),
         providerAccountId: account.id,
         ...errorLogFields(error),
       });
@@ -736,8 +740,6 @@ export const peekProviderAccountQuotas = (
   return quotas;
 };
 
-const loggedLiveLimits = new Set<string>();
-
 const mergeLiveLimits = (
   previous: TrackingData | undefined,
   limits: LiveLimits,
@@ -793,21 +795,9 @@ export const recordProviderAccountLiveLimits = (
       expiresAt: entry ? Math.max(entry.expiresAt, now + baseMs) : now,
     });
     snapshots?.recordQuota(account, quota, quotaSignature(quota.data));
-    if (!loggedLiveLimits.has(key)) {
-      loggedLiveLimits.add(key);
-      logInfo("provider_account_limits_from_traffic", {
-        providerAccountId: account.id,
-        provider: account.provider,
-        fields: Object.entries(
-          limits.provider === "claude" ? limits.windows : limits
-        )
-          .filter(([field, value]) => field !== "provider" && value !== null)
-          .map(([field]) => field)
-          .join(","),
-      });
-    }
   } catch (error) {
     logWarn("provider_account_live_limits_failed", {
+      provider: account.provider,
       providerAccountId: account.id,
       ...errorLogFields(error),
     });

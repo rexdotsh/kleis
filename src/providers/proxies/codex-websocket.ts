@@ -17,13 +17,22 @@ import {
 } from "./codex-proxy";
 import { readOpenAiResponsesUsageFromSseEvent } from "../../usage/token-usage";
 import type { TokenUsage } from "../../usage/token-usage";
-import { errorLogFields, logWarn } from "../../utils/log";
+import { logError, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 import {
   normalizeOpenAiResponsesEvent,
   readOpenAiResponsesEventShapeIssue,
 } from "./openai-responses-event";
+import { createCodexStreamDiagnostics } from "./codex-stream-diagnostics";
+import { readUpstreamErrorFields } from "./upstream-error";
+import { readOpenAiResponseStatus } from "./openai-event-types";
+import {
+  extractWebSocketCloseError,
+  extractWebSocketError,
+  readWebSocketCloseCode,
+  webSocketErrorLogFields,
+} from "./codex-websocket-errors";
 
 const SESSION_SOCKET_TTL_MS = 5 * 60 * 1000;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -33,7 +42,6 @@ const CONNECTION_LIMIT_RETRIES = 5;
 const STREAM_FAILURE_RETRIES = 5;
 const MAX_TRACKED_FAILURE_SESSIONS = 1000;
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
-const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const MAX_RELAY_QUEUE_FRAMES = 8192;
 const MAX_RELAY_QUEUE_BYTES = 4 * 1024 * 1024;
 const textEncoder = new TextEncoder();
@@ -66,14 +74,11 @@ export const setCodexWebSocketConstructorForTests = (
   webSocketConstructorOverride = webSocketConstructor;
 };
 
-type WebSocketCloseError = Error & {
-  webSocketCloseCode?: number;
-};
-
 type CodexWebSocketInput = {
   headers: Headers;
   bodyJson: Record<string, unknown> | null;
   accountKey: string;
+  providerAccountId?: string;
   sessionId?: string | null;
   upstreamSessionId?: string | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
@@ -179,57 +184,6 @@ const terminateSocket = (socket: WebSocketLike): void => {
   } catch {
     // Ignore termination failures from already-closed sockets.
   }
-};
-
-const extractWebSocketError = (event: unknown): Error => {
-  if (isObjectRecord(event)) {
-    const message = readString(event.message);
-    if (message) {
-      return new Error(message);
-    }
-
-    const nestedError = event.error;
-    if (nestedError instanceof Error && nestedError.message) {
-      return nestedError;
-    }
-    if (isObjectRecord(nestedError)) {
-      const nestedMessage = readString(nestedError.message);
-      if (nestedMessage) {
-        return new Error(nestedMessage);
-      }
-    }
-  }
-
-  return new Error("WebSocket error");
-};
-
-const extractWebSocketCloseError = (event: unknown): Error => {
-  if (!isObjectRecord(event)) {
-    return new Error("WebSocket closed");
-  }
-
-  const code = typeof event.code === "number" ? event.code : null;
-  const reason = readString(event.reason);
-  const codeText = code === null ? "" : ` ${code}`;
-  const reasonText =
-    reason ??
-    (code === WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE ? "message too big" : null);
-  const error = new Error(
-    `WebSocket closed${codeText}${reasonText ? ` ${reasonText}` : ""}`.trim()
-  ) as WebSocketCloseError;
-  if (code !== null) {
-    error.webSocketCloseCode = code;
-  }
-  return error;
-};
-
-const readWebSocketCloseCode = (error: unknown): number | null => {
-  if (!(error instanceof Error)) {
-    return null;
-  }
-
-  const closeCode = (error as WebSocketCloseError).webSocketCloseCode;
-  return typeof closeCode === "number" ? closeCode : null;
 };
 
 const clearSessionFallback = (key: string): void => {
@@ -367,7 +321,7 @@ const connectWebSocket = (
         headers: headersToRecord(headers),
       });
     } catch (error) {
-      reject(error instanceof Error ? error : new Error(String(error)));
+      reject(extractWebSocketError(error));
       return;
     }
 
@@ -771,42 +725,10 @@ const readPayloadStatus = (payload: Record<string, unknown>): number => {
 const isErrorPayload = (payload: Record<string, unknown>): boolean =>
   payload.type === "error" || payload.type === "response.failed";
 
-const truncateLogValue = (value: string): string => {
-  const trimmed = value.trim();
-  return trimmed.length > 500 ? `${trimmed.slice(0, 500)}...` : trimmed;
-};
-
-const readErrorField = (
-  payload: Record<string, unknown>,
-  key: string
-): string | number | boolean | null | undefined => {
-  const error = isObjectRecord(payload.error) ? payload.error : null;
-  const response = isObjectRecord(payload.response) ? payload.response : null;
-  const responseError = isObjectRecord(response?.error) ? response.error : null;
-  const value = error?.[key] ?? responseError?.[key] ?? payload[key];
-  if (typeof value === "string") {
-    return truncateLogValue(value);
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return value;
-  }
-  return null;
-};
-
-const readErrorPayloadLogFields = (
-  payload: Record<string, unknown>
-): Record<string, string | number | boolean | null> => ({
-  payloadType: String(payload.type),
-  errorType: readErrorField(payload, "type") ?? null,
-  errorCode: readErrorField(payload, "code") ?? null,
-  errorStatus: readErrorField(payload, "status") ?? null,
-});
-
 const isExpectedUsageLimitPayload = (
   payload: Record<string, unknown>
 ): boolean => {
-  const errorType = readErrorField(payload, "type");
-  const errorCode = readErrorField(payload, "code");
+  const { errorType, errorCode } = readUpstreamErrorFields(payload);
   return (
     errorType === "usage_limit_reached" ||
     errorType === "usage_not_included" ||
@@ -834,9 +756,7 @@ const isSessionConcurrencyError = (error: unknown): boolean =>
     error.message === "Codex WebSocket session is connecting");
 
 const isUserCancelledStage = (stage: string): boolean =>
-  stage === "request_aborted" ||
-  stage === "downstream_cancel" ||
-  stage === "relay_queue_overflow";
+  stage === "request_aborted" || stage === "downstream_cancel";
 
 const isCacheableFinalEvent = (
   eventType: unknown,
@@ -919,6 +839,12 @@ export const tryProxyCodexWebSocket = async (
 
   const active = acquired;
   const startedAt = Date.now();
+  const trackDiagnostics = createCodexStreamDiagnostics({
+    providerAccountId: input.providerAccountId,
+    requestId,
+    transport: "websocket",
+    startedAt,
+  });
 
   const responseItems: unknown[] = [];
   let responseId: string | null = null;
@@ -947,8 +873,13 @@ export const tryProxyCodexWebSocket = async (
   }> = [];
 
   const logStreamAnomaly = (event: string, fields = {}): void => {
-    logWarn(event, {
+    const log =
+      event === "codex_websocket_stream_failed" && emittedPayload
+        ? logError
+        : logWarn;
+    log(event, {
       provider: "codex",
+      providerAccountId: input.providerAccountId,
       transport: "websocket",
       elapsedMs: Date.now() - startedAt,
       hasSession: Boolean(sessionId),
@@ -1036,13 +967,13 @@ export const tryProxyCodexWebSocket = async (
           return;
         }
         if (error) {
-          fail("send_failed", error);
+          fail("send_failed", extractWebSocketError(error));
           return;
         }
         resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
       });
     } catch (error) {
-      fail("send_failed", error);
+      fail("send_failed", extractWebSocketError(error));
     }
   };
 
@@ -1091,7 +1022,7 @@ export const tryProxyCodexWebSocket = async (
     }
   };
 
-  const fail = (stage: string, error: unknown): void => {
+  const fail = (stage: string, error: unknown, fields = {}): void => {
     if (settled) {
       return;
     }
@@ -1109,13 +1040,17 @@ export const tryProxyCodexWebSocket = async (
       if (immediateFallback) {
         markSessionFallback(cacheKey);
       }
-      const failureCount = recordSessionStreamFailure(cacheKey);
+      const failureCount =
+        stage === "relay_queue_overflow"
+          ? 0
+          : recordSessionStreamFailure(cacheKey);
       logStreamAnomaly("codex_websocket_stream_failed", {
         stage,
         failureCount,
         immediateFallback,
         webSocketCloseCode,
-        ...errorLogFields(error),
+        ...webSocketErrorLogFields(error),
+        ...fields,
       });
     }
     firstPayloadReject?.(error);
@@ -1221,14 +1156,13 @@ export const tryProxyCodexWebSocket = async (
         frameBytes > MAX_RELAY_QUEUE_BYTES
           ? "relay_frame_too_large"
           : "relay_queue_overflow";
-      logStreamAnomaly("codex_websocket_queue_overflow", {
+      fail(stage, new Error("Codex WebSocket queue overflow"), {
         reason:
           frameBytes > MAX_RELAY_QUEUE_BYTES ? "frame_too_large" : "bytes",
         frameBytes,
         maxQueueFrames: MAX_RELAY_QUEUE_FRAMES,
         maxQueueBytes: MAX_RELAY_QUEUE_BYTES,
       });
-      fail(stage, new Error("Codex WebSocket queue overflow"));
       return { bytes: frameBytes, queued: false };
     }
 
@@ -1236,13 +1170,10 @@ export const tryProxyCodexWebSocket = async (
     try {
       parsedPayload = JSON.parse(text) as unknown;
     } catch {
-      logStreamAnomaly("codex_websocket_invalid_frame", {
-        parseCategory: "invalid_json",
-        frameBytes,
-      });
       fail(
         "message_parse_failed",
-        new Error("Codex WebSocket frame contains invalid JSON")
+        new Error("Codex WebSocket frame contains invalid JSON"),
+        { parseCategory: "invalid_json", frameBytes }
       );
       return { bytes: frameBytes, queued: false };
     }
@@ -1256,6 +1187,7 @@ export const tryProxyCodexWebSocket = async (
     if (terminal) {
       return { bytes: frameBytes, queued: false };
     }
+    trackDiagnostics(parsedPayload);
     const shapeIssue = readOpenAiResponsesEventShapeIssue(parsedPayload);
     if (shapeIssue) {
       logStreamAnomaly("codex_websocket_invalid_frame", {
@@ -1309,20 +1241,20 @@ export const tryProxyCodexWebSocket = async (
       bufferedFrameBytes + reservedBytes > MAX_RELAY_QUEUE_BYTES
     ) {
       const frameTooLarge = reservedBytes > MAX_RELAY_QUEUE_BYTES;
-      logStreamAnomaly("codex_websocket_queue_overflow", {
-        reason:
-          bufferedFrameCount + 1 > MAX_RELAY_QUEUE_FRAMES
-            ? "frames"
-            : frameTooLarge
-              ? "frame_too_large"
-              : "bytes",
-        frameBytes: reservedBytes,
-        maxQueueFrames: MAX_RELAY_QUEUE_FRAMES,
-        maxQueueBytes: MAX_RELAY_QUEUE_BYTES,
-      });
       fail(
         frameTooLarge ? "relay_frame_too_large" : "relay_queue_overflow",
-        new Error("Codex WebSocket queue overflow")
+        new Error("Codex WebSocket queue overflow"),
+        {
+          reason:
+            bufferedFrameCount + 1 > MAX_RELAY_QUEUE_FRAMES
+              ? "frames"
+              : frameTooLarge
+                ? "frame_too_large"
+                : "bytes",
+          frameBytes: reservedBytes,
+          maxQueueFrames: MAX_RELAY_QUEUE_FRAMES,
+          maxQueueBytes: MAX_RELAY_QUEUE_BYTES,
+        }
       );
       return;
     }
@@ -1355,12 +1287,6 @@ export const tryProxyCodexWebSocket = async (
 
   if (isErrorPayload(first)) {
     keepSocket = false;
-    if (!isExpectedUsageLimitPayload(first)) {
-      logStreamAnomaly("codex_websocket_error_payload", {
-        responseStatus: finalResponseStatus,
-        ...readErrorPayloadLogFields(first),
-      });
-    }
     finish();
     return Response.json(first, { status: readPayloadStatus(first) });
   }
@@ -1392,15 +1318,15 @@ export const tryProxyCodexWebSocket = async (
       if (payload.type === "response.incomplete") {
         keepSocket = false;
         logStreamAnomaly("codex_websocket_response_incomplete", {
-          responseStatus: finalResponseStatus,
+          responseStatus: readOpenAiResponseStatus(finalResponseStatus),
         });
       }
       if (isErrorPayload(payload)) {
         keepSocket = false;
         if (!isExpectedUsageLimitPayload(payload)) {
           logStreamAnomaly("codex_websocket_error_payload", {
-            responseStatus: finalResponseStatus,
-            ...readErrorPayloadLogFields(payload),
+            responseStatus: readOpenAiResponseStatus(finalResponseStatus),
+            ...readUpstreamErrorFields(payload),
           });
         }
       }
@@ -1413,9 +1339,6 @@ export const tryProxyCodexWebSocket = async (
   const stream = new ReadableStream<Uint8Array>({
     start(controller): void {
       clearStreamKeepAlive = createSseKeepAlive(controller, {
-        provider: "codex",
-        transport: "websocket_sse",
-        getElapsedMs: () => Date.now() - startedAt,
         onKeepAlive: () => {
           lastDownstreamWriteAt = Date.now();
         },

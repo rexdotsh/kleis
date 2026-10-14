@@ -144,7 +144,9 @@ describe("provider account enablement", () => {
     if (!(failure instanceof Error)) {
       throw new Error("Expected a Codex credential update failure");
     }
-    expect(failure.message).toBe("Codex credential update failed");
+    expect(failure.message).toBe(
+      "SQLITE_CONSTRAINT_TRIGGER: credential write blocked"
+    );
     expect(failure.message).not.toContain("new-access-secret");
     expect(failure.message).not.toContain("new-refresh-secret");
     const current = await database.query.providerAccounts.findFirst({
@@ -392,7 +394,7 @@ describe("provider account enablement", () => {
       ).toContainEqual(
         expect.objectContaining({
           event: "provider_refresh_lock_lost",
-          accountId: "codex-primary",
+          providerAccountId: "codex-primary",
           provider: "codex",
         })
       );

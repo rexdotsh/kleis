@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readResponseJson } from "../utils/response-json";
 
 import {
   consumeOAuthState,
@@ -174,7 +175,10 @@ const extractAccountIdFromClaims = (
 const parseTokenResponse = async (
   response: Response
 ): Promise<CodexTokenResponse> => {
-  const body = (await response.json()) as CodexTokenResponse;
+  const body = (await readResponseJson(
+    response,
+    "Codex token response"
+  )) as CodexTokenResponse;
   if (!body.access_token) {
     throw new Error("Codex OAuth response is missing access_token");
   }
@@ -259,7 +263,10 @@ const requestDeviceAuthorization = async (): Promise<{
 
   await requireOkResponse(response, "Codex device authorization start failed");
 
-  const body = (await response.json()) as CodexDeviceAuthorizationResponse;
+  const body = (await readResponseJson(
+    response,
+    "Codex device authorization response"
+  )) as CodexDeviceAuthorizationResponse;
   if (!body.device_auth_id || !body.user_code) {
     throw new Error("Codex device authorization response is malformed");
   }
@@ -298,7 +305,10 @@ const pollDeviceAuthorizationCode = async (input: {
     });
 
     if (response.ok) {
-      const body = (await response.json()) as CodexDeviceTokenResponse;
+      const body = (await readResponseJson(
+        response,
+        "Codex device token response"
+      )) as CodexDeviceTokenResponse;
       if (!body.authorization_code || !body.code_verifier) {
         throw new Error("Codex device authorization response is malformed");
       }

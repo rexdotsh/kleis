@@ -3,7 +3,7 @@ import {
   type UsageBucketWrite,
   upsertUsageRows,
 } from "../db/repositories/request-usage";
-import { errorLogFields, logWarn } from "../utils/log";
+import { errorLogFields, logError, logWarn } from "../utils/log";
 
 const FLUSH_INTERVAL_MS = 2000;
 const FLUSH_AT_ROWS = 200;
@@ -78,7 +78,7 @@ export const createUsageBuffer = (
     flushing = upsertUsageRows(database, rows)
       .catch((error: unknown) => {
         if (pending.size + rows.length > MAX_PENDING_ROWS) {
-          logWarn("usage_flush_dropped", {
+          logError("usage_flush_dropped", {
             rows: rows.length,
             ...errorLogFields(error),
           });

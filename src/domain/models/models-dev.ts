@@ -1,6 +1,7 @@
 import type { Provider } from "../../db/schema";
 import { isModelInScope, type ModelScopeRoute } from "../../http/proxy-routing";
 import { proxyProviderMappings } from "../../providers/proxy-provider";
+import { readResponseJson } from "../../utils/response-json";
 import {
   getObjectProperty,
   isObjectRecord,
@@ -75,7 +76,9 @@ const fetchModelsDevRegistryFromUpstream =
       );
     }
 
-    return parseRegistry(await response.json());
+    return parseRegistry(
+      await readResponseJson(response, "models.dev response")
+    );
   };
 
 export const fetchModelsDevRegistry = async (options?: {

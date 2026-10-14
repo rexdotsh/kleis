@@ -679,15 +679,12 @@ describe("limits from proxied traffic", () => {
     });
   });
 
-  test("header readings are stored like polled limits and logged once", () => {
+  test("header readings are stored like polled limits", () => {
     const { store, recorded } = snapshotSpy();
     setAccountSnapshotStore(store);
-    const info = spyOn(console, "info").mockImplementation(() => undefined);
     const account = claudeAccount();
     recordProviderAccountLiveLimits(account, claudeHeaders(0.2));
     recordProviderAccountLiveLimits(account, claudeHeaders(0.3));
-    const lines = info.mock.calls.map((call) => String(call[0]));
-    info.mockRestore();
 
     expect(recorded).toHaveLength(2);
     const [stored, quota, signature] = recorded[1] ?? [];
@@ -701,15 +698,5 @@ describe("limits from proxied traffic", () => {
       },
     });
     expect(signature).toEqual({ plan: null, resets: [1_791_000_000_000] });
-    expect(lines).toHaveLength(1);
-    const line = lines[0] ?? "";
-    expect(JSON.parse(line)).toMatchObject({
-      level: "info",
-      event: "provider_account_limits_from_traffic",
-      providerAccountId: account.id,
-      provider: "claude",
-      fields: "five_hour",
-    });
-    expect(line).not.toContain("claude-access");
   });
 });

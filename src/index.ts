@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { HTTPException } from "hono/http-exception";
+import { installErrorHandler } from "./http/error-handler";
 
 import { requireAdminAuth } from "./http/middleware/bearer-env-auth";
 import { requireProxyApiKey } from "./http/middleware/api-key-auth";
@@ -10,7 +10,11 @@ import { adminUsageRoutes } from "./http/routes/admin-usage";
 import { cronRoutes } from "./http/routes/cron";
 import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
-import { flushProxyUsage, proxyRoutes } from "./http/routes/proxy";
+import {
+  flushProxyFailureLogs,
+  flushProxyUsage,
+  proxyRoutes,
+} from "./http/routes/proxy";
 import { db } from "./db";
 import { createAccountSnapshotStore } from "./domain/providers/account-snapshot-store";
 import {
@@ -25,25 +29,7 @@ const QUOTA_WARMUP_DELAY_MS = 3000;
 
 const app = new Hono();
 
-app.onError((error, context) => {
-  if (error instanceof HTTPException) {
-    return context.json(
-      {
-        error: "request_error",
-        message: error.message,
-      },
-      error.status
-    );
-  }
-
-  return context.json(
-    {
-      error: "internal_error",
-      message: error.message,
-    },
-    500
-  );
-});
+installErrorHandler(app);
 
 app.get("/", (context) => context.redirect("/admin"));
 
@@ -69,6 +55,7 @@ const restoredAccounts = restoreProviderAccountSnapshots(db, accountSnapshots);
 
 gracefulShutdown.beforeExit(flushProxyUsage);
 gracefulShutdown.beforeExit(accountSnapshots.flush);
+gracefulShutdown.beforeExit(flushProxyFailureLogs);
 gracefulShutdown.install();
 
 setTimeout(() => {
