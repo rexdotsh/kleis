@@ -7,7 +7,7 @@ Single OAuth account proxy for coding agents. One base URL that stores OAuth cre
 - **Runtime**: Bun + Hono, self-hosted as a long-running server
 - **Database**: Turso (libSQL) via Drizzle ORM
 - **Admin UI**: Vanilla HTML/CSS/JS SPA in `public/admin/`
-- **Linting**: `bun fix` (Biome-based via Ultracite)
+- **Formatting and linting**: `bun fix` (oxfmt + oxlint), `bun lint` to check
 - **Tests**: `bun test`
 - **Type check**: `bun typecheck`
 
