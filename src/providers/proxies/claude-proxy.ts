@@ -5,7 +5,6 @@ import {
   CLAUDE_CLI_USER_AGENT,
   CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
-  CLAUDE_TOOL_PREFIX,
 } from "../constants";
 import { requireProxyEndpointRoute } from "../proxy-endpoints";
 import {
@@ -15,6 +14,10 @@ import {
 } from "../../usage/token-usage";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { isObjectRecord, type JsonObject } from "../../utils/object";
+import {
+  type ClaudeToolNames,
+  createClaudeToolNames,
+} from "./claude-tool-names";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
 // Anthropic OAuth sessions reject the feedback repo path used in OpenCode's
@@ -69,42 +72,9 @@ const withClaudeSystemIdentity = (
     : [{ type: "text", text: systemIdentity }, ...sanitized];
 };
 
-const toClaudeToolName = (name: string, prefix: string): string => {
-  if (name.startsWith(prefix)) {
-    return name;
-  }
-
-  return `${prefix}${name[0]?.toUpperCase() ?? ""}${name.slice(1)}`;
-};
-
-const fromClaudeToolName = (name: string, prefix: string): string => {
-  if (!name.startsWith(prefix)) {
-    return name;
-  }
-
-  const rest = name.slice(prefix.length);
-  if (!rest) {
-    return rest;
-  }
-
-  return `${rest[0]?.toLowerCase() ?? ""}${rest.slice(1)}`;
-};
-
-// Request: prefix tool names so they match Claude Code's expected format.
-// Response: strip prefixes back so the client sees its original names.
-// https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L214-L239
-// https://github.com/anomalyco/opencode-anthropic-auth/blob/d5a1ab46ac58c93d0edf5c9eea46f3e72981f1fd/index.mjs#L276-L294
-// pi-mono uses case-normalized Claude Code tool names instead of a prefix:
-// https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L64-L93
-const prefixToolName = (name: string, prefix: string): string =>
-  toClaudeToolName(name, prefix);
-
-const stripToolNamePrefix = (name: string, prefix: string): string =>
-  fromClaudeToolName(name, prefix);
-
 const transformClaudeRequestPayload = (
   payload: unknown,
-  toolPrefix: string,
+  toolNames: ClaudeToolNames,
   systemIdentity: string
 ): unknown => {
   if (!isObjectRecord(payload)) {
@@ -124,7 +94,7 @@ const transformClaudeRequestPayload = (
 
       return {
         ...tool,
-        name: prefixToolName(tool.name, toolPrefix),
+        name: toolNames.toUpstream(tool.name),
       };
     });
   }
@@ -136,7 +106,7 @@ const transformClaudeRequestPayload = (
   ) {
     transformed.tool_choice = {
       ...transformed.tool_choice,
-      name: prefixToolName(transformed.tool_choice.name, toolPrefix),
+      name: toolNames.toUpstream(transformed.tool_choice.name),
     };
   }
 
@@ -159,7 +129,7 @@ const transformClaudeRequestPayload = (
 
           return {
             ...block,
-            name: prefixToolName(block.name, toolPrefix),
+            name: toolNames.toUpstream(block.name),
           };
         }),
       };
@@ -175,25 +145,26 @@ const withField = (
   value: unknown
 ): JsonObject => (value === record[key] ? record : { ...record, [key]: value });
 
-const restoreToolUseName = (block: unknown, toolPrefix: string): unknown =>
+const restoreToolUseName = (
+  block: unknown,
+  toolNames: ClaudeToolNames
+): unknown =>
   isObjectRecord(block) &&
   block.type === "tool_use" &&
   typeof block.name === "string"
-    ? withField(block, "name", stripToolNamePrefix(block.name, toolPrefix))
+    ? withField(block, "name", toolNames.toClient(block.name))
     : block;
 
 const restoreMessageToolNames = (
   message: unknown,
-  toolPrefix: string
+  toolNames: ClaudeToolNames
 ): unknown => {
   if (!(isObjectRecord(message) && Array.isArray(message.content))) {
     return message;
   }
 
   const content: unknown[] = message.content;
-  const restored = content.map((block) =>
-    restoreToolUseName(block, toolPrefix)
-  );
+  const restored = content.map((block) => restoreToolUseName(block, toolNames));
   return restored.some((block, index) => block !== content[index])
     ? { ...message, content: restored }
     : message;
@@ -204,7 +175,7 @@ const restoreMessageToolNames = (
 // callers forward the upstream bytes.
 const transformClaudeResponsePayload = (
   payload: unknown,
-  toolPrefix: string
+  toolNames: ClaudeToolNames
 ): unknown => {
   if (!isObjectRecord(payload)) {
     return payload;
@@ -212,18 +183,18 @@ const transformClaudeResponsePayload = (
 
   switch (payload.type) {
     case "message":
-      return restoreMessageToolNames(payload, toolPrefix);
+      return restoreMessageToolNames(payload, toolNames);
     case "message_start":
       return withField(
         payload,
         "message",
-        restoreMessageToolNames(payload.message, toolPrefix)
+        restoreMessageToolNames(payload.message, toolNames)
       );
     case "content_block_start":
       return withField(
         payload,
         "content_block",
-        restoreToolUseName(payload.content_block, toolPrefix)
+        restoreToolUseName(payload.content_block, toolNames)
       );
     default:
       return payload;
@@ -353,7 +324,7 @@ const readSseEventName = (chunk: string): string | null => {
 
 const transformSseEventChunk = (
   chunk: string,
-  toolPrefix: string,
+  toolNames: ClaudeToolNames,
   readStreamUsage: (payload: unknown) => void,
   readStreamAnomaly: (payload: unknown) => void
 ): string => {
@@ -375,7 +346,7 @@ const transformSseEventChunk = (
     const jsonBody = JSON.parse(payload) as unknown;
     readStreamUsage(jsonBody);
     readStreamAnomaly(jsonBody);
-    const transformed = transformClaudeResponsePayload(jsonBody, toolPrefix);
+    const transformed = transformClaudeResponsePayload(jsonBody, toolNames);
     return transformed === jsonBody
       ? chunk
       : rewriteSseDataLines(chunk, JSON.stringify(transformed));
@@ -386,7 +357,7 @@ const transformSseEventChunk = (
 
 const maybeTransformClaudeStreamResponse = (
   response: Response,
-  toolPrefix: string,
+  toolNames: ClaudeToolNames,
   onTokenUsage?: ((usage: TokenUsage) => void) | null
 ): Response => {
   if (!response.body) {
@@ -566,7 +537,7 @@ const maybeTransformClaudeStreamResponse = (
                 encoder.encode(
                   transformSseEventChunk(
                     buffer,
-                    toolPrefix,
+                    toolNames,
                     readStreamUsage,
                     readStreamAnomaly
                   )
@@ -601,7 +572,7 @@ const maybeTransformClaudeStreamResponse = (
                 encoder.encode(
                   transformSseEventChunk(
                     chunk,
-                    toolPrefix,
+                    toolNames,
                     readStreamUsage,
                     readStreamAnomaly
                   )
@@ -648,7 +619,7 @@ const maybeTransformClaudeStreamResponse = (
 
 const maybeTransformClaudeJsonResponse = async (
   response: Response,
-  toolPrefix: string,
+  toolNames: ClaudeToolNames,
   onTokenUsage?: ((usage: TokenUsage) => void) | null
 ): Promise<Response> => {
   const contentType = response.headers.get("content-type") ?? "";
@@ -668,7 +639,7 @@ const maybeTransformClaudeJsonResponse = async (
     });
   }
 
-  const transformedBody = transformClaudeResponsePayload(jsonBody, toolPrefix);
+  const transformedBody = transformClaudeResponsePayload(jsonBody, toolNames);
   const usage = readAnthropicUsageFromResponse(jsonBody);
   if (usage) {
     onTokenUsage?.(usage);
@@ -691,7 +662,7 @@ const maybeTransformClaudeJsonResponse = async (
 
 const transformClaudeResponse = (
   response: Response,
-  toolPrefix: string,
+  toolNames: ClaudeToolNames,
   onTokenUsage?: ((usage: TokenUsage) => void) | null
 ): Promise<Response> => {
   if (!response.body) {
@@ -701,11 +672,11 @@ const transformClaudeResponse = (
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.toLowerCase().includes("text/event-stream")) {
     return Promise.resolve(
-      maybeTransformClaudeStreamResponse(response, toolPrefix, onTokenUsage)
+      maybeTransformClaudeStreamResponse(response, toolNames, onTokenUsage)
     );
   }
 
-  return maybeTransformClaudeJsonResponse(response, toolPrefix, onTokenUsage);
+  return maybeTransformClaudeJsonResponse(response, toolNames, onTokenUsage);
 };
 
 const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {
@@ -735,7 +706,6 @@ type ClaudeProxyPreparationResult = {
 export const prepareClaudeProxyRequest = (
   input: ClaudeProxyPreparationInput
 ): ClaudeProxyPreparationResult => {
-  const toolPrefix = CLAUDE_TOOL_PREFIX;
   const systemIdentity = CLAUDE_SYSTEM_IDENTITY;
   const mergedBetas = mergeBetaHeaders(
     input.headers,
@@ -751,9 +721,10 @@ export const prepareClaudeProxyRequest = (
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
   input.headers.set("x-app", "cli");
 
+  const toolNames = createClaudeToolNames(input.bodyJson);
   const transformedPayload = transformClaudeRequestPayload(
     input.bodyJson,
-    toolPrefix,
+    toolNames,
     systemIdentity
   );
   const bodyText =
@@ -765,6 +736,6 @@ export const prepareClaudeProxyRequest = (
     upstreamUrl: buildUpstreamUrl(input.requestUrl.search),
     bodyText,
     transformResponse: (response: Response): Promise<Response> =>
-      transformClaudeResponse(response, toolPrefix, input.onTokenUsage),
+      transformClaudeResponse(response, toolNames, input.onTokenUsage),
   };
 };
