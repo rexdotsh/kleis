@@ -635,18 +635,18 @@ function accountFact(account) {
     : "";
   if (account.provider === "claude") {
     const extra = data?.subscription?.extraUsage;
-    return fact(
-      "Sign-in",
-      account.metadata?.oauthMode === "console" ? "Console" : "claude.ai",
-      [
-        extra?.isEnabled &&
-          (typeof extra.utilization === "number"
-            ? `extra usage on \u00b7 ${Math.round(extra.utilization)}% used`
-            : "extra usage on"),
-        id,
-        added,
-      ]
-    );
+    const plan = data?.plan?.label;
+    const signIn =
+      account.metadata?.oauthMode === "console" ? "Console" : "claude.ai";
+    return fact(plan ? "Plan" : "Sign-in", escapeHtml(plan || signIn), [
+      plan && signIn,
+      extra?.isEnabled &&
+        (typeof extra.utilization === "number"
+          ? `extra usage on \u00b7 ${Math.round(extra.utilization)}% used`
+          : "extra usage on"),
+      id,
+      added,
+    ]);
   }
   const plan =
     CODEX_PLAN_LABELS[data?.status?.planType] || data?.status?.planType;

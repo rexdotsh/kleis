@@ -15,11 +15,18 @@ import {
   fetchCodexUsageProfile,
   fetchCodexUsageStatus,
 } from "../../providers/account-tracking/codex";
-import { fetchClaudeSubscriptionUsage } from "../../providers/account-tracking/claude";
+import {
+  type ClaudeSubscriptionPlan,
+  fetchClaudeSubscriptionPlan,
+  fetchClaudeSubscriptionUsage,
+} from "../../providers/account-tracking/claude";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
+import { errorLogFields, logWarn } from "../../utils/log";
 import { refreshProviderAccount } from "./provider-service";
 
 const CACHE_MS = 60_000;
+const CLAUDE_PLAN_CACHE_MS = 60 * 60 * 1000;
+const CLAUDE_PLAN_RETRY_MS = 5 * 60 * 1000;
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
 
 type TrackingAccount = ProviderAccountRecord & {
@@ -35,6 +42,7 @@ type CodexTrackingData = {
 
 type ClaudeTrackingData = {
   provider: "claude";
+  plan?: ClaudeSubscriptionPlan | null;
   subscription?: Awaited<ReturnType<typeof fetchClaudeSubscriptionUsage>>;
 };
 
@@ -139,18 +147,62 @@ const fetchCodexData = async (account: TrackingAccount) => {
   return { data, errors };
 };
 
+// The plan rarely changes, so it is looked up far less often than usage. A
+// failed lookup keeps the last known plan and never fails the usage sync.
+const claudePlans = new Map<
+  string,
+  { expiresAt: number; plan: ClaudeSubscriptionPlan | null }
+>();
+
+const getClaudePlan = async (
+  account: TrackingAccount
+): Promise<ClaudeSubscriptionPlan | null> => {
+  const key = quotaKey(account);
+  const cached = claudePlans.get(key);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.plan;
+  }
+  try {
+    const plan = await fetchClaudeSubscriptionPlan(account.accessToken);
+    claudePlans.set(key, {
+      plan,
+      expiresAt: Date.now() + CLAUDE_PLAN_CACHE_MS,
+    });
+    return plan;
+  } catch (error) {
+    logWarn("claude_account_plan_fetch_failed", {
+      providerAccountId: account.id,
+      ...errorLogFields(error),
+    });
+    const plan = cached?.plan ?? null;
+    claudePlans.set(key, {
+      plan,
+      expiresAt:
+        Date.now() + Math.max(CLAUDE_PLAN_RETRY_MS, cacheDuration([error])),
+    });
+    return plan;
+  }
+};
+
 const fetchAccountData = async (
   database: Database,
   account: TrackingAccount
 ): Promise<{ data: TrackingData; errors: unknown[] }> => {
   if (account.provider === "claude") {
+    const plan = getClaudePlan(account);
     try {
       const subscription = await retryAfter401(database, account, (current) =>
         fetchClaudeSubscriptionUsage(current.accessToken)
       );
-      return { data: { provider: "claude", subscription }, errors: [] };
+      return {
+        data: { provider: "claude", plan: await plan, subscription },
+        errors: [],
+      };
     } catch (error) {
-      return { data: { provider: "claude" }, errors: [error] };
+      return {
+        data: { provider: "claude", plan: await plan },
+        errors: [error],
+      };
     }
   }
 
