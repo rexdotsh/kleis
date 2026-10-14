@@ -3112,6 +3112,23 @@ describe("proxy contract: claude", () => {
     ]);
   });
 
+  test("always sends beta=true upstream and keeps other query params", () => {
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL(
+        "https://kleis.local/v1/messages?beta=false&beta=false&trace=1"
+      ),
+      headers: new Headers(),
+      bodyText: "{}",
+      bodyJson: {},
+      accessToken: "claude-token",
+      metadata: null,
+    });
+
+    expect(result.upstreamUrl).toBe(
+      "https://api.anthropic.com/v1/messages?beta=true&trace=1"
+    );
+  });
+
   test("adds fine-grained tool streaming only when the caller asks for it", () => {
     expect(CLAUDE_REQUIRED_BETA_HEADERS).not.toContain(
       "fine-grained-tool-streaming-2025-05-14"
