@@ -231,9 +231,16 @@ code,
   position: relative;
   width: min(320px, calc(100vw - 48px));
 }
+.brand-mark {
+  flex: none;
+  display: block;
+  border-radius: 22.5%;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  -webkit-user-drag: none;
+}
 .login-logo {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
   font-size: 16px;
   font-weight: 500;
