@@ -143,7 +143,7 @@ let keyOpenSeq = 0;
 
 async function setExpandedAccount(id) {
   const seq = ++accountOpenSeq;
-  const token = state.token;
+  const sessionSeq = state.sessionRequestSeq;
   state.pendingExpandedAccountId = id;
   if (id)
     await Promise.all([
@@ -152,7 +152,7 @@ async function setExpandedAccount(id) {
     ]);
   if (
     seq !== accountOpenSeq ||
-    token !== state.token ||
+    sessionSeq !== state.sessionRequestSeq ||
     state.pendingExpandedAccountId !== id
   )
     return false;
@@ -173,12 +173,12 @@ async function setExpandedAccount(id) {
 
 async function setExpandedKey(id) {
   const seq = ++keyOpenSeq;
-  const token = state.token;
+  const sessionSeq = state.sessionRequestSeq;
   state.pendingExpandedKeyId = id;
   if (id && usageHasTraffic("key", id)) await waitForUsageDetail("key", id);
   if (
     seq !== keyOpenSeq ||
-    token !== state.token ||
+    sessionSeq !== state.sessionRequestSeq ||
     state.pendingExpandedKeyId !== id
   )
     return false;
