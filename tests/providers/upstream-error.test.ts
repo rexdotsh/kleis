@@ -15,20 +15,20 @@ test("only allowlisted error metadata is read, without changing response bytes",
   expect(await response.text()).toBe(body);
 });
 
-test.each([
-  "text/html",
-  "text/event-stream",
-])("%s error bodies are never read for logging", async (contentType) => {
-  const response = new Response("private body", {
-    status: 502,
-    headers: { "content-type": contentType },
-  });
-  expect(await readUpstreamResponseError(response)).toEqual({
-    errorType: null,
-    errorCode: null,
-  });
-  expect(await response.text()).toBe("private body");
-});
+test.each(["text/html", "text/event-stream"])(
+  "%s error bodies are never read for logging",
+  async (contentType) => {
+    const response = new Response("private body", {
+      status: 502,
+      headers: { "content-type": contentType },
+    });
+    expect(await readUpstreamResponseError(response)).toEqual({
+      errorType: null,
+      errorCode: null,
+    });
+    expect(await response.text()).toBe("private body");
+  }
+);
 
 test("oversized or invalid JSON does not become log content", async () => {
   for (const body of [

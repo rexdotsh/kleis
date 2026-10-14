@@ -169,80 +169,80 @@ test("unknown event and item types are content-free in every diagnostic and forw
   }
 });
 
-test.each([
-  false,
-  true,
-])("open-item and restart anchors survive ring eviction (restart=%s)", (restart) => {
-  const log = spyOn(console, "warn").mockImplementation(() => undefined);
-  try {
-    const track = createCodexStreamDiagnostics({
-      transport: "sse",
-      startedAt: Date.now(),
-    });
-    track({
-      type: "response.created",
-      response: { id: "private-response-A" },
-      sequence_number: 0,
-    });
-    track({ ...itemEvent("added", "private-A"), sequence_number: 2 });
-    if (restart) {
+test.each([false, true])(
+  "open-item and restart anchors survive ring eviction (restart=%s)",
+  (restart) => {
+    const log = spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const track = createCodexStreamDiagnostics({
+        transport: "sse",
+        startedAt: Date.now(),
+      });
       track({
         type: "response.created",
-        response: { id: "private-response-B" },
+        response: { id: "private-response-A" },
         sequence_number: 0,
       });
-    }
-    for (let sequence = 0; sequence < 100; sequence++) {
-      track({
-        type: "response.reasoning_summary_text.delta",
-        sequence_number: sequence,
-        delta: "private content",
+      track({ ...itemEvent("added", "private-A"), sequence_number: 2 });
+      if (restart) {
+        track({
+          type: "response.created",
+          response: { id: "private-response-B" },
+          sequence_number: 0,
+        });
+      }
+      for (let sequence = 0; sequence < 100; sequence++) {
+        track({
+          type: "response.reasoning_summary_text.delta",
+          sequence_number: sequence,
+          delta: "private content",
+        });
+      }
+      track({ ...itemEvent("added", "private-B"), sequence_number: 2 });
+      expect(log).toHaveBeenCalledTimes(1);
+      const payload = JSON.parse(String(log.mock.calls[0]?.[0]));
+      expect(payload.history).toHaveLength(64);
+      expect(
+        payload.history.some(
+          (entry: { type: string }) => entry.type === "response.created"
+        )
+      ).toBe(false);
+      expect(payload.openItem).toMatchObject({
+        type: "response.output_item.added",
+        sequenceNumber: 2,
+        outputIndex: 0,
+        elapsedMs: expect.any(Number),
       });
+      expect(payload.responseTransitionCount).toBe(restart ? 1 : 0);
+      expect(payload.responseTransitions).toHaveLength(restart ? 1 : 0);
+      if (restart) {
+        expect(payload.firstResponseCreated).toMatchObject({
+          type: "response.created",
+          sequenceNumber: 0,
+        });
+        expect(payload.firstResponseCreated.responseIdHash).not.toBe(
+          payload.openItem.responseIdHash
+        );
+        expect(payload.firstResponseCreated.responseIdHash).toBe(
+          payload.history.at(-1).responseIdHash
+        );
+        expect(payload.responseTransitions[0]).toMatchObject({
+          type: "response.created",
+          sequenceNumber: 0,
+          responseIdHash: payload.firstResponseCreated.responseIdHash,
+        });
+      } else {
+        expect(payload.firstResponseCreated).toBeNull();
+        expect(payload.openItem.responseIdHash).toBe(
+          payload.history.at(-1).responseIdHash
+        );
+      }
+      expect(JSON.stringify(payload)).not.toContain("private");
+    } finally {
+      log.mockRestore();
     }
-    track({ ...itemEvent("added", "private-B"), sequence_number: 2 });
-    expect(log).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(String(log.mock.calls[0]?.[0]));
-    expect(payload.history).toHaveLength(64);
-    expect(
-      payload.history.some(
-        (entry: { type: string }) => entry.type === "response.created"
-      )
-    ).toBe(false);
-    expect(payload.openItem).toMatchObject({
-      type: "response.output_item.added",
-      sequenceNumber: 2,
-      outputIndex: 0,
-      elapsedMs: expect.any(Number),
-    });
-    expect(payload.responseTransitionCount).toBe(restart ? 1 : 0);
-    expect(payload.responseTransitions).toHaveLength(restart ? 1 : 0);
-    if (restart) {
-      expect(payload.firstResponseCreated).toMatchObject({
-        type: "response.created",
-        sequenceNumber: 0,
-      });
-      expect(payload.firstResponseCreated.responseIdHash).not.toBe(
-        payload.openItem.responseIdHash
-      );
-      expect(payload.firstResponseCreated.responseIdHash).toBe(
-        payload.history.at(-1).responseIdHash
-      );
-      expect(payload.responseTransitions[0]).toMatchObject({
-        type: "response.created",
-        sequenceNumber: 0,
-        responseIdHash: payload.firstResponseCreated.responseIdHash,
-      });
-    } else {
-      expect(payload.firstResponseCreated).toBeNull();
-      expect(payload.openItem.responseIdHash).toBe(
-        payload.history.at(-1).responseIdHash
-      );
-    }
-    expect(JSON.stringify(payload)).not.toContain("private");
-  } finally {
-    log.mockRestore();
   }
-});
+);
 
 test("transition history is bounded without evicting the first restart", () => {
   const log = spyOn(console, "warn").mockImplementation(() => undefined);

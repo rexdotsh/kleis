@@ -243,15 +243,14 @@ describe("Claude account tracking contracts", () => {
     expect(decodeClaudeSubscriptionPlan(profile)).toBeNull();
   });
 
-  test.each([
-    { value: null },
-    { value: [] },
-    { value: "not a profile" },
-  ])("rejects malformed profile %j", ({ value }) => {
-    expect(() => decodeClaudeSubscriptionPlan(value)).toThrow(
-      "Claude OAuth profile response is malformed"
-    );
-  });
+  test.each([{ value: null }, { value: [] }, { value: "not a profile" }])(
+    "rejects malformed profile %j",
+    ({ value }) => {
+      expect(() => decodeClaudeSubscriptionPlan(value)).toThrow(
+        "Claude OAuth profile response is malformed"
+      );
+    }
+  );
 
   test("keeps subscription, scoped limit, and overage data separate", () => {
     const result = decodeClaudeSubscriptionUsage({

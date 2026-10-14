@@ -43,67 +43,72 @@ afterEach(() => {
   client.close();
 });
 
-test.each([
-  "claude",
-  "codex",
-] as const)("%s malformed token responses cannot leak through refresh or HTTP logs", async (provider) => {
-  const app = new Hono();
-  installErrorHandler(app);
-  app.get("/refresh", async () => {
-    await refreshProviderAccount(database, `fake-${provider}`, Date.now(), {
-      force: true,
-    });
-    return new Response(null, { status: 204 });
-  });
-  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
-  const log = spyOn(console, "error").mockImplementation(() => undefined);
-  try {
-    const response = await app.request("/refresh");
-    expect(response.status).toBe(500);
-    const message = `${provider === "claude" ? "Claude" : "Codex"} token response is not valid JSON (HTTP 200, 18 bytes)`;
-    expect(await response.json()).toMatchObject({ message });
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(log).toHaveBeenCalledTimes(1);
-    for (const [event, calls] of [
-      ["provider_oauth_refresh_failed", warn.mock.calls],
-      ["http_request_failed", log.mock.calls],
-    ] as const) {
-      const line = String(calls[0]?.[0]);
-      expect(JSON.parse(line)).toMatchObject({
-        event,
-        errorName: "SyntaxError",
-        errorMessage: message,
-        errorStack: expect.stringContaining(message),
+test.each(["claude", "codex"] as const)(
+  "%s malformed token responses cannot leak through refresh or HTTP logs",
+  async (provider) => {
+    const app = new Hono();
+    installErrorHandler(app);
+    app.get("/refresh", async () => {
+      await refreshProviderAccount(database, `fake-${provider}`, Date.now(), {
+        force: true,
       });
-      expect(line).not.toContain(secret);
+      return new Response(null, { status: 204 });
+    });
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const log = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const response = await app.request("/refresh");
+      expect(response.status).toBe(500);
+      const message = `${provider === "claude" ? "Claude" : "Codex"} token response is not valid JSON (HTTP 200, 18 bytes)`;
+      expect(await response.json()).toMatchObject({ message });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledTimes(1);
+      for (const [event, calls] of [
+        ["provider_oauth_refresh_failed", warn.mock.calls],
+        ["http_request_failed", log.mock.calls],
+      ] as const) {
+        const line = String(calls[0]?.[0]);
+        expect(JSON.parse(line)).toMatchObject({
+          event,
+          errorName: "SyntaxError",
+          errorMessage: message,
+          errorStack: expect.stringContaining(message),
+        });
+        expect(line).not.toContain(secret);
+      }
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
     }
-  } finally {
-    warn.mockRestore();
-    log.mockRestore();
   }
-});
+);
 
-test.each([
-  "claude",
-  "codex",
-] as const)("%s code exchange uses content-free JSON parse failures", async (provider) => {
-  const started = await startProviderOAuth(database, provider, {}, Date.now());
-  try {
-    await completeProviderOAuth(
+test.each(["claude", "codex"] as const)(
+  "%s code exchange uses content-free JSON parse failures",
+  async (provider) => {
+    const started = await startProviderOAuth(
       database,
       provider,
-      { state: started.state, code: "fake-code" },
+      {},
       Date.now()
     );
-    throw new Error("Expected token parsing to fail");
-  } catch (error) {
-    const fields = errorLogFields(error);
-    expect(fields.errorMessage).toContain(
-      "token response is not valid JSON (HTTP 200, 18 bytes)"
-    );
-    expect(JSON.stringify(fields)).not.toContain(secret);
+    try {
+      await completeProviderOAuth(
+        database,
+        provider,
+        { state: started.state, code: "fake-code" },
+        Date.now()
+      );
+      throw new Error("Expected token parsing to fail");
+    } catch (error) {
+      const fields = errorLogFields(error);
+      expect(fields.errorMessage).toContain(
+        "token response is not valid JSON (HTTP 200, 18 bytes)"
+      );
+      expect(JSON.stringify(fields)).not.toContain(secret);
+    }
   }
-});
+);
 
 test("Codex device authorization sanitizes malformed start responses", async () => {
   try {

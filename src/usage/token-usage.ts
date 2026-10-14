@@ -33,10 +33,10 @@ export const isTokenUsagePopulated = (
 ): usage is TokenUsage =>
   Boolean(
     usage &&
-      (usage.inputTokens > 0 ||
-        usage.outputTokens > 0 ||
-        usage.cacheReadTokens > 0 ||
-        usage.cacheWriteTokens > 0)
+    (usage.inputTokens > 0 ||
+      usage.outputTokens > 0 ||
+      usage.cacheReadTokens > 0 ||
+      usage.cacheWriteTokens > 0)
   );
 
 export const readAnthropicUsageObject = (usage: unknown): TokenUsage | null => {

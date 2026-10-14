@@ -1066,10 +1066,10 @@ export const tryProxyCodexWebSocket = async (
     cleanup();
     const canStoreContinuation = Boolean(
       active.cached &&
-        keepSocket &&
-        responseId &&
-        isCacheableFinalEvent(finalEventType, finalResponseStatus) &&
-        !active.cached.skipNextContinuationStore
+      keepSocket &&
+      responseId &&
+      isCacheableFinalEvent(finalEventType, finalResponseStatus) &&
+      !active.cached.skipNextContinuationStore
     );
     if (active.cached) {
       if (canStoreContinuation && responseId) {

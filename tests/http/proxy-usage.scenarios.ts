@@ -9,13 +9,11 @@ if (process.env.TURSO_CONNECTION_URL !== ":memory:") {
   throw new Error("proxy usage scenarios need TURSO_CONNECTION_URL=:memory:");
 }
 const { db } = await import("../../src/db");
-const { upsertProviderAccount, updateProviderAccountTokens } = await import(
-  "../../src/db/repositories/provider-accounts"
-);
+const { upsertProviderAccount, updateProviderAccountTokens } =
+  await import("../../src/db/repositories/provider-accounts");
 const { requestUsageBuckets } = await import("../../src/db/schema");
-const { proxyRoutes, flushProxyUsage, flushProxyFailureLogs } = await import(
-  "../../src/http/routes/proxy"
-);
+const { proxyRoutes, flushProxyUsage, flushProxyFailureLogs } =
+  await import("../../src/http/routes/proxy");
 
 const app = new Hono();
 installErrorHandler(app);
@@ -185,45 +183,49 @@ for (const [provider, path] of [
   ["codex", "/openai/v1/responses"],
   ["claude", "/anthropic/v1/messages"],
 ] as const) {
-  test.each([
-    403, 429, 503,
-  ])(`${provider} non-2xx %s is logged once without provider content`, async (status) => {
-    const original = globalThis.fetch;
-    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
-    const error = spyOn(console, "error").mockImplementation(() => undefined);
-    const body = {
-      error: {
-        type: "permission_error",
-        code: "private-code",
-        message: "private prompt",
-      },
-    };
-    globalThis.fetch = (async () =>
-      Response.json(body, { status })) as typeof fetch;
-    try {
-      const response = await app.request(path, { method: "POST", body: "{}" });
-      expect(response.status).toBe(status);
-      expect(await response.json()).toEqual(body);
-      const calls = [...warn.mock.calls, ...error.mock.calls];
-      expect(calls).toHaveLength(1);
-      const line = String(calls[0]?.[0]);
-      expect(JSON.parse(line)).toMatchObject({
-        event: "proxy_upstream_response_failed",
-        level: status >= 500 ? "error" : "warn",
-        provider,
-        providerAccountId: expect.any(String),
-        status,
-        errorType: "permission_error",
-        errorCode: null,
-        elapsedMs: expect.any(Number),
-      });
-      expect(line).not.toContain("private");
-    } finally {
-      warn.mockRestore();
-      error.mockRestore();
-      globalThis.fetch = original;
+  test.each([403, 429, 503])(
+    `${provider} non-2xx %s is logged once without provider content`,
+    async (status) => {
+      const original = globalThis.fetch;
+      const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+      const error = spyOn(console, "error").mockImplementation(() => undefined);
+      const body = {
+        error: {
+          type: "permission_error",
+          code: "private-code",
+          message: "private prompt",
+        },
+      };
+      globalThis.fetch = (async () =>
+        Response.json(body, { status })) as typeof fetch;
+      try {
+        const response = await app.request(path, {
+          method: "POST",
+          body: "{}",
+        });
+        expect(response.status).toBe(status);
+        expect(await response.json()).toEqual(body);
+        const calls = [...warn.mock.calls, ...error.mock.calls];
+        expect(calls).toHaveLength(1);
+        const line = String(calls[0]?.[0]);
+        expect(JSON.parse(line)).toMatchObject({
+          event: "proxy_upstream_response_failed",
+          level: status >= 500 ? "error" : "warn",
+          provider,
+          providerAccountId: expect.any(String),
+          status,
+          errorType: "permission_error",
+          errorCode: null,
+          elapsedMs: expect.any(Number),
+        });
+        expect(line).not.toContain("private");
+      } finally {
+        warn.mockRestore();
+        error.mockRestore();
+        globalThis.fetch = original;
+      }
     }
-  });
+  );
 }
 
 test("thrown upstream failures reach the global error handler exactly once", async () => {

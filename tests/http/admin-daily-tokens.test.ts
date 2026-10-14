@@ -3,9 +3,8 @@ import { expect, test } from "bun:test";
 // Bun shares the db module between test files; if this file loads it first,
 // give it a database that is never deleted.
 process.env.TURSO_CONNECTION_URL ||= ":memory:";
-const { adminAccountsRoutes } = await import(
-  "../../src/http/routes/admin-accounts"
-);
+const { adminAccountsRoutes } =
+  await import("../../src/http/routes/admin-accounts");
 
 // Validation rejects these before any database access. Data and ordering are
 // covered by tests/db/account-daily-tokens.test.ts; admin auth by
