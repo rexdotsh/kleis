@@ -4,8 +4,9 @@ import { errorLogFields, logWarn } from "../utils/log";
 const DRAIN_GRACE_MS = 6000;
 const DRAIN_TIMEOUT_MS = 14 * 60 * 1000;
 const EXIT_FLUSH_DELAY_MS = 3000;
+const DRAIN_POLL_MS = 100;
 
-type StoppableServer = Pick<Bun.Server<unknown>, "stop">;
+type StoppableServer = Pick<Bun.Server<unknown>, "stop" | "pendingRequests">;
 type DrainOutcome = "drained" | "timed_out";
 
 const readDurationMs = (name: string, fallback: number): number => {
@@ -28,15 +29,18 @@ export const createGracefulShutdown = () => {
         return "drained" as const;
       }
       await Bun.sleep(input.graceMs);
-      const outcome = await Promise.race([
-        current.stop().then(() => "drained" as const),
-        Bun.sleep(input.timeoutMs).then(() => "timed_out" as const),
-      ]);
-      if (outcome === "timed_out") {
-        // Closing the remaining connections cancels their streams, which
-        // records them before the exit hooks flush usage.
-        await current.stop(true);
+      const deadline = Date.now() + input.timeoutMs;
+      while (current.pendingRequests > 0 && Date.now() < deadline) {
+        await Bun.sleep(DRAIN_POLL_MS);
       }
+      const outcome =
+        current.pendingRequests > 0
+          ? ("timed_out" as const)
+          : ("drained" as const);
+      // Force-closing cancels the streams still open, so they are recorded
+      // before the exit hooks flush usage. A graceful stop() first would keep
+      // Bun 1.3 from cancelling them.
+      await current.stop(true);
       return outcome;
     })();
     return draining;
