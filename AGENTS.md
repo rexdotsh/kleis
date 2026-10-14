@@ -57,6 +57,16 @@ Write code that is type-safe and explicit. Use `unknown` over `any`, const asser
 
 The admin UI is vanilla JS in `public/admin/`.
 
+### Comments
+
+Most code needs no comment. Add one only when a reader can't get it from the code itself: a non-obvious reason, an upstream quirk, a constraint that would be easy to break, or a link to the source a behavior copies.
+
+- Describe what the code does and why, as it is now. Never describe old behavior, what was removed, what changed, or what the code doesn't do ("no longer", "used to", "instead of X we now", "intentionally absent"). That belongs in the commit message or PR.
+- Don't restate the code, the name of a function or the type of a value.
+- Don't narrate the task, the PR or the review that produced the code.
+- One or two short lines. Don't hedge or pad.
+- When code changes, fix or delete the comments it makes wrong.
+
 ---
 
 ## Pull Requests

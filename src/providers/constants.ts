@@ -18,9 +18,6 @@ const CLAUDE_CODE_BETA_HEADER = "claude-code-20250219";
 export const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
 const CLAUDE_INTERLEAVED_THINKING_BETA_HEADER =
   "interleaved-thinking-2025-05-14";
-// No fine-grained-tool-streaming beta: Claude Code never sends it, and it
-// streams tool input as unvalidated, possibly partial JSON. Callers that want
-// it can still send it.
 export const CLAUDE_REQUIRED_BETA_HEADERS = [
   CLAUDE_CODE_BETA_HEADER,
   CLAUDE_OAUTH_BETA_HEADER,
