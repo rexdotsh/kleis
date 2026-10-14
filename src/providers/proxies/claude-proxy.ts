@@ -342,8 +342,7 @@ const maybeTransformClaudeStreamResponse = (
   let lastChunkAt = startedAt;
   let lastWriteAt = startedAt;
   let closed = false;
-  // Set by message_stop or an error event, whichever ends the stream.
-  let endStatus: number | null = null;
+  let endStatus: number | null = response.ok ? null : response.status;
   let clearKeepAlive: (() => void) | null = null;
 
   const logStreamAnomaly = (

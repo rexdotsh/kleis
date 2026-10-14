@@ -426,7 +426,6 @@ const proxyRequest = async (
               ? attemptAccount.metadata
               : null,
           onTokenUsage: usageRecorder.onTokenUsage,
-          // Latency stays time to response headers, as for other requests.
           onStreamEnd: (statusCode) =>
             usageRecorder.recordFinal(statusCode, respondedAt),
         });

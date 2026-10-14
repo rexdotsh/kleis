@@ -36,12 +36,21 @@ describe("graceful shutdown", () => {
     expect(events).toEqual(["stop", "in-flight finished"]);
   });
 
-  test("gives up waiting after the drain timeout", async () => {
+  test("closes the remaining connections after the drain timeout", async () => {
     const shutdown = createGracefulShutdown();
-    shutdown.trackServer({ stop: () => new Promise<void>(() => undefined) });
+    const stops: (boolean | undefined)[] = [];
+    shutdown.trackServer({
+      stop: (closeActiveConnections?: boolean) => {
+        stops.push(closeActiveConnections);
+        return closeActiveConnections
+          ? Promise.resolve()
+          : new Promise<void>(() => undefined);
+      },
+    });
 
     expect(await shutdown.drain({ graceMs: 0, timeoutMs: 20 })).toBe(
       "timed_out"
     );
+    expect(stops).toEqual([undefined, true]);
   });
 });

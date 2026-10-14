@@ -3919,6 +3919,26 @@ describe("proxy contract: claude", () => {
     }
   });
 
+  test("records a non-2xx Claude event stream with its HTTP status", async () => {
+    const records: unknown[] = [];
+    const response = await prepareClaudeStreamEndRequest(
+      records
+    ).transformResponse(
+      new Response(
+        toNamedSse([
+          {
+            type: "error",
+            error: { type: "authentication_error", message: "Unauthorized" },
+          } as { type: string },
+        ]),
+        { status: 401, headers: { "content-type": "text/event-stream" } }
+      )
+    );
+    await response.text();
+
+    expect(records).toEqual([401]);
+  });
+
   test("records a Claude stream whose upstream read fails as 502", async () => {
     const records: unknown[] = [];
     const result = prepareClaudeStreamEndRequest(records);

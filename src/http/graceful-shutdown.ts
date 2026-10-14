@@ -23,14 +23,21 @@ export const createGracefulShutdown = () => {
     timeoutMs: number;
   }): Promise<DrainOutcome> => {
     draining ??= (async () => {
-      if (!server) {
+      const current = server;
+      if (!current) {
         return "drained" as const;
       }
       await Bun.sleep(input.graceMs);
-      return await Promise.race([
-        server.stop().then(() => "drained" as const),
+      const outcome = await Promise.race([
+        current.stop().then(() => "drained" as const),
         Bun.sleep(input.timeoutMs).then(() => "timed_out" as const),
       ]);
+      if (outcome === "timed_out") {
+        // Closing the remaining connections cancels their streams, which
+        // records them before the exit hooks flush usage.
+        await current.stop(true);
+      }
+      return outcome;
     })();
     return draining;
   };
