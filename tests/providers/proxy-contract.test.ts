@@ -2817,14 +2817,17 @@ describe("proxy contract: claude", () => {
     oauthHost: "claude.ai",
   };
 
+  const claudeUsageRequestBody = {
+    tools: [{ name: "shell" }, { name: "browser" }],
+  };
   const prepareClaudeUsageRequest = (
     onTokenUsage?: ((usage: TokenUsage) => void) | null
   ) =>
     prepareClaudeProxyRequest({
       requestUrl: new URL("https://kleis.local/v1/messages"),
       headers: new Headers(),
-      bodyText: "{}",
-      bodyJson: {},
+      bodyText: JSON.stringify(claudeUsageRequestBody),
+      bodyJson: claudeUsageRequestBody,
       accessToken: "claude-token",
       metadata: null,
       onTokenUsage,
@@ -2918,6 +2921,22 @@ describe("proxy contract: claude", () => {
         { name: "shell" },
       ],
       tool_choice: { type: "tool", name: "web_search" },
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "tool_use", id: "t-0", name: "read", input: {} }],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "t-0",
+              content: [{ type: "tool_reference", tool_name: "read" }],
+            },
+          ],
+        },
+      ],
     };
     const result = prepareClaudeProxyRequest({
       requestUrl: new URL("https://kleis.local/v1/messages"),
@@ -2930,27 +2949,48 @@ describe("proxy contract: claude", () => {
     const transformed = JSON.parse(result.bodyText) as {
       tools: Array<{ name: string }>;
       tool_choice: { name: string };
+      messages: Array<{
+        content: Array<{ name?: string; content?: [{ tool_name: string }] }>;
+      }>;
     };
 
     expect(transformed.tools.map((tool) => tool.name)).toEqual([
       "web_search",
+      "mcp__Shell",
       "mcp_Shell",
-      "mcp_Shell_2",
     ]);
     expect(transformed.tool_choice.name).toBe("web_search");
+    expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_Read");
+    expect(transformed.messages[1]?.content[0]?.content?.[0].tool_name).toBe(
+      "mcp_Read"
+    );
 
-    const response = await result.transformResponse(
+    const upstreamNames = ["mcp__Shell", "mcp_Shell", "mcp_Read", "mcp_Other"];
+    const clientNames = ["Shell", "shell", "read", "mcp_Other"];
+    const toolUse = (name: string) => ({
+      type: "tool_use",
+      id: "t-1",
+      name,
+      input: {},
+    });
+
+    const sse = await result.transformResponse(
       createSseResponse(
-        ["mcp_Shell", "mcp_Shell_2"].map((name) => ({
+        upstreamNames.map((name) => ({
           type: "content_block_start",
-          content_block: { type: "tool_use", id: "t-1", name, input: {} },
+          content_block: toolUse(name),
         }))
       )
     );
-    expect((await response.text()).match(/"name":"[^"]+"/gu)).toEqual([
-      '"name":"Shell"',
-      '"name":"shell"',
-    ]);
+    expect((await sse.text()).match(/"name":"[^"]+"/gu)).toEqual(
+      clientNames.map((name) => `"name":"${name}"`)
+    );
+
+    const json = await result.transformResponse(
+      Response.json({ type: "message", content: upstreamNames.map(toolUse) })
+    );
+    const body = (await json.json()) as { content: Array<{ name: string }> };
+    expect(body.content.map((block) => block.name)).toEqual(clientNames);
   });
 
   test("rewrites repo path and directories in non-OpenCode Claude system prompts", () => {
@@ -3275,9 +3315,9 @@ describe("proxy contract: claude", () => {
       content: [
         {
           type: "tool_use",
-          name: "mcp_shell",
+          name: "mcp_Shell",
           id: "t-1",
-          input: { call: { type: "tool_use", name: "mcp_shell" } },
+          input: { call: { type: "tool_use", name: "mcp_Shell" } },
         },
       ],
     });
@@ -3292,7 +3332,7 @@ describe("proxy contract: claude", () => {
         type: "tool_use",
         name: "shell",
         id: "t-1",
-        input: { call: { type: "tool_use", name: "mcp_shell" } },
+        input: { call: { type: "tool_use", name: "mcp_Shell" } },
       },
     ]);
     expect(capture.read()).toEqual({
@@ -3315,7 +3355,7 @@ describe("proxy contract: claude", () => {
               'data: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_'
             )
           );
-          controller.enqueue(encoder.encode('shell"}}\n'));
+          controller.enqueue(encoder.encode('Shell"}}\n'));
           controller.enqueue(encoder.encode("\n"));
           controller.close();
         },
@@ -3440,7 +3480,7 @@ describe("proxy contract: claude", () => {
               'data: {"type":"content_block_start","content_block":{"type":"tool_use",\n'
             )
           );
-          controller.enqueue(encoder.encode('data: "name":"mcp_shell"}}\n\n'));
+          controller.enqueue(encoder.encode('data: "name":"mcp_Shell"}}\n\n'));
           controller.close();
         },
       }),
@@ -3468,7 +3508,7 @@ describe("proxy contract: claude", () => {
         start(controller): void {
           controller.enqueue(
             encoder.encode(
-              'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_shell"}}\r\n\r\n'
+              'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_Shell"}}\r\n\r\n'
             )
           );
           controller.close();
@@ -3498,12 +3538,12 @@ describe("proxy contract: claude", () => {
         start(controller): void {
           controller.enqueue(
             encoder.encode(
-              'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_shell"}}\n\r\n'
+              'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_Shell"}}\n\r\n'
             )
           );
           controller.enqueue(
             encoder.encode(
-              'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_browser"}}\r\n\n'
+              'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_Browser"}}\r\n\n'
             )
           );
           controller.close();
@@ -3539,7 +3579,7 @@ describe("proxy contract: claude", () => {
             )
           );
           controller.enqueue(
-            encoder.encode('data: "name":"mcp_shell"}}\n\r\n')
+            encoder.encode('data: "name":"mcp_Shell"}}\n\r\n')
           );
           controller.close();
         },
@@ -3568,8 +3608,8 @@ describe("proxy contract: claude", () => {
         start(controller): void {
           controller.enqueue(
             encoder.encode(
-              'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_shell"}}\n\n' +
-                'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_browser"}}\n\n'
+              'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_Shell"}}\n\n' +
+                'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_Browser"}}\n\n'
             )
           );
           controller.close();
@@ -4022,7 +4062,7 @@ describe("proxy contract: claude", () => {
   test("leaves tool_use look-alikes outside content blocks byte-for-byte", async () => {
     const result = prepareClaudeUsageRequest();
     const events =
-      'event: future_event\ndata: { "type": "future_event", "item": {"type":"tool_use","name":"mcp_shell"} }\n\n' +
+      'event: future_event\ndata: { "type": "future_event", "item": {"type":"tool_use","name":"mcp_Shell"} }\n\n' +
       'event: message_delta\ndata: { "type": "message_delta", "delta": {"stop_reason":"tool_use"} }\n\n';
 
     const response = await result.transformResponse(
@@ -4036,11 +4076,11 @@ describe("proxy contract: claude", () => {
     const result = prepareClaudeUsageRequest();
 
     const transformedResponse = await result.transformResponse(
-      createSseResponse([{ type: "status", name: "mcp_shell" }])
+      createSseResponse([{ type: "status", name: "mcp_Shell" }])
     );
 
     const transformedText = await transformedResponse.text();
-    expect(transformedText).toContain('"name":"mcp_shell"');
+    expect(transformedText).toContain('"name":"mcp_Shell"');
   });
 });
 

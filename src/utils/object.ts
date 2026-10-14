@@ -26,3 +26,9 @@ export const getObjectProperty = (
   const nested = value[key];
   return isObjectRecord(nested) ? nested : null;
 };
+
+export const withField = (
+  record: JsonObject,
+  key: string,
+  value: unknown
+): JsonObject => (value === record[key] ? record : { ...record, [key]: value });
