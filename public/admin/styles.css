@@ -2649,18 +2649,16 @@ input[type="checkbox"].toggle:checked::after {
 
 /* Installed app */
 
-.standalone body::before {
-  content: "";
+/* iOS 27 blurs whatever an installed app draws under the status bar unless an
+   opaque fixed element covers it, and then paints the bar in that element's
+   colour. It must be a real element: pseudo-elements are not sampled. */
+.statusbar {
   position: fixed;
-  top: 0;
-  right: 0;
-  left: 0;
+  inset: 0 0 auto;
   z-index: 920;
   height: env(safe-area-inset-top);
   pointer-events: none;
-  background: rgba(10, 10, 11, 0.82);
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
+  background: var(--page);
 }
 .standalone .top {
   padding-top: env(safe-area-inset-top);
@@ -2713,6 +2711,11 @@ input[type="checkbox"].toggle:checked::after {
 }
 
 @media (max-width: 640px) {
+  .standalone {
+    /* The tab bar sits a little into the home indicator area, like native
+       tab bars, instead of above all of it. */
+    --tabbar-bottom: max(8px, calc(env(safe-area-inset-bottom) - 14px));
+  }
   .standalone .tabs {
     position: fixed;
     right: 0;
@@ -2724,7 +2727,7 @@ input[type="checkbox"].toggle:checked::after {
     width: auto;
     height: auto;
     margin: 0;
-    padding: 0 max(8px, env(safe-area-inset-right)) env(safe-area-inset-bottom)
+    padding: 0 max(8px, env(safe-area-inset-right)) var(--tabbar-bottom)
       max(8px, env(safe-area-inset-left));
     background: rgba(16, 16, 18, 0.86);
     border-top: 1px solid var(--line);
@@ -2759,9 +2762,9 @@ input[type="checkbox"].toggle:checked::after {
     content: none;
   }
   .standalone .main {
-    padding-bottom: calc(52px + env(safe-area-inset-bottom) + 32px);
+    padding-bottom: calc(52px + var(--tabbar-bottom) + 32px);
   }
   .standalone #toast-container {
-    bottom: calc(52px + env(safe-area-inset-bottom) + 12px);
+    bottom: calc(52px + var(--tabbar-bottom) + 12px);
   }
 }
