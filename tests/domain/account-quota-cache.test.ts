@@ -14,24 +14,23 @@ import type { AccountSnapshotStore } from "../../src/domain/providers/account-sn
 import {
   listProviderAccountQuotas,
   peekProviderAccountQuotas,
-  recordProviderAccountRateLimits,
+  recordProviderAccountLiveLimits,
   setAccountSnapshotStore,
 } from "../../src/domain/providers/provider-account-tracking";
 import {
-  readClaudeRateLimitHeaders,
-  readCodexRateLimitEvent,
-  readCodexRateLimitHeaders,
-} from "../../src/providers/account-tracking/rate-limit-headers";
+  readClaudeLiveLimits,
+  readCodexLiveLimits,
+  readCodexLiveLimitsEvent,
+} from "../../src/providers/account-tracking/live-limits";
 
 const claudeAccount = (
   accountId: string | null = null,
-  id: string = crypto.randomUUID(),
-  provider: "claude" | "codex" = "claude"
+  id: string = crypto.randomUUID()
 ): ProviderAccountRecord => {
   const now = Date.now();
   return {
     id,
-    provider,
+    provider: "claude",
     label: null,
     accountId,
     isPrimary: true,
@@ -379,9 +378,8 @@ describe("account quota cache", () => {
 });
 
 const claudeHeaders = (fiveHour: number, sevenDay?: number) =>
-  readClaudeRateLimitHeaders(
+  readClaudeLiveLimits(
     new Headers({
-      "anthropic-ratelimit-unified-status": "allowed",
       "anthropic-ratelimit-unified-5h-utilization": String(fiveHour),
       "anthropic-ratelimit-unified-5h-reset": "1791000000",
       ...(sevenDay === undefined
@@ -443,17 +441,13 @@ describe("limits from proxied traffic", () => {
     expect(usageCalls).toBe(1);
 
     setSystemTime(new Date(startedAt + 120_000));
-    const result = recordProviderAccountRateLimits(
-      account,
-      claudeHeaders(0.42, 0.25)
-    );
-    expect(result).toBeUndefined();
+    recordProviderAccountLiveLimits(account, claudeHeaders(0.42, 0.25));
 
     const quotas = await listProviderAccountQuotas(database, [account]);
     expect(quotas.get(account.id)).toMatchObject({
       fetchedAt: startedAt + 120_000,
       error: null,
-      source: "headers",
+      source: "traffic",
       data: {
         plan: { type: "max_20x" },
         subscription: {
@@ -485,37 +479,6 @@ describe("limits from proxied traffic", () => {
     });
   });
 
-  test("a rejected Claude request marks the deciding window as reached", async () => {
-    globalThis.fetch = trackingFetch(() =>
-      Response.json({
-        five_hour: { utilization: 60, resets_at: "2026-10-14T18:00:00Z" },
-        seven_day: { utilization: 99, resets_at: "2026-10-18T00:00:00Z" },
-      })
-    );
-    const account = claudeAccount();
-    await listProviderAccountQuotas(database, [account]);
-
-    recordProviderAccountRateLimits(
-      account,
-      readClaudeRateLimitHeaders(
-        new Headers({
-          "anthropic-ratelimit-unified-status": "rejected",
-          "anthropic-ratelimit-unified-representative-claim": "seven_day",
-          "anthropic-ratelimit-unified-reset": "1791500000",
-        })
-      )
-    );
-    const quotas = await listProviderAccountQuotas(database, [account]);
-    expect(quotas.get(account.id)).toMatchObject({
-      data: {
-        subscription: {
-          fiveHour: { utilization: 60 },
-          sevenDay: { utilization: 100, resetsAt: "2026-10-18T00:00:00Z" },
-        },
-      },
-    });
-  });
-
   test("header readings refresh a paused Claude account without lifting the pause", async () => {
     let usageCalls = 0;
     let rateLimited = true;
@@ -536,13 +499,13 @@ describe("limits from proxied traffic", () => {
     expect(first.get(limited.id)).toMatchObject({ errorStatus: 429 });
     expect(usageCalls).toBe(1);
 
-    recordProviderAccountRateLimits(limited, claudeHeaders(0.3));
+    recordProviderAccountLiveLimits(limited, claudeHeaders(0.3));
     const fresh = await listProviderAccountQuotas(database, [limited]);
     expect(fresh.get(limited.id)).toMatchObject({
       error: null,
       errorStatus: null,
       fetchedAt: startedAt,
-      source: "headers",
+      source: "traffic",
       data: { subscription: { fiveHour: { utilization: 30 } } },
     });
 
@@ -581,15 +544,6 @@ describe("limits from proxied traffic", () => {
               reset_at: 1_791_500_000,
             },
           },
-          additional_rate_limits: [
-            {
-              metered_feature: "codex_bengalfox",
-              limit_name: "GPT-5.3-Codex-Spark",
-              rate_limit: {
-                primary_window: { used_percent: 2, reset_at: 1_791_000_000 },
-              },
-            },
-          ],
           spend_control: { reached: false },
           rate_limit_reset_credits: { available_count: 1 },
         },
@@ -605,40 +559,33 @@ describe("limits from proxied traffic", () => {
       };
       return Promise.resolve(Response.json(bodies[path] ?? {}));
     }) as unknown as typeof fetch;
-    const account = claudeAccount("workspace-1", crypto.randomUUID(), "codex");
+    const account: ProviderAccountRecord = {
+      ...claudeAccount("workspace-1"),
+      provider: "codex",
+    };
     await listProviderAccountQuotas(database, [account]);
     const usageCalls = calls["/backend-api/wham/usage"];
 
-    recordProviderAccountRateLimits(
+    recordProviderAccountLiveLimits(
       account,
-      readCodexRateLimitHeaders(
+      readCodexLiveLimits(
         new Headers({
-          "x-codex-primary-used-percent": "100",
-          "x-codex-primary-window-minutes": "300",
-          "x-codex-primary-reset-at": "1791000000",
-          "x-codex-bengalfox-primary-used-percent": "15",
-          "x-codex-bengalfox-limit-name": "GPT-5.3-Codex-Spark",
-          "x-codex-rate-limit-reached-type": "rate_limit_reached",
+          "x-codex-primary-used-percent": "45",
         })
       )
     );
-    const reached = await listProviderAccountQuotas(database, [account]);
-    expect(reached.get(account.id)).toMatchObject({
-      source: "headers",
+    const fromHeaders = await listProviderAccountQuotas(database, [account]);
+    expect(fromHeaders.get(account.id)).toMatchObject({
+      source: "traffic",
       data: {
         status: {
           planType: "plus",
-          allowed: false,
-          limitReached: true,
-          rateLimitReachedType: "rate_limit_reached",
-          primaryWindow: { usedPercent: 100, windowSeconds: 18_000 },
+          primaryWindow: {
+            usedPercent: 45,
+            windowSeconds: 18_000,
+            resetAt: 1_791_000_000,
+          },
           secondaryWindow: { usedPercent: 30 },
-          additionalRateLimits: [
-            {
-              meteredFeature: "codex_bengalfox",
-              primaryWindow: { usedPercent: 15, resetAt: 1_791_000_000 },
-            },
-          ],
           spendControl: { reached: false },
           resetCreditsAvailable: 1,
         },
@@ -646,7 +593,7 @@ describe("limits from proxied traffic", () => {
         profile: { displayName: "Dev", lifetimeTokens: 1000 },
       },
     });
-    const event = readCodexRateLimitEvent({
+    const event = readCodexLiveLimitsEvent({
       type: "codex.rate_limits",
       plan_type: "pro",
       rate_limits: {
@@ -657,17 +604,14 @@ describe("limits from proxied traffic", () => {
         },
       },
     });
-    recordProviderAccountRateLimits(account, event);
-    const recovered = await listProviderAccountQuotas(database, [account]);
-    expect(recovered.get(account.id)).toMatchObject({
+    recordProviderAccountLiveLimits(account, event);
+    const fromEvent = await listProviderAccountQuotas(database, [account]);
+    expect(fromEvent.get(account.id)).toMatchObject({
       data: {
         status: {
           planType: "pro",
-          allowed: true,
-          limitReached: false,
-          rateLimitReachedType: null,
           primaryWindow: { usedPercent: 4, resetAt: 1_791_018_000 },
-          additionalRateLimits: [{ primaryWindow: { usedPercent: 15 } }],
+          secondaryWindow: { usedPercent: 30 },
         },
       },
     });
@@ -675,12 +619,10 @@ describe("limits from proxied traffic", () => {
 
     // A reading never lands on another provider's or identity's limits.
     const moved = { ...account, accountId: "workspace-2" };
-    recordProviderAccountRateLimits(moved, claudeHeaders(0.9));
-    recordProviderAccountRateLimits(
+    recordProviderAccountLiveLimits(moved, claudeHeaders(0.9));
+    recordProviderAccountLiveLimits(
       moved,
-      readCodexRateLimitHeaders(
-        new Headers({ "x-codex-primary-used-percent": "70" })
-      )
+      readCodexLiveLimits(new Headers({ "x-codex-primary-used-percent": "70" }))
     );
     const original = await listProviderAccountQuotas(database, [account]);
     expect(original.get(account.id)).toMatchObject({
@@ -699,12 +641,12 @@ describe("limits from proxied traffic", () => {
     const account = claudeAccount();
     const pending = listProviderAccountQuotas(database, [account]);
     await Bun.sleep(0);
-    recordProviderAccountRateLimits(account, claudeHeaders(0.6));
+    recordProviderAccountLiveLimits(account, claudeHeaders(0.6));
     release?.(Response.json({}, { status: 500 }));
     const quotas = await pending;
     expect(quotas.get(account.id)).toMatchObject({
       errorStatus: 500,
-      source: "headers",
+      source: "traffic",
       data: { subscription: { fiveHour: { utilization: 60 } } },
     });
   });
@@ -719,12 +661,11 @@ describe("limits from proxied traffic", () => {
       });
     });
     const account = claudeAccount();
-    recordProviderAccountRateLimits(account, claudeHeaders(0.5));
-    recordProviderAccountRateLimits(account, null);
+    recordProviderAccountLiveLimits(account, claudeHeaders(0.5));
 
     const peeked = peekProviderAccountQuotas(database, [account]);
     expect(peeked.get(account.id)).toMatchObject({
-      source: "headers",
+      source: "traffic",
       data: {
         subscription: { fiveHour: { utilization: 50 }, modelWindows: {} },
       },
@@ -743,8 +684,8 @@ describe("limits from proxied traffic", () => {
     setAccountSnapshotStore(store);
     const info = spyOn(console, "info").mockImplementation(() => undefined);
     const account = claudeAccount();
-    recordProviderAccountRateLimits(account, claudeHeaders(0.2));
-    recordProviderAccountRateLimits(account, claudeHeaders(0.3));
+    recordProviderAccountLiveLimits(account, claudeHeaders(0.2));
+    recordProviderAccountLiveLimits(account, claudeHeaders(0.3));
     const lines = info.mock.calls.map((call) => String(call[0]));
     info.mockRestore();
 
@@ -752,11 +693,10 @@ describe("limits from proxied traffic", () => {
     const [stored, quota, signature] = recorded[1] ?? [];
     expect(stored).toMatchObject({ id: account.id });
     expect(quota).toMatchObject({
-      source: "headers",
+      source: "traffic",
       error: null,
       data: {
         provider: "claude",
-        source: "headers",
         subscription: { fiveHour: { utilization: 30 } },
       },
     });
@@ -768,7 +708,7 @@ describe("limits from proxied traffic", () => {
       event: "provider_account_limits_from_traffic",
       providerAccountId: account.id,
       provider: "claude",
-      fields: "five_hour,status",
+      fields: "five_hour",
     });
     expect(line).not.toContain("claude-access");
   });

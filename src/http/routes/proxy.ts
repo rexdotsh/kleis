@@ -7,17 +7,16 @@ import {
   MISSING_PROVIDER_ACCOUNT_ID,
 } from "../../db/repositories/request-usage";
 import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
-import { recordProviderAccountRateLimits } from "../../domain/providers/provider-account-tracking";
+import { recordProviderAccountLiveLimits } from "../../domain/providers/provider-account-tracking";
 import {
   findPinnedProviderAccounts,
   getRoutableProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../domain/providers/provider-service";
 import {
-  type RateLimitReading,
-  readClaudeRateLimitHeaders,
-  readCodexRateLimitHeaders,
-} from "../../providers/account-tracking/rate-limit-headers";
+  readClaudeLiveLimits,
+  readCodexLiveLimits,
+} from "../../providers/account-tracking/live-limits";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import {
   deriveCodexSessionId,
@@ -76,21 +75,6 @@ const createCodexSseHeaderTimeout = (): {
 };
 
 const usageBuffer = createUsageBuffer(db);
-
-// Reading limits off a response must never fail the request it rides on.
-const recordRateLimits = (
-  account: ProviderAccountRecord,
-  read: () => RateLimitReading | null
-): void => {
-  try {
-    recordProviderAccountRateLimits(account, read());
-  } catch (error) {
-    logWarn("proxy_rate_limit_record_failed", {
-      providerAccountId: account.id,
-      ...errorLogFields(error),
-    });
-  }
-};
 
 export const flushProxyUsage = (): Promise<void> => usageBuffer.flush();
 
@@ -332,8 +316,8 @@ const proxyRequest = async (
             sessionId: codexSessionId,
             upstreamSessionId: codexUpstreamSessionId,
             onTokenUsage: usageRecorder.onTokenUsage,
-            onRateLimits: (reading) =>
-              recordRateLimits(attemptAccount, () => reading),
+            onLiveLimits: (limits) =>
+              recordProviderAccountLiveLimits(attemptAccount, limits),
             signal: context.req.raw.signal,
           });
           if (webSocketResponse) {
@@ -395,8 +379,9 @@ const proxyRequest = async (
         });
       }
       const { attempt } = result;
-      recordRateLimits(account, () =>
-        readCodexRateLimitHeaders(attempt.response.headers)
+      recordProviderAccountLiveLimits(
+        account,
+        readCodexLiveLimits(attempt.response.headers)
       );
 
       let responseToClient = attempt.response;
@@ -494,8 +479,9 @@ const proxyRequest = async (
         });
       }
       const { attempt } = result;
-      recordRateLimits(account, () =>
-        readClaudeRateLimitHeaders(attempt.response.headers)
+      recordProviderAccountLiveLimits(
+        account,
+        readClaudeLiveLimits(attempt.response.headers)
       );
       let responseToClient = attempt.response;
       try {

@@ -28,14 +28,17 @@ import {
   fetchClaudeSubscriptionUsage,
 } from "../../providers/account-tracking/claude";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
-import type { RateLimitReading } from "../../providers/account-tracking/rate-limit-headers";
+import {
+  type LiveLimits,
+  mergeClaudeLiveLimits,
+  mergeCodexLiveLimits,
+} from "../../providers/account-tracking/live-limits";
 import { errorLogFields, logInfo, logWarn } from "../../utils/log";
 import type {
   AccountSnapshotStore,
   QuotaSignature,
 } from "./account-snapshot-store";
 import { refreshProviderAccount } from "./provider-service";
-import { mergeClaudeReading, mergeCodexReading } from "./rate-limit-readings";
 
 const CACHE_MS = 60_000;
 const CLAUDE_CACHE_MS = 3 * 60_000;
@@ -66,15 +69,13 @@ type ClaudeTrackingData = {
 
 type TrackingData = CodexTrackingData | ClaudeTrackingData;
 
-// "headers" when the limits were last read from proxied traffic, "poll" when
-// they came from the providers' usage endpoints.
-export type QuotaSource = "headers" | "poll";
-
 export type AccountQuota = {
   fetchedAt: number | null;
   error: string | null;
   errorStatus: number | null;
-  source: QuotaSource | null;
+  // "traffic" when the limits were last read from a proxied response. Not
+  // persisted: limits restored after a restart report null.
+  source: "poll" | "traffic" | null;
   data: TrackingData;
 };
 
@@ -452,7 +453,7 @@ const fetchProviderAccountQuota = async (
     // A lookup started later, or an invalidation, owns the cache entry.
     if (generations.get(key) === generation) {
       cache.set(key, { expiresAt, quota });
-      recordQuotaSnapshot(stored, quota);
+      snapshots?.recordQuota(stored, quota, quotaSignature(quota.data));
     }
     return quota;
   };
@@ -575,18 +576,6 @@ const quotaSignature = (data: TrackingData): QuotaSignature => {
   };
 };
 
-// The source travels inside the stored quota JSON, next to the data.
-const recordQuotaSnapshot = (
-  account: TrackingAccount,
-  quota: AccountQuota
-): void => {
-  snapshots?.recordQuota(
-    account,
-    { ...quota, data: { ...quota.data, source: quota.source } },
-    quotaSignature(quota.data)
-  );
-};
-
 const parseJson = (value: string | null): unknown => {
   if (!value) {
     return null;
@@ -615,14 +604,11 @@ const restoreSnapshot = (
     });
   }
 
-  const stored = parseJson(row.quotaJson) as
-    | (TrackingData & { source?: unknown })
-    | null;
-  if (stored?.provider !== account.provider) {
+  const data = parseJson(row.quotaJson) as TrackingData | null;
+  if (data?.provider !== account.provider) {
     snapshots?.seed(account.id, row.updatedAt, null);
     return;
   }
-  const { source, ...data } = stored;
   if (data.provider === "claude" && restoredProfile?.provider === "claude") {
     data.plan = restoredProfile.plan;
   }
@@ -636,7 +622,7 @@ const restoreSnapshot = (
         fetchedAt: row.quotaFetchedAt,
         error: row.lastError,
         errorStatus: row.lastErrorStatus,
-        source: source === "headers" || source === "poll" ? source : "poll",
+        source: null,
         data,
       },
     });
@@ -735,82 +721,79 @@ export const peekProviderAccountQuotas = (
   return quotas;
 };
 
-const loggedReadings = new Set<string>();
+const loggedLiveLimits = new Set<string>();
 
-const describeReading = (reading: RateLimitReading): string =>
-  reading.provider === "claude"
-    ? [...Object.keys(reading.windows), reading.status && "status"]
-        .filter(Boolean)
-        .join(",")
-    : [
-        ...reading.limits.map((limit) => limit.limitId),
-        reading.credits && "credits",
-        reading.planType && "plan",
-        reading.rateLimitReachedType && "reached",
-      ]
-        .filter(Boolean)
-        .join(",");
-
-const mergeReading = (
+const mergeLiveLimits = (
   previous: TrackingData | undefined,
-  reading: RateLimitReading,
+  limits: LiveLimits,
   now: number
 ): TrackingData => {
-  if (reading.provider === "claude") {
+  if (limits.provider === "claude") {
     const base = previous?.provider === "claude" ? previous : undefined;
     return {
       ...base,
       provider: "claude",
-      subscription: mergeClaudeReading(base?.subscription, reading),
+      subscription: mergeClaudeLiveLimits(base?.subscription, limits),
     };
   }
   const base = previous?.provider === "codex" ? previous : undefined;
   return {
     ...base,
     provider: "codex",
-    status: mergeCodexReading(base?.status, reading, now),
+    status: mergeCodexLiveLimits(base?.status, limits, now),
   };
 };
 
 // Limits read from a proxied response count as a fresh sync: the next poll
-// waits the usual interval from now, so busy accounts rarely need one. This
-// runs on the proxy hot path, so it only touches memory; the snapshot store
-// buffers the write. It leaves the shared Claude 429 pause alone, since that
-// is about the usage endpoint.
-export const recordProviderAccountRateLimits = (
+// waits the usual interval from now, so busy accounts rarely need one. It runs
+// on the proxy hot path, so it only touches memory and the buffered snapshot
+// store, and never throws. The shared Claude 429 pause is about the usage
+// endpoint, so it stays.
+export const recordProviderAccountLiveLimits = (
   account: ProviderAccountRecord,
-  reading: RateLimitReading | null
+  limits: LiveLimits | null
 ): void => {
   if (
-    !(reading && isTrackingAccount(account)) ||
-    account.provider !== reading.provider
+    !(limits && isTrackingAccount(account)) ||
+    account.provider !== limits.provider
   ) {
     return;
   }
-  const key = quotaKey(account);
-  const now = Date.now();
-  const entry = cache.get(key);
-  const quota: AccountQuota = {
-    fetchedAt: now,
-    error: null,
-    errorStatus: null,
-    source: "headers",
-    data: mergeReading(entry?.quota.data, reading, now),
-  };
-  const baseMs = account.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS;
-  cache.set(key, {
-    quota,
-    // Without an earlier sync, the plan and the limits only the usage
-    // endpoints report are still missing, so the next read polls at once.
-    expiresAt: entry ? Math.max(entry.expiresAt, now + baseMs) : now,
-  });
-  recordQuotaSnapshot(account, quota);
-  if (!loggedReadings.has(key)) {
-    loggedReadings.add(key);
-    logInfo("provider_account_limits_from_traffic", {
+  try {
+    const key = quotaKey(account);
+    const now = Date.now();
+    const entry = cache.get(key);
+    const quota: AccountQuota = {
+      fetchedAt: now,
+      error: null,
+      errorStatus: null,
+      source: "traffic",
+      data: mergeLiveLimits(entry?.quota.data, limits, now),
+    };
+    const baseMs = account.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS;
+    cache.set(key, {
+      quota,
+      // Without an earlier poll the plan and the limits only the usage
+      // endpoints report are missing, so the next read still polls.
+      expiresAt: entry ? Math.max(entry.expiresAt, now + baseMs) : now,
+    });
+    snapshots?.recordQuota(account, quota, quotaSignature(quota.data));
+    if (!loggedLiveLimits.has(key)) {
+      loggedLiveLimits.add(key);
+      logInfo("provider_account_limits_from_traffic", {
+        providerAccountId: account.id,
+        provider: account.provider,
+        fields: Object.keys(
+          limits.provider === "claude" ? limits.windows : limits
+        )
+          .filter((field) => field !== "provider")
+          .join(","),
+      });
+    }
+  } catch (error) {
+    logWarn("provider_account_live_limits_failed", {
       providerAccountId: account.id,
-      provider: account.provider,
-      fields: describeReading(reading),
+      ...errorLogFields(error),
     });
   }
 };

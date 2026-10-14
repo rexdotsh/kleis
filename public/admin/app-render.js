@@ -837,7 +837,7 @@ function keyFormHtml(mode, key = null) {
 // Limits read off proxied responses are as fresh as the account's traffic.
 function limitsSourceText(quota) {
   const when = escapeHtml(relativeTime(quota.fetchedAt));
-  return quota.source === "headers"
+  return quota.source === "traffic"
     ? `<span title="Read from the provider's response to a proxied request">Limits from live traffic, ${when}</span>`
     : `Limits synced ${when}`;
 }
