@@ -176,8 +176,17 @@ describe("admin mutation and session guards", () => {
   afterAll(() => window.happyDOM.cancelAsync());
 
   test("background actions report unexpected rejections", async () => {
-    data.runAction(Promise.reject(new Error("Background action failed")));
-    await tick();
+    const reported: unknown[] = [];
+    const consoleError = console.error;
+    console.error = (error: unknown) => reported.push(error);
+    const failure = new Error("Background action failed");
+    try {
+      data.runAction(Promise.reject(failure));
+      await tick();
+    } finally {
+      console.error = consoleError;
+    }
+    expect(reported).toEqual([failure]);
     expect($("#toast-container").textContent).toContain(
       "Background action failed"
     );

@@ -185,7 +185,8 @@ function setButtonBusy(button, busy) {
 
 function runAction(result) {
   Promise.resolve(result).catch((error) => {
-    toast(error?.message || "Something went wrong", "error");
+    console.error(error);
+    toast(error instanceof Error ? error.message : String(error), "error");
   });
 }
 
