@@ -19,12 +19,14 @@ import {
   keyById,
   maskKey,
   modelsUrlForKey,
+  mutationAttributes,
   normalizeUsage,
   relativeTime,
   requestDailyTokens,
   requestUsageDetail,
   state,
   syncScopedAccountAvailability,
+  syncMutationControls,
   tokenStatus,
   usageForKey,
   usageWindowLabel,
@@ -42,6 +44,12 @@ const accountName = (account) =>
 const keyName = (key) => key.label || maskKey(key.key);
 const shortDate = formatShortDate;
 const hasTraffic = (usage) => normalizeUsage(usage).requestCount > 0;
+
+const actionMutationAttributes = (action, target) =>
+  mutationAttributes(
+    action === "revoke-key" ? [action, "revoke-key-request"] : action,
+    target
+  );
 
 function untilText(timestamp) {
   const diff = timestamp - Date.now();
@@ -623,7 +631,7 @@ function creditsFact(account) {
   const title = next
     ? `${next.title || "Reset credit"}: ${next.description || "restores this account's Codex limits"}`
     : "Consume a reset credit to restore limits";
-  const use = `<button class="link small" type="button" data-action="redeem-reset-credit" data-account-id="${account.id}"${next ? ` data-credit-id="${escapeHtml(next.id)}"` : ""} title="${escapeHtml(title)}">Use one</button>`;
+  const use = `<button class="link small" type="button" data-action="redeem-reset-credit" data-account-id="${account.id}"${next ? ` data-credit-id="${escapeHtml(next.id)}"` : ""} ${mutationAttributes("redeem-reset-credit", `${account.id}:${next?.id || "auto"}`)} title="${escapeHtml(title)}">Use one</button>`;
   let expiryText = "";
   if (next) {
     expiryText = expiry
@@ -790,7 +798,7 @@ function accountEditHtml(account) {
         `<details class="json-edit"><summary>Show JSON</summary><textarea id="edit-account-metadata" class="field-input" rows="7" aria-label="Metadata JSON" placeholder='{"chatgptAccountId":"org_123"}'>${escapeHtml(formatMetadataForInput(account.metadata))}</textarea><p class="field-hint">Must be a JSON object. Leave empty to clear.</p></details>`
       )}
     </div>
-    ${formFoot(`<button id="btn-save-account" class="btn btn-primary btn-sm" data-action="save-account" data-account-id="${account.id}" type="button">Save</button>`, "cancel-edit-account")}
+    ${formFoot(`<button id="btn-save-account" class="btn btn-primary btn-sm" data-action="save-account" data-account-id="${account.id}" ${mutationAttributes("save-account", account.id)} type="button">Save</button>`, "cancel-edit-account")}
   </div>`;
 }
 
@@ -825,8 +833,8 @@ function keyFormHtml(mode, key = null) {
         ),
   ];
   const submit = create
-    ? '<button id="btn-submit-key" class="btn btn-primary btn-sm" data-action="submit-key" type="button">Create key</button>'
-    : `<button id="btn-save-key" class="btn btn-primary btn-sm" data-action="save-key" data-key-id="${key.id}" type="button">Save</button>`;
+    ? `<button id="btn-submit-key" class="btn btn-primary btn-sm" data-action="submit-key" ${mutationAttributes("submit-key")} type="button">Create key</button>`
+    : `<button id="btn-save-key" class="btn btn-primary btn-sm" data-action="save-key" data-key-id="${key.id}" ${mutationAttributes("save-key", key.id)} type="button">Save</button>`;
   return `<div class="${create ? "create-form" : "detail"} inline-form" data-form="${create ? "create-key" : `edit-key:${key.id}`}"${key ? ` data-detail-for="${key.id}"` : ""}>
     ${create ? '<div class="form-title">New API key</div>' : ""}
     <div class="form-rows">${rows.join("")}</div>
@@ -847,7 +855,7 @@ function accountDetailHtml(account) {
   const supportsOAuth =
     account.provider === "codex" || account.provider === "claude";
   const button = (label, action, shortcut, cls = "btn btn-ghost btn-sm") =>
-    `<button class="${cls}" data-action="${action}" data-account-id="${account.id}" type="button">${label}${kbd(shortcut)}</button>`;
+    `<button class="${cls}" data-action="${action}" data-account-id="${account.id}" ${actionMutationAttributes(action, account.id)} type="button">${label}${kbd(shortcut)}</button>`;
   const synced = account.quota?.fetchedAt
     ? `<span>${limitsSourceText(account.quota)}</span>`
     : "";
@@ -889,7 +897,7 @@ function groupHtml(provider, status, count) {
   const enabled = status?.enabled !== false;
   const name = providerName(provider);
   return `<div class="group t-acc" data-flip="group:${provider}">
-    <span class="group-name"><span class="cap">${escapeHtml(name)}</span><span class="muted small">${count}</span><button class="switch" type="button" role="switch" aria-checked="${enabled}" aria-label="${escapeHtml(name)} enabled" title="${enabled ? "Enabled" : "Disabled"}" data-action="toggle-provider" data-provider="${provider}" data-enabled="${enabled ? "false" : "true"}"></button>${enabled ? "" : '<span class="tag">Disabled</span>'}</span>
+    <span class="group-name"><span class="cap">${escapeHtml(name)}</span><span class="muted small">${count}</span><button class="switch" type="button" role="switch" aria-checked="${enabled}" aria-label="${escapeHtml(name)} enabled" title="${enabled ? "Enabled" : "Disabled"}" data-action="toggle-provider" data-provider="${provider}" data-enabled="${enabled ? "false" : "true"}" ${mutationAttributes("toggle-provider", provider)}></button>${enabled ? "" : '<span class="tag">Disabled</span>'}</span>
     ${accountColumnsHtml(`Requests ${escapeHtml(usageWindowLabel(state.accountUsageWindowMs))}`)}
   </div>`;
 }
@@ -945,6 +953,7 @@ function renderAccounts() {
   renderWithMotion(list, () => renderPreservingForm(list, groups), {
     anchor: state.motionAnchor,
   });
+  syncMutationControls();
   const expanded = state.expandedAccountId;
   if (
     expanded &&
@@ -1018,7 +1027,7 @@ function renderReauthorizeList() {
     const reason = flagged.includes(account)
       ? reauthorizeReason(account)
       : providerName(account.provider);
-    return `<button class="row reauth" type="button" data-action="reauthorize-account" data-account-id="${account.id}"><span class="name"><span class="dot ${flagged.includes(account) ? "err" : ""}"></span><span class="ellipsis">${escapeHtml(accountName(account))}</span></span><span class="small ${flagged.includes(account) ? "err" : "muted"}">${escapeHtml(reason)}</span>${icon("chev")}</button>`;
+    return `<button class="row reauth" type="button" aria-label="Reauthorize ${escapeHtml(accountName(account))}" data-action="reauthorize-account" data-account-id="${account.id}" ${mutationAttributes("reauthorize-account", account.id)}><span class="name"><span class="dot ${flagged.includes(account) ? "err" : ""}"></span><span class="ellipsis">${escapeHtml(accountName(account))}</span></span><span class="small ${flagged.includes(account) ? "err" : "muted"}">${escapeHtml(reason)}</span>${icon("chev")}</button>`;
   });
   if (others.length) {
     rows.push(
@@ -1168,7 +1177,7 @@ function keyDetailHtml(key) {
   const revoked = Boolean(key.revokedAt);
   const revealed = state.revealedKeyIds.has(key.id);
   const button = (label, action, shortcut = "", cls = "btn btn-ghost btn-sm") =>
-    `<button class="${cls}" data-action="${action}" data-key-id="${key.id}" type="button">${label}${shortcut ? kbd(shortcut) : ""}</button>`;
+    `<button class="${cls}" data-action="${action}" data-key-id="${key.id}" ${actionMutationAttributes(action, key.id)} type="button">${label}${shortcut ? kbd(shortcut) : ""}</button>`;
   const keyLine = revealed
     ? `<div class="key-line"><code>${escapeHtml(key.key)}</code>${button("Copy", "copy-key")}${button("Hide", "toggle-key")}</div>`
     : "";
@@ -1308,6 +1317,7 @@ function renderKeys() {
       anchor: state.motionAnchor,
     }
   );
+  syncMutationControls();
   if (state.creatingKey) syncScopedAccountAvailability("create");
   if (state.editingKeyId) syncScopedAccountAvailability("edit");
   const expanded = state.expandedKeyId;
@@ -1373,7 +1383,7 @@ function menuHtml(kind, id) {
     .map((item) => {
       if (item === "separator") return "<hr>";
       const shortcut = item.shortcut === "Del" ? "Backspace" : item.shortcut;
-      return `<button class="menu-item${item.danger ? " danger" : ""}" type="button" role="menuitem" data-action="${item.action}" data-${kind}-id="${id}" data-shortcut="${shortcut}"><span>${item.label}</span><span class="kbd">${item.shortcut}</span></button>`;
+      return `<button class="menu-item${item.danger ? " danger" : ""}" type="button" role="menuitem" aria-label="${escapeHtml(item.label)}" data-action="${item.action}" data-${kind}-id="${id}" ${actionMutationAttributes(item.action, id)} data-shortcut="${shortcut}"><span>${item.label}</span><span class="kbd">${item.shortcut}</span></button>`;
     })
     .join("");
 }
@@ -1745,7 +1755,7 @@ function renderOAuthFlow(data, provider) {
     ${steps.join("")}
     <p id="oauth-flow-error" class="oauth-flow-error" role="alert" hidden></p>
     <div class="flow-actions">
-      <button class="btn btn-primary btn-block" type="button" id="btn-oauth-complete">${isDevice ? "I\u2019ve approved it" : "Connect account"}</button>
+      <button class="btn btn-primary btn-block" type="button" id="btn-oauth-complete" ${mutationAttributes("complete-oauth", data.state)}>${isDevice ? "I\u2019ve approved it" : "Connect account"}</button>
       <button class="btn btn-ghost" type="button" id="btn-oauth-cancel">Start over</button>
     </div>
   </div>`;

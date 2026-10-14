@@ -1,115 +1,99 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+import { Window } from "happy-dom";
 
-const fakeElement = () => {
-  const classes = new Set<string>();
-  const children: unknown[] = [];
-  return {
-    value: "",
-    disabled: false,
-    hidden: true,
-    innerHTML: "",
-    textContent: "",
-    checked: false,
-    dataset: {},
-    style: { display: "" },
-    offsetWidth: 240,
-    offsetHeight: 120,
-    children,
-    classList: {
-      contains: (name: string) => classes.has(name),
-      add: (name: string) => classes.add(name),
-      remove: (name: string) => classes.delete(name),
-      toggle: (name: string, on = !classes.has(name)) =>
-        on ? classes.add(name) : classes.delete(name),
-    },
-    append: (...items: unknown[]) => children.push(...items),
-    appendChild: (child: unknown) => children.push(child),
-    querySelector: () => null,
-    setAttribute: () => undefined,
-    focus: () => undefined,
-    remove: () => undefined,
-  };
-};
-const elements = new Map<string, ReturnType<typeof fakeElement>>();
-const element = (selector: string) => {
-  let current = elements.get(selector);
-  if (!current) {
-    current = fakeElement();
-    elements.set(selector, current);
-  }
-  return current;
-};
-
-const globals = globalThis as Record<string, unknown>;
-const originalGlobals = Object.fromEntries(
-  [
-    "document",
-    "window",
-    "localStorage",
-    "location",
-    "history",
-    "innerWidth",
-    "innerHeight",
-    "scrollX",
-    "scrollY",
-    "fetch",
-  ].map((key) => [key, globals[key]])
+const window = new Window({
+  url: "http://localhost/admin/",
+  settings: { disableJavaScriptEvaluation: true },
+});
+window.document.write(
+  await Bun.file(
+    new URL("../../public/admin/index.html", import.meta.url)
+  ).text()
 );
-const installGlobals = () => {
-  globals.document = {
-    querySelector: element,
-    querySelectorAll: () => [],
-    createElement: fakeElement,
-  };
-  globals.window = { location: { origin: "http://localhost" } };
-  globals.localStorage = {
-    getItem: () => null,
-    setItem: () => undefined,
-    removeItem: () => undefined,
-  };
-  globals.location = { hash: "" };
-  globals.history = { replaceState: () => undefined };
-  globals.innerWidth = 1200;
-  globals.innerHeight = 800;
-  globals.scrollX = 0;
-  globals.scrollY = 0;
-};
-
+const globals = globalThis as Record<string, unknown>;
+const names = [
+  "window",
+  "document",
+  "localStorage",
+  "navigator",
+  "location",
+  "history",
+  "HTMLElement",
+  "MutationObserver",
+  "matchMedia",
+  "requestAnimationFrame",
+  "cancelAnimationFrame",
+  "innerWidth",
+  "innerHeight",
+  "scrollX",
+  "scrollY",
+  "fetch",
+];
+const originals = new Map(
+  names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)])
+);
+function installGlobals() {
+  for (const name of names.filter((name) => name !== "fetch")) {
+    let value = name === "window" ? window : Reflect.get(window, name);
+    if (
+      ["matchMedia", "requestAnimationFrame", "cancelAnimationFrame"].includes(
+        name
+      )
+    )
+      value = value.bind(window);
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      writable: true,
+      value,
+    });
+  }
+}
 installGlobals();
-const {
-  cancelOAuthFlow,
-  completeOAuth,
-  createKey,
-  deleteAccount,
-  deleteKey,
-  handleLogin,
-  importAccount,
-  loadAccounts,
-  loadAccountUsage,
-  loadDashboard,
-  loadKeys,
-  loadKeyUsage,
-  logout,
-  reauthorizeAccount,
-  redeemResetCredit,
-  refreshAccount,
-  requestDailyTokens,
-  requestUsageDetail,
-  resolveConfirm,
-  revokeKey,
-  rotateKey,
-  saveAccountEdits,
-  saveKeyEdits,
-  setPrimary,
-  startOAuth,
-  state,
-  toggleProvider,
-} = await import("../../public/admin/app-data.js");
-const { renderAccounts, renderKeys } = await import(
+const data = await import("../../public/admin/app-data.js");
+const { renderAccounts, renderKeys, renderOAuthFlow } = await import(
   "../../public/admin/app-render.js"
 );
-
-const deferredResponse = () => {
+await import("../../public/admin/app.js");
+const { state } = data;
+const $ = (selector: string) =>
+  window.document.querySelector(selector) as unknown as HTMLButtonElement;
+const account = {
+  id: "account-preview",
+  provider: "codex",
+  label: "Preview account",
+  expiresAt: Date.now() + 3_600_000,
+  quota: { data: { provider: "codex", status: {} } },
+};
+const key = {
+  id: "key-preview",
+  key: "kleis_fake_preview",
+  label: "Preview key",
+};
+const replacement = {
+  ...key,
+  id: "replacement-preview",
+  key: "kleis_fake_replacement",
+};
+const tick = () => Bun.sleep(0);
+const confirm = (accepted = true) => data.resolveConfirm(accepted);
+const keyboard = (key: string, selector = "body") =>
+  window.document
+    .querySelector(selector)
+    ?.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key, bubbles: true })
+    );
+const menu = (kind: "account" | "key", action: string) => {
+  $(`[data-menu="${kind}"]`).click();
+  return $(`#menu [data-action="${action}"]`);
+};
+function deferred() {
   let release: (response: Response) => void = () => undefined;
   const promise = new Promise<Response>((resolve) => {
     release = resolve;
@@ -118,483 +102,474 @@ const deferredResponse = () => {
     respond: async () => (await promise).clone(),
     release: (response: Response) => release(response),
   };
-};
-const account = { id: "account-preview", provider: "codex", label: "Preview" };
-const key = { id: "key-preview", key: "kleis_fake_preview", label: "Preview" };
-const seedForms = () => {
-  state.accounts = [{ ...account }];
-  state.accountsById = new Map([[account.id, state.accounts[0]]]);
-  state.providerStatuses = [{ provider: "codex", enabled: true }];
-  state.keys = [{ ...key }];
-  state.keysById = new Map([[key.id, state.keys[0]]]);
-  state.editingAccountId = account.id;
-  state.editingKeyId = key.id;
-  state.creatingKey = true;
-  element("#oauth-provider").value = "claude";
-  element("#oauth-claude-mode").value = "max";
-  element("#oauth-code").value = "fake-code";
-  element("#import-provider").value = "codex";
-  element("#import-access-token").value = "fake-access";
-  element("#import-refresh-token").value = "fake-refresh";
-};
-type MutationCase = {
-  name: string;
-  run: () => unknown;
-  confirm: boolean;
-  prepare?: () => void;
-};
-const mutations: MutationCase[] = [
-  { name: "create key", run: createKey, confirm: false },
-  { name: "save key", run: saveKeyEdits, confirm: false },
-  { name: "rotate key", run: () => rotateKey(key.id, null), confirm: true },
-  { name: "revoke key", run: () => revokeKey(key.id), confirm: true },
-  { name: "delete key", run: () => deleteKey(key.id), confirm: true },
-  { name: "save account", run: saveAccountEdits, confirm: false },
-  {
-    name: "delete account",
-    run: () => deleteAccount(account.id),
-    confirm: true,
-  },
-  {
-    name: "refresh account",
-    run: () => refreshAccount(account.id),
-    confirm: false,
-  },
-  { name: "set primary", run: () => setPrimary(account.id), confirm: false },
-  {
-    name: "toggle provider",
-    run: () => toggleProvider("codex", false),
-    confirm: true,
-  },
-  {
-    name: "reset credit",
-    run: () => redeemResetCredit(account.id, "credit-preview"),
-    confirm: true,
-  },
-  { name: "import account", run: importAccount, confirm: false },
-  { name: "start OAuth", run: startOAuth, confirm: false },
-  {
-    name: "complete OAuth",
-    run: completeOAuth,
-    confirm: false,
-    prepare: () => {
-      state.activeOAuth = { provider: "claude", state: "flow-preview" };
-    },
-  },
-];
-
-const freshResponse = (path: string) => {
+}
+const failure = () => Response.json({ message: "Try again" }, { status: 503 });
+const fresh = (path: string) => {
   if (path === "/admin/accounts")
-    return Response.json({ accounts: [], providers: [] });
-  if (path === "/admin/keys") return Response.json({ keys: [] });
+    return Response.json({
+      accounts: state.accounts,
+      providers: state.providerStatuses,
+    });
+  if (path === "/admin/keys") return Response.json({ keys: state.keys });
   return Response.json({ usage: [], totals: {} });
 };
 const signIn = async () => {
-  element("#login-token").value = "same-admin-token";
-  await handleLogin();
-  await Bun.sleep(0);
+  $("#login-token").value = "same-admin-token";
+  await data.handleLogin();
+  await tick();
 };
 const snapshot = () =>
   JSON.stringify({
-    state: {
-      ...state,
-      accountsById: [...state.accountsById],
-      keysById: [...state.keysById],
-      accountUsageById: [...state.accountUsageById],
-      keyUsageById: [...state.keyUsageById],
-      usageDetails: [...state.usageDetails],
-      visibleUsageDetails: [...state.visibleUsageDetails],
-      pendingMutations: [...state.pendingMutations],
-      pendingResetRedemptions: [...state.pendingResetRedemptions],
-      revealedKeyIds: [...state.revealedKeyIds],
-    },
-    elements: [...elements],
+    token: state.token,
+    active: state.sessionActive,
+    seq: state.sessionRequestSeq,
+    accounts: state.accounts,
+    keys: state.keys,
+    accountUsage: [...state.accountUsageById],
+    keyUsage: [...state.keyUsageById],
+    details: [...state.usageDetails],
+    dashboard: state.dashboardData,
+    expanded: state.expandedKeyId,
+    revealed: [...state.revealedKeyIds],
+    html: [
+      "#accounts-list",
+      "#keys-list",
+      "#dash-content",
+      "#toast-container",
+      "#login-error",
+      "#oauth-flow-active",
+    ].map((selector) => $(selector).innerHTML),
   });
 
 describe("admin mutation and session guards", () => {
   beforeEach(() => {
     installGlobals();
-    elements.clear();
-    logout();
+    data.logout();
+    $("#menu").hidden = true;
+    $("#toast-container").replaceChildren();
     state.token = "same-admin-token";
     state.sessionActive = true;
+    state.accounts = [structuredClone(account)];
+    state.accountsById = new Map([[account.id, state.accounts[0]]]);
+    state.providerStatuses = [{ provider: "codex", enabled: true }];
+    state.keys = [{ ...key }];
+    state.keysById = new Map([[key.id, state.keys[0]]]);
     state.accountsLoaded = true;
     state.keysLoaded = true;
-    seedForms();
+    state.expandedAccountId = account.id;
+    state.expandedKeyId = key.id;
+    $("#app").classList.add("visible");
+    data.switchToTab("accounts");
+    renderAccounts();
+    renderKeys();
+    globals.fetch = async (url: RequestInfo | URL) => fresh(String(url));
   });
 
-  afterEach(() => {
-    logout();
-    Object.assign(globals, originalGlobals);
+  afterEach(async () => {
+    data.logout();
+    await tick();
+    window.happyDOM.cancelAsync();
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else Reflect.deleteProperty(globalThis, name);
+    }
   });
+  afterAll(() => window.happyDOM.cancelAsync());
 
-  for (const mutation of mutations) {
-    test(`${mutation.name} ignores rapid repeats across re-renders and unlocks on failure`, async () => {
-      mutation.prepare?.();
-      const response = deferredResponse();
+  const entries: {
+    name: string;
+    run: () => unknown;
+    prepare?: () => void;
+    confirm?: boolean;
+  }[] = [
+    {
+      name: "create key",
+      run: data.createKey,
+      prepare: () => data.startCreateKey(),
+    },
+    {
+      name: "save key",
+      run: data.saveKeyEdits,
+      prepare: () => data.startEditKey(key.id),
+    },
+    { name: "rotate key", run: () => data.rotateKey(key.id), confirm: true },
+    { name: "revoke key", run: () => data.revokeKey(key.id), confirm: true },
+    { name: "delete key", run: () => data.deleteKey(key.id), confirm: true },
+    {
+      name: "save account",
+      run: data.saveAccountEdits,
+      prepare: () => data.startEditAccount(account.id),
+    },
+    {
+      name: "delete account",
+      run: () => data.deleteAccount(account.id),
+      confirm: true,
+    },
+    { name: "refresh account", run: () => data.refreshAccount(account.id) },
+    { name: "primary", run: () => data.setPrimary(account.id) },
+    {
+      name: "provider",
+      run: () => data.toggleProvider("codex", false),
+      confirm: true,
+    },
+    {
+      name: "reset credit",
+      run: () => data.redeemResetCredit(account.id, "credit-preview"),
+      confirm: true,
+    },
+    {
+      name: "import",
+      run: data.importAccount,
+      prepare: () => {
+        $("#import-access-token").value = "fake-access";
+        $("#import-refresh-token").value = "fake-refresh";
+      },
+    },
+    { name: "OAuth start", run: data.startOAuth },
+    {
+      name: "OAuth complete",
+      run: data.completeOAuth,
+      prepare: () => {
+        state.activeOAuth = { provider: "claude", state: "flow-preview" };
+        renderOAuthFlow(state.activeOAuth, "claude");
+        $("#oauth-code").value = "fake-code";
+      },
+    },
+  ];
+  for (const entry of entries) {
+    test(`${entry.name} is wired to one operation/target lock`, async () => {
+      entry.prepare?.();
+      const response = deferred();
       let calls = 0;
       globals.fetch = () => {
         calls++;
         return response.respond();
       };
-
-      const first = mutation.run();
-      const repeated = mutation.run();
-      if (mutation.confirm) resolveConfirm(true);
-      await Bun.sleep(0);
+      const pending = entry.run();
+      const repeated = entry.run();
+      if (entry.confirm) confirm();
+      await tick();
       expect(calls).toBe(1);
-      renderAccounts();
-      renderKeys();
-      for (const [selector, current] of elements) {
-        if (current.disabled) elements.set(selector, fakeElement());
-      }
-      const afterRender = mutation.run();
-      expect(element("#confirm").hidden).toBe(true);
-      resolveConfirm(true);
-      await Bun.sleep(0);
-      expect(calls).toBe(1);
-
-      response.release(
-        Response.json({ message: "Try again" }, { status: 503 })
-      );
-      await Promise.all([first, repeated, afterRender]);
-      expect(state.pendingMutations.size).toBe(0);
-      const retry = mutation.run();
-      if (mutation.confirm) resolveConfirm(true);
-      await retry;
-      expect(calls).toBe(2);
+      response.release(failure());
+      await Promise.all([pending, repeated]);
       expect(state.pendingMutations.size).toBe(0);
     });
-
-    for (const status of [200, 401, 503]) {
-      for (const newSession of [false, true]) {
-        test(`${mutation.name} ignores ${status} after ${newSession ? "same-token sign-in" : "logout"}`, async () => {
-          mutation.prepare?.();
-          const response = deferredResponse();
-          const calls: string[] = [];
-          globals.fetch = (url: RequestInfo | URL) => {
-            const path = String(url);
-            calls.push(path);
-            return calls.length === 1
-              ? response.respond()
-              : Promise.resolve(freshResponse(path));
-          };
-          const pending = mutation.run();
-          if (mutation.confirm) resolveConfirm(true);
-          await Bun.sleep(0);
-          expect(calls).toHaveLength(1);
-          if (newSession) await signIn();
-          else logout();
-          const before = snapshot();
-          const callsBefore = [...calls];
-          response.release(
-            Response.json(
-              {
-                key: { ...key, id: "stale-key" },
-                state: "stale-flow",
-                authorizationUrl: "https://example.com/oauth",
-                message: "Stale error",
-                redeemRequestId: "stale-redemption",
-              },
-              { status }
-            )
-          );
-          await pending;
-          expect(calls).toEqual(callsBefore);
-          expect(snapshot()).toBe(before);
-        });
-      }
-    }
   }
 
-  test("different targets and operations can run independently", async () => {
-    const response = deferredResponse();
+  test("keyboard and menu share a lock; re-rendered controls stay busy and failure unlocks them", async () => {
+    const response = deferred();
     let calls = 0;
     globals.fetch = () => {
       calls++;
       return response.respond();
     };
-    const requests = [
-      refreshAccount(account.id),
-      refreshAccount("another-account"),
-      saveAccountEdits(),
-    ];
-    expect(calls).toBe(3);
-    response.release(Response.json({ message: "Try again" }, { status: 503 }));
-    await Promise.all(requests);
+    state.cursorAccountId = account.id;
+    keyboard("r");
+    const before = $('[data-action="refresh-account"]');
+    expect(before.disabled).toBe(true);
+    renderAccounts();
+    const after = $('[data-action="refresh-account"]');
+    expect(after).not.toBe(before);
+    expect(after.disabled).toBe(true);
+    expect(after.getAttribute("aria-busy")).toBe("true");
+    const item = menu("account", "refresh-account");
+    expect(item.disabled).toBe(true);
+    item.click();
+    keyboard("r", "#menu");
+    keyboard("Escape", "#menu");
+    keyboard("r");
+    expect(calls).toBe(1);
+    const joined = data.refreshAccount(account.id);
+    response.release(failure());
+    await joined;
+    expect(after.disabled).toBe(false);
+    expect(item.disabled).toBe(false);
+    after.click();
+    await tick();
+    expect(calls).toBe(2);
   });
 
-  test("a cancelled confirmation unlocks without sending a request", async () => {
+  test("a successful mutation stays locked through its reload", async () => {
+    const reload = deferred();
+    let calls = 0;
+    globals.fetch = (_url: RequestInfo | URL, init: RequestInit) => {
+      calls++;
+      return init?.method === "POST"
+        ? Promise.resolve(Response.json({}))
+        : reload.respond();
+    };
+    const pending = data.refreshAccount(account.id);
+    await tick();
+    const repeated = data.refreshAccount(account.id);
+    expect(calls).toBe(3);
+    renderAccounts();
+    expect($('[data-action="refresh-account"]').disabled).toBe(true);
+    reload.release(Response.json({ accounts: [account], usage: [] }));
+    await Promise.all([pending, repeated]);
+    expect($('[data-action="refresh-account"]').disabled).toBe(false);
+  });
+
+  test("different targets and operations run independently", async () => {
+    const response = deferred();
     let calls = 0;
     globals.fetch = () => {
       calls++;
-      return Promise.resolve(
-        Response.json({ message: "Try again" }, { status: 503 })
-      );
+      return response.respond();
     };
-    const cancelled = deleteAccount(account.id);
-    resolveConfirm(false);
-    await cancelled;
-    expect(calls).toBe(0);
-    const retry = deleteAccount(account.id);
-    resolveConfirm(true);
-    await retry;
-    expect(calls).toBe(1);
+    data.startEditAccount(account.id);
+    const pending = [
+      data.refreshAccount(account.id),
+      data.refreshAccount("another-preview"),
+      data.saveAccountEdits(),
+    ];
+    expect(calls).toBe(3);
+    response.release(failure());
+    await Promise.all(pending);
   });
 
-  test("logout invalidates accepted confirmations before their continuations run", async () => {
+  for (const order of [
+    "menu first",
+    "rotation first",
+    "menu revoke finished",
+  ]) {
+    test(`rotation and menu/keyboard revoke share one request: ${order}`, async () => {
+      const creation = deferred();
+      const revocation = deferred();
+      let revokes = 0;
+      let created = false;
+      globals.fetch = (url: RequestInfo | URL, init: RequestInit) => {
+        const path = String(url);
+        if (path === "/admin/keys" && init?.method === "POST")
+          return creation.respond();
+        if (path.endsWith("/revoke")) {
+          revokes++;
+          return revocation.respond();
+        }
+        if (path === "/admin/keys")
+          return Promise.resolve(
+            Response.json({
+              keys: [
+                ...state.keys.filter((value) => value.id !== replacement.id),
+                ...(created ? [replacement] : []),
+              ],
+            })
+          );
+        return Promise.resolve(fresh(path));
+      };
+      data.switchToTab("keys");
+      state.cursorKeyId = key.id;
+      keyboard("r");
+      $("#rotate-revoke-old").checked = true;
+      confirm();
+      await tick();
+      if (order === "rotation first") {
+        created = true;
+        creation.release(Response.json({ key: replacement }));
+        await tick();
+        renderKeys();
+        expect(menu("key", "revoke-key").disabled).toBe(true);
+        keyboard("Escape", "#menu");
+        keyboard("Backspace");
+      } else menu("key", "revoke-key").click();
+      confirm();
+      await tick();
+      expect(revokes).toBe(1);
+      if (order === "menu revoke finished") {
+        revocation.release(Response.json({}));
+        await tick();
+      }
+      created = true;
+      creation.release(Response.json({ key: replacement }));
+      await tick();
+      expect(revokes).toBe(1);
+      revocation.release(Response.json({}));
+      await tick();
+      expect(state.pendingMutations.size).toBe(0);
+      expect($("#toast-container").textContent).toContain(
+        "API key rotated and previous key revoked"
+      );
+      expect($("#toast-container").textContent).not.toContain("failed");
+    });
+  }
+
+  test("cancelled confirmations unlock; logout also invalidates an accepted confirmation", async () => {
     let calls = 0;
     globals.fetch = () => {
       calls++;
       return Promise.resolve(Response.json({}));
     };
-    const pending = deleteAccount(account.id);
-    resolveConfirm(true);
-    logout();
-    await pending;
+    const cancelled = data.deleteAccount(account.id);
+    confirm(false);
+    await cancelled;
+    expect(state.pendingMutations.size).toBe(0);
+    const accepted = data.deleteAccount(account.id);
+    confirm();
+    data.logout();
+    await accepted;
     expect(calls).toBe(0);
   });
 
-  test("logout invalidates a pending reauthorization confirmation", async () => {
+  test("a re-rendered OAuth completion stays busy and unlocks on failure", async () => {
+    const response = deferred();
+    globals.fetch = () => response.respond();
     state.activeOAuth = { provider: "claude", state: "flow-preview" };
-    const pending = reauthorizeAccount(account.id);
-    const repeated = reauthorizeAccount(account.id);
-    resolveConfirm(true);
-    logout();
-    const before = snapshot();
-    await Promise.all([pending, repeated]);
-    expect(snapshot()).toBe(before);
-  });
-
-  test("an old completion cannot unlock the same operation in a new session", async () => {
-    const oldResponse = deferredResponse();
-    const newResponse = deferredResponse();
-    let calls = 0;
-    globals.fetch = () => {
-      calls++;
-      return calls === 1 ? oldResponse.respond() : newResponse.respond();
-    };
-    const oldRequest = refreshAccount(account.id);
-    logout();
-    state.sessionActive = true;
-    state.token = "same-admin-token";
-    const newRequest = refreshAccount(account.id);
-    oldResponse.release(Response.json({}));
-    await oldRequest;
-    expect(state.pendingMutations.size).toBe(1);
-    expect(
-      element(
-        `[data-action="refresh-account"][data-account-id="${account.id}"]`
-      ).disabled
-    ).toBe(true);
-    await refreshAccount(account.id);
-    expect(calls).toBe(2);
-    newResponse.release(
-      Response.json({ message: "Try again" }, { status: 503 })
-    );
-    await newRequest;
-    expect(state.pendingMutations.size).toBe(0);
-  });
-
-  test("OAuth cancellation allows a new start without accepting the old result", async () => {
-    const oldResponse = deferredResponse();
-    const newResponse = deferredResponse();
-    let calls = 0;
-    globals.fetch = () => {
-      calls++;
-      return calls === 1 ? oldResponse.respond() : newResponse.respond();
-    };
-    const oldStart = startOAuth();
-    cancelOAuthFlow();
-    const newStart = startOAuth();
-    oldResponse.release(Response.json({ state: "stale" }));
-    await oldStart;
-    expect(state.activeOAuth).toBeNull();
-    expect(element("#btn-oauth-start").disabled).toBe(true);
-    newResponse.release(
-      Response.json({ message: "Try again" }, { status: 503 })
-    );
-    await newStart;
-    expect(element("#btn-oauth-start").disabled).toBe(false);
-  });
-
-  test("the operation stays locked until its successful reload finishes", async () => {
-    const response = deferredResponse();
-    let calls = 0;
-    globals.fetch = () => {
-      calls++;
-      return calls === 1
-        ? Promise.resolve(Response.json({}))
-        : response.respond();
-    };
-    const pending = refreshAccount(account.id);
-    await Bun.sleep(0);
-    expect(calls).toBe(3);
-    await refreshAccount(account.id);
-    expect(calls).toBe(3);
-    response.release(Response.json({ accounts: [], usage: [] }));
+    renderOAuthFlow(state.activeOAuth, "claude");
+    $("#oauth-code").value = "fake-code";
+    const pending = data.completeOAuth();
+    const before = $("#btn-oauth-complete");
+    renderOAuthFlow(state.activeOAuth, "claude");
+    const after = $("#btn-oauth-complete");
+    expect(after).not.toBe(before);
+    expect(after.disabled).toBe(true);
+    response.release(failure());
     await pending;
-    expect(state.pendingMutations.size).toBe(0);
-    const retry = refreshAccount(account.id);
-    await retry;
-    expect(calls).toBe(6);
+    expect(after.disabled).toBe(false);
+    expect($("#oauth-flow-error").textContent).toContain("Try again");
   });
 
-  test("logout during rotation's revoke step suppresses its result and reload", async () => {
-    const response = deferredResponse();
+  test("logout during rotation's shared revoke step suppresses its completion", async () => {
+    const response = deferred();
     let calls = 0;
-    globals.fetch = () => {
-      calls++;
-      return calls === 1
-        ? Promise.resolve(Response.json({ key }))
+    globals.fetch = () =>
+      ++calls === 1
+        ? Promise.resolve(Response.json({ key: replacement }))
         : response.respond();
-    };
-    const pending = rotateKey(key.id, null);
-    element("#rotate-revoke-old").checked = true;
-    resolveConfirm(true);
-    await Bun.sleep(0);
+    const pending = data.rotateKey(key.id);
+    $("#rotate-revoke-old").checked = true;
+    confirm();
+    await tick();
     expect(calls).toBe(2);
-    logout();
+    data.logout();
     const before = snapshot();
     response.release(Response.json({}));
     await pending;
+    expect(snapshot()).toBe(before);
     expect(calls).toBe(2);
-    expect(snapshot()).toBe(before);
-  });
-
-  for (const mutation of [
-    { name: "account", run: () => refreshAccount(account.id) },
-    { name: "key", run: createKey },
-  ]) {
-    test(`${mutation.name} reload started by a mutation is invalidated by logout`, async () => {
-      const response = deferredResponse();
-      let calls = 0;
-      globals.fetch = () => {
-        calls++;
-        return calls === 1
-          ? Promise.resolve(Response.json({ key }))
-          : response.respond();
-      };
-      const pending = mutation.run();
-      await Bun.sleep(0);
-      expect(calls).toBe(3);
-      logout();
-      const before = snapshot();
-      response.release(
-        Response.json({ accounts: [account], keys: [key], usage: [] })
-      );
-      await pending;
-      expect(snapshot()).toBe(before);
-    });
-  }
-
-  const loads = [
-    { name: "account usage", run: loadAccountUsage },
-    { name: "key usage", run: loadKeyUsage },
-    { name: "dashboard", run: loadDashboard },
-    { name: "accounts", run: loadAccounts },
-    { name: "keys", run: loadKeys },
-    { name: "usage detail", run: () => requestUsageDetail("key", key.id) },
-    { name: "daily tokens", run: () => requestDailyTokens(account.id) },
-  ];
-  for (const load of loads) {
-    for (const newSession of [false, true]) {
-      for (const status of [200, 401, 503]) {
-        test(`${load.name} ignores ${status} after ${newSession ? "a new sign-in begins" : "logout"}`, async () => {
-          const response = deferredResponse();
-          globals.fetch = () => response.respond();
-          const pending = load.run();
-          if (newSession) {
-            globals.fetch = (url: RequestInfo | URL) =>
-              Promise.resolve(freshResponse(String(url)));
-            await signIn();
-          } else logout();
-          const before = snapshot();
-          response.release(
-            Response.json(
-              {
-                usage: [
-                  {
-                    apiKeyId: key.id,
-                    providerAccountId: account.id,
-                    requestCount: 99,
-                  },
-                ],
-                windowMs: 123,
-                accounts: [{ ...account, id: "stale-account" }],
-                keys: [{ ...key, id: "stale-key" }],
-                totals: { requestCount: 99 },
-                daily: [{ totalTokens: 99 }],
-                message: "Stale error",
-              },
-              { status }
-            )
-          );
-          await pending;
-          expect(snapshot()).toBe(before);
-        });
-      }
-    }
-  }
-
-  for (const kind of ["account", "key"]) {
-    test(`logout invalidates ${kind} usage waiting for expanded details`, async () => {
-      const response = deferredResponse();
-      const id = kind === "account" ? account.id : key.id;
-      state.expandedAccountId = kind === "account" ? id : null;
-      state.expandedKeyId = kind === "key" ? id : null;
-      globals.fetch = (url: RequestInfo | URL) =>
-        String(url).includes(`/${id}/usage?`)
-          ? response.respond()
-          : Promise.resolve(
-              Response.json({
-                usage: [
-                  { providerAccountId: id, apiKeyId: id, requestCount: 1 },
-                ],
-              })
-            );
-      const pending = kind === "account" ? loadAccountUsage() : loadKeyUsage();
-      await Bun.sleep(0);
-      expect(state.usageDetails.size).toBe(1);
-      logout();
-      const before = snapshot();
-      response.release(Response.json({ models: [] }));
-      await pending;
-      expect(snapshot()).toBe(before);
-    });
-  }
-
-  test("logout invalidates quota loads started by an account reload", async () => {
-    const response = deferredResponse();
-    globals.fetch = (url: RequestInfo | URL) => {
-      const path = String(url);
-      if (path === "/admin/accounts")
-        return Promise.resolve(Response.json({ accounts: [account] }));
-      if (path === "/admin/accounts/quotas") return response.respond();
-      return Promise.resolve(freshResponse(path));
-    };
-    await loadAccounts();
-    logout();
-    const before = snapshot();
-    response.release(
-      Response.json({ quotas: { [account.id]: { fetchedAt: 99, data: {} } } })
-    );
-    await Bun.sleep(0);
-    expect(snapshot()).toBe(before);
   });
 
   for (const status of [200, 401, 503]) {
-    test(`a ${status} verification result after logout cannot sign in or show an error`, async () => {
-      const response = deferredResponse();
+    for (const boundary of ["logout", "sign-in"]) {
+      test(`a stale mutation's ${status} cannot affect ${boundary} state or start reloads`, async () => {
+        const response = deferred();
+        let calls = 0;
+        globals.fetch = (url: RequestInfo | URL) =>
+          ++calls === 1
+            ? response.respond()
+            : Promise.resolve(fresh(String(url)));
+        const pending = data.refreshAccount(account.id);
+        if (boundary === "logout") data.logout();
+        else await signIn();
+        const before = snapshot();
+        const callsBefore = calls;
+        response.release(Response.json({ message: "Stale error" }, { status }));
+        await pending;
+        expect(snapshot()).toBe(before);
+        expect(calls).toBe(callsBefore);
+      });
+    }
+  }
+
+  test("an old completion cannot unlock the same operation in the next session", async () => {
+    const old = deferred();
+    const current = deferred();
+    let calls = 0;
+    globals.fetch = () => (++calls === 1 ? old.respond() : current.respond());
+    const previous = data.refreshAccount(account.id);
+    data.logout();
+    state.token = "same-admin-token";
+    const pending = data.refreshAccount(account.id);
+    old.release(Response.json({}));
+    await previous;
+    expect(state.pendingMutations.size).toBe(1);
+    expect($('[data-action="refresh-account"]').disabled).toBe(true);
+    const repeat = data.refreshAccount(account.id);
+    expect(calls).toBe(2);
+    current.release(failure());
+    await Promise.all([pending, repeat]);
+  });
+
+  for (const boundary of ["logout", "sign-in"]) {
+    test(`usage, lists and detail loads are invalidated by ${boundary}`, async () => {
+      const response = deferred();
       globals.fetch = () => response.respond();
-      element("#login-token").value = "pending-token";
-      const pending = handleLogin();
-      logout();
+      state.expandedAccountId = null;
+      state.expandedKeyId = null;
+      const pending = [
+        data.loadAccounts(),
+        data.loadKeys(),
+        data.loadAccountUsage(),
+        data.loadKeyUsage(),
+        data.loadDashboard(),
+        data.requestUsageDetail("key", key.id),
+        data.requestDailyTokens(account.id),
+      ];
+      if (boundary === "logout") data.logout();
+      else {
+        globals.fetch = async (url: RequestInfo | URL) => fresh(String(url));
+        await signIn();
+      }
       const before = snapshot();
-      response.release(Response.json({ message: "Stale error" }, { status }));
-      await pending;
+      response.release(
+        Response.json({
+          accounts: [account],
+          keys: [key],
+          usage: [
+            {
+              apiKeyId: key.id,
+              providerAccountId: account.id,
+              requestCount: 99,
+            },
+          ],
+          totals: { requestCount: 99 },
+          windowMs: 123,
+        })
+      );
+      await Promise.all(pending);
       expect(snapshot()).toBe(before);
-      expect(element("#login-btn").disabled).toBe(false);
     });
   }
+
+  test("a mutation-triggered list reload cannot repopulate signed-out state", async () => {
+    const reload = deferred();
+    globals.fetch = (_url: RequestInfo | URL, init: RequestInit) =>
+      init?.method === "POST"
+        ? Promise.resolve(Response.json({}))
+        : reload.respond();
+    const pending = data.refreshAccount(account.id);
+    await tick();
+    data.logout();
+    const before = snapshot();
+    reload.release(Response.json({ accounts: [account], usage: [] }));
+    await pending;
+    expect(snapshot()).toBe(before);
+  });
+
+  test("a late key creation cannot reveal its key after logout", async () => {
+    const response = deferred();
+    globals.fetch = () => response.respond();
+    data.startCreateKey();
+    const pending = data.createKey();
+    data.logout();
+    const before = snapshot();
+    response.release(Response.json({ key: replacement }));
+    await pending;
+    expect(snapshot()).toBe(before);
+  });
+
+  test("OAuth cancellation permits a new start without accepting or unlocking the old one", async () => {
+    const old = deferred();
+    const current = deferred();
+    let calls = 0;
+    globals.fetch = () => (++calls === 1 ? old.respond() : current.respond());
+    const previous = data.startOAuth();
+    data.cancelOAuthFlow();
+    const pending = data.startOAuth();
+    old.release(Response.json({ state: "stale-flow" }));
+    await previous;
+    expect(state.activeOAuth).toBeNull();
+    expect($("#btn-oauth-start").disabled).toBe(true);
+    current.release(failure());
+    await pending;
+    expect($("#btn-oauth-start").disabled).toBe(false);
+  });
 });

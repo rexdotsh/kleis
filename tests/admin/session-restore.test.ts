@@ -6,6 +6,7 @@ type FakeElement = {
   innerHTML: string;
   textContent: string;
   style: { display: string };
+  dataset: Record<string, string>;
   classes: Set<string>;
   classList: {
     contains: (name: string) => boolean;
@@ -27,6 +28,7 @@ const element = (selector: string) => {
       innerHTML: "",
       textContent: "",
       style: { display: "none" },
+      dataset: {},
       classes,
       classList: {
         contains: (name) => classes.has(name),

@@ -106,7 +106,7 @@ const keyActions = {
   "open-create-key": () => startCreateKey(),
   "submit-key": () => createKey(),
   "cancel-create-key": () => cancelCreateKey(),
-  "rotate-key": (id, button) => rotateKey(id, button),
+  "rotate-key": (id) => rotateKey(id),
   "revoke-key": (id) => revokeKey(id),
   "delete-key": (id) => deleteKey(id),
   "clear-filter": () => clearFilter("#keys-filter", "keyFilter", renderKeys),
@@ -365,7 +365,7 @@ function openMenu(anchor) {
   menuAnchor = anchor;
   anchor.setAttribute("aria-expanded", "true");
   anchor.closest(".row")?.classList.add("sel");
-  menu.querySelector(".menu-item")?.focus();
+  menu.querySelector(".menu-item:not(:disabled)")?.focus();
 }
 
 document.addEventListener(
@@ -379,7 +379,7 @@ document.addEventListener(
 
 $("#menu").addEventListener("click", (event) => {
   const item = event.target.closest(".menu-item");
-  if (!item) return;
+  if (!item || item.disabled) return;
   const kind = $("#menu").dataset.kind;
   setConfirmAnchor(menuAnchor);
   closeMenu({ restoreFocus: true });
@@ -391,7 +391,7 @@ $("#menu").addEventListener("click", (event) => {
 });
 
 $("#menu").addEventListener("keydown", (event) => {
-  const items = Array.from($$("#menu .menu-item"));
+  const items = Array.from($$("#menu .menu-item:not(:disabled)"));
   const index = items.indexOf(document.activeElement);
   const move = {
     ArrowDown: items[(index + 1) % items.length],

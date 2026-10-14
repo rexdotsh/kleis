@@ -395,13 +395,15 @@ code,
 }
 
 .is-busy,
+[data-mutation][aria-busy="true"],
 .copy-confirmed {
+  position: relative;
   color: transparent !important;
 }
-:is(.is-busy, .copy-confirmed) > * {
+:is(.is-busy, [data-mutation][aria-busy="true"], .copy-confirmed) > * {
   visibility: hidden;
 }
-.is-busy::after {
+:is(.is-busy, [data-mutation][aria-busy="true"])::after {
   content: "";
   position: absolute;
   width: 12px;

@@ -183,38 +183,86 @@ function setButtonBusy(button, busy) {
   button.setAttribute?.("aria-busy", String(busy));
 }
 
-async function runMutation(
-  operation,
-  target,
-  run,
-  onError = (error) => toast(error.message, "error")
-) {
-  const key = JSON.stringify([operation, target]);
-  if (state.pendingMutations.has(key)) return;
-  const requestSeq = state.sessionRequestSeq;
-  const pending = { button: null };
-  state.pendingMutations.set(key, pending);
-  const isCurrent = () => requestSeq === state.sessionRequestSeq;
-  try {
-    await run({
-      guard(value) {
-        if (!isCurrent()) throw new Error("Session changed");
-        return value;
-      },
-      busy(button) {
-        pending.button = button;
-        setButtonBusy(button, true);
-      },
-    });
-  } catch (error) {
-    if (isCurrent()) onError(error);
-  } finally {
-    // The next session can start the same operation before this one settles.
-    if (state.pendingMutations.get(key) === pending) {
-      state.pendingMutations.delete(key);
-    }
-    if (isCurrent()) setButtonBusy(pending.button, false);
+const mutationKey = (operation, target) =>
+  JSON.stringify([operation, String(target ?? "")]);
+
+function mutationAttributes(operations, target = null) {
+  const names = [operations].flat();
+  const busy = names.some((name) =>
+    state.pendingMutations.has(mutationKey(name, target))
+  );
+  return `data-mutation="${names.join(" ")}" data-mutation-target="${escapeHtml(target ?? "")}" aria-busy="${busy}"${busy ? " disabled" : ""}`;
+}
+
+function syncMutationControls() {
+  for (const button of $$("[data-mutation]")) {
+    const busy = button.dataset.mutation
+      .split(" ")
+      .some((operation) =>
+        state.pendingMutations.has(
+          mutationKey(operation, button.dataset.mutationTarget)
+        )
+      );
+    setButtonBusy(button, busy);
   }
+}
+
+function sessionRequest() {
+  const requestSeq = state.sessionRequestSeq;
+  const isCurrent = () => requestSeq === state.sessionRequestSeq;
+  const check = () => {
+    if (!isCurrent()) throw new Error("Session changed");
+  };
+  const wait = async (promise) => {
+    const value = await promise;
+    check();
+    return value;
+  };
+  const request = (...args) => {
+    check();
+    return wait(api(...args));
+  };
+  request.confirm = (...args) => {
+    check();
+    return wait(showConfirm(...args));
+  };
+  request.wait = wait;
+  request.isCurrent = isCurrent;
+  return request;
+}
+
+function runMutation(operation, target, run) {
+  const key = mutationKey(operation, target);
+  const existing = state.pendingMutations.get(key);
+  if (existing) return existing.promise;
+  const pending = {};
+  state.pendingMutations.set(key, pending);
+  syncMutationControls();
+  pending.promise = (async () => {
+    try {
+      return await run();
+    } finally {
+      // The next session can start the same operation before this one settles.
+      if (state.pendingMutations.get(key) === pending) {
+        state.pendingMutations.delete(key);
+        syncMutationControls();
+      }
+    }
+  })();
+  return pending.promise;
+}
+
+function mutation(operation, run, targetOf = (id) => id) {
+  return async (...args) => {
+    const request = sessionRequest();
+    try {
+      return await runMutation(operation, targetOf(...args), () =>
+        run(request, ...args)
+      );
+    } catch (error) {
+      if (request.isCurrent()) toast(error.message, "error");
+    }
+  };
 }
 
 let confirmResolve = null;
@@ -1124,117 +1172,98 @@ const markPrimary = (provider, id) => {
 
 // Switches at once and rolls back if the server refuses; the toast offers
 // an undo instead of asking first.
-function setPrimary(id, { isUndo = false } = {}) {
+async function setPrimaryAction(request, id, { isUndo = false } = {}) {
   const account = accountById(id);
   if (!account || account.isPrimary) return;
-  return runMutation("set-primary", id, async ({ guard }) => {
-    const previous = state.accounts.find(
-      (candidate) =>
-        candidate.provider === account.provider && candidate.isPrimary
+  const previous = state.accounts.find(
+    (candidate) =>
+      candidate.provider === account.provider && candidate.isPrimary
+  );
+  const name = account.label || account.accountId || id;
+  markPrimary(account.provider, id);
+  renderAccounts();
+  document
+    .querySelector(`#accounts-list [data-account-id="${id}"] .dot.primary`)
+    ?.classList.add("pop");
+  try {
+    await request(`/admin/accounts/${id}/primary`, { method: "POST" });
+    toast(
+      `${name} is now the primary ${providerLabel(account.provider)} account`,
+      "success",
+      previous && !isUndo
+        ? {
+            label: "Undo",
+            run: () => setPrimary(previous.id, { isUndo: true }),
+          }
+        : null
     );
-    const name = account.label || account.accountId || id;
-    markPrimary(account.provider, id);
+  } catch (e) {
+    if (!request.isCurrent()) return;
+    markPrimary(account.provider, previous?.id ?? null);
     renderAccounts();
-    document
-      .querySelector(`#accounts-list [data-account-id="${id}"] .dot.primary`)
-      ?.classList.add("pop");
-    try {
-      guard(await api(`/admin/accounts/${id}/primary`, { method: "POST" }));
-      toast(
-        `${name} is now the primary ${providerLabel(account.provider)} account`,
-        "success",
-        previous && !isUndo
-          ? {
-              label: "Undo",
-              run: () => setPrimary(previous.id, { isUndo: true }),
-            }
-          : null
-      );
-    } catch (e) {
-      guard();
-      markPrimary(account.provider, previous?.id ?? null);
-      renderAccounts();
-      toast(e.message, "error");
-    }
-  });
+    toast(e.message, "error");
+  }
 }
 
-function toggleProvider(provider, enabled) {
-  return runMutation("toggle-provider", provider, async ({ guard }) => {
-    if (!enabled) {
-      const confirmed = guard(
-        await showConfirm(
-          `Disable ${providerLabel(provider)}?`,
-          `All ${providerLabel(provider)} accounts stop receiving proxy traffic and its models disappear from model registries. You can re-enable it at any time.`,
-          "Disable",
-          { danger: true }
-        )
-      );
-      if (!confirmed) return;
-    }
-
-    const status = state.providerStatuses.find(
-      (entry) => entry.provider === provider
-    );
-    const previous = status?.enabled;
-    if (status) status.enabled = enabled;
-    document
-      .querySelector(
-        `[data-action="toggle-provider"][data-provider="${provider}"]`
-      )
-      ?.setAttribute("aria-checked", String(enabled));
-    const requestSeq = state.sessionRequestSeq;
-    setTimeout(() => {
-      if (requestSeq === state.sessionRequestSeq) renderAccounts();
-    }, 180);
-    try {
-      guard(
-        await api(`/admin/accounts/providers/${provider}`, {
-          method: "PATCH",
-          body: JSON.stringify({ enabled }),
-        })
-      );
-      toast(`${providerLabel(provider)} ${enabled ? "enabled" : "disabled"}`);
-      await loadAccounts();
-    } catch (e) {
-      guard();
-      if (status) status.enabled = previous;
-      renderAccounts();
-      toast(e.message, "error");
-    }
-  });
-}
-
-function deleteAccount(id) {
-  return runMutation("delete-account", id, async ({ guard }) => {
-    const account = accountById(id);
-    const name = account?.label || account?.accountId || id;
-    const confirmed = guard(
-      await showConfirm(
-        "Remove account?",
-        `Remove "${name}" and its stored tokens. This cannot be undone.`,
-        "Remove",
-        { danger: true }
-      )
+async function toggleProviderAction(request, provider, enabled) {
+  if (!enabled) {
+    const confirmed = await request.confirm(
+      `Disable ${providerLabel(provider)}?`,
+      `All ${providerLabel(provider)} accounts stop receiving proxy traffic and its models disappear from model registries. You can re-enable it at any time.`,
+      "Disable",
+      { danger: true }
     );
     if (!confirmed) return;
+  }
 
-    guard(await api(`/admin/accounts/${id}`, { method: "DELETE" }));
-    toast("Account removed");
+  const status = state.providerStatuses.find(
+    (entry) => entry.provider === provider
+  );
+  const previous = status?.enabled;
+  if (status) status.enabled = enabled;
+  document
+    .querySelector(
+      `[data-action="toggle-provider"][data-provider="${provider}"]`
+    )
+    ?.setAttribute("aria-checked", String(enabled));
+  setTimeout(() => {
+    if (request.isCurrent()) renderAccounts();
+  }, 180);
+  try {
+    await request(`/admin/accounts/providers/${provider}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    });
+    toast(`${providerLabel(provider)} ${enabled ? "enabled" : "disabled"}`);
     await loadAccounts();
-  });
+  } catch (e) {
+    if (!request.isCurrent()) return;
+    if (status) status.enabled = previous;
+    renderAccounts();
+    toast(e.message, "error");
+  }
 }
 
-function refreshAccount(id) {
-  return runMutation("refresh-account", id, async ({ guard, busy }) => {
-    const btn = document.querySelector(
-      `[data-action="refresh-account"][data-account-id="${id}"]`
-    );
-    busy(btn);
-    guard(await api(`/admin/accounts/${id}/refresh`, { method: "POST" }));
-    toast("Token refreshed");
-    await loadAccounts();
-  });
+async function deleteAccountAction(request, id) {
+  const account = accountById(id);
+  const name = account?.label || account?.accountId || id;
+  const confirmed = await request.confirm(
+    "Remove account?",
+    `Remove "${name}" and its stored tokens. This cannot be undone.`,
+    "Remove",
+    { danger: true }
+  );
+  if (!confirmed) return;
+
+  await request(`/admin/accounts/${id}`, { method: "DELETE" });
+  toast("Account removed");
+  await loadAccounts();
+}
+
+async function refreshAccountAction(request, id) {
+  await request(`/admin/accounts/${id}/refresh`, { method: "POST" });
+  toast("Token refreshed");
+  await loadAccounts();
 }
 
 function resetResultToast(result) {
@@ -1265,58 +1294,49 @@ function resetResultToast(result) {
   }
 }
 
-function redeemResetCredit(accountId, creditId) {
+async function redeemResetCreditAction(request, accountId, creditId) {
   const redemptionKey = `${accountId}:${creditId || "auto"}`;
-  return runMutation(
-    "redeem-reset-credit",
-    redemptionKey,
-    async ({ guard }) => {
-      const account = accountById(accountId);
-      const label = account?.label || account?.accountId || accountId;
-      const existingRequestId =
-        state.pendingResetRedemptions.get(redemptionKey);
-      const credit = account?.quota?.data?.resetCredits?.credits?.find(
-        (entry) => entry.id === creditId
-      );
-      const creditName = credit?.title ? `"${credit.title}"` : "a reset credit";
-      const confirmed = guard(
-        await showConfirm(
-          "Reset Codex limits?",
-          existingRequestId
-            ? `Retry the pending reset for "${label}" with the same idempotency key?`
-            : `Use ${creditName} on "${label}"? Its Codex rate limits reset upstream right away.`,
-          existingRequestId ? "Retry reset" : "Use credit"
-        )
-      );
-      if (!confirmed) return;
-
-      const body = {};
-      if (creditId) body.creditId = creditId;
-      if (existingRequestId) body.redeemRequestId = existingRequestId;
-      const response = guard(
-        await api(
-          `/admin/accounts/${accountId}/tracking/codex/reset-credits/consume`,
-          { method: "POST", body: JSON.stringify(body) }
-        )
-      );
-      state.pendingResetRedemptions.delete(redemptionKey);
-      const { message, type } = resetResultToast(response.result);
-      toast(message, type);
-      await loadAccounts();
-    },
-    (e) => {
-      const redeemRequestId = e.body?.redeemRequestId;
-      if (redeemRequestId) {
-        state.pendingResetRedemptions.set(redemptionKey, redeemRequestId);
-        toast(
-          "Reset status is ambiguous; the next retry will reuse its request ID",
-          "error"
-        );
-        return;
-      }
-      toast(e.message, "error");
-    }
+  const account = accountById(accountId);
+  const label = account?.label || account?.accountId || accountId;
+  const existingRequestId = state.pendingResetRedemptions.get(redemptionKey);
+  const credit = account?.quota?.data?.resetCredits?.credits?.find(
+    (entry) => entry.id === creditId
   );
+  const creditName = credit?.title ? `"${credit.title}"` : "a reset credit";
+  const confirmed = await request.confirm(
+    "Reset Codex limits?",
+    existingRequestId
+      ? `Retry the pending reset for "${label}" with the same idempotency key?`
+      : `Use ${creditName} on "${label}"? Its Codex rate limits reset upstream right away.`,
+    existingRequestId ? "Retry reset" : "Use credit"
+  );
+  if (!confirmed) return;
+
+  try {
+    const body = {};
+    if (creditId) body.creditId = creditId;
+    if (existingRequestId) body.redeemRequestId = existingRequestId;
+    const response = await request(
+      `/admin/accounts/${accountId}/tracking/codex/reset-credits/consume`,
+      { method: "POST", body: JSON.stringify(body) }
+    );
+    state.pendingResetRedemptions.delete(redemptionKey);
+    const { message, type } = resetResultToast(response.result);
+    toast(message, type);
+    await loadAccounts();
+  } catch (e) {
+    if (!request.isCurrent()) return;
+    const redeemRequestId = e.body?.redeemRequestId;
+    if (redeemRequestId) {
+      state.pendingResetRedemptions.set(redemptionKey, redeemRequestId);
+      toast(
+        "Reset status is ambiguous; the next retry will reuse its request ID",
+        "error"
+      );
+      return;
+    }
+    toast(e.message, "error");
+  }
 }
 
 function startEditAccount(id) {
@@ -1335,8 +1355,7 @@ function cancelEditAccount() {
   renderAccounts();
 }
 
-function saveAccountEdits() {
-  const saveButton = $("#btn-save-account");
+async function saveAccountEditsAction(request) {
   const accountId = state.editingAccountId;
   if (!accountId) {
     toast("Account was not found", "error");
@@ -1355,22 +1374,13 @@ function saveAccountEdits() {
     return;
   }
 
-  return runMutation("save-account", accountId, async ({ guard, busy }) => {
-    busy(saveButton);
-    guard(
-      await api(`/admin/accounts/${accountId}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          label,
-          accountId: editableAccountId,
-          metadata,
-        }),
-      })
-    );
-    state.editingAccountId = null;
-    toast("Account updated");
-    await loadAccounts();
+  await request(`/admin/accounts/${accountId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ label, accountId: editableAccountId, metadata }),
   });
+  state.editingAccountId = null;
+  toast("Account updated");
+  await loadAccounts();
 }
 
 function startCreateKey() {
@@ -1384,8 +1394,7 @@ function cancelCreateKey() {
   renderKeys();
 }
 
-function createKey() {
-  const btn = $("#btn-submit-key");
+async function createKeyAction(request) {
   const label = trimmedOrNull($("#key-label").value);
   const providerScopes = selectedProviderScopes("create");
   if (providerScopes?.length === 0) {
@@ -1401,20 +1410,15 @@ function createKey() {
     ...(modelScopes.length ? { modelScopes } : {}),
   };
 
-  return runMutation("create-key", null, async ({ guard, busy }) => {
-    busy(btn);
-    const data = guard(
-      await api("/admin/keys", {
-        method: "POST",
-        body: JSON.stringify(body),
-      })
-    );
-    state.creatingKey = false;
-    state.expandedKeyId = data.key.id;
-    state.revealedKeyIds.add(data.key.id);
-    toast("API key created");
-    await loadKeys();
+  const data = await request("/admin/keys", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
+  state.creatingKey = false;
+  state.expandedKeyId = data.key.id;
+  state.revealedKeyIds.add(data.key.id);
+  toast("API key created");
+  await loadKeys();
 }
 
 function startEditKey(id) {
@@ -1436,8 +1440,7 @@ function cancelEditKey() {
   renderKeys();
 }
 
-function saveKeyEdits() {
-  const saveButton = $("#btn-save-key");
+async function saveKeyEditsAction(request) {
   const keyId = state.editingKeyId;
   const existing = keyById(keyId);
   if (!existing) {
@@ -1479,136 +1482,117 @@ function saveKeyEdits() {
     }
   }
 
-  return runMutation("save-key", keyId, async ({ guard, busy }) => {
-    busy(saveButton);
-    guard(
-      await api(`/admin/keys/${keyId}`, {
-        method: "PATCH",
-        body: JSON.stringify(body),
-      })
-    );
-    state.editingKeyId = null;
-    toast("API key updated");
-    await loadKeys();
+  await request(`/admin/keys/${keyId}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
   });
+  state.editingKeyId = null;
+  toast("API key updated");
+  await loadKeys();
 }
 
-function rotateKey(id, button) {
+async function rotateKeyAction(request, id) {
   const existing = keyById(id);
   if (!existing) {
     toast("API key was not found", "error");
     return;
   }
 
-  let keyCreated = false;
-  let revokeOld = false;
-  return runMutation(
-    "rotate-key",
-    id,
-    async ({ guard, busy }) => {
-      const label = existing.label || maskKey(existing.key);
-      const confirmed = guard(
-        await showConfirm(
-          "Rotate API key?",
-          `Create a new key with the same settings as "${label}".`,
-          "Rotate",
-          {
-            extrasHtml:
-              '<label class="scope-check confirm-check"><input id="rotate-revoke-old" type="checkbox"> Revoke the old key afterwards</label>',
-          }
-        )
-      );
-      if (!confirmed) return;
-
-      const payload = {
-        label: existing.label || undefined,
-        providerScopes: existing.providerScopes?.length
-          ? existing.providerScopes
-          : undefined,
-        accountScopes: existing.accountScopes?.length
-          ? existing.accountScopes
-          : undefined,
-        modelScopes: existing.modelScopes?.length
-          ? existing.modelScopes
-          : undefined,
-      };
-      if (existing.expiresAt != null && existing.expiresAt > Date.now()) {
-        payload.expiresAt = existing.expiresAt;
-      }
-
-      busy(button);
-      revokeOld = $("#rotate-revoke-old")?.checked ?? false;
-      const data = guard(
-        await api("/admin/keys", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        })
-      );
-      keyCreated = true;
-      state.expandedKeyId = data.key.id;
-      state.revealedKeyIds.add(data.key.id);
-      if (revokeOld) {
-        guard(await api(`/admin/keys/${id}/revoke`, { method: "POST" }));
-      }
-      toast(
-        revokeOld
-          ? "API key rotated and previous key revoked"
-          : "API key rotated"
-      );
-      await loadKeys();
-    },
-    (e) => {
-      if (keyCreated && revokeOld) {
-        toast(
-          `New key created, but old key revoke failed: ${e.message}`,
-          "error"
-        );
-      } else {
-        toast(e.message, "error");
-      }
+  const label = existing.label || maskKey(existing.key);
+  const confirmed = await request.confirm(
+    "Rotate API key?",
+    `Create a new key with the same settings as "${label}".`,
+    "Rotate",
+    {
+      extrasHtml:
+        '<label class="scope-check confirm-check"><input id="rotate-revoke-old" type="checkbox"> Revoke the old key afterwards</label>',
     }
   );
+  if (!confirmed) return;
+
+  const payload = {
+    label: existing.label || undefined,
+    providerScopes: existing.providerScopes?.length
+      ? existing.providerScopes
+      : undefined,
+    accountScopes: existing.accountScopes?.length
+      ? existing.accountScopes
+      : undefined,
+    modelScopes: existing.modelScopes?.length
+      ? existing.modelScopes
+      : undefined,
+  };
+  if (existing.expiresAt != null && existing.expiresAt > Date.now()) {
+    payload.expiresAt = existing.expiresAt;
+  }
+
+  const revokeOld = $("#rotate-revoke-old")?.checked ?? false;
+  let keyCreated = false;
+  try {
+    const data = await request("/admin/keys", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    keyCreated = true;
+    state.expandedKeyId = data.key.id;
+    state.revealedKeyIds.add(data.key.id);
+    if (revokeOld) await request.wait(revokeKeyRequest(id));
+    toast(
+      revokeOld ? "API key rotated and previous key revoked" : "API key rotated"
+    );
+    await loadKeys();
+  } catch (e) {
+    if (!request.isCurrent()) return;
+    toast(
+      keyCreated && revokeOld
+        ? `New key created, but old key revoke failed: ${e.message}`
+        : e.message,
+      "error"
+    );
+  }
 }
 
-function revokeKey(id) {
-  return runMutation("revoke-key", id, async ({ guard }) => {
+function revokeKeyRequest(id) {
+  const request = sessionRequest();
+  return runMutation("revoke-key-request", id, async () => {
+    if (keyById(id)?.revokedAt) return;
+    await request(`/admin/keys/${id}/revoke`, { method: "POST" });
     const key = keyById(id);
-    const label = key?.label || maskKey(key?.key || id);
-    const confirmed = guard(
-      await showConfirm(
-        "Revoke API key?",
-        `Clients using "${label}" stop working immediately. This cannot be undone.`,
-        "Revoke",
-        { danger: true }
-      )
-    );
-    if (!confirmed) return;
-
-    guard(await api(`/admin/keys/${id}/revoke`, { method: "POST" }));
-    toast("Key revoked");
-    await loadKeys();
+    if (key) key.revokedAt = Date.now();
   });
 }
 
-function deleteKey(id) {
-  return runMutation("delete-key", id, async ({ guard }) => {
-    const key = keyById(id);
-    const label = key?.label || maskKey(key?.key || id);
-    const confirmed = guard(
-      await showConfirm(
-        "Delete revoked key?",
-        `Delete "${label}" and its usage history permanently. This cannot be undone.`,
-        "Delete",
-        { danger: true }
-      )
-    );
-    if (!confirmed) return;
+async function revokeKeyAction(request, id) {
+  const key = keyById(id);
+  const label = key?.label || maskKey(key?.key || id);
+  const confirmed = await request.confirm(
+    "Revoke API key?",
+    `Clients using "${label}" stop working immediately. This cannot be undone.`,
+    "Revoke",
+    { danger: true }
+  );
+  if (!confirmed) return;
 
-    guard(await api(`/admin/keys/${id}`, { method: "DELETE" }));
-    state.revealedKeyIds.delete(id);
-    toast("Key deleted");
-    await loadKeys();
-  });
+  await request.wait(revokeKeyRequest(id));
+  toast("Key revoked");
+  await loadKeys();
+}
+
+async function deleteKeyAction(request, id) {
+  const key = keyById(id);
+  const label = key?.label || maskKey(key?.key || id);
+  const confirmed = await request.confirm(
+    "Delete revoked key?",
+    `Delete "${label}" and its usage history permanently. This cannot be undone.`,
+    "Delete",
+    { danger: true }
+  );
+  if (!confirmed) return;
+
+  await request(`/admin/keys/${id}`, { method: "DELETE" });
+  state.revealedKeyIds.delete(id);
+  toast("Key deleted");
+  await loadKeys();
 }
 
 async function copyToClipboard(text, btn, confirmation = "Copied") {
@@ -1664,45 +1648,42 @@ function updateOAuthProviderUI() {
   $("#oauth-claude-opts").style.display = p === "claude" ? "block" : "none";
 }
 
-function reauthorizeAccount(id) {
+async function reauthorizeAccountAction(request, id) {
   const account = accountById(id);
   if (!account || !["codex", "claude"].includes(account.provider)) return;
-  return runMutation("reauthorize-account", id, async ({ guard }) => {
-    if (state.activeOAuth) {
-      const confirmed = guard(
-        await showConfirm(
-          "Replace active OAuth flow?",
-          "The current authorization code will no longer work in this form.",
-          "Start over"
-        )
-      );
-      if (!confirmed) return;
-      cancelOAuthFlow();
-    }
-    if ($("#btn-oauth-start").disabled) cancelOAuthFlow();
-    state.reauthorizeAccountId = id;
-    const target = $("#oauth-reauthorize-target");
-    $("#oauth-reauthorize-label").textContent =
-      `Reauthorizing ${account.label || account.accountId || providerLabel(account.provider)}. Its settings and API-key scopes stay attached.${account.provider === "claude" ? " Sign in to the same Claude account and organization; Kleis cannot check this for you." : ""}`;
-    target.style.display = "flex";
-    $("#oauth-provider").value = account.provider;
-    $("#oauth-provider").disabled = true;
-    $("#oauth-codex-opts").style.display =
-      account.provider === "codex" ? "block" : "none";
-    $("#oauth-claude-opts").style.display =
-      account.provider === "claude" ? "block" : "none";
-    if (account.provider === "claude") {
-      $("#oauth-claude-mode").value = account.metadata?.oauthMode || "max";
-      $("#oauth-claude-mode").disabled = true;
-    }
-    syncConnectControls();
-    switchToTab("oauth");
-    toast(`Reauthorizing ${account.label || account.provider}`);
-  });
+  if (state.activeOAuth) {
+    const confirmed = await request.confirm(
+      "Replace active OAuth flow?",
+      "The current authorization code will no longer work in this form.",
+      "Start over"
+    );
+    if (!confirmed) return;
+    cancelOAuthFlow();
+  }
+  if ($("#btn-oauth-start").disabled) cancelOAuthFlow();
+  state.reauthorizeAccountId = id;
+  const target = $("#oauth-reauthorize-target");
+  $("#oauth-reauthorize-label").textContent =
+    `Reauthorizing ${account.label || account.accountId || providerLabel(account.provider)}. Its settings and API-key scopes stay attached.${account.provider === "claude" ? " Sign in to the same Claude account and organization; Kleis cannot check this for you." : ""}`;
+  target.style.display = "flex";
+  $("#oauth-provider").value = account.provider;
+  $("#oauth-provider").disabled = true;
+  $("#oauth-codex-opts").style.display =
+    account.provider === "codex" ? "block" : "none";
+  $("#oauth-claude-opts").style.display =
+    account.provider === "claude" ? "block" : "none";
+  if (account.provider === "claude") {
+    $("#oauth-claude-mode").value = account.metadata?.oauthMode || "max";
+    $("#oauth-claude-mode").disabled = true;
+  }
+  syncConnectControls();
+  switchToTab("oauth");
+  toast(`Reauthorizing ${account.label || account.provider}`);
 }
 
 function cancelOAuthFlow() {
   state.oauthRequestSeq++;
+  $("#btn-oauth-start").dataset.mutationTarget = String(state.oauthRequestSeq);
   state.activeOAuth = null;
   $("#oauth-flow-active").style.display = "none";
   $("#oauth-flow-active").innerHTML = "";
@@ -1711,121 +1692,96 @@ function cancelOAuthFlow() {
   clearReauthorization();
 }
 
-function startOAuth() {
+async function startOAuthAction(request) {
   if (state.activeOAuth) return;
   const requestSeq = state.oauthRequestSeq;
-  return runMutation("start-oauth", requestSeq, async ({ guard }) => {
-    const provider = $("#oauth-provider").value;
-    const btn = $("#btn-oauth-start");
-    setButtonBusy(btn, true);
-    btn.style.display = "none";
-    const flow = $("#oauth-flow-active");
-    flow.style.display = "block";
-    renderOAuthLoading(
-      provider,
-      provider === "codex" && $("#oauth-codex-mode").value === "headless"
-    );
+  const provider = $("#oauth-provider").value;
+  $("#btn-oauth-start").style.display = "none";
+  const flow = $("#oauth-flow-active");
+  flow.style.display = "block";
+  renderOAuthLoading(
+    provider,
+    provider === "codex" && $("#oauth-codex-mode").value === "headless"
+  );
 
-    try {
-      const body = {};
-      if (provider === "codex") {
-        body.options = { mode: $("#oauth-codex-mode").value };
-      } else if (provider === "claude") {
-        body.options = { mode: $("#oauth-claude-mode").value };
-      }
+  try {
+    const body = {};
+    if (provider === "codex")
+      body.options = { mode: $("#oauth-codex-mode").value };
+    else if (provider === "claude")
+      body.options = { mode: $("#oauth-claude-mode").value };
 
-      if (state.reauthorizeAccountId) {
-        const target = accountById(state.reauthorizeAccountId);
-        if (target?.provider !== provider) {
-          throw new Error("Reauthorization target does not match provider");
-        }
-        body.options = {
-          ...body.options,
-          replaceAccountId: state.reauthorizeAccountId,
-        };
-      }
-
-      const data = guard(
-        await api(`/admin/accounts/${provider}/oauth/start`, {
-          method: "POST",
-          body: JSON.stringify(body),
-        })
-      );
-      if (requestSeq !== state.oauthRequestSeq) return;
-      const account = accountById(state.reauthorizeAccountId);
-      state.activeOAuth = {
-        provider,
-        ...data,
-        accountName:
-          account?.label || account?.accountId || (account ? account.id : null),
-        mode: body.options?.mode || null,
+    if (state.reauthorizeAccountId) {
+      const target = accountById(state.reauthorizeAccountId);
+      if (target?.provider !== provider)
+        throw new Error("Reauthorization target does not match provider");
+      body.options = {
+        ...body.options,
+        replaceAccountId: state.reauthorizeAccountId,
       };
-      $("#oauth-provider").disabled = true;
-      $("#oauth-codex-mode").disabled = true;
-      $("#oauth-claude-mode").disabled = true;
-      $("#btn-oauth-clear-target").disabled = true;
-      syncConnectControls();
-      renderOAuthFlow(data, provider);
-    } catch (e) {
-      guard();
-      if (requestSeq !== state.oauthRequestSeq) return;
-      toast(e.message, "error");
-      flow.innerHTML = `<div class="flow"><p class="err">${escapeHtml(e.message)}</p><button id="btn-oauth-retry" class="btn btn-ghost" type="button">Start over</button></div>`;
-      $("#btn-oauth-retry").addEventListener?.("click", cancelOAuthFlow);
-    } finally {
-      if (requestSeq === state.oauthRequestSeq) {
-        setButtonBusy(btn, Boolean(state.activeOAuth));
-      }
     }
-  });
+
+    const data = await request(`/admin/accounts/${provider}/oauth/start`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (requestSeq !== state.oauthRequestSeq) return;
+    const account = accountById(state.reauthorizeAccountId);
+    state.activeOAuth = {
+      provider,
+      ...data,
+      accountName:
+        account?.label || account?.accountId || (account ? account.id : null),
+      mode: body.options?.mode || null,
+    };
+    $("#oauth-provider").disabled = true;
+    $("#oauth-codex-mode").disabled = true;
+    $("#oauth-claude-mode").disabled = true;
+    $("#btn-oauth-clear-target").disabled = true;
+    syncConnectControls();
+    renderOAuthFlow(data, provider);
+  } catch (e) {
+    if (!request.isCurrent() || requestSeq !== state.oauthRequestSeq) return;
+    toast(e.message, "error");
+    flow.innerHTML = `<div class="flow"><p class="err">${escapeHtml(e.message)}</p><button id="btn-oauth-retry" class="btn btn-ghost" type="button">Start over</button></div>`;
+    $("#btn-oauth-retry").addEventListener?.("click", cancelOAuthFlow);
+  }
 }
 
-function completeOAuth() {
+async function completeOAuthAction(request) {
   if (!state.activeOAuth) return;
   const requestSeq = state.oauthRequestSeq;
-  return runMutation(
-    "complete-oauth",
-    state.activeOAuth.state,
-    async ({ guard, busy }) => {
-      const btn = $("#btn-oauth-complete");
-      busy(btn);
-
-      const body = { state: state.activeOAuth.state };
-      const codeInput = $("#oauth-code");
-      if (codeInput) {
-        const code = codeInput.value.trim();
-        if (!code) throw new Error("Authorization code is required");
-        body.code = code;
-      }
-      guard(
-        await api(
-          `/admin/accounts/${state.activeOAuth.provider}/oauth/complete`,
-          {
-            method: "POST",
-            body: JSON.stringify(body),
-          }
-        )
-      );
-      if (requestSeq !== state.oauthRequestSeq) return;
-      toast(
-        state.reauthorizeAccountId
-          ? "Account reauthorized"
-          : "Account connected"
-      );
-      cancelOAuthFlow();
-      switchToTab("accounts");
-      await loadAccounts();
-    },
-    (e) => {
-      if (requestSeq !== state.oauthRequestSeq) return;
-      const error = $("#oauth-flow-error");
-      error.textContent = `${e.message}. If this code was consumed or the flow expired, cancel and start over.`;
-      error.hidden = false;
+  try {
+    const body = { state: state.activeOAuth.state };
+    const codeInput = $("#oauth-code");
+    if (codeInput) {
+      const code = codeInput.value.trim();
+      if (!code) throw new Error("Authorization code is required");
+      body.code = code;
     }
-  );
+    await request(
+      `/admin/accounts/${state.activeOAuth.provider}/oauth/complete`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    );
+    if (requestSeq !== state.oauthRequestSeq) return;
+    toast(
+      state.reauthorizeAccountId ? "Account reauthorized" : "Account connected"
+    );
+    cancelOAuthFlow();
+    switchToTab("accounts");
+    await loadAccounts();
+  } catch (e) {
+    if (!request.isCurrent() || requestSeq !== state.oauthRequestSeq) return;
+    const error = $("#oauth-flow-error");
+    error.textContent = `${e.message}. If this code was consumed or the flow expired, cancel and start over.`;
+    error.hidden = false;
+  }
 }
 
-function importAccount() {
+async function importAccountAction(request) {
   const provider = $("#import-provider").value;
   const accessToken = $("#import-access-token").value.trim();
   const refreshToken = $("#import-refresh-token").value.trim();
@@ -1860,28 +1816,23 @@ function importAccount() {
   if (label) body.label = label;
   if (metadata) body.metadata = metadata;
 
-  return runMutation("import-account", provider, async ({ guard, busy }) => {
-    busy($("#btn-import-account"));
-    guard(
-      await api(`/admin/accounts/${provider}/import`, {
-        method: "POST",
-        body: JSON.stringify(body),
-      })
-    );
-    toast("Account imported");
-    for (const id of [
-      "import-access-token",
-      "import-refresh-token",
-      "import-expires-at",
-      "import-account-id",
-      "import-label",
-      "import-metadata",
-    ]) {
-      $(`#${id}`).value = "";
-    }
-    switchToTab("accounts");
-    await loadAccounts();
+  await request(`/admin/accounts/${provider}/import`, {
+    method: "POST",
+    body: JSON.stringify(body),
   });
+  toast("Account imported");
+  for (const id of [
+    "import-access-token",
+    "import-refresh-token",
+    "import-expires-at",
+    "import-account-id",
+    "import-label",
+    "import-metadata",
+  ]) {
+    $(`#${id}`).value = "";
+  }
+  switchToTab("accounts");
+  await loadAccounts();
 }
 
 function invalidateSessionRequests() {
@@ -1892,10 +1843,8 @@ function invalidateSessionRequests() {
   state.keysRequestSeq++;
   state.accountUsageRequestSeq++;
   state.keyUsageRequestSeq++;
-  for (const pending of state.pendingMutations.values()) {
-    setButtonBusy(pending.button, false);
-  }
   state.pendingMutations.clear();
+  syncMutationControls();
   state.pendingResetRedemptions.clear();
   state.usageDetails.clear();
   state.visibleUsageDetails.clear();
@@ -2019,7 +1968,48 @@ function logout() {
   $("#login-error").textContent = "";
 }
 
+const setPrimary = mutation("set-primary", setPrimaryAction);
+const toggleProvider = mutation("toggle-provider", toggleProviderAction);
+const deleteAccount = mutation("delete-account", deleteAccountAction);
+const refreshAccount = mutation("refresh-account", refreshAccountAction);
+const redeemResetCredit = mutation(
+  "redeem-reset-credit",
+  redeemResetCreditAction,
+  (accountId, creditId) => `${accountId}:${creditId || "auto"}`
+);
+const saveAccountEdits = mutation(
+  "save-account",
+  saveAccountEditsAction,
+  () => state.editingAccountId
+);
+const createKey = mutation("submit-key", createKeyAction);
+const saveKeyEdits = mutation(
+  "save-key",
+  saveKeyEditsAction,
+  () => state.editingKeyId
+);
+const rotateKey = mutation("rotate-key", rotateKeyAction);
+const revokeKey = mutation("revoke-key", revokeKeyAction);
+const deleteKey = mutation("delete-key", deleteKeyAction);
+const reauthorizeAccount = mutation(
+  "reauthorize-account",
+  reauthorizeAccountAction
+);
+const startOAuth = mutation(
+  "start-oauth",
+  startOAuthAction,
+  () => state.oauthRequestSeq
+);
+const completeOAuth = mutation(
+  "complete-oauth",
+  completeOAuthAction,
+  () => state.activeOAuth?.state
+);
+const importAccount = mutation("import-account", importAccountAction);
+
 export {
+  mutationAttributes,
+  syncMutationControls,
   DAILY_TOKEN_DAYS,
   hasDailyTokens,
   requestDailyTokens,
