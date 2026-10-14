@@ -366,9 +366,14 @@ function needsReauthorization(account) {
   );
 }
 
+const isRateLimited = (quota) => quota?.errorStatus === 429;
+
 // The provider asked us to slow down, but the last limits are still shown.
 const isRateLimitedWithData = (quota) =>
-  quota?.errorStatus === 429 && Boolean(quota.fetchedAt);
+  isRateLimited(quota) && Boolean(quota.fetchedAt);
+
+const syncFailureText = (quota) =>
+  isRateLimited(quota) ? "Rate limited" : "Sync failed";
 
 function accountIssues(account) {
   const issues = [];
@@ -396,7 +401,11 @@ function accountIssues(account) {
       when: "",
     });
   } else if (quota?.error && !isRateLimitedWithData(quota)) {
-    issues.push({ severity: "warn", text: "limit sync failed", when: "" });
+    issues.push({
+      severity: "warn",
+      text: isRateLimited(quota) ? "limits rate limited" : "limit sync failed",
+      when: "",
+    });
   }
   const tightest = tightestWindow(account);
   const severity = tightest ? limitSeverity(tightest.percent) : "";
@@ -444,7 +453,9 @@ const mainWindows = (account) =>
 function limitMetersHtml(account) {
   const windows = mainWindows(account);
   if (!windows.length) {
-    if (account.quota?.error) return '<span class="warn">Sync failed</span>';
+    if (account.quota?.error) {
+      return `<span class="warn">${syncFailureText(account.quota)}</span>`;
+    }
     return account.quota
       ? '<span class="muted">\u2014</span>'
       : '<span class="meter-pending" aria-label="Loading limits"></span>';
@@ -465,7 +476,9 @@ function limitMetersHtml(account) {
 function limitSummaryText(account) {
   const windows = mainWindows(account);
   if (!windows.length) {
-    return account.quota?.error ? '<span class="warn">sync failed</span>' : "";
+    return account.quota?.error
+      ? `<span class="warn">${syncFailureText(account.quota).toLowerCase()}</span>`
+      : "";
   }
   return windows
     .map((window) => {
@@ -541,6 +554,12 @@ function limitFacts(account) {
     facts.push(
       fact("Limit sync", '<span class="warn">Rate limited</span>', [
         `showing limits from ${escapeHtml(relativeTime(quota.fetchedAt))}`,
+      ])
+    );
+  else if (isRateLimited(quota))
+    facts.push(
+      fact("Limit sync", '<span class="warn">Rate limited</span>', [
+        "retrying automatically",
       ])
     );
   else if (quota.error)
