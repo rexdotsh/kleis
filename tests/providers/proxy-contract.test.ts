@@ -2880,6 +2880,49 @@ describe("proxy contract: claude", () => {
     expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_Shell");
   });
 
+  test("maps tool names per request and restores them in responses", async () => {
+    const requestBody = {
+      tools: [
+        { type: "web_search_20250305", name: "web_search" },
+        { name: "Shell" },
+        { name: "shell" },
+      ],
+      tool_choice: { type: "tool", name: "web_search" },
+    };
+    const result = prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: JSON.stringify(requestBody),
+      bodyJson: requestBody,
+      accessToken: "claude-token",
+      metadata: null,
+    });
+    const transformed = JSON.parse(result.bodyText) as {
+      tools: Array<{ name: string }>;
+      tool_choice: { name: string };
+    };
+
+    expect(transformed.tools.map((tool) => tool.name)).toEqual([
+      "web_search",
+      "mcp_Shell",
+      "mcp_Shell_2",
+    ]);
+    expect(transformed.tool_choice.name).toBe("web_search");
+
+    const response = await result.transformResponse(
+      createSseResponse(
+        ["mcp_Shell", "mcp_Shell_2"].map((name) => ({
+          type: "content_block_start",
+          content_block: { type: "tool_use", id: "t-1", name, input: {} },
+        }))
+      )
+    );
+    expect((await response.text()).match(/"name":"[^"]+"/gu)).toEqual([
+      '"name":"Shell"',
+      '"name":"shell"',
+    ]);
+  });
+
   test("rewrites repo path and directories in non-OpenCode Claude system prompts", () => {
     const requestBody = {
       system:
