@@ -489,26 +489,24 @@ export const mapUsageBucketRows = (
   rows: readonly UsageBucketSummaryRow[]
 ): UsageBucketRow[] =>
   rows
-    .map(
-      (row): UsageBucketRow => ({
-        bucketStart: toNonNegativeInteger(row.bucketStart),
-        requestCount: toNonNegativeInteger(row.requestCount),
-        successCount: toNonNegativeInteger(row.successCount),
-        clientErrorCount: toNonNegativeInteger(row.clientErrorCount),
-        serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
-        authErrorCount: toNonNegativeInteger(row.authErrorCount),
-        rateLimitCount: toNonNegativeInteger(row.rateLimitCount),
-        proxyErrorCount: toNonNegativeInteger(row.proxyErrorCount),
-        upstreamErrorCount: toNonNegativeInteger(row.upstreamErrorCount),
-        inputTokens: toNonNegativeInteger(row.inputTokens),
-        inputTotalTokens: toNonNegativeInteger(row.inputTotalTokens),
-        outputTokens: toNonNegativeInteger(row.outputTokens),
-        reasoningTokens: toNonNegativeInteger(row.reasoningTokens),
-        totalTokens: toNonNegativeInteger(row.totalTokens),
-        cacheReadTokens: toNonNegativeInteger(row.cacheReadTokens),
-        cacheWriteTokens: toNonNegativeInteger(row.cacheWriteTokens),
-      })
-    )
+    .map((row): UsageBucketRow => ({
+      bucketStart: toNonNegativeInteger(row.bucketStart),
+      requestCount: toNonNegativeInteger(row.requestCount),
+      successCount: toNonNegativeInteger(row.successCount),
+      clientErrorCount: toNonNegativeInteger(row.clientErrorCount),
+      serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
+      authErrorCount: toNonNegativeInteger(row.authErrorCount),
+      rateLimitCount: toNonNegativeInteger(row.rateLimitCount),
+      proxyErrorCount: toNonNegativeInteger(row.proxyErrorCount),
+      upstreamErrorCount: toNonNegativeInteger(row.upstreamErrorCount),
+      inputTokens: toNonNegativeInteger(row.inputTokens),
+      inputTotalTokens: toNonNegativeInteger(row.inputTotalTokens),
+      outputTokens: toNonNegativeInteger(row.outputTokens),
+      reasoningTokens: toNonNegativeInteger(row.reasoningTokens),
+      totalTokens: toNonNegativeInteger(row.totalTokens),
+      cacheReadTokens: toNonNegativeInteger(row.cacheReadTokens),
+      cacheWriteTokens: toNonNegativeInteger(row.cacheWriteTokens),
+    }))
     .reverse();
 
 export type UsageModelBreakdown = {

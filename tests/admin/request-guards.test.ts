@@ -57,9 +57,8 @@ function installGlobals() {
 }
 installGlobals();
 const data = await import("../../public/admin/app-data.js");
-const { renderAccounts, renderKeys, renderOAuthFlow } = await import(
-  "../../public/admin/app-render.js"
-);
+const { renderAccounts, renderKeys, renderOAuthFlow } =
+  await import("../../public/admin/app-render.js");
 await import("../../public/admin/app.js");
 const { state } = data;
 const $ = (selector: string) =>

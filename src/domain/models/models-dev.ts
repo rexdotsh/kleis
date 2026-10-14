@@ -314,7 +314,7 @@ const mergeKleisProviderModels = (input: {
           // Codex subscription limits apply to every eligible GPT model, not
           // only known IDs. Preserve the model's output limit from models.dev.
           model.limit = {
-            ...(getObjectProperty(model, "limit") ?? {}),
+            ...getObjectProperty(model, "limit"),
             context: 400_000,
             input: 272_000,
           };

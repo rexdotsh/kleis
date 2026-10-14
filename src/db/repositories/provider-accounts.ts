@@ -541,8 +541,8 @@ export const hasActiveProviderAccountRefreshLock = (
 ): boolean =>
   Boolean(
     account.refreshLockToken &&
-      account.refreshLockExpiresAt &&
-      account.refreshLockExpiresAt > now
+    account.refreshLockExpiresAt &&
+    account.refreshLockExpiresAt > now
   );
 
 type TryAcquireProviderAccountRefreshLockInput = {
@@ -578,9 +578,9 @@ export const tryAcquireProviderAccountRefreshLock = withInvalidation(
     const account = await findProviderAccountById(database, id);
     return Boolean(
       account &&
-        account.refreshLockToken === input.token &&
-        account.refreshLockExpiresAt !== null &&
-        account.refreshLockExpiresAt > input.now
+      account.refreshLockToken === input.token &&
+      account.refreshLockExpiresAt !== null &&
+      account.refreshLockExpiresAt > input.now
     );
   }
 );

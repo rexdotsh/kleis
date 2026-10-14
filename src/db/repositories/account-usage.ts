@@ -204,12 +204,10 @@ export const getProviderAccountUsageDetail = async (
   }
 
   const apiKeys = mutableApiKeys
-    .map(
-      (entry): ProviderAccountUsageApiKeyBreakdown => ({
-        apiKeyId: entry.apiKeyId,
-        ...toAveragedTotals(entry.totals),
-      })
-    )
+    .map((entry): ProviderAccountUsageApiKeyBreakdown => ({
+      apiKeyId: entry.apiKeyId,
+      ...toAveragedTotals(entry.totals),
+    }))
     .sort(
       (left, right) =>
         right.requestCount - left.requestCount ||

@@ -7,7 +7,7 @@ Single OAuth account proxy for coding agents. One base URL that stores OAuth cre
 - **Runtime**: Bun + Hono, self-hosted as a long-running server
 - **Database**: Turso (libSQL) via Drizzle ORM
 - **Admin UI**: Vanilla HTML/CSS/JS SPA in `public/admin/`
-- **Linting**: `bun fix` (Biome-based via Ultracite)
+- **Formatting and linting**: `bun fix` (oxfmt + oxlint), `bun lint` to check
 - **Tests**: `bun test`
 - **Type check**: `bun typecheck`
 
@@ -46,12 +46,13 @@ All require `Authorization: Bearer <kleis_api_key>`:
 
 ---
 
-## Code Standards (Ultracite)
+## Code Standards (Oxc)
 
-This project uses Ultracite (Biome-based) for formatting and linting.
+This project uses Oxfmt for formatting and Oxlint for linting. Their settings live in `.oxfmtrc.json` and `.oxlintrc.json`.
 
-- **Fix**: `bun fix` (run before committing, also runs via lefthook pre-commit)
-- **Check**: `bun lint`
+- **Fix**: `bun fix` (Oxlint safe fixes, then Oxfmt; also runs via lefthook pre-commit)
+- **Check**: `bun lint` (Oxfmt formatting check and Oxlint)
+- **Format**: `bun format` (two spaces, double quotes, semicolons, ES5 trailing commas, 80 columns)
 
 Write code that is type-safe and explicit. Use `unknown` over `any`, const assertions for immutable values, early returns over nested conditionals, `for...of` over `.forEach()`, `async/await` over promise chains, and template literals over concatenation. Remove `console.log`/`debugger` from production code. Throw `Error` objects, not strings.
 
