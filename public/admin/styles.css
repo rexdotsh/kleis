@@ -2282,6 +2282,11 @@ input[type="checkbox"].toggle:checked::after {
     padding: 8px 16px 16px;
   }
   .actions .right {
+    flex-basis: 100%;
+    margin-left: 0;
+    padding-top: 4px;
+  }
+  .actions .right .collapse-hint {
     display: none;
   }
   .actions {

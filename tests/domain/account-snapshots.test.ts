@@ -24,11 +24,13 @@ import {
 } from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
 import { createAccountSnapshotStore } from "../../src/domain/providers/account-snapshot-store";
+import { readCodexRateLimitHeaders } from "../../src/providers/account-tracking/rate-limit-headers";
 import {
   expireProviderAccountTracking,
   listProviderAccountQuotas,
   peekProviderAccountProfiles,
   peekProviderAccountQuotas,
+  recordProviderAccountRateLimits,
   restoreProviderAccountSnapshots,
   setAccountSnapshotStore,
 } from "../../src/domain/providers/provider-account-tracking";
@@ -175,6 +177,77 @@ describe("account snapshots", () => {
     expect(JSON.parse((await readSnapshot(id))?.quotaJson ?? "")).toMatchObject(
       { status: { usedPercent: 5 } }
     );
+  });
+
+  test("limits from traffic are buffered like polled ones and restored with their source", async () => {
+    const store = createAccountSnapshotStore(database);
+    await restoreProviderAccountSnapshots(database, store);
+    const id = await insertAccount("codex", { accountId: "acct-traffic" });
+    const [account] = await accountsById(id);
+    if (!account) throw new Error("account missing");
+    const startedAt = Date.now();
+    setSystemTime(new Date(startedAt));
+    const reading = (used: number, resetAt: number) =>
+      readCodexRateLimitHeaders(
+        new Headers({
+          "x-codex-primary-used-percent": String(used),
+          "x-codex-primary-reset-at": String(Math.floor(resetAt / 1000)),
+        })
+      );
+    const resetAt = startedAt + 2 * HOUR_MS;
+
+    recordProviderAccountRateLimits(account, reading(10, resetAt));
+    await store.settled();
+    const first = await readSnapshot(id);
+    expect(first?.quotaFetchedAt).toBe(startedAt);
+    expect(JSON.parse(first?.quotaJson ?? "")).toMatchObject({
+      source: "headers",
+      status: { primaryWindow: { usedPercent: 10 } },
+    });
+
+    setSystemTime(new Date(startedAt + 60_000));
+    recordProviderAccountRateLimits(account, reading(20, resetAt));
+    await store.settled();
+    expect(store.pendingCount()).toBe(1);
+
+    // A window that reset is written at once.
+    setSystemTime(new Date(resetAt + 1000));
+    recordProviderAccountRateLimits(account, reading(1, resetAt + 5 * HOUR_MS));
+    await store.settled();
+    expect(store.pendingCount()).toBe(0);
+    expect(JSON.parse((await readSnapshot(id))?.quotaJson ?? "")).toMatchObject(
+      { status: { primaryWindow: { usedPercent: 1 } } }
+    );
+
+    const restoredId = await insertAccount("codex", {
+      accountId: "acct-restored",
+    });
+    await upsertProviderAccountSnapshots(database, [
+      {
+        providerAccountId: restoredId,
+        accountIdentity: "acct-restored",
+        quota: {
+          json: (await readSnapshot(id))?.quotaJson ?? "",
+          fetchedAt: Date.now() - 30_000,
+          error: null,
+          errorStatus: null,
+        },
+        updatedAt: Date.now() - 30_000,
+      },
+    ]);
+    const accounts = await restoreProviderAccountSnapshots(
+      database,
+      createAccountSnapshotStore(database)
+    );
+    const restored = peekProviderAccountQuotas(
+      database,
+      (accounts ?? []).filter((row) => row.id === restoredId)
+    ).get(restoredId);
+    expect(restored).toMatchObject({
+      source: "headers",
+      data: { status: { primaryWindow: { usedPercent: 1 } } },
+    });
+    expect(restored?.data).not.toHaveProperty("source");
   });
 
   test("profile and quota writes keep each other, and a removed account does not block the rest", async () => {

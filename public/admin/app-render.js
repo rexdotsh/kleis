@@ -834,6 +834,14 @@ function keyFormHtml(mode, key = null) {
   </div>`;
 }
 
+// Limits read off proxied responses are as fresh as the account's traffic.
+function limitsSourceText(quota) {
+  const when = escapeHtml(relativeTime(quota.fetchedAt));
+  return quota.source === "headers"
+    ? `<span title="Read from the provider's response to a proxied request">Limits from live traffic, ${when}</span>`
+    : `Limits synced ${when}`;
+}
+
 function accountDetailHtml(account) {
   if (state.editingAccountId === account.id) return accountEditHtml(account);
   const supportsOAuth =
@@ -841,7 +849,7 @@ function accountDetailHtml(account) {
   const button = (label, action, shortcut, cls = "btn btn-ghost btn-sm") =>
     `<button class="${cls}" data-action="${action}" data-account-id="${account.id}" type="button">${label}${kbd(shortcut)}</button>`;
   const synced = account.quota?.fetchedAt
-    ? `<span>Limits synced ${escapeHtml(relativeTime(account.quota.fetchedAt))}</span>`
+    ? `<span>${limitsSourceText(account.quota)}</span>`
     : "";
   const entering =
     state.enteringDetail === `account:${account.id}` ? " entering" : "";
@@ -861,7 +869,7 @@ function accountDetailHtml(account) {
       ${button("Refresh token", "refresh-account", "R")}
       ${button("Edit", "edit-account", "E")}
       ${button("Remove", "delete-account", "Del", "btn btn-ghost btn-sm btn-remove")}
-      <div class="right">${synced}<span>Collapse <span class="kbd">esc</span></span></div>
+      <div class="right">${synced}<span class="collapse-hint">Collapse <span class="kbd">esc</span></span></div>
     </div>
   </div>`;
 }

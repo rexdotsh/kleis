@@ -28,12 +28,14 @@ import {
   fetchClaudeSubscriptionUsage,
 } from "../../providers/account-tracking/claude";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
-import { errorLogFields, logWarn } from "../../utils/log";
+import type { RateLimitReading } from "../../providers/account-tracking/rate-limit-headers";
+import { errorLogFields, logInfo, logWarn } from "../../utils/log";
 import type {
   AccountSnapshotStore,
   QuotaSignature,
 } from "./account-snapshot-store";
 import { refreshProviderAccount } from "./provider-service";
+import { mergeClaudeReading, mergeCodexReading } from "./rate-limit-readings";
 
 const CACHE_MS = 60_000;
 const CLAUDE_CACHE_MS = 3 * 60_000;
@@ -64,10 +66,15 @@ type ClaudeTrackingData = {
 
 type TrackingData = CodexTrackingData | ClaudeTrackingData;
 
+// "headers" when the limits were last read from proxied traffic, "poll" when
+// they came from the providers' usage endpoints.
+export type QuotaSource = "headers" | "poll";
+
 export type AccountQuota = {
   fetchedAt: number | null;
   error: string | null;
   errorStatus: number | null;
+  source: QuotaSource | null;
   data: TrackingData;
 };
 
@@ -406,6 +413,7 @@ const toQuota = (
   error: errors.length ? errors.map(errorMessage).join("; ") : null,
   errorStatus:
     errors.map(errorStatus).find((status) => status !== null) ?? null,
+  source: errors.length ? (previous?.source ?? null) : "poll",
   data:
     errors.length && previous?.data.provider === data.provider
       ? ({ ...previous.data, ...data } as TrackingData)
@@ -437,12 +445,14 @@ const fetchProviderAccountQuota = async (
   generation: number
 ): Promise<AccountQuota | null> => {
   const now = Date.now();
-  const previous = cache.get(key)?.quota;
+  // Limits read from proxied traffic while this lookup ran are newer than
+  // what was cached when it started.
+  const latest = (): AccountQuota | undefined => cache.get(key)?.quota;
   const publish = (quota: AccountQuota, expiresAt: number): AccountQuota => {
     // A lookup started later, or an invalidation, owns the cache entry.
     if (generations.get(key) === generation) {
       cache.set(key, { expiresAt, quota });
-      snapshots?.recordQuota(stored, quota, quotaSignature(quota.data));
+      recordQuotaSnapshot(stored, quota);
     }
     return quota;
   };
@@ -454,7 +464,7 @@ const fetchProviderAccountQuota = async (
       null
     );
     return publish(
-      toQuota({ provider: "claude" }, [paused], now, previous),
+      toQuota({ provider: "claude" }, [paused], now, latest()),
       claudeRateLimit.until
     );
   }
@@ -470,12 +480,12 @@ const fetchProviderAccountQuota = async (
       if (claudeRateLimit.until > now) expiresAt = claudeRateLimit.until;
     }
     return publish(
-      toQuota(result.data, result.errors, now, previous),
+      toQuota(result.data, result.errors, now, latest()),
       expiresAt
     );
   } catch (error) {
     return publish(
-      toQuota({ provider: stored.provider }, [error], now, previous),
+      toQuota({ provider: stored.provider }, [error], now, latest()),
       now + Math.max(baseMs, cacheDuration([error]))
     );
   }
@@ -565,6 +575,18 @@ const quotaSignature = (data: TrackingData): QuotaSignature => {
   };
 };
 
+// The source travels inside the stored quota JSON, next to the data.
+const recordQuotaSnapshot = (
+  account: TrackingAccount,
+  quota: AccountQuota
+): void => {
+  snapshots?.recordQuota(
+    account,
+    { ...quota, data: { ...quota.data, source: quota.source } },
+    quotaSignature(quota.data)
+  );
+};
+
 const parseJson = (value: string | null): unknown => {
   if (!value) {
     return null;
@@ -593,11 +615,14 @@ const restoreSnapshot = (
     });
   }
 
-  const data = parseJson(row.quotaJson) as TrackingData | null;
-  if (data?.provider !== account.provider) {
+  const stored = parseJson(row.quotaJson) as
+    | (TrackingData & { source?: unknown })
+    | null;
+  if (stored?.provider !== account.provider) {
     snapshots?.seed(account.id, row.updatedAt, null);
     return;
   }
+  const { source, ...data } = stored;
   if (data.provider === "claude" && restoredProfile?.provider === "claude") {
     data.plan = restoredProfile.plan;
   }
@@ -611,6 +636,7 @@ const restoreSnapshot = (
         fetchedAt: row.quotaFetchedAt,
         error: row.lastError,
         errorStatus: row.lastErrorStatus,
+        source: source === "headers" || source === "poll" ? source : "poll",
         data,
       },
     });
@@ -707,6 +733,86 @@ export const peekProviderAccountQuotas = (
     quotas.set(account.id, cached?.quota ?? null);
   }
   return quotas;
+};
+
+const loggedReadings = new Set<string>();
+
+const describeReading = (reading: RateLimitReading): string =>
+  reading.provider === "claude"
+    ? [...Object.keys(reading.windows), reading.status && "status"]
+        .filter(Boolean)
+        .join(",")
+    : [
+        ...reading.limits.map((limit) => limit.limitId),
+        reading.credits && "credits",
+        reading.planType && "plan",
+        reading.rateLimitReachedType && "reached",
+      ]
+        .filter(Boolean)
+        .join(",");
+
+const mergeReading = (
+  previous: TrackingData | undefined,
+  reading: RateLimitReading,
+  now: number
+): TrackingData => {
+  if (reading.provider === "claude") {
+    const base = previous?.provider === "claude" ? previous : undefined;
+    return {
+      ...base,
+      provider: "claude",
+      subscription: mergeClaudeReading(base?.subscription, reading),
+    };
+  }
+  const base = previous?.provider === "codex" ? previous : undefined;
+  return {
+    ...base,
+    provider: "codex",
+    status: mergeCodexReading(base?.status, reading, now),
+  };
+};
+
+// Limits read from a proxied response count as a fresh sync: the next poll
+// waits the usual interval from now, so busy accounts rarely need one. This
+// runs on the proxy hot path, so it only touches memory; the snapshot store
+// buffers the write. It leaves the shared Claude 429 pause alone, since that
+// is about the usage endpoint.
+export const recordProviderAccountRateLimits = (
+  account: ProviderAccountRecord,
+  reading: RateLimitReading | null
+): void => {
+  if (
+    !(reading && isTrackingAccount(account)) ||
+    account.provider !== reading.provider
+  ) {
+    return;
+  }
+  const key = quotaKey(account);
+  const now = Date.now();
+  const entry = cache.get(key);
+  const quota: AccountQuota = {
+    fetchedAt: now,
+    error: null,
+    errorStatus: null,
+    source: "headers",
+    data: mergeReading(entry?.quota.data, reading, now),
+  };
+  const baseMs = account.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS;
+  cache.set(key, {
+    quota,
+    // Without an earlier sync, the plan and the limits only the usage
+    // endpoints report are still missing, so the next read polls at once.
+    expiresAt: entry ? Math.max(entry.expiresAt, now + baseMs) : now,
+  });
+  recordQuotaSnapshot(account, quota);
+  if (!loggedReadings.has(key)) {
+    loggedReadings.add(key);
+    logInfo("provider_account_limits_from_traffic", {
+      providerAccountId: account.id,
+      provider: account.provider,
+      fields: describeReading(reading),
+    });
+  }
 };
 
 // A fresh process (every deploy) starts with no snapshots; loading them right

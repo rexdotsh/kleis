@@ -7,11 +7,17 @@ import {
   MISSING_PROVIDER_ACCOUNT_ID,
 } from "../../db/repositories/request-usage";
 import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
+import { recordProviderAccountRateLimits } from "../../domain/providers/provider-account-tracking";
 import {
   findPinnedProviderAccounts,
   getRoutableProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../domain/providers/provider-service";
+import {
+  type RateLimitReading,
+  readClaudeRateLimitHeaders,
+  readCodexRateLimitHeaders,
+} from "../../providers/account-tracking/rate-limit-headers";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import {
   deriveCodexSessionId,
@@ -70,6 +76,21 @@ const createCodexSseHeaderTimeout = (): {
 };
 
 const usageBuffer = createUsageBuffer(db);
+
+// Reading limits off a response must never fail the request it rides on.
+const recordRateLimits = (
+  account: ProviderAccountRecord,
+  read: () => RateLimitReading | null
+): void => {
+  try {
+    recordProviderAccountRateLimits(account, read());
+  } catch (error) {
+    logWarn("proxy_rate_limit_record_failed", {
+      providerAccountId: account.id,
+      ...errorLogFields(error),
+    });
+  }
+};
 
 export const flushProxyUsage = (): Promise<void> => usageBuffer.flush();
 
@@ -311,6 +332,8 @@ const proxyRequest = async (
             sessionId: codexSessionId,
             upstreamSessionId: codexUpstreamSessionId,
             onTokenUsage: usageRecorder.onTokenUsage,
+            onRateLimits: (reading) =>
+              recordRateLimits(attemptAccount, () => reading),
             signal: context.req.raw.signal,
           });
           if (webSocketResponse) {
@@ -372,6 +395,9 @@ const proxyRequest = async (
         });
       }
       const { attempt } = result;
+      recordRateLimits(account, () =>
+        readCodexRateLimitHeaders(attempt.response.headers)
+      );
 
       let responseToClient = attempt.response;
       if (attempt.transformResponse) {
@@ -468,6 +494,9 @@ const proxyRequest = async (
         });
       }
       const { attempt } = result;
+      recordRateLimits(account, () =>
+        readClaudeRateLimitHeaders(attempt.response.headers)
+      );
       let responseToClient = attempt.response;
       try {
         responseToClient = await attempt.transformResponse(attempt.response);
