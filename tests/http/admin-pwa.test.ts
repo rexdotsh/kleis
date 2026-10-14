@@ -126,4 +126,14 @@ describe("admin PWA", () => {
       }
     }
   });
+
+  test("does not serve, preload, or cache compatibility entry points", async () => {
+    const { shell } = await readShell();
+    const html = await (await get("/admin/")).text();
+    for (const file of ["app-data.js", "app-render.js"]) {
+      expect((await get(`/admin/${file}`)).status).toBe(404);
+      expect(Object.keys(shell.files)).not.toContain(`./${file}`);
+      expect(html).not.toContain(`./${file}`);
+    }
+  });
 });

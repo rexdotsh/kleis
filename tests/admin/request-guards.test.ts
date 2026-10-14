@@ -56,11 +56,41 @@ function installGlobals() {
   }
 }
 installGlobals();
-const data = await import("../../public/admin/app-data.js");
-const { renderAccounts, renderKeys, renderOAuthFlow } =
-  await import("../../public/admin/app-render.js");
+const {
+  deleteAccount,
+  importAccount,
+  loadAccounts,
+  loadAccountUsage,
+  redeemResetCredit,
+  refreshAccount,
+  saveAccountEdits,
+  setPrimary,
+  startEditAccount,
+  toggleProvider,
+} = await import("../../public/admin/app-accounts.js");
+const { renderAccounts } =
+  await import("../../public/admin/app-accounts-render.js");
+const { cancelOAuthFlow, logout, resolveConfirm, runAction } =
+  await import("../../public/admin/app-core.js");
+const {
+  createKey,
+  deleteKey,
+  loadKeys,
+  loadKeyUsage,
+  revokeKey,
+  rotateKey,
+  saveKeyEdits,
+  startCreateKey,
+  startEditKey,
+} = await import("../../public/admin/app-keys.js");
+const { renderKeys } = await import("../../public/admin/app-keys-render.js");
+const { completeOAuth, renderOAuthFlow, startOAuth } =
+  await import("../../public/admin/app-oauth.js");
+const { handleLogin } = await import("../../public/admin/app-session.js");
+const { state } = await import("../../public/admin/app-state.js");
+const { loadDashboard, requestDailyTokens, requestUsageDetail, switchToTab } =
+  await import("../../public/admin/app-usage.js");
 await import("../../public/admin/app.js");
-const { state } = data;
 const $ = (selector: string) =>
   window.document.querySelector(selector) as unknown as HTMLButtonElement;
 const account = {
@@ -81,7 +111,7 @@ const replacement = {
   key: "kleis_fake_replacement",
 };
 const tick = () => Bun.sleep(0);
-const confirm = (accepted = true) => data.resolveConfirm(accepted);
+const confirm = (accepted = true) => resolveConfirm(accepted);
 const keyboard = (key: string, selector = "body") =>
   window.document
     .querySelector(selector)
@@ -114,7 +144,7 @@ const fresh = (path: string) => {
 };
 const signIn = async () => {
   $("#login-token").value = "same-admin-token";
-  await data.handleLogin();
+  await handleLogin();
   await tick();
 };
 const snapshot = () =>
@@ -143,7 +173,7 @@ const snapshot = () =>
 describe("admin mutation and session guards", () => {
   beforeEach(() => {
     installGlobals();
-    data.logout();
+    logout();
     $("#menu").hidden = true;
     $("#toast-container").replaceChildren();
     state.token = "same-admin-token";
@@ -158,14 +188,14 @@ describe("admin mutation and session guards", () => {
     state.expandedAccountId = account.id;
     state.expandedKeyId = key.id;
     $("#app").classList.add("visible");
-    data.switchToTab("accounts");
+    switchToTab("accounts");
     renderAccounts();
     renderKeys();
     globals.fetch = async (url: RequestInfo | URL) => fresh(String(url));
   });
 
   afterEach(async () => {
-    data.logout();
+    logout();
     await tick();
     await window.happyDOM.cancelAsync();
     for (const [name, descriptor] of originals) {
@@ -181,7 +211,7 @@ describe("admin mutation and session guards", () => {
     console.error = (error: unknown) => reported.push(error);
     const failure = new Error("Background action failed");
     try {
-      data.runAction(Promise.reject(failure));
+      runAction(Promise.reject(failure));
       await tick();
     } finally {
       console.error = consoleError;
@@ -201,51 +231,51 @@ describe("admin mutation and session guards", () => {
   }[] = [
     {
       name: "create key",
-      run: data.createKey,
-      prepare: () => data.startCreateKey(),
+      run: createKey,
+      prepare: () => startCreateKey(),
     },
     {
       name: "save key",
-      run: data.saveKeyEdits,
-      prepare: () => data.startEditKey(key.id),
+      run: saveKeyEdits,
+      prepare: () => startEditKey(key.id),
     },
-    { name: "rotate key", run: () => data.rotateKey(key.id), confirm: true },
-    { name: "revoke key", run: () => data.revokeKey(key.id), confirm: true },
-    { name: "delete key", run: () => data.deleteKey(key.id), confirm: true },
+    { name: "rotate key", run: () => rotateKey(key.id), confirm: true },
+    { name: "revoke key", run: () => revokeKey(key.id), confirm: true },
+    { name: "delete key", run: () => deleteKey(key.id), confirm: true },
     {
       name: "save account",
-      run: data.saveAccountEdits,
-      prepare: () => data.startEditAccount(account.id),
+      run: saveAccountEdits,
+      prepare: () => startEditAccount(account.id),
     },
     {
       name: "delete account",
-      run: () => data.deleteAccount(account.id),
+      run: () => deleteAccount(account.id),
       confirm: true,
     },
-    { name: "refresh account", run: () => data.refreshAccount(account.id) },
-    { name: "primary", run: () => data.setPrimary(account.id) },
+    { name: "refresh account", run: () => refreshAccount(account.id) },
+    { name: "primary", run: () => setPrimary(account.id) },
     {
       name: "provider",
-      run: () => data.toggleProvider("codex", false),
+      run: () => toggleProvider("codex", false),
       confirm: true,
     },
     {
       name: "reset credit",
-      run: () => data.redeemResetCredit(account.id, "credit-preview"),
+      run: () => redeemResetCredit(account.id, "credit-preview"),
       confirm: true,
     },
     {
       name: "import",
-      run: data.importAccount,
+      run: importAccount,
       prepare: () => {
         $("#import-access-token").value = "fake-access";
         $("#import-refresh-token").value = "fake-refresh";
       },
     },
-    { name: "OAuth start", run: data.startOAuth },
+    { name: "OAuth start", run: startOAuth },
     {
       name: "OAuth complete",
-      run: data.completeOAuth,
+      run: completeOAuth,
       prepare: () => {
         state.activeOAuth = { provider: "claude", state: "flow-preview" };
         renderOAuthFlow(state.activeOAuth, "claude");
@@ -296,7 +326,7 @@ describe("admin mutation and session guards", () => {
     keyboard("Escape", "#menu");
     keyboard("r");
     expect(calls).toBe(1);
-    const joined = data.refreshAccount(account.id);
+    const joined = refreshAccount(account.id);
     response.release(failure());
     await joined;
     expect(after.disabled).toBe(false);
@@ -338,9 +368,9 @@ describe("admin mutation and session guards", () => {
         ? Promise.resolve(Response.json({}))
         : reload.respond();
     };
-    const pending = data.refreshAccount(account.id);
+    const pending = refreshAccount(account.id);
     await tick();
-    const repeated = data.refreshAccount(account.id);
+    const repeated = refreshAccount(account.id);
     expect(calls).toBe(3);
     renderAccounts();
     expect($('[data-action="refresh-account"]').disabled).toBe(true);
@@ -356,11 +386,11 @@ describe("admin mutation and session guards", () => {
       calls++;
       return response.respond();
     };
-    data.startEditAccount(account.id);
+    startEditAccount(account.id);
     const pending = [
-      data.refreshAccount(account.id),
-      data.refreshAccount("another-preview"),
-      data.saveAccountEdits(),
+      refreshAccount(account.id),
+      refreshAccount("another-preview"),
+      saveAccountEdits(),
     ];
     expect(calls).toBe(3);
     response.release(failure());
@@ -396,7 +426,7 @@ describe("admin mutation and session guards", () => {
           );
         return Promise.resolve(fresh(path));
       };
-      data.switchToTab("keys");
+      switchToTab("keys");
       state.cursorKeyId = key.id;
       keyboard("r");
       $("#rotate-revoke-old").checked = true;
@@ -438,13 +468,13 @@ describe("admin mutation and session guards", () => {
       calls++;
       return Promise.resolve(Response.json({}));
     };
-    const cancelled = data.deleteAccount(account.id);
+    const cancelled = deleteAccount(account.id);
     confirm(false);
     await cancelled;
     expect(state.pendingMutations.size).toBe(0);
-    const accepted = data.deleteAccount(account.id);
+    const accepted = deleteAccount(account.id);
     confirm();
-    data.logout();
+    logout();
     await accepted;
     expect(calls).toBe(0);
   });
@@ -455,7 +485,7 @@ describe("admin mutation and session guards", () => {
     state.activeOAuth = { provider: "claude", state: "flow-preview" };
     renderOAuthFlow(state.activeOAuth, "claude");
     $("#oauth-code").value = "fake-code";
-    const pending = data.completeOAuth();
+    const pending = completeOAuth();
     const before = $("#btn-oauth-complete");
     renderOAuthFlow(state.activeOAuth, "claude");
     const after = $("#btn-oauth-complete");
@@ -474,12 +504,12 @@ describe("admin mutation and session guards", () => {
       ++calls === 1
         ? Promise.resolve(Response.json({ key: replacement }))
         : response.respond();
-    const pending = data.rotateKey(key.id);
+    const pending = rotateKey(key.id);
     $("#rotate-revoke-old").checked = true;
     confirm();
     await tick();
     expect(calls).toBe(2);
-    data.logout();
+    logout();
     const before = snapshot();
     response.release(Response.json({}));
     await pending;
@@ -496,8 +526,8 @@ describe("admin mutation and session guards", () => {
           ++calls === 1
             ? response.respond()
             : Promise.resolve(fresh(String(url)));
-        const pending = data.refreshAccount(account.id);
-        if (boundary === "logout") data.logout();
+        const pending = refreshAccount(account.id);
+        if (boundary === "logout") logout();
         else await signIn();
         const before = snapshot();
         const callsBefore = calls;
@@ -514,15 +544,15 @@ describe("admin mutation and session guards", () => {
     const current = deferred();
     let calls = 0;
     globals.fetch = () => (++calls === 1 ? old.respond() : current.respond());
-    const previous = data.refreshAccount(account.id);
-    data.logout();
+    const previous = refreshAccount(account.id);
+    logout();
     state.token = "same-admin-token";
-    const pending = data.refreshAccount(account.id);
+    const pending = refreshAccount(account.id);
     old.release(Response.json({}));
     await previous;
     expect(state.pendingMutations.size).toBe(1);
     expect($('[data-action="refresh-account"]').disabled).toBe(true);
-    const repeat = data.refreshAccount(account.id);
+    const repeat = refreshAccount(account.id);
     expect(calls).toBe(2);
     current.release(failure());
     await Promise.all([pending, repeat]);
@@ -535,15 +565,15 @@ describe("admin mutation and session guards", () => {
       state.expandedAccountId = null;
       state.expandedKeyId = null;
       const pending = [
-        data.loadAccounts(),
-        data.loadKeys(),
-        data.loadAccountUsage(),
-        data.loadKeyUsage(),
-        data.loadDashboard(),
-        data.requestUsageDetail("key", key.id),
-        data.requestDailyTokens(account.id),
+        loadAccounts(),
+        loadKeys(),
+        loadAccountUsage(),
+        loadKeyUsage(),
+        loadDashboard(),
+        requestUsageDetail("key", key.id),
+        requestDailyTokens(account.id),
       ];
-      if (boundary === "logout") data.logout();
+      if (boundary === "logout") logout();
       else {
         globals.fetch = async (url: RequestInfo | URL) => fresh(String(url));
         await signIn();
@@ -575,9 +605,9 @@ describe("admin mutation and session guards", () => {
       init?.method === "POST"
         ? Promise.resolve(Response.json({}))
         : reload.respond();
-    const pending = data.refreshAccount(account.id);
+    const pending = refreshAccount(account.id);
     await tick();
-    data.logout();
+    logout();
     const before = snapshot();
     reload.release(Response.json({ accounts: [account], usage: [] }));
     await pending;
@@ -587,9 +617,9 @@ describe("admin mutation and session guards", () => {
   test("a late key creation cannot reveal its key after logout", async () => {
     const response = deferred();
     globals.fetch = () => response.respond();
-    data.startCreateKey();
-    const pending = data.createKey();
-    data.logout();
+    startCreateKey();
+    const pending = createKey();
+    logout();
     const before = snapshot();
     response.release(Response.json({ key: replacement }));
     await pending;
@@ -601,9 +631,9 @@ describe("admin mutation and session guards", () => {
     const current = deferred();
     let calls = 0;
     globals.fetch = () => (++calls === 1 ? old.respond() : current.respond());
-    const previous = data.startOAuth();
-    data.cancelOAuthFlow();
-    const pending = data.startOAuth();
+    const previous = startOAuth();
+    cancelOAuthFlow();
+    const pending = startOAuth();
     old.release(Response.json({ state: "stale-flow" }));
     await previous;
     expect(state.activeOAuth).toBeNull();

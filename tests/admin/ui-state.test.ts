@@ -55,25 +55,26 @@ globalThis.window = { location: { origin: "http://localhost" } } as Window &
   typeof globalThis;
 globalThis.localStorage = { getItem: () => null } as unknown as Storage;
 
+const { loadAccounts, loadAccountUsage } =
+  await import("../../public/admin/app-accounts.js");
+const { renderAccounts } =
+  await import("../../public/admin/app-accounts-render.js");
+const { cancelOAuthFlow, logout } =
+  await import("../../public/admin/app-core.js");
+const { cacheReadRate, escapeHtml, normalizeUsage } =
+  await import("../../public/admin/app-format.js");
+const { startEditKey, saveKeyEdits } =
+  await import("../../public/admin/app-keys.js");
+const { startOAuth } = await import("../../public/admin/app-oauth.js");
+const { state } = await import("../../public/admin/app-state.js");
 const {
-  cacheReadRate,
-  cancelOAuthFlow,
-  escapeHtml,
-  loadAccounts,
   loadDashboard,
-  loadAccountUsage,
   requestUsageDetail,
   scheduleUsagePrefetch,
   waitForUsageDetail,
-  logout,
-  normalizeUsage,
-  startEditKey,
-  saveKeyEdits,
-  startOAuth,
-  state,
-} = await import("../../public/admin/app-data.js");
-const { renderAccounts, renderDashboard, renderUsageSlot, renderAttention } =
-  await import("../../public/admin/app-render.js");
+} = await import("../../public/admin/app-usage.js");
+const { renderDashboard, renderUsageSlot, renderAttention } =
+  await import("../../public/admin/app-usage-render.js");
 
 describe("admin UI request state", () => {
   beforeEach(() => {

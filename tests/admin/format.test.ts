@@ -5,7 +5,7 @@ globals.document ??= { querySelector: () => null, querySelectorAll: () => [] };
 globals.window ??= { location: { origin: "http://localhost" } };
 globals.localStorage ??= { getItem: () => null };
 
-const { formatCompact } = await import("../../public/admin/app-data.js");
+const { formatCompact } = await import("../../public/admin/app-format.js");
 
 test("formats token counts into billions and trillions", () => {
   expect(formatCompact(950)).toBe("950");
