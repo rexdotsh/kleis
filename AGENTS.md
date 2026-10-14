@@ -46,12 +46,13 @@ All require `Authorization: Bearer <kleis_api_key>`:
 
 ---
 
-## Code Standards (Ultracite)
+## Code Standards (Oxc)
 
-This project uses Ultracite (Biome-based) for formatting and linting.
+This project uses Oxfmt for formatting and Oxlint for linting. Their settings live in `.oxfmtrc.json` and `.oxlintrc.json`.
 
-- **Fix**: `bun fix` (run before committing, also runs via lefthook pre-commit)
-- **Check**: `bun lint`
+- **Fix**: `bun fix` (Oxlint safe fixes, then Oxfmt; also runs via lefthook pre-commit)
+- **Check**: `bun lint` (Oxfmt formatting check and Oxlint)
+- **Format**: `bun format` (two spaces, double quotes, semicolons, ES5 trailing commas, 80 columns)
 
 Write code that is type-safe and explicit. Use `unknown` over `any`, const assertions for immutable values, early returns over nested conditionals, `for...of` over `.forEach()`, `async/await` over promise chains, and template literals over concatenation. Remove `console.log`/`debugger` from production code. Throw `Error` objects, not strings.
 

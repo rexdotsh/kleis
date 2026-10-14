@@ -1,4 +1,4 @@
-// biome-ignore-all lint/style/noNonNullAssertion: env vars required at runtime
+/* oxlint-disable typescript/no-non-null-assertion -- env vars required at runtime */
 import { defineConfig } from "drizzle-kit";
 
 export default defineConfig({

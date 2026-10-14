@@ -4,7 +4,7 @@ import type { ProxyRequestBody } from "../http/proxy-routing";
 import type { LogFields } from "../utils/log";
 
 declare module "hono" {
-  // biome-ignore lint/style/useConsistentTypeDefinitions: Hono module augmentation requires an interface.
+  // oxlint-disable-next-line typescript/consistent-type-definitions -- Hono module augmentation requires an interface.
   interface ContextVariableMap {
     proxyApiKeyAccountScopeIds: string[] | null;
     proxyApiKeyId: string;

@@ -506,9 +506,7 @@ export const adminAccountsRoutes = new Hono()
         const result = await startProviderOAuth(
           db,
           provider,
-          {
-            ...(body.options ? { options: body.options } : {}),
-          },
+          body.options ? { options: body.options } : {},
           Date.now()
         );
         return context.json(result);

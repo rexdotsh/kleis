@@ -57,8 +57,8 @@ describe("admin PWA", () => {
 
   test("serves every icon and launch image the page links to", async () => {
     const html = await (await get("/admin/")).text();
-    expect(html).toContain(
-      '<link rel="manifest" href="./manifest.webmanifest">'
+    expect(html).toMatch(
+      /<link\s+rel="manifest"\s+href="\.\/manifest\.webmanifest"\s*\/?>/
     );
     expect(html).toContain("viewport-fit=cover");
 
