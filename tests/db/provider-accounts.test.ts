@@ -236,6 +236,24 @@ describe("provider account enablement", () => {
     }
   });
 
+  test("an already disconnected request starts no refresh", async () => {
+    let refreshCount = 0;
+    codexAdapter.refreshAccount = () => {
+      refreshCount++;
+      return Promise.reject(new Error("refresh should not start"));
+    };
+
+    await expect(
+      refreshProviderAccountAfterAuthFailure(
+        database,
+        "codex-primary",
+        "access-codex",
+        AbortSignal.abort(new Error("client disconnected"))
+      )
+    ).rejects.toThrow("client disconnected");
+    expect(refreshCount).toBe(0);
+  });
+
   test("refreshes a rejected token issued more than a minute ago", async () => {
     await database
       .update(providerAccounts)

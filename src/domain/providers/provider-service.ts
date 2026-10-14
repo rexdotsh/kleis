@@ -303,12 +303,14 @@ export const refreshProviderAccountAfterAuthFailure = async (
   failedAccessToken: string,
   signal?: AbortSignal
 ): Promise<ProviderAccountRecord | null> => {
+  signal?.throwIfAborted();
   const pending = inFlightRefreshes.get(accountId);
   if (pending) {
     const shared = await unlessAborted(pending, signal);
     if (shared?.accessToken !== failedAccessToken) {
       return shared;
     }
+    signal?.throwIfAborted();
   }
   return unlessAborted(
     shareInFlightRefresh(accountId, () =>
