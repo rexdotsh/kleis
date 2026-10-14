@@ -41,7 +41,7 @@ export type ProviderAccountRecord = {
   updatedAt: number;
 };
 
-const toRecord = (
+export const toProviderAccountRecord = (
   row: typeof providerAccounts.$inferSelect
 ): ProviderAccountRecord => ({
   id: row.id,
@@ -72,7 +72,7 @@ export const listProviderAccounts = async (
       desc(providerAccounts.isPrimary),
       desc(providerAccounts.createdAt)
     );
-  return rows.map(toRecord);
+  return rows.map(toProviderAccountRecord);
 };
 
 export const listConfiguredProviders = async (
@@ -105,7 +105,7 @@ export const findProviderAccountById = async (
     return null;
   }
 
-  return toRecord(row);
+  return toProviderAccountRecord(row);
 };
 
 export const findProviderAccountsByIds = async (
@@ -125,7 +125,7 @@ export const findProviderAccountsByIds = async (
     .where(inArray(providerAccounts.id, uniqueIds));
 
   return rows
-    .map(toRecord)
+    .map(toProviderAccountRecord)
     .sort(
       (left, right) =>
         Number(right.isPrimary) - Number(left.isPrimary) ||
@@ -150,7 +150,7 @@ export const findPrimaryProviderAccount = async (
     return null;
   }
 
-  return toRecord(row);
+  return toProviderAccountRecord(row);
 };
 
 const findProviderAccountByProviderAndAccountId = async (
@@ -169,7 +169,7 @@ const findProviderAccountByProviderAndAccountId = async (
     return null;
   }
 
-  return toRecord(row);
+  return toProviderAccountRecord(row);
 };
 
 const hasPrimaryProviderAccount = async (
@@ -764,7 +764,7 @@ export const setPrimaryProviderAccount = withInvalidation(
           throw new Error(accountChangedMessage);
         }
 
-        return toRecord(row);
+        return toProviderAccountRecord(row);
       });
     } catch (error) {
       if (error instanceof Error && error.message === accountChangedMessage) {

@@ -15,7 +15,10 @@ import {
 } from "../../db/repositories/provider-accounts";
 import type { Provider } from "../../db/schema";
 import type { ProviderAccountMetadata } from "../../providers/metadata";
-import { ClaudeOAuthError } from "../../providers/claude";
+import {
+  CLAUDE_ACCOUNT_ON_HOLD,
+  ClaudeOAuthError,
+} from "../../providers/claude";
 import { getProviderAdapter } from "../../providers/registry";
 import type { ProviderOAuthStartResult } from "../../providers/types";
 import { logWarn } from "../../utils/log";
@@ -30,6 +33,7 @@ const REFRESH_WAIT_TIMEOUT_MS = 20_000;
 const AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS = 30_000;
 const CLAUDE_REFRESH_WAIT_TIMEOUT_MS = 30_000;
 const CLAUDE_TRANSIENT_REFRESH_COOLDOWN_MS = 30_000;
+const CLAUDE_ON_HOLD_REFRESH_COOLDOWN_MS = 30 * 60_000;
 const REFRESH_WAIT_POLL_INTERVAL_MS = 150;
 
 const assertExpiresAt = (expiresAt: number, now: number): number => {
@@ -178,9 +182,11 @@ const refreshProviderAccountWithLock = async (
         account.provider === "claude" && error instanceof ClaudeOAuthError
           ? error.code === "invalid_grant"
             ? "reauthorize"
-            : error.status === 429
-              ? "rate_limited"
-              : "transient"
+            : error.code === CLAUDE_ACCOUNT_ON_HOLD
+              ? CLAUDE_ACCOUNT_ON_HOLD
+              : error.status === 429
+                ? "rate_limited"
+                : "transient"
           : account.provider === "claude"
             ? "transient"
             : "failed";
@@ -327,6 +333,16 @@ export class ProviderReauthorizationTargetError extends Error {
 const assertClaudeRefreshAllowed = (account: ProviderAccountRecord): void => {
   if (account.lastRefreshStatus === "reauthorize") {
     throw new Error("Claude account needs reauthorization");
+  }
+  // A hold can be lifted, so refreshes resume after a long pause.
+  if (
+    account.lastRefreshStatus === CLAUDE_ACCOUNT_ON_HOLD &&
+    account.lastRefreshAt !== null &&
+    Date.now() - account.lastRefreshAt < CLAUDE_ON_HOLD_REFRESH_COOLDOWN_MS
+  ) {
+    throw new Error(
+      "Claude account is on hold (account_on_hold); see https://claude.ai/restricted"
+    );
   }
   if (
     (account.lastRefreshStatus === "rate_limited" ||

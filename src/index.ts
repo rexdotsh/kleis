@@ -12,7 +12,11 @@ import { healthRoutes } from "./http/routes/health";
 import { modelsRoutes } from "./http/routes/models";
 import { flushProxyUsage, proxyRoutes } from "./http/routes/proxy";
 import { db } from "./db";
-import { warmProviderAccountQuotas } from "./domain/providers/provider-account-tracking";
+import { createAccountSnapshotStore } from "./domain/providers/account-snapshot-store";
+import {
+  restoreProviderAccountSnapshots,
+  warmProviderAccountQuotas,
+} from "./domain/providers/provider-account-tracking";
 import { gracefulShutdown } from "./http/graceful-shutdown";
 import { resolveRequestIdleTimeout } from "./http/utils/request-timeout";
 import { errorLogFields, logWarn } from "./utils/log";
@@ -60,13 +64,19 @@ app.use("/openai/v1/*", requireProxyApiKey);
 app.use("/anthropic/v1/*", requireProxyApiKey);
 app.route("/", proxyRoutes);
 
+const accountSnapshots = createAccountSnapshotStore(db);
+const restoredAccounts = restoreProviderAccountSnapshots(db, accountSnapshots);
+
 gracefulShutdown.beforeExit(flushProxyUsage);
+gracefulShutdown.beforeExit(accountSnapshots.flush);
 gracefulShutdown.install();
 
 setTimeout(() => {
-  warmProviderAccountQuotas(db).catch((error: unknown) => {
-    logWarn("quota_warmup_failed", errorLogFields(error));
-  });
+  restoredAccounts
+    .then((accounts) => warmProviderAccountQuotas(db, accounts))
+    .catch((error: unknown) => {
+      logWarn("quota_warmup_failed", errorLogFields(error));
+    });
 }, QUOTA_WARMUP_DELAY_MS).unref();
 
 export default {

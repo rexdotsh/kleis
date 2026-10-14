@@ -12,8 +12,11 @@ import {
 } from "../../domain/providers/provider-service";
 import {
   CodexResetCreditConsumeError,
+  expireProviderAccountTracking,
   listProviderAccountQuotas,
+  peekProviderAccountProfiles,
   peekProviderAccountQuotas,
+  providerAccountSnapshotsRestored,
   queryCodexThreadUsage,
   redeemCodexResetCredit,
 } from "../../domain/providers/provider-account-tracking";
@@ -152,22 +155,31 @@ const toAdminAccountView = (
 
 export const adminAccountsRoutes = new Hono()
   .get("/", async (context) => {
-    const accounts = await listProviderAccounts(db);
+    const [accounts] = await Promise.all([
+      listProviderAccounts(db),
+      providerAccountSnapshotsRestored(),
+    ]);
     const quotas = peekProviderAccountQuotas(db, accounts);
+    const profiles = peekProviderAccountProfiles(accounts);
     return context.json({
       accounts: accounts.map((account) => ({
         ...toAdminAccountView(account),
         quota: quotas.get(account.id) ?? null,
+        profile: profiles.get(account.id) ?? null,
       })),
       providers: summarizeProviderStatuses(accounts),
     });
   })
   .get("/quotas", async (context) => {
-    const quotas = await listProviderAccountQuotas(
-      db,
-      await listProviderAccounts(db)
-    );
-    return context.json({ quotas: Object.fromEntries(quotas) });
+    const [accounts] = await Promise.all([
+      listProviderAccounts(db),
+      providerAccountSnapshotsRestored(),
+    ]);
+    const quotas = await listProviderAccountQuotas(db, accounts);
+    return context.json({
+      quotas: Object.fromEntries(quotas),
+      profiles: Object.fromEntries(peekProviderAccountProfiles(accounts)),
+    });
   })
   .get("/providers", async (context) => {
     const providerStatuses = await listProviderStatuses(db);
@@ -407,6 +419,7 @@ export const adminAccountsRoutes = new Hono()
       if (!account) {
         return context.json(accountNotFoundBody, 404);
       }
+      expireProviderAccountTracking(account.id);
 
       return context.json({
         account: toAdminAccountView(account),
@@ -469,6 +482,7 @@ export const adminAccountsRoutes = new Hono()
           },
           Date.now()
         );
+        expireProviderAccountTracking(account.id);
 
         return context.json({ account: toAdminAccountView(account) });
       } catch (error) {

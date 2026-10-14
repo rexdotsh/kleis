@@ -142,7 +142,10 @@ export const decodeCodexUsageProfile = (value: unknown) => {
     "Codex usage profile response is malformed"
   );
   const stats = readObject(input.stats);
+  const profile = readObject(input.profile);
   return {
+    displayName: readString(profile?.display_name),
+    username: readString(profile?.username),
     lifetimeTokens: readNumber(stats?.lifetime_tokens),
     peakDailyTokens: readNumber(stats?.peak_daily_tokens),
     longestRunningTurnSeconds: readNumber(stats?.longest_running_turn_sec),
@@ -170,6 +173,9 @@ const decodeCodexAccount = (value: unknown) => {
     name: readString(input.name),
     profilePictureUrl: readString(input.profile_picture_url),
     structure: readString(input.structure),
+    planType: readString(input.plan_type),
+    role: readString(input.account_user_role),
+    isDeactivated: readBoolean(input.is_deactivated),
   };
 };
 

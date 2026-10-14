@@ -4,24 +4,35 @@ import {
   saveCodexResetCreditRedemption,
 } from "../../db/repositories/codex-reset-redemptions";
 import {
+  listProviderAccountsWithSnapshots,
+  type ProviderAccountSnapshotRow,
+} from "../../db/repositories/provider-account-snapshots";
+import {
   findProviderAccountById,
   listProviderAccounts,
   type ProviderAccountRecord,
 } from "../../db/repositories/provider-accounts";
 import {
+  type CodexAccounts,
   consumeCodexResetCredit,
+  fetchCodexAccounts,
   fetchCodexResetCredits,
   fetchCodexThreadUsage,
   fetchCodexUsageProfile,
   fetchCodexUsageStatus,
 } from "../../providers/account-tracking/codex";
 import {
+  type ClaudeAccountProfile,
   type ClaudeSubscriptionPlan,
-  fetchClaudeSubscriptionPlan,
+  fetchClaudeAccountProfile,
   fetchClaudeSubscriptionUsage,
 } from "../../providers/account-tracking/claude";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
 import { errorLogFields, logWarn } from "../../utils/log";
+import type {
+  AccountSnapshotStore,
+  QuotaSignature,
+} from "./account-snapshot-store";
 import { refreshProviderAccount } from "./provider-service";
 
 const CACHE_MS = 60_000;
@@ -29,8 +40,9 @@ const CLAUDE_CACHE_MS = 3 * 60_000;
 const CLAUDE_RATE_LIMIT_BACKOFF_MS = [2, 4, 8, 15].map(
   (minutes) => minutes * 60_000
 );
-const CLAUDE_PLAN_CACHE_MS = 60 * 60 * 1000;
-const CLAUDE_PLAN_RETRY_MS = 5 * 60 * 1000;
+const PROFILE_CACHE_MS = 24 * 60 * 60 * 1000;
+const PROFILE_CACHE_JITTER_MS = 60 * 60 * 1000;
+const PROFILE_RETRY_MS = 5 * 60 * 1000;
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
 
 type TrackingAccount = ProviderAccountRecord & {
@@ -60,6 +72,9 @@ export type AccountQuota = {
 };
 
 const cache = new Map<string, { expiresAt: number; quota: AccountQuota }>();
+
+let snapshots: AccountSnapshotStore | null = null;
+let snapshotsRestored: Promise<void> = Promise.resolve();
 
 // Anthropic rate-limits the usage endpoint per client, not per account: one
 // 429 pauses usage checks for every Claude account, backing off until a check
@@ -174,40 +189,171 @@ const fetchCodexData = async (account: TrackingAccount) => {
   return { data, errors };
 };
 
-// The plan rarely changes, so it is looked up far less often than usage. A
-// failed lookup keeps the last known plan and never fails the usage sync.
-const claudePlans = new Map<
-  string,
-  { expiresAt: number; plan: ClaudeSubscriptionPlan | null }
->();
+export type CodexAccountProfile = {
+  planType: string | null;
+  workspacePlanType: string | null;
+  workspaceName: string | null;
+  structure: string | null;
+  role: string | null;
+  displayName: string | null;
+  username: string | null;
+};
 
-const getClaudePlan = async (
+export type AccountProfile =
+  | ({ provider: "claude" } & ClaudeAccountProfile)
+  | ({ provider: "codex" } & CodexAccountProfile);
+
+type ProfileEntry = {
+  profile: AccountProfile | null;
+  fetchedAt: number | null;
+  expiresAt: number;
+  // The token response's organization when the profile was looked up; a
+  // different one means the account moved and the profile is out of date.
+  organizationKey: string | null;
+};
+
+// Plans and profiles rarely change, so they are looked up once a day (spread
+// over an hour so accounts don't all come due together), and the last lookup
+// survives restarts through the snapshot table. A failed lookup keeps the last
+// known profile and never fails the usage sync.
+const profiles = new Map<string, ProfileEntry>();
+
+const profileExpiry = (fetchedAt: number): number =>
+  fetchedAt + PROFILE_CACHE_MS - Math.random() * PROFILE_CACHE_JITTER_MS;
+
+const claudeOrganizationKey = (account: TrackingAccount): string | null => {
+  const metadata = account.metadata;
+  if (metadata?.provider !== "claude" || !metadata.organizationUuid) {
+    return null;
+  }
+  return `${metadata.organizationUuid}|${metadata.organizationName ?? ""}`;
+};
+
+const profileOrganizationKey = (
+  profile: AccountProfile | null
+): string | null =>
+  profile?.provider === "claude" && profile.organizationUuid
+    ? `${profile.organizationUuid}|${profile.organizationName ?? ""}`
+    : null;
+
+const getClaudeProfile = async (
   account: TrackingAccount
-): Promise<ClaudeSubscriptionPlan | null> => {
+): Promise<ClaudeAccountProfile | null> => {
   const key = quotaKey(account);
-  const cached = claudePlans.get(key);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.plan;
+  const cached = profiles.get(key);
+  const previous =
+    cached?.profile?.provider === "claude" ? cached.profile : null;
+  const organizationKey = claudeOrganizationKey(account);
+  const organizationChanged =
+    organizationKey !== null && cached?.organizationKey !== organizationKey;
+  if (cached && cached.expiresAt > Date.now() && !organizationChanged) {
+    return previous;
   }
   try {
-    const plan = await fetchClaudeSubscriptionPlan(account.accessToken);
-    claudePlans.set(key, {
-      plan,
-      expiresAt: Date.now() + CLAUDE_PLAN_CACHE_MS,
+    const profile: AccountProfile = {
+      provider: "claude",
+      ...(await fetchClaudeAccountProfile(account.accessToken, previous)),
+    };
+    const fetchedAt = Date.now();
+    profiles.set(key, {
+      profile,
+      fetchedAt,
+      expiresAt: profileExpiry(fetchedAt),
+      organizationKey: organizationKey ?? profileOrganizationKey(profile),
     });
-    return plan;
+    snapshots?.recordProfile(account, profile, fetchedAt);
+    return profile;
   } catch (error) {
     logWarn("claude_account_plan_fetch_failed", {
       providerAccountId: account.id,
       ...errorLogFields(error),
     });
-    const plan = cached?.plan ?? null;
-    claudePlans.set(key, {
-      plan,
+    profiles.set(key, {
+      profile: cached?.profile ?? null,
+      fetchedAt: cached?.fetchedAt ?? null,
       expiresAt:
-        Date.now() + Math.max(CLAUDE_PLAN_RETRY_MS, cacheDuration([error])),
+        Date.now() + Math.max(PROFILE_RETRY_MS, cacheDuration([error])),
+      organizationKey: organizationKey ?? cached?.organizationKey ?? null,
     });
-    return plan;
+    return previous;
+  }
+};
+
+const pickCodexAccount = (
+  accounts: CodexAccounts,
+  accountId: string | null
+): CodexAccounts["accounts"][number] | null =>
+  accounts.accounts.find((entry) => entry.id === accountId) ??
+  (accountId
+    ? null
+    : (accounts.accounts.find(
+        (entry) => entry.id === accounts.defaultAccountId
+      ) ?? null));
+
+const emptyCodexProfile: CodexAccountProfile = {
+  planType: null,
+  workspacePlanType: null,
+  workspaceName: null,
+  structure: null,
+  role: null,
+  displayName: null,
+  username: null,
+};
+
+// /wham/usage reports the plan on every sync; when it differs from the stored
+// one the workspace is looked up again instead of waiting for the daily check.
+// The name and username come with the usage profile, at no extra cost.
+const updateCodexProfile = async (
+  account: TrackingAccount,
+  data: CodexTrackingData
+): Promise<void> => {
+  const key = quotaKey(account);
+  const cached = profiles.get(key);
+  const previous =
+    cached?.profile?.provider === "codex" ? cached.profile : null;
+  const usagePlan = data.status?.planType ?? null;
+  let next: CodexAccountProfile = previous ?? emptyCodexProfile;
+  let fetchedAt = cached?.fetchedAt ?? null;
+  let expiresAt = cached?.expiresAt ?? 0;
+  const planChanged =
+    usagePlan !== null && previous !== null && previous.planType !== usagePlan;
+  if (expiresAt <= Date.now() || planChanged) {
+    try {
+      const entry = pickCodexAccount(
+        await fetchCodexAccounts(account.accessToken, account.accountId),
+        account.accountId
+      );
+      next = {
+        ...next,
+        workspacePlanType: entry?.planType ?? null,
+        workspaceName: entry?.name ?? null,
+        structure: entry?.structure ?? null,
+        role: entry?.role ?? null,
+      };
+      fetchedAt = Date.now();
+      expiresAt = profileExpiry(fetchedAt);
+    } catch (error) {
+      logWarn("codex_account_profile_fetch_failed", {
+        providerAccountId: account.id,
+        ...errorLogFields(error),
+      });
+      expiresAt =
+        Date.now() + Math.max(PROFILE_RETRY_MS, cacheDuration([error]));
+    }
+  }
+  next = {
+    ...next,
+    planType: usagePlan ?? next.planType,
+    displayName: data.profile?.displayName ?? next.displayName,
+    username: data.profile?.username ?? next.username,
+  };
+  const profile: AccountProfile = { provider: "codex", ...next };
+  profiles.set(key, { profile, fetchedAt, expiresAt, organizationKey: null });
+  if (
+    fetchedAt !== (cached?.fetchedAt ?? null) ||
+    JSON.stringify(profile) !== JSON.stringify(cached?.profile ?? null)
+  ) {
+    snapshots?.recordProfile(account, profile, fetchedAt);
   }
 };
 
@@ -216,7 +362,9 @@ const fetchAccountData = async (
   account: TrackingAccount
 ): Promise<{ data: TrackingData; errors: unknown[] }> => {
   if (account.provider === "claude") {
-    const plan = getClaudePlan(account);
+    const plan = getClaudeProfile(account).then(
+      (profile) => profile?.plan ?? null
+    );
     try {
       const subscription = await retryAfter401(database, account, (current) =>
         fetchClaudeSubscriptionUsage(current.accessToken)
@@ -233,13 +381,16 @@ const fetchAccountData = async (
     }
   }
 
+  let current = account;
   let result = await fetchCodexData(account);
   if (result.errors.some((error) => errorStatus(error) === 401)) {
     const refreshed = await resolveAccount(database, account, true);
     if (refreshed) {
+      current = refreshed;
       result = await fetchCodexData(refreshed);
     }
   }
+  await updateCodexProfile(current, result.data);
   return result;
 };
 
@@ -291,6 +442,7 @@ const fetchProviderAccountQuota = async (
     // A lookup started later, or an invalidation, owns the cache entry.
     if (generations.get(key) === generation) {
       cache.set(key, { expiresAt, quota });
+      snapshots?.recordQuota(stored, quota, quotaSignature(quota.data));
     }
     return quota;
   };
@@ -370,6 +522,176 @@ const getProviderAccountQuota = (
   return Promise.resolve(cached.quota);
 };
 
+const toResetTimestamp = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value < 10_000_000_000 ? value * 1000 : value;
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const quotaSignature = (data: TrackingData): QuotaSignature => {
+  if (data.provider === "claude") {
+    const subscription = data.subscription;
+    const windows = [
+      subscription?.fiveHour,
+      subscription?.sevenDay,
+      ...Object.values(subscription?.modelWindows ?? {}),
+    ];
+    return {
+      plan: data.plan?.type ?? null,
+      resets: windows
+        .map((window) => toResetTimestamp(window?.resetsAt))
+        .filter((value) => value !== null),
+    };
+  }
+  const status = data.status;
+  const windows = [
+    status?.primaryWindow,
+    status?.secondaryWindow,
+    ...(status?.additionalRateLimits ?? []).flatMap((limit) => [
+      limit.primaryWindow,
+      limit.secondaryWindow,
+    ]),
+  ];
+  return {
+    plan: status?.planType ?? null,
+    resets: windows
+      .map((window) => toResetTimestamp(window?.resetAt))
+      .filter((value) => value !== null),
+  };
+};
+
+const parseJson = (value: string | null): unknown => {
+  if (!value) {
+    return null;
+  }
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+};
+
+const restoreSnapshot = (
+  account: TrackingAccount,
+  row: ProviderAccountSnapshotRow
+): void => {
+  const key = quotaKey(account);
+  const profile = parseJson(row.profileJson) as AccountProfile | null;
+  const restoredProfile =
+    profile?.provider === account.provider ? profile : null;
+  if (restoredProfile && !profiles.has(key)) {
+    profiles.set(key, {
+      profile: restoredProfile,
+      fetchedAt: row.profileFetchedAt,
+      expiresAt: row.profileFetchedAt ? profileExpiry(row.profileFetchedAt) : 0,
+      organizationKey: profileOrganizationKey(restoredProfile),
+    });
+  }
+
+  const data = parseJson(row.quotaJson) as TrackingData | null;
+  if (data?.provider !== account.provider) {
+    snapshots?.seed(account.id, row.updatedAt, null);
+    return;
+  }
+  if (data.provider === "claude" && restoredProfile?.provider === "claude") {
+    data.plan = restoredProfile.plan;
+  }
+  const baseMs = account.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS;
+  if (!cache.has(key)) {
+    cache.set(key, {
+      // Restored limits count as fresh only for what is left of the usual
+      // interval since they were fetched, so normal refreshes continue.
+      expiresAt: (row.quotaFetchedAt ?? 0) + baseMs,
+      quota: {
+        fetchedAt: row.quotaFetchedAt,
+        error: row.lastError,
+        errorStatus: row.lastErrorStatus,
+        data,
+      },
+    });
+  }
+  snapshots?.seed(account.id, row.updatedAt, quotaSignature(data));
+};
+
+// Loads the last stored profiles and limits, so a fresh process shows them at
+// once and only asks providers for what is out of date. Returns the accounts
+// so warming does not read them again.
+export const setAccountSnapshotStore = (
+  store: AccountSnapshotStore | null
+): void => {
+  snapshots = store;
+};
+
+export const restoreProviderAccountSnapshots = (
+  database: Database,
+  store: AccountSnapshotStore
+): Promise<ProviderAccountRecord[] | null> => {
+  setAccountSnapshotStore(store);
+  const restored = (async () => {
+    try {
+      const result = await listProviderAccountsWithSnapshots(database);
+      const accounts = new Map(
+        result.accounts
+          .filter(isTrackingAccount)
+          .map((account) => [account.id, account])
+      );
+      for (const row of result.snapshots) {
+        const account = accounts.get(row.providerAccountId);
+        if (account && row.accountIdentity === (account.accountId ?? "")) {
+          restoreSnapshot(account, row);
+        }
+      }
+      return result.accounts;
+    } catch (error) {
+      logWarn("account_snapshot_restore_failed", errorLogFields(error));
+      return null;
+    }
+  })();
+  snapshotsRestored = restored.then(() => undefined);
+  return restored;
+};
+
+export const providerAccountSnapshotsRestored = (): Promise<void> =>
+  snapshotsRestored;
+
+// After a reauthorization or an admin refresh, the next sync looks the
+// profile up again and does not wait out the usual interval for limits.
+export const expireProviderAccountTracking = (
+  providerAccountId: string
+): void => {
+  const prefix = `${providerAccountId}:`;
+  for (const [key, entry] of profiles) {
+    if (key.startsWith(prefix)) {
+      entry.expiresAt = 0;
+    }
+  }
+  for (const [key, entry] of cache) {
+    if (key.startsWith(prefix)) {
+      entry.expiresAt = 0;
+    }
+  }
+};
+
+export const peekProviderAccountProfiles = (
+  providerAccounts: readonly ProviderAccountRecord[]
+): Map<string, { fetchedAt: number | null; data: AccountProfile } | null> =>
+  new Map(
+    providerAccounts.filter(isTrackingAccount).map((account) => {
+      const entry = profiles.get(quotaKey(account));
+      return [
+        account.id,
+        entry?.profile
+          ? { fetchedAt: entry.fetchedAt, data: entry.profile }
+          : null,
+      ];
+    })
+  );
+
 // Returns whatever snapshot is cached, without waiting on providers, and
 // starts a lookup for accounts that have none or whose snapshot is stale.
 export const peekProviderAccountQuotas = (
@@ -390,9 +712,13 @@ export const peekProviderAccountQuotas = (
 // A fresh process (every deploy) starts with no snapshots; loading them right
 // away means the first admin visit does not wait on providers.
 export const warmProviderAccountQuotas = async (
-  database: Database
+  database: Database,
+  accounts?: readonly ProviderAccountRecord[] | null
 ): Promise<void> => {
-  peekProviderAccountQuotas(database, await listProviderAccounts(database));
+  peekProviderAccountQuotas(
+    database,
+    accounts ?? (await listProviderAccounts(database))
+  );
 };
 
 export const listProviderAccountQuotas = async (
