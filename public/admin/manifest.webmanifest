@@ -1,0 +1,57 @@
+{
+  "id": "/admin/",
+  "name": "Kleis",
+  "short_name": "Kleis",
+  "description": "Accounts, API keys and usage for your Kleis proxy.",
+  "start_url": "/admin/",
+  "scope": "/admin/",
+  "display": "standalone",
+  "background_color": "#0a0a0b",
+  "theme_color": "#0a0a0b",
+  "categories": ["developer", "utilities"],
+  "icons": [
+    {
+      "src": "/admin/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/admin/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/admin/icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/admin/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Accounts",
+      "url": "/admin/#accounts",
+      "icons": [{ "src": "/admin/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "API keys",
+      "short_name": "Keys",
+      "url": "/admin/#keys",
+      "icons": [{ "src": "/admin/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Connect an account",
+      "short_name": "Connect",
+      "url": "/admin/#oauth",
+      "icons": [{ "src": "/admin/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
