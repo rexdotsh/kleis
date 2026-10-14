@@ -30,8 +30,15 @@ export const createSseEventFramer = () => {
     }
 
     let eventStart = 0;
+    const append = (part: string): void => {
+      pendingBytes += Buffer.byteLength(part);
+      if (pendingBytes > MAX_SSE_EVENT_BYTES) {
+        throw new Error("SSE event exceeds the proxy buffer limit");
+      }
+      parts.push(part);
+    };
     const emit = (end: number): void => {
-      parts.push(text.slice(eventStart, end));
+      append(text.slice(eventStart, end));
       events.push(parts.join(""));
       parts = [];
       pendingBytes = 0;
@@ -68,20 +75,14 @@ export const createSseEventFramer = () => {
       atLineStart = false;
     }
     if (eventStart < text.length) {
-      const tail = text.slice(eventStart);
-      parts.push(tail);
-      pendingBytes += Buffer.byteLength(tail);
+      append(text.slice(eventStart));
     }
     return events;
   };
 
   return {
     push(chunk: Uint8Array): string[] {
-      const events = scan(decoder.decode(chunk, { stream: true }), false);
-      if (pendingBytes > MAX_SSE_EVENT_BYTES) {
-        throw new Error("SSE event exceeds the proxy buffer limit");
-      }
-      return events;
+      return scan(decoder.decode(chunk, { stream: true }), false);
     },
     // `rest` is a final event without its terminating blank line.
     end(): { events: string[]; rest: string } {
@@ -105,28 +106,31 @@ export const readSseData = (event: string): string | null => {
   return data;
 };
 
-// Replaces an event's data lines with a single line carrying `data`, and its
-// event name when one is given, keeping other fields and line endings as they
-// are.
+// Replaces an event's data lines with one line carrying `data`, and its event
+// name when one is given, keeping other fields and line endings as they are.
+// The new line takes the last data line's place, so the line endings around
+// the blank line that ends the event are left untouched.
 export const replaceSseData = (
   event: string,
   data: string,
   eventName?: string
 ): string => {
   const parts = event.split(LINE_SPLIT);
+  let lastData = -1;
+  for (let index = 0; index < parts.length; index += 2) {
+    if (isDataLine(parts[index] ?? "")) {
+      lastData = index;
+    }
+  }
   let output = "";
-  let replaced = false;
   for (let index = 0; index < parts.length; index += 2) {
     const line = parts[index] ?? "";
     const ending = parts[index + 1] ?? "";
-    if (isDataLine(line)) {
-      if (!replaced) {
-        output += `data: ${data}${ending}`;
-        replaced = true;
-      }
+    if (index === lastData) {
+      output += `data: ${data}${ending}`;
     } else if (eventName !== undefined && isEventLine(line)) {
       output += `event: ${eventName}${ending}`;
-    } else {
+    } else if (!isDataLine(line)) {
       output += `${line}${ending}`;
     }
   }

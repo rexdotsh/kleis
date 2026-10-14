@@ -3752,6 +3752,27 @@ describe("proxy contract: claude", () => {
     });
   });
 
+  test("reads and rewrites a final event that has no closing blank line", async () => {
+    const capture = createUsageCapture();
+    const result = prepareClaudeUsageRequest(capture.onTokenUsage);
+    const transformedResponse = await result.transformResponse(
+      new Response(
+        'data: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":1}}}\n\n' +
+          'data: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_shell"}}\n\n' +
+          'data: {"type":"message_delta","usage":{"output_tokens":9}}\n',
+        { headers: { "content-type": "text/event-stream" } }
+      )
+    );
+
+    expect(await transformedResponse.text()).toContain('"name":"shell"');
+    expect(capture.read()).toEqual({
+      inputTokens: 3,
+      outputTokens: 9,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+
   test("retains observed Claude usage when the upstream stream fails", async () => {
     const capture = createUsageCapture();
     const result = prepareClaudeUsageRequest(capture.onTokenUsage);

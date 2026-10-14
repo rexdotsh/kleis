@@ -85,6 +85,13 @@ describe("SSE event framer", () => {
       "SSE event exceeds the proxy buffer limit"
     );
   });
+
+  test("rejects an event larger than 4 MiB that completes in one read", () => {
+    const framer = createSseEventFramer();
+    expect(() =>
+      framer.push(encoder.encode(`data: ${"x".repeat(4 * 1024 * 1024)}\n\n`))
+    ).toThrow("SSE event exceeds the proxy buffer limit");
+  });
 });
 
 describe("SSE event data", () => {
@@ -94,12 +101,19 @@ describe("SSE event data", () => {
     );
   });
 
-  test("replaces data lines in place, keeping other fields and line endings", () => {
+  test("replaces data lines, keeping other fields and line endings", () => {
     expect(
       replaceSseData(
         "event: x\r\ndata: a\ndata\r\nid: 7\rdata: b\r\n\r\n",
         '{"b":1}'
       )
-    ).toBe('event: x\r\ndata: {"b":1}\nid: 7\r\r\n');
+    ).toBe('event: x\r\nid: 7\rdata: {"b":1}\r\n\r\n');
+  });
+
+  test("a rewritten event still frames as one event", () => {
+    const output = replaceSseData("data: {\rdata: }\n\n", "{}", "done");
+    const framer = createSseEventFramer();
+    expect(framer.push(new TextEncoder().encode(output))).toEqual([output]);
+    expect(framer.end()).toEqual({ events: [], rest: "" });
   });
 });

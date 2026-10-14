@@ -498,7 +498,7 @@ const maybeTransformClaudeStreamResponse = (
               return;
             }
             const { events, rest } = framer.end();
-            const output = `${transformEvents(events)}${rest}`;
+            const output = transformEvents(rest ? [...events, rest] : events);
             if (output) {
               controller.enqueue(encoder.encode(output));
               lastWriteAt = Date.now();
