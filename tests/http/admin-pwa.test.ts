@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readdirSync } from "node:fs";
 
 import { adminUiRoutes } from "../../src/http/routes/admin-ui";
 
@@ -103,6 +104,26 @@ describe("admin PWA", () => {
       expect(path).toMatch(
         /^\.\/($|[\w-]+\.(js|css|webmanifest)$|fonts\/|icons\/)/
       );
+    }
+  });
+
+  test("serves and pins every admin JavaScript module for offline imports", async () => {
+    const { shell } = await readShell();
+    const modules = readdirSync("public/admin").filter(
+      (file) => file.endsWith(".js") && file !== "sw.js"
+    );
+    for (const file of modules) {
+      expect(Object.keys(shell.files)).toContain(`./${file}`);
+      const response = await get(`/admin/${file}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toContain("text/javascript");
+      expect(response.headers.get("Cache-Control")).toBe("no-cache");
+      const body = await response.arrayBuffer();
+      expect(sha256(body)).toBe(shell.files[`./${file}`]);
+      const source = new TextDecoder().decode(body);
+      for (const match of source.matchAll(/from "(\.\/[^"\n]+\.js)"/g)) {
+        expect(Object.keys(shell.files)).toContain(match[1]);
+      }
     }
   });
 });
