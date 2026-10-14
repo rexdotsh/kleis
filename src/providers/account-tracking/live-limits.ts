@@ -19,6 +19,12 @@ export type ClaudeLiveLimits = {
   windows: Record<string, ClaudeWindowReading>;
 };
 
+type CodexWindowReading = {
+  usedPercent: number;
+  windowSeconds: number | null;
+  resetAt: number | null;
+};
+
 export type CodexLiveLimits = {
   provider: "codex";
   primaryWindow: CodexWindowReading | null;
@@ -28,12 +34,6 @@ export type CodexLiveLimits = {
 };
 
 export type LiveLimits = ClaudeLiveLimits | CodexLiveLimits;
-
-type CodexWindowReading = {
-  usedPercent: number;
-  windowSeconds: number | null;
-  resetAt: number | null;
-};
 
 // Claude Code's header names for the usage endpoint's windows.
 const CLAUDE_WINDOW_HEADERS = {
@@ -54,8 +54,9 @@ const readHeaderNumber = (value: string | null): number | undefined => {
 };
 
 const readHeaderBoolean = (value: string | null): boolean | null => {
-  if (value === "true") return true;
-  if (value === "false") return false;
+  const flag = value?.trim().toLowerCase();
+  if (flag === "true" || flag === "1") return true;
+  if (flag === "false" || flag === "0") return false;
   return null;
 };
 

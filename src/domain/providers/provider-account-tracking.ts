@@ -783,10 +783,11 @@ export const recordProviderAccountLiveLimits = (
       logInfo("provider_account_limits_from_traffic", {
         providerAccountId: account.id,
         provider: account.provider,
-        fields: Object.keys(
+        fields: Object.entries(
           limits.provider === "claude" ? limits.windows : limits
         )
-          .filter((field) => field !== "provider")
+          .filter(([field, value]) => field !== "provider" && value !== null)
+          .map(([field]) => field)
           .join(","),
       });
     }
