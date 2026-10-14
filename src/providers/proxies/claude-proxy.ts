@@ -52,7 +52,7 @@ const withClaudeSystemIdentity = (
   system: unknown,
   systemIdentity: string
 ): unknown => {
-  let blocks = system ?? [];
+  let blocks = system || [];
   if (typeof blocks === "string") {
     blocks = [{ type: "text", text: blocks }];
   }

@@ -3106,6 +3106,8 @@ describe("proxy contract: claude", () => {
 
     expect(prepareSystem({ messages: [] })).toEqual([identity]);
     expect(prepareSystem({ system: null })).toEqual([identity]);
+    // Anthropic rejects an empty system text block.
+    expect(prepareSystem({ system: "" })).toEqual([identity]);
     expect(prepareSystem({ system: CLAUDE_SYSTEM_IDENTITY })).toEqual([
       identity,
     ]);
