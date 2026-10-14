@@ -34,10 +34,10 @@ import {
   isTokenUsagePopulated,
   type TokenUsage,
 } from "../../usage/token-usage";
-import { logError, logWarn } from "../../utils/log";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 import { sendWithAuthReplay } from "../auth-replay";
 import { createUpstreamProxyHeaders } from "../proxy-headers";
+import { createUpstreamFailureLogger } from "../upstream-failure-log";
 import {
   parseModelForProxyRoute,
   proxyRouteTable,
@@ -79,6 +79,7 @@ const createCodexSseHeaderTimeout = (): {
 };
 
 const usageBuffer = createUsageBuffer(db);
+const logUpstreamFailure = createUpstreamFailureLogger();
 
 const logUpstreamResponse = async (
   response: Response,
@@ -90,8 +91,7 @@ const logUpstreamResponse = async (
     return;
   }
   const fields = await readUpstreamResponseError(response);
-  const log = response.status >= 500 ? logError : logWarn;
-  log("proxy_upstream_response_failed", {
+  logUpstreamFailure({
     provider: route.provider,
     providerAccountId,
     endpoint: route.endpoint,

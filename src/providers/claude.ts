@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { readResponseJson } from "../utils/response-json";
 
 import {
   consumeOAuthState,
@@ -113,7 +114,7 @@ const requestClaudeTokens = async (
     );
   }
 
-  const value: unknown = await response.json();
+  const value = await readResponseJson(response, "Claude token response");
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Claude OAuth response is not an object");
   }

@@ -1,3 +1,5 @@
+import { readResponseJson } from "../../utils/response-json";
+
 export class AccountTrackingHttpError extends Error {
   readonly retryAfterMs: number | null;
   readonly status: number;
@@ -50,9 +52,5 @@ export const fetchTrackingJson = async (input: {
     );
   }
 
-  try {
-    return (await response.json()) as unknown;
-  } catch {
-    throw new Error(`${input.errorPrefix} returned invalid JSON`);
-  }
+  return readResponseJson(response, input.errorPrefix);
 };

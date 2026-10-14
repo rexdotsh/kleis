@@ -250,3 +250,35 @@ test("thrown upstream failures reach the global error handler exactly once", asy
     globalThis.fetch = original;
   }
 });
+
+test("100 identical Claude 429s do not flood the logs or change client responses", async () => {
+  const originalFetch = globalThis.fetch;
+  const log = spyOn(console, "warn").mockImplementation(() => undefined);
+  const body = {
+    error: {
+      type: "rate_limit_error",
+      code: "rate_limit_exceeded",
+      message: "PRIVATESECRETTOKEN",
+    },
+  };
+  globalThis.fetch = (() =>
+    Promise.resolve(Response.json(body, { status: 429 }))) as typeof fetch;
+  try {
+    for (let index = 0; index < 100; index++) {
+      const response = await request();
+      expect(response.status).toBe(429);
+      expect(await response.json()).toEqual(body);
+    }
+    expect(log).toHaveBeenCalledTimes(1);
+    const line = String(log.mock.calls[0]?.[0]);
+    expect(JSON.parse(line)).toMatchObject({
+      event: "proxy_upstream_response_failed",
+      status: 429,
+      errorCode: "rate_limit_exceeded",
+    });
+    expect(line).not.toContain("PRIVATESECRETTOKEN");
+  } finally {
+    log.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});

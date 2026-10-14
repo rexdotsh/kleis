@@ -1,4 +1,5 @@
 import { isObjectRecord } from "../../utils/object";
+import { readOpenAiEventType } from "./openai-event-types";
 
 export type OpenAiResponsesEventShapeIssue = {
   eventType: string;
@@ -32,8 +33,7 @@ export const readOpenAiResponsesEventShapeIssue = (
     return null;
   }
   return {
-    eventType:
-      typeof payload.type === "string" ? payload.type.slice(0, 100) : "unknown",
+    eventType: readOpenAiEventType(payload.type),
     fields: issues.join(","),
   };
 };
