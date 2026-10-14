@@ -2833,6 +2833,41 @@ describe("proxy contract: claude", () => {
       onTokenUsage,
     });
 
+  for (const stream of [false, true]) {
+    for (const headerState of ["missing", "conflicting"]) {
+      test(`sets Claude Code headers with ${headerState} caller headers and stream=${stream}`, () => {
+        const headers = new Headers(
+          headerState === "conflicting"
+            ? {
+                "Anthropic-Version": "2099-01-01",
+                "Content-Type": "text/plain",
+                Accept: "text/event-stream",
+              }
+            : undefined
+        );
+        const requestBody = {
+          model: "claude-sonnet-4-6",
+          messages: [{ role: "user", content: "Hello" }],
+          max_tokens: 16,
+          stream,
+        };
+
+        prepareClaudeProxyRequest({
+          requestUrl: new URL("https://kleis.local/v1/messages"),
+          headers,
+          bodyText: JSON.stringify(requestBody),
+          bodyJson: requestBody,
+          accessToken: "claude-token",
+          metadata: null,
+        });
+
+        expect(headers.get("anthropic-version")).toBe("2023-06-01");
+        expect(headers.get("content-type")).toBe("application/json");
+        expect(headers.get("accept")).toBe("application/json");
+      });
+    }
+  }
+
   test("merges beta headers and rewrites payload tool names", () => {
     const headers = new Headers({
       "anthropic-beta": `custom-beta,${CLAUDE_REQUIRED_BETA_HEADERS[0]}`,
