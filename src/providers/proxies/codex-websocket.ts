@@ -7,6 +7,10 @@ import {
   CODEX_WEBSOCKET_BETA_HEADER,
 } from "../constants";
 import {
+  type CodexLiveLimits,
+  readCodexLiveLimitsEvent,
+} from "../account-tracking/live-limits";
+import {
   applyCodexSessionHeaders,
   deriveCodexSessionId,
   readCodexSessionId,
@@ -73,6 +77,7 @@ type CodexWebSocketInput = {
   sessionId?: string | null;
   upstreamSessionId?: string | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
+  onLiveLimits?: ((limits: CodexLiveLimits | null) => void) | null;
   signal?: AbortSignal;
 };
 
@@ -1261,6 +1266,9 @@ export const tryProxyCodexWebSocket = async (
       });
     }
     const payload = normalizeOpenAiResponsesEvent(parsedPayload);
+    if (payload.type === "codex.rate_limits") {
+      input.onLiveLimits?.(readCodexLiveLimitsEvent(payload));
+    }
     resetResponseIdleTimer("idle_timeout_waiting_for_websocket");
     payloadCount++;
     lastUpstreamEventAt = Date.now();

@@ -10,11 +10,18 @@ import {
 
 import type { Database } from "../../src/db";
 import type { ProviderAccountRecord } from "../../src/db/repositories/provider-accounts";
+import type { AccountSnapshotStore } from "../../src/domain/providers/account-snapshot-store";
 import {
   listProviderAccountQuotas,
   peekProviderAccountQuotas,
+  recordProviderAccountLiveLimits,
   setAccountSnapshotStore,
 } from "../../src/domain/providers/provider-account-tracking";
+import {
+  readClaudeLiveLimits,
+  readCodexLiveLimits,
+  readCodexLiveLimitsEvent,
+} from "../../src/providers/account-tracking/live-limits";
 
 const claudeAccount = (
   accountId: string | null = null,
@@ -367,5 +374,342 @@ describe("account quota cache", () => {
     const recovered = await listProviderAccountQuotas(database, [first]);
     expect(recovered.get(first.id)).toMatchObject({ error: null });
     expect(usageCalls).toBe(4);
+  });
+});
+
+const claudeHeaders = (fiveHour: number, sevenDay?: number) =>
+  readClaudeLiveLimits(
+    new Headers({
+      "anthropic-ratelimit-unified-5h-utilization": String(fiveHour),
+      "anthropic-ratelimit-unified-5h-reset": "1791000000",
+      ...(sevenDay === undefined
+        ? {}
+        : { "anthropic-ratelimit-unified-7d-utilization": String(sevenDay) }),
+    })
+  );
+
+type RecordedQuota = Parameters<AccountSnapshotStore["recordQuota"]>;
+
+const snapshotSpy = () => {
+  const recorded: RecordedQuota[] = [];
+  const store = {
+    recordQuota: (...args: RecordedQuota) => {
+      recorded.push(args);
+    },
+    recordProfile: () => undefined,
+    seed: () => undefined,
+  } as unknown as AccountSnapshotStore;
+  return { store, recorded };
+};
+
+describe("limits from proxied traffic", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    setAccountSnapshotStore(null);
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    setSystemTime();
+    setAccountSnapshotStore(null);
+  });
+
+  test("merges Claude headers into polled limits and counts as a fresh sync", async () => {
+    let usageCalls = 0;
+    globalThis.fetch = trackingFetch(
+      () => {
+        usageCalls++;
+        return Response.json({
+          five_hour: { utilization: 10, resets_at: "2026-10-14T18:00:00Z" },
+          seven_day: { utilization: 20, resets_at: "2026-10-18T00:00:00Z" },
+          seven_day_opus: { utilization: 5, resets_at: null },
+          extra_usage: { is_enabled: true, monthly_limit: 5000 },
+        });
+      },
+      () =>
+        Response.json({
+          organization: {
+            organization_type: "claude_max",
+            rate_limit_tier: "default_claude_max_20x",
+          },
+        })
+    );
+    const account = claudeAccount();
+    const startedAt = Date.now();
+    await listProviderAccountQuotas(database, [account]);
+    expect(usageCalls).toBe(1);
+
+    setSystemTime(new Date(startedAt + 120_000));
+    recordProviderAccountLiveLimits(account, claudeHeaders(0.42, 0.25));
+
+    const quotas = await listProviderAccountQuotas(database, [account]);
+    expect(quotas.get(account.id)).toMatchObject({
+      fetchedAt: startedAt + 120_000,
+      error: null,
+      source: "traffic",
+      data: {
+        plan: { type: "max_20x" },
+        subscription: {
+          fiveHour: {
+            utilization: 42,
+            resetsAt: new Date(1_791_000_000_000).toISOString(),
+          },
+          sevenDay: { utilization: 25, resetsAt: "2026-10-18T00:00:00Z" },
+          modelWindows: { seven_day_opus: { utilization: 5 } },
+          extraUsage: { isEnabled: true, monthlyLimit: 5000 },
+        },
+      },
+    });
+
+    // The usual three minutes now run from the header reading.
+    setSystemTime(new Date(startedAt + 200_000));
+    await listProviderAccountQuotas(database, [account]);
+    await Bun.sleep(0);
+    expect(usageCalls).toBe(1);
+
+    setSystemTime(new Date(startedAt + 301_000));
+    await listProviderAccountQuotas(database, [account]);
+    await Bun.sleep(0);
+    const polled = await listProviderAccountQuotas(database, [account]);
+    expect(usageCalls).toBe(2);
+    expect(polled.get(account.id)).toMatchObject({
+      source: "poll",
+      data: { subscription: { fiveHour: { utilization: 10 } } },
+    });
+  });
+
+  test("header readings refresh a paused Claude account without lifting the pause", async () => {
+    let usageCalls = 0;
+    let rateLimited = true;
+    globalThis.fetch = trackingFetch(() => {
+      usageCalls++;
+      return rateLimited
+        ? Response.json(
+            { error: { type: "rate_limit_error" } },
+            { status: 429, headers: { "Retry-After": "0" } }
+          )
+        : Response.json({ five_hour: { utilization: 1 } });
+    });
+    const limited = claudeAccount();
+    const other = claudeAccount();
+    const startedAt = Date.now();
+    setSystemTime(new Date(startedAt));
+    const first = await listProviderAccountQuotas(database, [limited]);
+    expect(first.get(limited.id)).toMatchObject({ errorStatus: 429 });
+    expect(usageCalls).toBe(1);
+
+    recordProviderAccountLiveLimits(limited, claudeHeaders(0.3));
+    const fresh = await listProviderAccountQuotas(database, [limited]);
+    expect(fresh.get(limited.id)).toMatchObject({
+      error: null,
+      errorStatus: null,
+      fetchedAt: startedAt,
+      source: "traffic",
+      data: { subscription: { fiveHour: { utilization: 30 } } },
+    });
+
+    const paused = await listProviderAccountQuotas(database, [other]);
+    expect(paused.get(other.id)).toMatchObject({ errorStatus: 429 });
+    expect(usageCalls).toBe(1);
+
+    // Leave the shared pause cleared for other tests.
+    rateLimited = false;
+    setSystemTime(new Date(startedAt + 121_000));
+    await listProviderAccountQuotas(database, [other]);
+    await Bun.sleep(0);
+    const recovered = await listProviderAccountQuotas(database, [other]);
+    expect(recovered.get(other.id)).toMatchObject({ error: null });
+  });
+
+  test("Codex headers and events keep reset credits and the usage profile", async () => {
+    const calls: Record<string, number> = {};
+    globalThis.fetch = ((input: string | URL | Request) => {
+      const path = new URL(String(input)).pathname;
+      calls[path] = (calls[path] ?? 0) + 1;
+      const bodies: Record<string, unknown> = {
+        "/backend-api/wham/usage": {
+          plan_type: "plus",
+          rate_limit: {
+            allowed: true,
+            limit_reached: false,
+            primary_window: {
+              used_percent: 10,
+              limit_window_seconds: 18_000,
+              reset_at: 1_791_000_000,
+            },
+            secondary_window: {
+              used_percent: 30,
+              limit_window_seconds: 604_800,
+              reset_at: 1_791_500_000,
+            },
+          },
+          spend_control: { reached: false },
+          rate_limit_reset_credits: { available_count: 1 },
+        },
+        "/backend-api/wham/rate-limit-reset-credits": {
+          available_count: 1,
+          credits: [{ id: "credit-1", status: "available" }],
+        },
+        "/backend-api/wham/profiles/me": {
+          profile: { display_name: "Dev" },
+          stats: { lifetime_tokens: 1000 },
+        },
+        "/backend-api/wham/accounts/check": { accounts: [] },
+      };
+      return Promise.resolve(Response.json(bodies[path] ?? {}));
+    }) as unknown as typeof fetch;
+    const account: ProviderAccountRecord = {
+      ...claudeAccount("workspace-1"),
+      provider: "codex",
+    };
+    await listProviderAccountQuotas(database, [account]);
+    const usageCalls = calls["/backend-api/wham/usage"];
+
+    recordProviderAccountLiveLimits(
+      account,
+      readCodexLiveLimits(
+        new Headers({
+          "x-codex-primary-used-percent": "45",
+        })
+      )
+    );
+    const fromHeaders = await listProviderAccountQuotas(database, [account]);
+    expect(fromHeaders.get(account.id)).toMatchObject({
+      source: "traffic",
+      data: {
+        status: {
+          planType: "plus",
+          primaryWindow: {
+            usedPercent: 45,
+            windowSeconds: 18_000,
+            resetAt: 1_791_000_000,
+          },
+          secondaryWindow: { usedPercent: 30 },
+          spendControl: { reached: false },
+          resetCreditsAvailable: 1,
+        },
+        resetCredits: { availableCount: 1 },
+        profile: { displayName: "Dev", lifetimeTokens: 1000 },
+      },
+    });
+    const event = readCodexLiveLimitsEvent({
+      type: "codex.rate_limits",
+      plan_type: "pro",
+      rate_limits: {
+        primary: {
+          used_percent: 4,
+          window_minutes: 300,
+          reset_at: 1_791_018_000,
+        },
+      },
+    });
+    recordProviderAccountLiveLimits(account, event);
+    const fromEvent = await listProviderAccountQuotas(database, [account]);
+    expect(fromEvent.get(account.id)).toMatchObject({
+      data: {
+        status: {
+          planType: "pro",
+          primaryWindow: { usedPercent: 4, resetAt: 1_791_018_000 },
+          secondaryWindow: { usedPercent: 30 },
+        },
+      },
+    });
+    expect(calls["/backend-api/wham/usage"]).toBe(usageCalls);
+
+    // A reading never lands on another provider's or identity's limits.
+    const moved = { ...account, accountId: "workspace-2" };
+    recordProviderAccountLiveLimits(moved, claudeHeaders(0.9));
+    recordProviderAccountLiveLimits(
+      moved,
+      readCodexLiveLimits(new Headers({ "x-codex-primary-used-percent": "70" }))
+    );
+    const original = await listProviderAccountQuotas(database, [account]);
+    expect(original.get(account.id)).toMatchObject({
+      data: { status: { primaryWindow: { usedPercent: 4 } } },
+    });
+  });
+
+  test("a failed poll keeps limits read while it was running", async () => {
+    let release: ((response: Response) => void) | undefined;
+    globalThis.fetch = trackingFetch(
+      () =>
+        new Promise<Response>((resolve) => {
+          release = resolve;
+        })
+    );
+    const account = claudeAccount();
+    const pending = listProviderAccountQuotas(database, [account]);
+    await Bun.sleep(0);
+    recordProviderAccountLiveLimits(account, claudeHeaders(0.6));
+    release?.(Response.json({}, { status: 500 }));
+    const quotas = await pending;
+    expect(quotas.get(account.id)).toMatchObject({
+      errorStatus: 500,
+      source: "traffic",
+      data: { subscription: { fiveHour: { utilization: 60 } } },
+    });
+  });
+
+  test("a first reading without a sync still polls for the rest", async () => {
+    let usageCalls = 0;
+    globalThis.fetch = trackingFetch(() => {
+      usageCalls++;
+      return Response.json({
+        five_hour: { utilization: 11 },
+        seven_day_opus: { utilization: 3 },
+      });
+    });
+    const account = claudeAccount();
+    recordProviderAccountLiveLimits(account, claudeHeaders(0.5));
+
+    const peeked = peekProviderAccountQuotas(database, [account]);
+    expect(peeked.get(account.id)).toMatchObject({
+      source: "traffic",
+      data: {
+        subscription: { fiveHour: { utilization: 50 }, modelWindows: {} },
+      },
+    });
+    await Bun.sleep(0);
+    expect(usageCalls).toBe(1);
+    const polled = await listProviderAccountQuotas(database, [account]);
+    expect(polled.get(account.id)).toMatchObject({
+      source: "poll",
+      data: { subscription: { modelWindows: { seven_day_opus: {} } } },
+    });
+  });
+
+  test("header readings are stored like polled limits and logged once", () => {
+    const { store, recorded } = snapshotSpy();
+    setAccountSnapshotStore(store);
+    const info = spyOn(console, "info").mockImplementation(() => undefined);
+    const account = claudeAccount();
+    recordProviderAccountLiveLimits(account, claudeHeaders(0.2));
+    recordProviderAccountLiveLimits(account, claudeHeaders(0.3));
+    const lines = info.mock.calls.map((call) => String(call[0]));
+    info.mockRestore();
+
+    expect(recorded).toHaveLength(2);
+    const [stored, quota, signature] = recorded[1] ?? [];
+    expect(stored).toMatchObject({ id: account.id });
+    expect(quota).toMatchObject({
+      source: "traffic",
+      error: null,
+      data: {
+        provider: "claude",
+        subscription: { fiveHour: { utilization: 30 } },
+      },
+    });
+    expect(signature).toEqual({ plan: null, resets: [1_791_000_000_000] });
+    expect(lines).toHaveLength(1);
+    const line = lines[0] ?? "";
+    expect(JSON.parse(line)).toMatchObject({
+      level: "info",
+      event: "provider_account_limits_from_traffic",
+      providerAccountId: account.id,
+      provider: "claude",
+      fields: "five_hour",
+    });
+    expect(line).not.toContain("claude-access");
   });
 });

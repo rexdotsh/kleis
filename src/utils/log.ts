@@ -1,7 +1,7 @@
 type LogFields = Record<string, string | number | boolean | null | undefined>;
 
 const writeLog = (
-  level: "warn" | "error",
+  level: "info" | "warn" | "error",
   event: string,
   fields: LogFields
 ) => {
@@ -19,8 +19,16 @@ const writeLog = (
     console.error(line);
     return;
   }
+  if (level === "info") {
+    console.info(line);
+    return;
+  }
 
   console.warn(line);
+};
+
+export const logInfo = (event: string, fields: LogFields = {}): void => {
+  writeLog("info", event, fields);
 };
 
 export const logWarn = (event: string, fields: LogFields = {}): void => {

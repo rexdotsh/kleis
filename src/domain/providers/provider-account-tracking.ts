@@ -28,7 +28,12 @@ import {
   fetchClaudeSubscriptionUsage,
 } from "../../providers/account-tracking/claude";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
-import { errorLogFields, logWarn } from "../../utils/log";
+import {
+  type LiveLimits,
+  mergeClaudeLiveLimits,
+  mergeCodexLiveLimits,
+} from "../../providers/account-tracking/live-limits";
+import { errorLogFields, logInfo, logWarn } from "../../utils/log";
 import type {
   AccountSnapshotStore,
   QuotaSignature,
@@ -68,6 +73,9 @@ export type AccountQuota = {
   fetchedAt: number | null;
   error: string | null;
   errorStatus: number | null;
+  // "traffic" when the limits were last read from a proxied response. Not
+  // persisted: limits restored after a restart report null.
+  source: "poll" | "traffic" | null;
   data: TrackingData;
 };
 
@@ -406,6 +414,7 @@ const toQuota = (
   error: errors.length ? errors.map(errorMessage).join("; ") : null,
   errorStatus:
     errors.map(errorStatus).find((status) => status !== null) ?? null,
+  source: errors.length ? (previous?.source ?? null) : "poll",
   data:
     errors.length && previous?.data.provider === data.provider
       ? ({ ...previous.data, ...data } as TrackingData)
@@ -437,7 +446,9 @@ const fetchProviderAccountQuota = async (
   generation: number
 ): Promise<AccountQuota | null> => {
   const now = Date.now();
-  const previous = cache.get(key)?.quota;
+  // Limits read from proxied traffic while this lookup ran are newer than
+  // what was cached when it started.
+  const latest = (): AccountQuota | undefined => cache.get(key)?.quota;
   const publish = (quota: AccountQuota, expiresAt: number): AccountQuota => {
     // A lookup started later, or an invalidation, owns the cache entry.
     if (generations.get(key) === generation) {
@@ -454,7 +465,7 @@ const fetchProviderAccountQuota = async (
       null
     );
     return publish(
-      toQuota({ provider: "claude" }, [paused], now, previous),
+      toQuota({ provider: "claude" }, [paused], now, latest()),
       claudeRateLimit.until
     );
   }
@@ -470,12 +481,12 @@ const fetchProviderAccountQuota = async (
       if (claudeRateLimit.until > now) expiresAt = claudeRateLimit.until;
     }
     return publish(
-      toQuota(result.data, result.errors, now, previous),
+      toQuota(result.data, result.errors, now, latest()),
       expiresAt
     );
   } catch (error) {
     return publish(
-      toQuota({ provider: stored.provider }, [error], now, previous),
+      toQuota({ provider: stored.provider }, [error], now, latest()),
       now + Math.max(baseMs, cacheDuration([error]))
     );
   }
@@ -611,6 +622,7 @@ const restoreSnapshot = (
         fetchedAt: row.quotaFetchedAt,
         error: row.lastError,
         errorStatus: row.lastErrorStatus,
+        source: null,
         data,
       },
     });
@@ -707,6 +719,84 @@ export const peekProviderAccountQuotas = (
     quotas.set(account.id, cached?.quota ?? null);
   }
   return quotas;
+};
+
+const loggedLiveLimits = new Set<string>();
+
+const mergeLiveLimits = (
+  previous: TrackingData | undefined,
+  limits: LiveLimits,
+  now: number
+): TrackingData => {
+  if (limits.provider === "claude") {
+    const base = previous?.provider === "claude" ? previous : undefined;
+    return {
+      ...base,
+      provider: "claude",
+      subscription: mergeClaudeLiveLimits(base?.subscription, limits),
+    };
+  }
+  const base = previous?.provider === "codex" ? previous : undefined;
+  return {
+    ...base,
+    provider: "codex",
+    status: mergeCodexLiveLimits(base?.status, limits, now),
+  };
+};
+
+// Limits read from a proxied response count as a fresh sync: the next poll
+// waits the usual interval from now, so busy accounts rarely need one. It runs
+// on the proxy hot path, so it only touches memory and the buffered snapshot
+// store, and never throws. The shared Claude 429 pause is about the usage
+// endpoint, so it stays.
+export const recordProviderAccountLiveLimits = (
+  account: ProviderAccountRecord,
+  limits: LiveLimits | null
+): void => {
+  if (
+    !(limits && isTrackingAccount(account)) ||
+    account.provider !== limits.provider
+  ) {
+    return;
+  }
+  try {
+    const key = quotaKey(account);
+    const now = Date.now();
+    const entry = cache.get(key);
+    const quota: AccountQuota = {
+      fetchedAt: now,
+      error: null,
+      errorStatus: null,
+      source: "traffic",
+      data: mergeLiveLimits(entry?.quota.data, limits, now),
+    };
+    const baseMs = account.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS;
+    cache.set(key, {
+      quota,
+      // Without an earlier poll the plan and the limits only the usage
+      // endpoints report are missing, so the next read still polls.
+      expiresAt: entry ? Math.max(entry.expiresAt, now + baseMs) : now,
+    });
+    snapshots?.recordQuota(account, quota, quotaSignature(quota.data));
+    if (!loggedLiveLimits.has(key)) {
+      loggedLiveLimits.add(key);
+      logInfo("provider_account_limits_from_traffic", {
+        providerAccountId: account.id,
+        provider: account.provider,
+        fields: Object.entries(
+          limits.provider === "claude" ? limits.windows : limits
+        )
+          .filter(([field, value]) => field !== "provider" && value !== null)
+          .map(([field]) => field)
+          .join(","),
+      });
+    }
+  } catch (error) {
+    logWarn("provider_account_live_limits_failed", {
+      providerAccountId: account.id,
+      ...errorLogFields(error),
+    });
+  }
 };
 
 // A fresh process (every deploy) starts with no snapshots; loading them right

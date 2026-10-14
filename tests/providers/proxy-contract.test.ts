@@ -17,6 +17,12 @@ import type {
   ClaudeAccountMetadata,
   CodexAccountMetadata,
 } from "../../src/providers/metadata";
+import {
+  type CodexLiveLimits,
+  readClaudeLiveLimits,
+  readCodexLiveLimits,
+  readCodexLiveLimitsEvent,
+} from "../../src/providers/account-tracking/live-limits";
 import { prepareClaudeProxyRequest } from "../../src/providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../src/providers/proxies/codex-proxy";
 import {
@@ -3603,5 +3609,195 @@ describe("proxy contract: claude", () => {
 
     const transformedText = await transformedResponse.text();
     expect(transformedText).toContain('"name":"mcp_shell"');
+  });
+});
+
+// Fixtures follow the headers Claude Code reads (anthropic-ratelimit-unified-*)
+// and codex-rs codex-api/src/rate_limits.rs.
+describe("proxy contract: live limits", () => {
+  const RESET_5H = 1_791_000_000;
+  const RESET_7D = 1_791_500_000;
+  const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
+
+  test("reads Claude unified windows as percent with ISO resets", () => {
+    expect(
+      readClaudeLiveLimits(
+        new Headers({
+          "anthropic-ratelimit-unified-status": "allowed_warning",
+          "anthropic-ratelimit-unified-representative-claim": "five_hour",
+          "anthropic-ratelimit-unified-5h-utilization": "0.42",
+          "anthropic-ratelimit-unified-5h-reset": String(RESET_5H),
+          "anthropic-ratelimit-unified-7d-utilization": "0.071",
+          "anthropic-ratelimit-unified-7d_oi-utilization": "0.9",
+          "anthropic-ratelimit-unified-7d_oi-reset": String(RESET_7D),
+          "anthropic-ratelimit-unified-overage-status": "rejected",
+        })
+      )
+    ).toEqual({
+      provider: "claude",
+      windows: {
+        five_hour: { utilization: 42, resetsAt: iso(RESET_5H) },
+        seven_day: { utilization: 7.1 },
+        seven_day_overage_included: {
+          utilization: 90,
+          resetsAt: iso(RESET_7D),
+        },
+      },
+    });
+  });
+
+  test("a rejected Claude request marks the deciding window as used up", () => {
+    expect(
+      readClaudeLiveLimits(
+        new Headers({
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-representative-claim": "seven_day_opus",
+          "anthropic-ratelimit-unified-5h-utilization": "0.3",
+        })
+      )
+    ).toEqual({
+      provider: "claude",
+      windows: {
+        five_hour: { utilization: 30 },
+        seven_day_opus: { utilization: 100 },
+      },
+    });
+  });
+
+  test("ignores missing and malformed Claude values", () => {
+    expect(readClaudeLiveLimits(new Headers())).toBeNull();
+    expect(
+      readClaudeLiveLimits(
+        new Headers({
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-representative-claim": "overage",
+          "anthropic-ratelimit-unified-5h-utilization": "abc",
+          "anthropic-ratelimit-unified-5h-reset": "-5",
+          "anthropic-ratelimit-unified-7d-reset": "Infinity",
+        })
+      )
+    ).toBeNull();
+  });
+
+  test("reads Codex windows and credits from headers", () => {
+    expect(
+      readCodexLiveLimits(
+        new Headers({
+          "x-codex-primary-used-percent": "12.5",
+          "x-codex-primary-window-minutes": "300",
+          "x-codex-primary-reset-at": String(RESET_5H),
+          "x-codex-secondary-used-percent": "40",
+          "x-codex-bengalfox-primary-used-percent": "80",
+          "x-codex-credits-has-credits": "true",
+          "x-codex-credits-unlimited": "false",
+          "x-codex-credits-balance": "12.50",
+        })
+      )
+    ).toEqual({
+      provider: "codex",
+      primaryWindow: {
+        usedPercent: 12.5,
+        windowSeconds: 18_000,
+        resetAt: RESET_5H,
+      },
+      secondaryWindow: { usedPercent: 40, windowSeconds: null, resetAt: null },
+      credits: { hasCredits: true, unlimited: false, balance: "12.50" },
+      planType: null,
+    });
+    expect(readCodexLiveLimits(new Headers())).toBeNull();
+    expect(
+      readCodexLiveLimits(
+        new Headers({
+          // An all-zero window carries no data, as in codex-rs.
+          "x-codex-primary-used-percent": "0",
+          "x-codex-secondary-used-percent": "NaN",
+          "x-codex-credits-has-credits": "yes",
+          "x-codex-credits-unlimited": "false",
+        })
+      )
+    ).toBeNull();
+  });
+
+  test("reads codex.rate_limits websocket events", () => {
+    expect(
+      readCodexLiveLimitsEvent({
+        type: "codex.rate_limits",
+        plan_type: "pro",
+        rate_limits: {
+          primary: { used_percent: 9, window_minutes: 300, reset_at: RESET_5H },
+          secondary: { used_percent: "x" },
+        },
+        credits: { has_credits: false, unlimited: false, balance: null },
+        metered_limit_name: "codex",
+      })
+    ).toEqual({
+      provider: "codex",
+      primaryWindow: {
+        usedPercent: 9,
+        windowSeconds: 18_000,
+        resetAt: RESET_5H,
+      },
+      secondaryWindow: null,
+      credits: { hasCredits: false, unlimited: false, balance: null },
+      planType: "pro",
+    });
+    // A metered feature's own limit is not the account's main window.
+    expect(
+      readCodexLiveLimitsEvent({
+        type: "codex.rate_limits",
+        metered_limit_name: "codex_bengalfox",
+        rate_limits: { primary: { used_percent: 50 } },
+      })
+    ).toBeNull();
+  });
+
+  test("reports websocket rate-limit events and still relays them", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const readings: (CodexLiveLimits | null)[] = [];
+    const responsePromise = tryProxyCodexWebSocket({
+      headers: new Headers({ authorization: "Bearer codex-access" }),
+      bodyJson: {
+        model: "gpt-5.6-sol",
+        stream: true,
+        input: [{ role: "user", content: "hello" }],
+      },
+      accountKey: "key-1:rate-limit-event-account",
+      onLiveLimits: (limits) => readings.push(limits),
+    });
+    await waitFor(() => sockets.length === 1 && sentBodies.length === 1);
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "codex.rate_limits",
+        plan_type: "plus",
+        rate_limits: {
+          primary: { used_percent: 31, window_minutes: 300, reset_at: null },
+          secondary: null,
+        },
+      }),
+    });
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "response.completed",
+        response: { id: "resp-rate-limits", status: "completed" },
+      }),
+    });
+    const responseText = await (await responsePromise)?.text();
+
+    expect(readings).toEqual([
+      {
+        provider: "codex",
+        primaryWindow: {
+          usedPercent: 31,
+          windowSeconds: 18_000,
+          resetAt: null,
+        },
+        secondaryWindow: null,
+        credits: null,
+        planType: "plus",
+      },
+    ]);
+    expect(responseText).toContain('"type":"codex.rate_limits"');
+    expect(responseText).toContain('"type":"response.completed"');
   });
 });

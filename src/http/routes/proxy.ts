@@ -7,11 +7,16 @@ import {
   MISSING_PROVIDER_ACCOUNT_ID,
 } from "../../db/repositories/request-usage";
 import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
+import { recordProviderAccountLiveLimits } from "../../domain/providers/provider-account-tracking";
 import {
   findPinnedProviderAccounts,
   getRoutableProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../domain/providers/provider-service";
+import {
+  readClaudeLiveLimits,
+  readCodexLiveLimits,
+} from "../../providers/account-tracking/live-limits";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import {
   deriveCodexSessionId,
@@ -311,6 +316,8 @@ const proxyRequest = async (
             sessionId: codexSessionId,
             upstreamSessionId: codexUpstreamSessionId,
             onTokenUsage: usageRecorder.onTokenUsage,
+            onLiveLimits: (limits) =>
+              recordProviderAccountLiveLimits(attemptAccount, limits),
             signal: context.req.raw.signal,
           });
           if (webSocketResponse) {
@@ -372,6 +379,10 @@ const proxyRequest = async (
         });
       }
       const { attempt } = result;
+      recordProviderAccountLiveLimits(
+        account,
+        readCodexLiveLimits(attempt.response.headers)
+      );
 
       let responseToClient = attempt.response;
       if (attempt.transformResponse) {
@@ -468,6 +479,10 @@ const proxyRequest = async (
         });
       }
       const { attempt } = result;
+      recordProviderAccountLiveLimits(
+        account,
+        readClaudeLiveLimits(attempt.response.headers)
+      );
       let responseToClient = attempt.response;
       try {
         responseToClient = await attempt.transformResponse(attempt.response);
