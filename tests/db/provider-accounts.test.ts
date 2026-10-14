@@ -1,5 +1,5 @@
 import { createClient } from "@libsql/client";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
@@ -24,6 +24,7 @@ import {
   refreshProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../src/domain/providers/provider-service";
+import { sendWithAuthReplay } from "../../src/http/auth-replay";
 import { codexAdapter } from "../../src/providers/codex";
 
 describe("provider account enablement", () => {
@@ -235,10 +236,10 @@ describe("provider account enablement", () => {
     }
   });
 
-  test("refreshes a rejected token even after a recent ordinary refresh", async () => {
+  test("refreshes a rejected token issued more than a minute ago", async () => {
     await database
       .update(providerAccounts)
-      .set({ lastRefreshAt: Date.now(), lastRefreshStatus: "success" })
+      .set({ lastRefreshAt: Date.now() - 61_000, lastRefreshStatus: "success" })
       .where(eq(providerAccounts.id, "codex-primary"));
 
     let refreshCount = 0;
@@ -261,6 +262,187 @@ describe("provider account enablement", () => {
 
     expect(refreshCount).toBe(1);
     expect(refreshed?.accessToken).toBe("access-after-401");
+  });
+
+  test("a token rejected again right after its refresh is not rotated on every request", async () => {
+    await database
+      .update(providerAccounts)
+      .set({ lastRefreshAt: Date.now() - 61_000, lastRefreshStatus: "success" })
+      .where(eq(providerAccounts.id, "codex-primary"));
+    let refreshCount = 0;
+    codexAdapter.refreshAccount = (account, now) => {
+      refreshCount++;
+      return Promise.resolve({
+        accessToken: `access-after-401-${refreshCount}`,
+        refreshToken: account.refreshToken,
+        expiresAt: now + 3_600_000,
+        accountId: account.accountId,
+        metadata: account.metadata,
+      });
+    };
+    const sendRequest = async () => {
+      const account = await findPrimaryProviderAccount(database, "codex");
+      if (!account) throw new Error("Missing test account");
+      return sendWithAuthReplay({
+        account,
+        send: () =>
+          Promise.resolve({ response: new Response(null, { status: 401 }) }),
+        refresh: (accountId, token) =>
+          refreshProviderAccountAfterAuthFailure(database, accountId, token),
+      });
+    };
+
+    const first = await sendRequest();
+    const second = await sendRequest();
+
+    expect(refreshCount).toBe(1);
+    expect(first.replayed).toBe(true);
+    expect(second).toMatchObject({ replayed: false, refreshFailed: true });
+    expect(second.attempt.response.status).toBe(401);
+    expect(second.account.accessToken).toBe("access-after-401-1");
+
+    await database
+      .update(providerAccounts)
+      .set({ expiresAt: Date.now() - 1000 })
+      .where(eq(providerAccounts.id, "codex-primary"));
+    expect(
+      await refreshProviderAccountAfterAuthFailure(
+        database,
+        "codex-primary",
+        "access-after-401-1"
+      )
+    ).toMatchObject({ accessToken: "access-after-401-2" });
+  });
+
+  test("same-account refreshes in one process share one failing attempt", async () => {
+    let refreshCount = 0;
+    codexAdapter.refreshAccount = async () => {
+      refreshCount++;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      throw new Error("Codex token refresh failed (HTTP 503)");
+    };
+
+    const results = await Promise.allSettled([
+      refreshProviderAccount(database, "codex-primary", Date.now(), {
+        force: true,
+      }),
+      refreshProviderAccount(database, "codex-primary", Date.now(), {
+        force: true,
+      }),
+      refreshProviderAccountAfterAuthFailure(
+        database,
+        "codex-primary",
+        "access-codex"
+      ),
+    ]);
+
+    expect(refreshCount).toBe(1);
+    expect(results.map((result) => result.status)).toEqual([
+      "rejected",
+      "rejected",
+      "rejected",
+    ]);
+  });
+
+  test("Codex adopts only a newer unexpired credential after losing its lock", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      codexAdapter.refreshAccount = async (account, now) => {
+        await database
+          .update(providerAccounts)
+          .set({ refreshLockToken: "another-owner" })
+          .where(eq(providerAccounts.id, "codex-primary"));
+        await new Promise((resolve) => setTimeout(resolve, 5200));
+        return {
+          accessToken: "access-without-lock",
+          refreshToken: "refresh-without-lock",
+          expiresAt: now + 60_000,
+          accountId: account.accountId,
+          metadata: account.metadata,
+        };
+      };
+
+      await expect(
+        refreshProviderAccount(database, "codex-primary", Date.now(), {
+          force: true,
+        })
+      ).rejects.toThrow("Codex refresh lost its credential lock");
+      expect(
+        warn.mock.calls.map(
+          (call) => JSON.parse(String(call[0])) as { event: string }
+        )
+      ).toContainEqual(
+        expect.objectContaining({
+          event: "provider_refresh_lock_lost",
+          accountId: "codex-primary",
+          provider: "codex",
+        })
+      );
+      expect(await findPrimaryProviderAccount(database, "codex")).toMatchObject(
+        { accessToken: "access-codex", refreshToken: "refresh-codex" }
+      );
+
+      codexAdapter.refreshAccount = async (account, now) => {
+        await database
+          .update(providerAccounts)
+          .set({
+            refreshLockToken: "another-owner",
+            accessToken: "access-from-other-owner",
+            refreshToken: "refresh-from-other-owner",
+            expiresAt: now + 60_000,
+          })
+          .where(eq(providerAccounts.id, "codex-primary"));
+        return {
+          accessToken: "access-without-lock",
+          refreshToken: "refresh-without-lock",
+          expiresAt: now + 60_000,
+          accountId: account.accountId,
+          metadata: account.metadata,
+        };
+      };
+      await database
+        .update(providerAccounts)
+        .set({ refreshLockToken: null, refreshLockExpiresAt: null })
+        .where(eq(providerAccounts.id, "codex-primary"));
+
+      expect(
+        await refreshProviderAccount(database, "codex-primary", Date.now(), {
+          force: true,
+        })
+      ).toMatchObject({ accessToken: "access-from-other-owner" });
+    } finally {
+      warn.mockRestore();
+    }
+  }, 10_000);
+
+  test("Codex OAuth errors keep only the status and an allowlisted code", async () => {
+    const account = await findPrimaryProviderAccount(database, "codex");
+    if (!account) throw new Error("Missing test account");
+    const bodies = [
+      {
+        error: {
+          message: "refresh-codex was already used",
+          type: "invalid_request_error",
+          code: "refresh_token_reused",
+        },
+      },
+      { error: "refresh-codex is unknown", detail: "refresh-codex" },
+    ];
+    const messages: string[] = [];
+    for (const body of bodies) {
+      globalThis.fetch = (() =>
+        Promise.resolve(Response.json(body, { status: 400 }))) as typeof fetch;
+      try {
+        await codexAdapter.refreshAccount(account, Date.now());
+      } catch (error) {
+        messages.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    expect(messages).toEqual([
+      "Codex token refresh failed (HTTP 400, refresh_token_reused)",
+      "Codex token refresh failed (HTTP 400)",
+    ]);
   });
 
   test("adopts a token already refreshed by another request", async () => {

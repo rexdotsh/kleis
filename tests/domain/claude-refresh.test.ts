@@ -237,20 +237,69 @@ describe("Claude refresh lifecycle", () => {
     expect(calls).toBe(1);
   });
 
-  test("does not accept a refresh response without a rotated refresh token", async () => {
+  // Claude Code 2.1.299 reads `refresh_token: G = e` from the refresh response,
+  // keeping the token it sent when the response omits one.
+  test("keeps the current refresh token when the response omits a replacement", async () => {
     globalThis.fetch = (() =>
       Promise.resolve(
         Response.json({ access_token: "new-access", expires_in: 3600 })
       )) as typeof fetch;
 
+    expect(
+      await refreshProviderAccount(database, id, Date.now())
+    ).toMatchObject({
+      accessToken: "new-access",
+      refreshToken: "old-refresh",
+      lastRefreshStatus: "success",
+    });
+  });
+
+  test("keeps a rotated refresh token when the expiry field is unusable", async () => {
+    for (const [index, expiresIn] of [undefined, "soon", 0, 30].entries()) {
+      await database.update(providerAccounts).set({
+        expiresAt: Date.now() - 1000,
+        lastRefreshStatus: null,
+      });
+      globalThis.fetch = (() =>
+        Promise.resolve(
+          Response.json({
+            access_token: `new-access-${index}`,
+            refresh_token: `new-refresh-${index}`,
+            expires_in: expiresIn,
+          })
+        )) as typeof fetch;
+
+      const refreshed = await refreshProviderAccount(database, id, Date.now());
+      expect(refreshed).toMatchObject({
+        refreshToken: `new-refresh-${index}`,
+        lastRefreshStatus: "success",
+      });
+      expect(refreshed?.expiresAt).toBeGreaterThan(Date.now());
+      expect(refreshed?.expiresAt).toBeLessThanOrEqual(Date.now() + 60_000);
+    }
+  });
+
+  test("a token request that fails after it was sent is indeterminate", async () => {
+    let calls = 0;
+    globalThis.fetch = (() => {
+      calls++;
+      return Promise.reject(
+        new DOMException("The operation timed out.", "TimeoutError")
+      );
+    }) as typeof fetch;
+
     await expect(
       refreshProviderAccount(database, id, Date.now())
-    ).rejects.toThrow("missing refresh_token");
+    ).rejects.toThrow("timed out");
     expect(await findProviderAccountById(database, id)).toMatchObject({
-      accessToken: "old-access",
       refreshToken: "old-refresh",
-      lastRefreshStatus: "transient",
+      lastRefreshStatus: "indeterminate",
+      refreshLockToken: null,
     });
+    await expect(
+      refreshProviderAccount(database, id, Date.now())
+    ).rejects.toThrow("temporarily unavailable");
+    expect(calls).toBe(1);
   });
 
   test("classifies token endpoint rate limiting separately from credential failure", async () => {
