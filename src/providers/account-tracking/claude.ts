@@ -19,6 +19,8 @@ const CLAUDE_PLAN_LABELS = {
   max_5x: "Max 5x",
   max_20x: "Max 20x",
   team: "Team",
+  team_standard: "Team Standard",
+  team_premium: "Team Premium",
   enterprise: "Enterprise",
 } as const;
 
@@ -26,10 +28,22 @@ type ClaudePlanType = keyof typeof CLAUDE_PLAN_LABELS;
 
 export type ClaudeSubscriptionPlan = { type: ClaudePlanType; label: string };
 
-// The organization decides the plan: Team seats can carry Max rate tiers too.
+// The organization decides the plan; Team premium seats carry the Max 5x rate
+// tier, so on Team it identifies the seat rather than a Max subscription.
+const readTeamSeat = (
+  seatTier: string | null,
+  rateLimitTier: string | null
+): ClaudePlanType => {
+  if (seatTier === "team_standard") return "team_standard";
+  if (seatTier === "team_tier_1") return "team_premium";
+  if (rateLimitTier === "default_claude_max_5x") return "team_premium";
+  return "team";
+};
+
 const readClaudePlanType = (
   organizationType: string | null,
-  rateLimitTier: string | null
+  rateLimitTier: string | null,
+  seatTier: string | null
 ): ClaudePlanType | null => {
   switch (organizationType) {
     case "claude_pro":
@@ -39,7 +53,7 @@ const readClaudePlanType = (
       if (rateLimitTier === "default_claude_max_5x") return "max_5x";
       return "max";
     case "claude_team":
-      return "team";
+      return readTeamSeat(seatTier, rateLimitTier);
     case "claude_enterprise":
       return "enterprise";
     default:
@@ -57,7 +71,8 @@ export const decodeClaudeSubscriptionPlan = (
   const organization = readObject(input.organization);
   const type = readClaudePlanType(
     readString(organization?.organization_type),
-    readString(organization?.rate_limit_tier)
+    readString(organization?.rate_limit_tier),
+    readString(organization?.seat_tier)
   );
   return type ? { type, label: CLAUDE_PLAN_LABELS[type] } : null;
 };
