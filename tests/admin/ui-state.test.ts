@@ -236,8 +236,9 @@ describe("admin UI request state", () => {
     state.usageDetails = new Map();
     const slot = element(`[data-usage-for="account:${id}"]`);
     renderUsageSlot("account", id);
-    expect(slot.innerHTML).toContain("By key");
-    expect(slot.innerHTML).toContain("By model");
+    expect(slot.innerHTML).toContain("<span>Key</span>");
+    expect(slot.innerHTML).toContain("<span>Model</span>");
+    expect(slot.innerHTML).not.toContain("By key");
     expect(slot.innerHTML.match(/class="usage-panel"/g)).toHaveLength(2);
     expect(slot.innerHTML).toContain('class="row skeleton"');
     expect(slot.innerHTML.match(/class="row skeleton"/g)).toHaveLength(6);
