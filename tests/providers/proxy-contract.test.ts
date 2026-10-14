@@ -3559,6 +3559,60 @@ describe("proxy contract: claude", () => {
     );
   });
 
+  test("rewrites tool names when every read ends inside a CRLF", async () => {
+    const result = prepareClaudeUsageRequest();
+    const encoder = new TextEncoder();
+    const original =
+      'event: content_block_start\r\ndata: {"type":"content_block_start",\r\ndata: "content_block":{"type":"tool_use","name":"mcp_shell"}}\r\n\r\n' +
+      'event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n';
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          for (const part of original.split(/(?<=\r)/u)) {
+            controller.enqueue(encoder.encode(part));
+          }
+          controller.close();
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+
+    const transformedResponse = await result.transformResponse(sourceResponse);
+
+    expect(await transformedResponse.text()).toBe(
+      'event: content_block_start\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\r\n\r\n' +
+        'event: message_stop\r\ndata: {"type":"message_stop"}\r\n\r\n'
+    );
+  });
+
+  test("cancels upstream when a Claude SSE event exceeds the buffer limit", async () => {
+    const result = prepareClaudeUsageRequest();
+    let cancelled = false;
+    const sourceResponse = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller): void {
+          controller.enqueue(
+            new TextEncoder().encode(`data: ${"x".repeat(4 * 1024 * 1024)}`)
+          );
+        },
+        cancel(): void {
+          cancelled = true;
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+    const originalWarn = console.warn;
+    console.warn = (): void => undefined;
+    try {
+      const transformedResponse =
+        await result.transformResponse(sourceResponse);
+      await expect(transformedResponse.text()).rejects.toThrow("buffer limit");
+      await waitFor(() => cancelled);
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
   const claudeStreamUsageCases = [
     {
       name: "extracts usage from claude streaming message events",
