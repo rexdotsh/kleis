@@ -169,44 +169,65 @@ const transformClaudeRequestPayload = (
   return transformed;
 };
 
-// Returns the original value when nothing needed renaming, so callers can
-// reuse the upstream text instead of serializing it again.
+const withField = (
+  record: JsonObject,
+  key: string,
+  value: unknown
+): JsonObject => (value === record[key] ? record : { ...record, [key]: value });
+
+const restoreToolUseName = (block: unknown, toolPrefix: string): unknown =>
+  isObjectRecord(block) &&
+  block.type === "tool_use" &&
+  typeof block.name === "string"
+    ? withField(block, "name", stripToolNamePrefix(block.name, toolPrefix))
+    : block;
+
+const restoreMessageToolNames = (
+  message: unknown,
+  toolPrefix: string
+): unknown => {
+  if (!(isObjectRecord(message) && Array.isArray(message.content))) {
+    return message;
+  }
+
+  const content: unknown[] = message.content;
+  const restored = content.map((block) =>
+    restoreToolUseName(block, toolPrefix)
+  );
+  return restored.some((block, index) => block !== content[index])
+    ? { ...message, content: restored }
+    : message;
+};
+
+// Only tool_use blocks are renamed: look-alikes inside tool inputs must reach
+// the client as sent. Returning the same object when nothing changed lets
+// callers forward the upstream bytes.
 const transformClaudeResponsePayload = (
   payload: unknown,
   toolPrefix: string
 ): unknown => {
-  if (Array.isArray(payload)) {
-    let changed = false;
-    const items = payload.map((item) => {
-      const next = transformClaudeResponsePayload(item, toolPrefix);
-      changed ||= next !== item;
-      return next;
-    });
-    return changed ? items : payload;
-  }
-
   if (!isObjectRecord(payload)) {
     return payload;
   }
 
-  let transformed: JsonObject | null = null;
-  for (const [key, value] of Object.entries(payload)) {
-    const next = transformClaudeResponsePayload(value, toolPrefix);
-    if (next !== value) {
-      transformed ??= { ...payload };
-      transformed[key] = next;
-    }
+  switch (payload.type) {
+    case "message":
+      return restoreMessageToolNames(payload, toolPrefix);
+    case "message_start":
+      return withField(
+        payload,
+        "message",
+        restoreMessageToolNames(payload.message, toolPrefix)
+      );
+    case "content_block_start":
+      return withField(
+        payload,
+        "content_block",
+        restoreToolUseName(payload.content_block, toolPrefix)
+      );
+    default:
+      return payload;
   }
-
-  if (payload.type === "tool_use" && typeof payload.name === "string") {
-    const name = stripToolNamePrefix(payload.name, toolPrefix);
-    if (name !== payload.name) {
-      transformed ??= { ...payload };
-      transformed.name = name;
-    }
-  }
-
-  return transformed ?? payload;
 };
 
 const claudeMessagesUpstreamSuffix = requireProxyEndpointRoute({
