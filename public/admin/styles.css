@@ -2541,17 +2541,22 @@ input[type="checkbox"].toggle:checked::after {
     inset: 0;
     z-index: 940;
     display: block;
+    visibility: hidden;
     background: rgba(0, 0, 0, 0.55);
     opacity: 0;
     pointer-events: none;
     touch-action: none;
-    transition: opacity 260ms ease;
+    transition:
+      opacity 260ms ease,
+      visibility 0s linear 260ms;
   }
   .scrim.on {
     opacity: 1;
   }
   .scrim:is(.on, .leaving) {
+    visibility: visible;
     pointer-events: auto;
+    transition: opacity 260ms ease;
   }
   .menu,
   .popover {
@@ -2651,13 +2656,14 @@ input[type="checkbox"].toggle:checked::after {
 
 /* iOS 27 blurs whatever an installed app draws under the status bar unless an
    opaque fixed element covers it, and then paints the bar in that element's
-   colour. It must be a real element: pseudo-elements are not sampled. */
+   colour. It must be a real element that WebKit's edge sampling can hit:
+   pseudo-elements are not sampled, and an invisible full-screen layer above it
+   (the sheet scrim) makes the sampler retry honoring pointer-events. */
 .statusbar {
   position: fixed;
   inset: 0 0 auto;
   z-index: 920;
   height: env(safe-area-inset-top);
-  pointer-events: none;
   background: var(--page);
 }
 .standalone .top {
@@ -2714,7 +2720,7 @@ input[type="checkbox"].toggle:checked::after {
   .standalone {
     /* The tab bar sits a little into the home indicator area, like native
        tab bars, instead of above all of it. */
-    --tabbar-bottom: max(8px, calc(env(safe-area-inset-bottom) - 14px));
+    --tabbar-bottom: max(8px, calc(env(safe-area-inset-bottom) - 8px));
   }
   .standalone .tabs {
     position: fixed;
