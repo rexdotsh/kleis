@@ -633,6 +633,11 @@ export const prepareClaudeProxyRequest = (
   // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L525-L538
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("anthropic-beta", mergedBetas);
+  input.headers.set("anthropic-version", "2023-06-01");
+  input.headers.set("content-type", "application/json");
+  // Claude Code's SDK uses JSON Accept even for SSE responses.
+  // https://unpkg.com/@anthropic-ai/sdk@0.128.0/src/client.ts
+  input.headers.set("accept", "application/json");
   // Keep existing accounts on the minimum supported Claude Code version even
   // when their persisted metadata still contains an older user agent.
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
