@@ -204,6 +204,7 @@ describe("account quota cache", () => {
     });
     expect(profileHeaders.get("authorization")).toBe("Bearer claude-access");
     expect(profileHeaders.get("anthropic-beta")).not.toBeNull();
+    expect(profileHeaders.get("user-agent")).toStartWith("claude-cli/");
 
     setSystemTime(new Date(startedAt + 181_000));
     await listProviderAccountQuotas(database, [account]);

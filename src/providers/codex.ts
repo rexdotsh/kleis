@@ -68,7 +68,6 @@ type CodexTokenResponse = {
 
 type IdTokenClaims = {
   chatgpt_account_id?: string;
-  organizations?: Array<{ id: string }>;
   email?: string;
   "https://api.openai.com/auth"?: {
     chatgpt_account_id?: string;
@@ -158,10 +157,6 @@ const extractAccountIdFromClaims = (
 
   if (claims["https://api.openai.com/auth"]?.chatgpt_account_id) {
     return claims["https://api.openai.com/auth"]?.chatgpt_account_id ?? null;
-  }
-
-  if (claims.organizations?.[0]?.id) {
-    return claims.organizations[0].id;
   }
 
   return null;

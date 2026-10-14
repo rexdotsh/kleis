@@ -1,4 +1,8 @@
-import { ANTHROPIC_API_BASE_URL, CLAUDE_OAUTH_BETA_HEADER } from "../constants";
+import {
+  ANTHROPIC_API_BASE_URL,
+  CLAUDE_CLI_USER_AGENT,
+  CLAUDE_OAUTH_BETA_HEADER,
+} from "../constants";
 import {
   decodeArray,
   decodeFields,
@@ -85,7 +89,7 @@ export const fetchClaudeSubscriptionPlan = async (accessToken: string) => {
       Accept: "application/json",
       "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
       "anthropic-version": "2023-06-01",
-      "User-Agent": "Kleis/1 account-usage",
+      "User-Agent": CLAUDE_CLI_USER_AGENT,
     },
     timeoutMs: CLAUDE_PROFILE_TIMEOUT_MS,
     errorPrefix: "Claude OAuth profile request failed",
@@ -175,7 +179,7 @@ export const fetchClaudeSubscriptionUsage = async (accessToken: string) => {
       Accept: "application/json",
       "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
       "anthropic-version": "2023-06-01",
-      "User-Agent": "Kleis/1 account-usage",
+      "User-Agent": CLAUDE_CLI_USER_AGENT,
     },
     timeoutMs: CLAUDE_USAGE_TIMEOUT_MS,
     errorPrefix: "Claude subscription usage request failed",
