@@ -68,6 +68,44 @@ describe("Codex account tracking contracts", () => {
     expect(result).not.toHaveProperty("unknown_top_level");
   });
 
+  test("decodes the spend limit and limit-reached type objects", () => {
+    const result = decodeCodexUsageStatus({
+      spend_control: {
+        reached: true,
+        individual_limit: {
+          source: "workspace",
+          limit: "50.00",
+          used: "48.25",
+          remaining: "1.75",
+          used_percent: 96.5,
+          remaining_percent: 3.5,
+          reset_after_seconds: 3600,
+          reset_at: 1_786_712_700,
+        },
+      },
+      rate_limit_reached_type: { type: "primary_window" },
+    });
+
+    expect(result.spendControl).toEqual({
+      reached: true,
+      individualLimit: {
+        source: "workspace",
+        limit: "50.00",
+        used: "48.25",
+        remaining: "1.75",
+        usedPercent: 96.5,
+        remainingPercent: 3.5,
+        resetAfterSeconds: 3600,
+        resetAt: 1_786_712_700,
+      },
+    });
+    expect(result.rateLimitReachedType).toBe("primary_window");
+    expect(
+      decodeCodexUsageStatus({ rate_limit_reached_type: "secondary_window" })
+        .rateLimitReachedType
+    ).toBe("secondary_window");
+  });
+
   test("normalizes reset credits, profiles, accounts, and thread usage", () => {
     expect(
       decodeCodexResetCredits({

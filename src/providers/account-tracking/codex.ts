@@ -50,6 +50,22 @@ const decodeAdditionalRateLimit = (value: unknown) => {
   };
 };
 
+// Amounts arrive as decimal strings; numbers are accepted too.
+const readAmount = (value: unknown): string | null =>
+  readString(value) ?? readNumber(value)?.toString() ?? null;
+
+const decodeIndividualLimit = (value: unknown) =>
+  decodeFields(value, {
+    source: ["source", readString],
+    limit: ["limit", readAmount],
+    used: ["used", readAmount],
+    remaining: ["remaining", readAmount],
+    usedPercent: ["used_percent", readNumber],
+    remainingPercent: ["remaining_percent", readNumber],
+    resetAfterSeconds: ["reset_after_seconds", readNumber],
+    resetAt: ["reset_at", readNumber],
+  });
+
 export type CodexUsageStatus = ReturnType<typeof decodeCodexUsageStatus>;
 
 export const decodeCodexUsageStatus = (value: unknown) => {
@@ -75,16 +91,16 @@ export const decodeCodexUsageStatus = (value: unknown) => {
     spendControl: spendControl
       ? {
           reached: readBoolean(spendControl.reached),
-          individualLimit:
-            readString(spendControl.individual_limit) ??
-            readNumber(spendControl.individual_limit),
+          individualLimit: decodeIndividualLimit(spendControl.individual_limit),
         }
       : null,
     additionalRateLimits: decodeArray(
       input.additional_rate_limits,
       decodeAdditionalRateLimit
     ),
-    rateLimitReachedType: readString(input.rate_limit_reached_type),
+    rateLimitReachedType:
+      readString(readObject(input.rate_limit_reached_type)?.type) ??
+      readString(input.rate_limit_reached_type),
     resetCreditsAvailable: readNumber(resetCredits?.available_count),
   };
 };
