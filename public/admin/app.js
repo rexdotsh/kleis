@@ -27,6 +27,7 @@ import {
   restoreSession,
   revokeKey,
   rotateKey,
+  runAction,
   saveAccountEdits,
   saveKeyEdits,
   scheduleUsagePrefetch,
@@ -79,13 +80,15 @@ const accountActions = {
 const keyActions = {
   "copy-key": (id, button) => {
     const key = keyById(id);
-    if (key) copyToClipboard(key.key, button, "Key copied");
+    if (key) runAction(copyToClipboard(key.key, button, "Key copied"));
     else toast("Key unavailable", "error");
   },
   "copy-models-url": (id, button) => {
     const modelsUrl = modelsUrlForKey(keyById(id));
     if (modelsUrl) {
-      copyToClipboard(`${modelsUrl}/api.json`, button, "Models URL copied");
+      runAction(
+        copyToClipboard(`${modelsUrl}/api.json`, button, "Models URL copied")
+      );
     } else {
       toast("Scoped models URL unavailable", "error");
     }
@@ -384,9 +387,11 @@ $("#menu").addEventListener("click", (event) => {
   setConfirmAnchor(menuAnchor);
   closeMenu({ restoreFocus: true });
   if (kind === "account") {
-    accountActions[item.dataset.action]?.(item.dataset.accountId, null);
+    runAction(
+      accountActions[item.dataset.action]?.(item.dataset.accountId, null)
+    );
   } else {
-    keyActions[item.dataset.action]?.(item.dataset.keyId, null);
+    runAction(keyActions[item.dataset.action]?.(item.dataset.keyId, null));
   }
 });
 
@@ -452,21 +457,21 @@ $("#accounts-list").addEventListener("click", (event) => {
   if (button) {
     const { action, accountId, provider, enabled } = button.dataset;
     if (action === "toggle-provider")
-      toggleProvider(provider, enabled === "true");
+      runAction(toggleProvider(provider, enabled === "true"));
     else if (action === "go-connect") {
       clearReauthorization();
       switchToTab("oauth");
-    } else accountActions[action]?.(accountId, button);
+    } else runAction(accountActions[action]?.(accountId, button));
     return;
   }
   const linkedKey = event.target.closest(".usage-slot .row[data-key-id]");
   if (linkedKey) {
-    showKey(linkedKey.dataset.keyId);
+    runAction(showKey(linkedKey.dataset.keyId));
     return;
   }
   if (event.target.closest(".detail")) return;
   const row = event.target.closest(".row[data-account-id]");
-  if (row) toggleAccount(row.dataset.accountId);
+  if (row) runAction(toggleAccount(row.dataset.accountId));
 });
 
 // Mouse hover and touch taps both point at a day in the daily tokens chart.
@@ -489,19 +494,21 @@ $("#keys-list").addEventListener("click", (event) => {
   }
   const button = event.target.closest("button[data-action]");
   if (button) {
-    keyActions[button.dataset.action]?.(button.dataset.keyId, button);
+    runAction(
+      keyActions[button.dataset.action]?.(button.dataset.keyId, button)
+    );
     return;
   }
   const linkedAccount = event.target.closest(
     ".usage-slot .row[data-account-id]"
   );
   if (linkedAccount) {
-    showAccount(linkedAccount.dataset.accountId);
+    runAction(showAccount(linkedAccount.dataset.accountId));
     return;
   }
   if (event.target.closest(".detail, .inline-form")) return;
   const row = event.target.closest(".row[data-key-id]");
-  if (row) toggleKey(row.dataset.keyId);
+  if (row) runAction(toggleKey(row.dataset.keyId));
 });
 
 $("#keys-list").addEventListener("change", (event) => {
@@ -556,13 +563,13 @@ for (const [listId, open] of [
     if (!row || event.target !== row) return;
     event.preventDefault();
     if (row.closest(".usage-slot")) row.click();
-    else open(row);
+    else runAction(open(row));
   });
 }
 
 $("#attention").addEventListener("click", (event) => {
   const row = event.target.closest(".row[data-account-id]");
-  if (row) showAccount(row.dataset.accountId);
+  if (row) runAction(showAccount(row.dataset.accountId));
 });
 
 $("#dash-content").addEventListener("click", (event) => {
@@ -571,7 +578,7 @@ $("#dash-content").addEventListener("click", (event) => {
     return;
   }
   const row = event.target.closest(".row[data-key-id]");
-  if (row) showKey(row.dataset.keyId);
+  if (row) runAction(showKey(row.dataset.keyId));
 });
 
 function openOpenCodeSetup(id = null) {
@@ -607,7 +614,8 @@ $("#opencode-setup").addEventListener("click", (event) => {
     return;
   }
   const key = keyById(button.dataset.keyId);
-  if (key) copyToClipboard(setupSnippet(key), button, "Commands copied");
+  if (key)
+    runAction(copyToClipboard(setupSnippet(key), button, "Commands copied"));
 });
 
 $("#keys-foot").addEventListener("click", (event) => {
@@ -624,7 +632,7 @@ $("#reauthorize-list").addEventListener("click", (event) => {
     state.showAllReauthorize = !state.showAllReauthorize;
     renderAccounts();
   } else {
-    reauthorizeAccount(button.dataset.accountId);
+    runAction(reauthorizeAccount(button.dataset.accountId));
   }
 });
 
@@ -652,15 +660,21 @@ for (const [inputId, field, render] of [
 
 $("#login-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  handleLogin();
+  runAction(handleLogin());
 });
 $("#btn-logout").addEventListener("click", logout);
-$("#btn-refresh-accounts").addEventListener("click", loadAccounts);
-$("#btn-refresh-keys").addEventListener("click", loadKeys);
-$("#btn-refresh-dash").addEventListener("click", loadDashboard);
+$("#btn-refresh-accounts").addEventListener("click", () =>
+  runAction(loadAccounts())
+);
+$("#btn-refresh-keys").addEventListener("click", () => runAction(loadKeys()));
+$("#btn-refresh-dash").addEventListener("click", () =>
+  runAction(loadDashboard())
+);
 $("#btn-create-key").addEventListener("click", startCreateKey);
-$("#btn-oauth-start").addEventListener("click", startOAuth);
-$("#btn-import-account").addEventListener("click", importAccount);
+$("#btn-oauth-start").addEventListener("click", () => runAction(startOAuth()));
+$("#btn-import-account").addEventListener("click", () =>
+  runAction(importAccount())
+);
 
 const WINDOW_CONTROLS = {
   usage: {
@@ -690,7 +704,7 @@ for (const control of Object.values(WINDOW_CONTROLS)) {
     if (!windowMs || windowMs === state[control.field]) return;
     state[control.field] = windowMs;
     control.sync();
-    control.load();
+    runAction(control.load());
   });
 }
 
@@ -804,7 +818,7 @@ function runRowShortcut(tab, key) {
     const row = id ? accountRow(id) : null;
     if (!(row && action)) return false;
     setConfirmAnchor(row.querySelector(".more") ?? row);
-    accountActions[action](id, null);
+    runAction(accountActions[action](id, null));
     return true;
   }
   const id = state.cursorKeyId ?? state.expandedKeyId;
@@ -817,7 +831,7 @@ function runRowShortcut(tab, key) {
     else if (action !== "edit-key") return false;
   }
   setConfirmAnchor(row.querySelector(".more") ?? row);
-  keyActions[action](id, null);
+  runAction(keyActions[action](id, null));
   return true;
 }
 
@@ -879,8 +893,8 @@ function handleShortcut(event) {
   if ((key === "Enter" || key === "o") && !enterTaken) {
     const id = state[LISTS[tab].cursorField];
     if (!id) return false;
-    if (tab === "accounts") toggleAccount(id);
-    else toggleKey(id);
+    if (tab === "accounts") runAction(toggleAccount(id));
+    else runAction(toggleKey(id));
     return true;
   }
   return runRowShortcut(tab, key);
@@ -916,14 +930,14 @@ function handleEscape() {
   if (tab === "accounts") {
     const id = state.pendingExpandedAccountId || state.expandedAccountId;
     if (state.editingAccountId) cancelEditAccount();
-    else if (id) setExpandedAccount(null);
+    else if (id) runAction(setExpandedAccount(null));
     else setCursor("accounts", null);
     if (id) accountRow(id)?.focus();
   } else if (tab === "keys") {
     const id = state.pendingExpandedKeyId || state.expandedKeyId;
     if (state.creatingKey) cancelCreateKey();
     else if (state.editingKeyId) cancelEditKey();
-    else if (id) setExpandedKey(null);
+    else if (id) runAction(setExpandedKey(null));
     else setCursor("keys", null);
     if (id) keyRow(id)?.focus();
   }
@@ -955,4 +969,4 @@ initPwa({
     ]?.(),
 });
 
-restoreSession();
+runAction(restoreSession());

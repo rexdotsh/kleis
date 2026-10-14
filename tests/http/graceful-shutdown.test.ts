@@ -16,6 +16,40 @@ const fakeServer = (pendingRequests: number) => {
 };
 
 describe("graceful shutdown", () => {
+  for (const failure of ["stop", "hook"] as const) {
+    test(`logs and exits cleanly when ${failure} fails during SIGTERM`, async () => {
+      const moduleUrl = new URL(
+        "../../src/http/graceful-shutdown.ts",
+        import.meta.url
+      ).href;
+      const child = Bun.spawn(
+        [
+          process.execPath,
+          "--eval",
+          `import { createGracefulShutdown } from ${JSON.stringify(moduleUrl)};
+          const shutdown = createGracefulShutdown();
+          shutdown.trackServer({
+            pendingRequests: 0,
+            stop: () => ${failure === "stop" ? 'Promise.reject(new Error("stop failed"))' : "Promise.resolve()"},
+          });
+          shutdown.beforeExit(() => { throw new Error("hook failed"); });
+          shutdown.install();
+          process.emit("SIGTERM");`,
+        ],
+        {
+          env: { ...process.env, DRAIN_GRACE_MS: "0", DRAIN_TIMEOUT_MS: "0" },
+          stdout: "ignore",
+          stderr: "pipe",
+        }
+      );
+      const stderr = await new Response(child.stderr).text();
+      expect(await child.exited).toBe(1);
+      expect(stderr).toContain('"event":"server_shutdown_failed"');
+      expect(stderr).toContain(`${failure} failed`);
+      expect(stderr).not.toContain("Unhandled");
+    });
+  }
+
   test("fails health checks, then waits for in-flight requests before stopping", async () => {
     const shutdown = createGracefulShutdown();
     const health = createHealthRoutes(shutdown.isDraining);

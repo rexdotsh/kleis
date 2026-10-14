@@ -56,7 +56,7 @@ export const createGracefulShutdown = () => {
       beforeExitHooks.push(hook);
     },
     install: (): void => {
-      process.on("SIGTERM", async () => {
+      const stop = async () => {
         if (draining) {
           return;
         }
@@ -73,6 +73,12 @@ export const createGracefulShutdown = () => {
         }
         await Bun.sleep(EXIT_FLUSH_DELAY_MS);
         process.exit(0);
+      };
+      process.on("SIGTERM", () => {
+        stop().catch((error: unknown) => {
+          logError("server_shutdown_failed", errorLogFields(error));
+          process.exit(1);
+        });
       });
     },
   };

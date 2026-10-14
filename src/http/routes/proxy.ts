@@ -140,7 +140,8 @@ const fetchProxyUpstream = async (input: {
     return await fetch(input.url, requestInit);
   } catch (error) {
     const timeoutError = headerTimeout?.error();
-    throw timeoutError && !input.signal.aborted ? timeoutError : error;
+    if (timeoutError && !input.signal.aborted) throw timeoutError;
+    throw error;
   } finally {
     headerTimeout?.clear();
   }
