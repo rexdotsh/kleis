@@ -2,13 +2,98 @@
 <html lang="en">
   <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    >
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#0a0a0b">
     <base href="/admin/">
     <title>kleis</title>
+    <style>
+    html {
+      background: #0a0a0b;
+    }
+    </style>
+    <script>
+    "use strict";
+    if (
+      navigator.standalone === true ||
+      matchMedia("(display-mode: standalone)").matches
+    ) {
+      document.documentElement.classList.add("standalone");
+    }
+    </script>
+    <link rel="manifest" href="./manifest.webmanifest">
+    <link rel="icon" href="./icons/favicon-32.png" sizes="32x32">
+    <link rel="icon" href="./icons/favicon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+    <meta name="apple-mobile-web-app-title" content="Kleis">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta
+      name="apple-mobile-web-app-status-bar-style"
+      content="black-translucent"
+    >
     <link
-      rel="icon"
-      type="image/svg+xml"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23d4a24e'/%3E%3Ccircle cx='16' cy='12' r='4.5' fill='%230a0a0c'/%3E%3Crect x='13.5' y='14' width='5' height='12' rx='1.5' fill='%230a0a0c'/%3E%3C/svg%3E"
+      rel="apple-touch-startup-image"
+      href="./icons/launch-750x1334.png"
+      media="(device-width: 375px) and (device-height: 667px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)"
+    >
+    <link
+      rel="apple-touch-startup-image"
+      href="./icons/launch-1242x2208.png"
+      media="(device-width: 414px) and (device-height: 736px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)"
+    >
+    <link
+      rel="apple-touch-startup-image"
+      href="./icons/launch-1125x2436.png"
+      media="(device-width: 375px) and (device-height: 812px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)"
+    >
+    <link
+      rel="apple-touch-startup-image"
+      href="./icons/launch-828x1792.png"
+      media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)"
+    >
+    <link
+      rel="apple-touch-startup-image"
+      href="./icons/launch-1242x2688.png"
+      media="(device-width: 414px) and (device-height: 896px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)"
+    >
+    <link
+      rel="apple-touch-startup-image"
+      href="./icons/launch-1170x2532.png"
+      media="(device-width: 390px) and (device-height: 844px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)"
+    >
+    <link
+      rel="apple-touch-startup-image"
+      href="./icons/launch-1284x2778.png"
+      media="(device-width: 428px) and (device-height: 926px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)"
+    >
+    <link
+      rel="apple-touch-startup-image"
+      href="./icons/launch-1179x2556.png"
+      media="(device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)"
+    >
+    <link
+      rel="apple-touch-startup-image"
+      href="./icons/launch-1290x2796.png"
+      media="(device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)"
+    >
+    <link
+      rel="apple-touch-startup-image"
+      href="./icons/launch-1206x2622.png"
+      media="(device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)"
+    >
+    <link
+      rel="apple-touch-startup-image"
+      href="./icons/launch-1260x2736.png"
+      media="(device-width: 420px) and (device-height: 912px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)"
+    >
+    <link
+      rel="apple-touch-startup-image"
+      href="./icons/launch-1320x2868.png"
+      media="(device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)"
     >
     <link
       rel="preload"
@@ -28,29 +113,48 @@
     <link rel="modulepreload" href="./app.js">
     <link rel="modulepreload" href="./app-data.js">
     <link rel="modulepreload" href="./app-render.js">
+    <link rel="modulepreload" href="./app-pwa.js">
   </head>
   <body>
     <div id="login-gate">
       <div class="login-box">
         <div class="login-logo">
-          <svg width="16" height="16" aria-hidden="true">
-            <use href="#i-key"></use>
-          </svg>
+          <img
+            class="brand-mark"
+            src="./icons/favicon.svg"
+            width="28"
+            height="28"
+            alt=""
+          >
           kleis
         </div>
         <div class="login-sub">Admin</div>
-        <div class="login-form">
+        <form id="login-form" class="login-form" method="post">
+          <input
+            type="text"
+            name="username"
+            value="admin"
+            autocomplete="username"
+            tabindex="-1"
+            aria-hidden="true"
+            hidden
+          >
           <input
             id="login-token"
+            name="password"
             type="password"
             placeholder="Admin token"
-            autocomplete="off"
+            aria-label="Admin token"
+            autocomplete="current-password"
+            autocapitalize="off"
+            autocorrect="off"
             spellcheck="false"
+            enterkeyhint="go"
           >
-          <button id="login-btn" class="btn btn-primary" type="button">
+          <button id="login-btn" class="btn btn-primary" type="submit">
             Sign in
           </button>
-        </div>
+        </form>
         <div id="login-error" class="login-error" role="alert"></div>
       </div>
     </div>
@@ -98,26 +202,84 @@
           <path d="M13 2.5v3h-3" />
         </g>
       </symbol>
+      <symbol id="i-pulse" viewBox="0 0 16 16">
+        <path
+          d="M1.5 8.5h2.6l1.9-5 3.4 9 1.9-4h3.2"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.25"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="i-person" viewBox="0 0 16 16">
+        <g
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.25"
+          stroke-linecap="round"
+        >
+          <circle cx="8" cy="5.5" r="2.75" />
+          <path d="M2.75 14c.6-2.9 2.7-4.5 5.25-4.5s4.65 1.6 5.25 4.5" />
+        </g>
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 16 16">
+        <g
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.25"
+          stroke-linecap="round"
+        >
+          <circle cx="8" cy="8" r="6.25" />
+          <path d="M8 5.25v5.5M5.25 8h5.5" />
+        </g>
+      </symbol>
     </svg>
+
+    <div id="ptr" class="ptr" aria-hidden="true">
+      <svg width="16" height="16" aria-hidden="true">
+        <use href="#i-refresh"></use>
+      </svg>
+    </div>
 
     <div id="app">
       <header class="top">
         <div class="shell top-inner">
           <span class="brand">
-            <svg width="16" height="16" aria-hidden="true">
-              <use href="#i-key"></use>
-            </svg>
+            <img
+              class="brand-mark"
+              src="./icons/favicon.svg"
+              width="20"
+              height="20"
+              alt=""
+            >
             kleis
           </span>
           <nav class="tabs" role="tablist" aria-label="Admin sections">
             <button class="tab active" data-tab="usage" type="button">
-              Overview
+              <svg class="tab-icon" width="24" height="24" aria-hidden="true">
+                <use href="#i-pulse"></use>
+              </svg>
+              <span>Overview</span>
             </button>
             <button class="tab" data-tab="accounts" type="button">
-              Accounts
+              <svg class="tab-icon" width="24" height="24" aria-hidden="true">
+                <use href="#i-person"></use>
+              </svg>
+              <span>Accounts</span>
             </button>
-            <button class="tab" data-tab="keys" type="button">Keys</button>
-            <button class="tab" data-tab="oauth" type="button">Connect</button>
+            <button class="tab" data-tab="keys" type="button">
+              <svg class="tab-icon" width="24" height="24" aria-hidden="true">
+                <use href="#i-key"></use>
+              </svg>
+              <span>Keys</span>
+            </button>
+            <button class="tab" data-tab="oauth" type="button">
+              <svg class="tab-icon" width="24" height="24" aria-hidden="true">
+                <use href="#i-plus"></use>
+              </svg>
+              <span>Connect</span>
+            </button>
           </nav>
           <div class="top-right">
             <div class="top-ctl" data-for="usage">
@@ -324,6 +486,10 @@
       </header>
 
       <main class="shell main">
+        <div id="offline" class="offline" role="status" hidden>
+          <span class="dot warn"></span>
+          You're offline. Kleis will refresh when you reconnect.
+        </div>
         <section id="panel-usage" class="tab-panel active">
           <div id="overview-loading" hidden></div>
           <div id="attention" hidden></div>
@@ -594,6 +760,7 @@
       </main>
     </div>
 
+    <div id="scrim" class="scrim" aria-hidden="true"></div>
     <div id="menu" class="menu" role="menu" hidden></div>
 
     <div

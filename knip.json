@@ -3,6 +3,8 @@
   "ignoreFiles": [
     "public/admin/app.js",
     "public/admin/app-render.js",
-    "public/admin/app-data.js"
+    "public/admin/app-data.js",
+    "public/admin/app-pwa.js",
+    "public/admin/sw.js"
   ]
 }

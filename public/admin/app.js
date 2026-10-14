@@ -57,6 +57,7 @@ import {
   renderKeys,
   setupSnippet,
 } from "./app-render.js";
+import { initPwa } from "./app-pwa.js";
 
 const accountActions = {
   "edit-account": (id) => startEditAccount(id),
@@ -205,6 +206,17 @@ const LISTS = {
 };
 
 let cursorFromMouse = false;
+let lastTouchAt = 0;
+
+// Taps also send mouse events; a highlight that follows them would stick.
+document.addEventListener(
+  "touchstart",
+  () => {
+    lastTouchAt = Date.now();
+  },
+  { capture: true, passive: true }
+);
+const fromTouch = () => Date.now() - lastTouchAt < 1000;
 
 function setCursor(tab, row, { focus = false, mouse = false } = {}) {
   const list = LISTS[tab];
@@ -244,6 +256,7 @@ function moveCursor(tab, step) {
 for (const tab of ["accounts", "keys"]) {
   const list = LISTS[tab];
   $(list.container).addEventListener("mousemove", (event) => {
+    if (fromTouch()) return;
     const row = event.target.closest(list.selector);
     if (!row || list.idOf(row) === state[list.cursorField]) return;
     const focused = document.activeElement;
@@ -305,7 +318,6 @@ function closeMenu({ restoreFocus = false } = {}) {
   const menu = $("#menu");
   if (menu.hidden) return;
   menu.hidden = true;
-  menu.innerHTML = "";
   if (menuAnchor) {
     menuAnchor.setAttribute("aria-expanded", "false");
     menuAnchor.closest(".row")?.classList.remove("sel");
@@ -327,6 +339,8 @@ function openMenu(anchor) {
   menu.innerHTML = menuHtml(kind, id);
   if (!menu.innerHTML) return;
   menu.dataset.kind = kind;
+  menu.dataset.title =
+    anchor.closest(".row")?.querySelector(".name")?.textContent.trim() ?? "";
   menu.hidden = false;
 
   const rect = anchor.getBoundingClientRect();
@@ -618,9 +632,9 @@ for (const [inputId, field, render] of [
   });
 }
 
-$("#login-btn").addEventListener("click", handleLogin);
-$("#login-token").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") handleLogin();
+$("#login-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  handleLogin();
 });
 $("#btn-logout").addEventListener("click", logout);
 $("#btn-refresh-accounts").addEventListener("click", loadAccounts);
@@ -903,6 +917,24 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   if (handleShortcut(event)) event.preventDefault();
+});
+
+window.addEventListener("hashchange", () => {
+  const tab = location.hash.slice(1);
+  if (!(state.sessionActive && TABS.includes(tab)) || tab === activeTab()) {
+    return;
+  }
+  closeMenu();
+  resolveConfirm(false);
+  switchToTab(tab);
+});
+
+initPwa({
+  closeMenu: () => closeMenu({ restoreFocus: true }),
+  refresh: () =>
+    ({ usage: loadDashboard, accounts: loadAccounts, keys: loadKeys })[
+      activeTab()
+    ]?.(),
 });
 
 restoreSession();

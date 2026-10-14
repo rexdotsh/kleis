@@ -94,7 +94,17 @@ async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("Content-Type", "application/json");
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
-  const res = await fetch(path, { ...options, headers });
+  let res;
+  try {
+    res = await fetch(path, { ...options, headers });
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    throw new Error(
+      globalThis.navigator?.onLine === false
+        ? "You're offline"
+        : "Could not reach Kleis"
+    );
+  }
   if (res.status === 401 && state.sessionActive) {
     logout();
     $("#login-error").textContent = "Your session ended. Sign in again.";
@@ -122,6 +132,16 @@ async function api(path, options = {}) {
 }
 
 function toast(message, type = "success", action = null) {
+  // Several requests failing together (say, offline) report the same error.
+  for (const existing of $$("#toast-container .toast")) {
+    if (
+      !existing.classList.contains("removing") &&
+      existing.classList.contains(type) &&
+      existing.firstChild?.textContent === message
+    ) {
+      return;
+    }
+  }
   const el = document.createElement("div");
   el.className = `toast ${type}`;
   const text = document.createElement("span");
@@ -1771,7 +1791,9 @@ async function handleLogin() {
     $("#login-error").textContent =
       e?.status === 401
         ? "Invalid admin token"
-        : `Could not reach Kleis: ${e?.message || "request failed"}`;
+        : e?.status
+          ? `Could not reach Kleis: ${e.message}`
+          : e?.message || "Could not reach Kleis";
     clearPersistedToken();
     state.token = "";
   } finally {

@@ -1,14 +1,24 @@
 import { type Context, Hono } from "hono";
+import { readdirSync } from "node:fs";
 
 const ADMIN_ROOT = "./public/admin";
 const REVALIDATE = "no-cache";
 const IMMUTABLE = "public, max-age=31536000, immutable";
+const JAVASCRIPT = "text/javascript; charset=utf-8";
 
-type Asset = { body: ArrayBuffer; etag: string; lastModified: number };
+type Asset = {
+  body: ArrayBuffer;
+  etag: string;
+  sha256: string;
+  lastModified: number;
+};
 
 // Files are hashed once and re-read only when their modification time changes,
 // so browsers revalidate with a cheap 304 instead of downloading them again.
 const assets = new Map<string, Asset>();
+
+const sha256 = (data: ArrayBuffer | string): string =>
+  new Bun.CryptoHasher("sha256").update(data).digest("hex");
 
 const readAsset = async (relativePath: string): Promise<Asset> => {
   const file = Bun.file(`${ADMIN_ROOT}/${relativePath}`);
@@ -21,6 +31,7 @@ const readAsset = async (relativePath: string): Promise<Asset> => {
   const asset = {
     body,
     etag: `"${Bun.hash(body).toString(36)}"`,
+    sha256: sha256(body),
     lastModified,
   };
   assets.set(relativePath, asset);
@@ -29,6 +40,27 @@ const readAsset = async (relativePath: string): Promise<Asset> => {
 
 const matchesEtag = (header: string | undefined, etag: string): boolean =>
   header?.split(",").some((value) => value.trim() === etag) ?? false;
+
+const respond = (
+  context: Context,
+  body: ArrayBuffer | string,
+  etag: string,
+  contentType: string,
+  cacheControl: string,
+  extraHeaders: Record<string, string> = {}
+): Response => {
+  const headers = {
+    "Cache-Control": cacheControl,
+    ETag: etag,
+    ...extraHeaders,
+  };
+  if (matchesEtag(context.req.header("if-none-match"), etag)) {
+    return new Response(null, { status: 304, headers });
+  }
+  return new Response(body, {
+    headers: { "Content-Type": contentType, ...headers },
+  });
+};
 
 const serveAsset =
   (
@@ -39,18 +71,50 @@ const serveAsset =
   ) =>
   async (context: Context): Promise<Response> => {
     const asset = await readAsset(relativePath);
-    const headers = {
-      "Cache-Control": cacheControl,
-      ETag: asset.etag,
-      ...extraHeaders,
-    };
-    if (matchesEtag(context.req.header("if-none-match"), asset.etag)) {
-      return new Response(null, { status: 304, headers });
-    }
-    return new Response(asset.body, {
-      headers: { "Content-Type": contentType, ...headers },
-    });
+    return respond(
+      context,
+      asset.body,
+      asset.etag,
+      contentType,
+      cacheControl,
+      extraHeaders
+    );
   };
+
+// The app shell the service worker keeps for instant and offline launches.
+// Only these static files are cached; admin API responses never are.
+const SHELL_FILES = [
+  "index.html",
+  "app.js",
+  "app-data.js",
+  "app-render.js",
+  "app-pwa.js",
+  "styles.css",
+  "manifest.webmanifest",
+  "fonts/geist-latin.v1.woff2",
+  "fonts/geist-mono-latin.v1.woff2",
+  "icons/favicon.svg",
+  "icons/favicon-32.png",
+  "icons/apple-touch-icon.png",
+  "icons/icon-192.png",
+];
+
+// The worker is prefixed with the shell's content hashes, so any change to a
+// shell file changes the worker and installs a new version. The worker checks
+// each download against its hash, so a deploy that lands mid-install (old and
+// new servers both answering) cannot leave it with a mixed set of files.
+const serveServiceWorker = async (context: Context): Promise<Response> => {
+  const files: Record<string, string> = {};
+  for (const file of SHELL_FILES) {
+    const url = file === "index.html" ? "./" : `./${file}`;
+    files[url] = (await readAsset(file)).sha256;
+  }
+  const worker = await readAsset("sw.js");
+  const version = sha256(JSON.stringify(files) + worker.sha256).slice(0, 16);
+  const shell = JSON.stringify({ version, files });
+  const body = `self.KLEIS_SHELL = ${shell};\n${new TextDecoder().decode(worker.body)}`;
+  return respond(context, body, `"${version}"`, JAVASCRIPT, REVALIDATE);
+};
 
 const serveAdminIndex = serveAsset(
   "index.html",
@@ -65,12 +129,18 @@ const serveAdminIndex = serveAsset(
 export const adminUiRoutes = new Hono()
   .get("/admin", serveAdminIndex)
   .get("/admin/", serveAdminIndex)
-  .get("/admin/index.html", serveAdminIndex);
+  .get("/admin/index.html", serveAdminIndex)
+  .get("/admin/sw.js", serveServiceWorker);
 
-for (const fileName of ["app-data.js", "app-render.js", "app.js"]) {
+for (const fileName of [
+  "app-data.js",
+  "app-render.js",
+  "app-pwa.js",
+  "app.js",
+]) {
   adminUiRoutes.get(
     `/admin/${fileName}`,
-    serveAsset(fileName, "text/javascript; charset=utf-8", REVALIDATE)
+    serveAsset(fileName, JAVASCRIPT, REVALIDATE)
   );
 }
 
@@ -79,9 +149,29 @@ adminUiRoutes.get(
   serveAsset("styles.css", "text/css; charset=utf-8", REVALIDATE)
 );
 
+adminUiRoutes.get(
+  "/admin/manifest.webmanifest",
+  serveAsset("manifest.webmanifest", "application/manifest+json", REVALIDATE)
+);
+
 for (const fileName of ["geist-latin.v1.woff2", "geist-mono-latin.v1.woff2"]) {
   adminUiRoutes.get(
     `/admin/fonts/${fileName}`,
     serveAsset(`fonts/${fileName}`, "font/woff2", IMMUTABLE)
   );
+}
+
+const ICON_TYPES: Record<string, string> = {
+  png: "image/png",
+  svg: "image/svg+xml",
+};
+
+for (const fileName of readdirSync(`${ADMIN_ROOT}/icons`)) {
+  const contentType = ICON_TYPES[fileName.split(".").pop() ?? ""];
+  if (contentType) {
+    adminUiRoutes.get(
+      `/admin/icons/${fileName}`,
+      serveAsset(`icons/${fileName}`, contentType, REVALIDATE)
+    );
+  }
 }
