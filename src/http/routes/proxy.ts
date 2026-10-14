@@ -17,7 +17,10 @@ import {
   readClaudeLiveLimits,
   readCodexLiveLimits,
 } from "../../providers/account-tracking/live-limits";
-import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
+import {
+  isEventStreamResponse,
+  prepareClaudeProxyRequest,
+} from "../../providers/proxies/claude-proxy";
 import {
   deriveCodexSessionId,
   prepareCodexProxyRequest,
@@ -183,8 +186,8 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
       requestPersisted = true;
       recordRequestCounters(statusCode, requestOccurredAt, "proxy");
     },
-    recordFinal(statusCode: number): void {
-      requestOccurredAt = Date.now();
+    recordFinal(statusCode: number, occurredAt = Date.now()): void {
+      requestOccurredAt = occurredAt;
       recordRequestCounters(
         statusCode,
         requestOccurredAt,
@@ -411,6 +414,7 @@ const proxyRequest = async (
       const baseHeaders = new Headers(headers);
       const sendAttempt = async (attemptAccount: ProviderAccountRecord) => {
         const attemptHeaders = new Headers(baseHeaders);
+        let respondedAt = 0;
         const claudeProxy = prepareClaudeProxyRequest({
           requestUrl,
           headers: attemptHeaders,
@@ -422,18 +426,20 @@ const proxyRequest = async (
               ? attemptAccount.metadata
               : null,
           onTokenUsage: usageRecorder.onTokenUsage,
+          // Latency stays time to response headers, as for other requests.
+          onStreamEnd: (statusCode) =>
+            usageRecorder.recordFinal(statusCode, respondedAt),
         });
-        return {
-          response: await fetchProxyUpstream({
-            url: claudeProxy.upstreamUrl,
-            method: context.req.method,
-            headers: attemptHeaders,
-            body: claudeProxy.bodyText,
-            signal: context.req.raw.signal,
-            useCodexSseHeaderTimeout: false,
-          }),
-          transformResponse: claudeProxy.transformResponse,
-        };
+        const response = await fetchProxyUpstream({
+          url: claudeProxy.upstreamUrl,
+          method: context.req.method,
+          headers: attemptHeaders,
+          body: claudeProxy.bodyText,
+          signal: context.req.raw.signal,
+          useCodexSseHeaderTimeout: false,
+        });
+        respondedAt = Date.now();
+        return { response, transformResponse: claudeProxy.transformResponse };
       };
       let result: Awaited<
         ReturnType<
@@ -498,7 +504,9 @@ const proxyRequest = async (
         usageRecorder.recordImmediate(500);
         throw error;
       }
-      usageRecorder.recordFinal(attempt.response.status);
+      if (!isEventStreamResponse(attempt.response)) {
+        usageRecorder.recordFinal(attempt.response.status);
+      }
       return responseToClient;
     }
 

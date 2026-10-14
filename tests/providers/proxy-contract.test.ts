@@ -3804,6 +3804,154 @@ describe("proxy contract: claude", () => {
     });
   });
 
+  const prepareClaudeStreamEndRequest = (records: unknown[]) =>
+    prepareClaudeProxyRequest({
+      requestUrl: new URL("https://kleis.local/v1/messages"),
+      headers: new Headers(),
+      bodyText: "{}",
+      bodyJson: {},
+      accessToken: "claude-token",
+      metadata: null,
+      onTokenUsage: (usage) => records.push(usage.inputTokens),
+      onStreamEnd: (statusCode) => records.push(statusCode),
+    });
+
+  const messageStart = {
+    type: "message_start",
+    message: { usage: { input_tokens: 3 } },
+  };
+  const toNamedSse = (events: readonly { type: string }[]): string =>
+    events
+      .map(
+        (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+      )
+      .join("");
+
+  const claudeStreamEndCases = [
+    { name: "message_stop", event: { type: "message_stop" }, status: 200 },
+    {
+      name: "a rate limit error",
+      event: { type: "error", error: { type: "rate_limit_error" } },
+      status: 429,
+    },
+    {
+      name: "an overloaded error",
+      event: { type: "error", error: { type: "overloaded_error" } },
+      status: 529,
+    },
+    {
+      name: "another error",
+      event: { type: "error", error: { type: "api_error" } },
+      status: 502,
+    },
+  ] as const;
+
+  for (const testCase of claudeStreamEndCases) {
+    test(`records a Claude stream ended by ${testCase.name} after its usage`, async () => {
+      const records: unknown[] = [];
+      const result = prepareClaudeStreamEndRequest(records);
+      const originalWarn = console.warn;
+      console.warn = (): void => undefined;
+      try {
+        const response = await result.transformResponse(
+          new Response(toNamedSse([messageStart, testCase.event]), {
+            headers: { "content-type": "text/event-stream" },
+          })
+        );
+        await response.text();
+      } finally {
+        console.warn = originalWarn;
+      }
+
+      expect(records).toEqual([3, testCase.status]);
+    });
+  }
+
+  test("forwards a Claude stream without message_stop as is and records 502", async () => {
+    const records: unknown[] = [];
+    const result = prepareClaudeStreamEndRequest(records);
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown): void => {
+      warnings.push(String(message));
+    };
+    const body = `data: ${JSON.stringify(messageStart)}\n\ndata: {"type":"message_delta"`;
+    let output: string;
+    try {
+      const response = await result.transformResponse(
+        new Response(body, { headers: { "content-type": "text/event-stream" } })
+      );
+      output = await response.text();
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(output).toBe(body);
+    expect(records).toEqual([3, 502]);
+    expect(warnings).toHaveLength(1);
+    const warning = JSON.parse(warnings[0] ?? "{}") as Record<string, unknown>;
+    expect(warning.event).toBe("claude_sse_missing_message_stop");
+    expect(warning.truncatedEvent).toBe(true);
+  });
+
+  test("records a cancelled Claude stream as 499 unless message_stop arrived", async () => {
+    for (const [events, status] of [
+      [[messageStart], 499],
+      [[messageStart, { type: "message_stop" }], 200],
+    ] as const) {
+      const records: unknown[] = [];
+      const result = prepareClaudeStreamEndRequest(records);
+      const response = await result.transformResponse(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller): void {
+              controller.enqueue(new TextEncoder().encode(toNamedSse(events)));
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } }
+        )
+      );
+      const reader = response.body?.getReader();
+      expect((await reader?.read())?.done).toBe(false);
+      await reader?.cancel();
+
+      expect(records).toEqual([3, status]);
+    }
+  });
+
+  test("records a Claude stream whose upstream read fails as 502", async () => {
+    const records: unknown[] = [];
+    const result = prepareClaudeStreamEndRequest(records);
+    let upstream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const response = await result.transformResponse(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller): void {
+            upstream = controller;
+            controller.enqueue(
+              new TextEncoder().encode(
+                `data: ${JSON.stringify(messageStart)}\n\n`
+              )
+            );
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } }
+      )
+    );
+    const reader = response.body?.getReader();
+    expect((await reader?.read())?.done).toBe(false);
+    upstream?.error(new Error("upstream interrupted"));
+    const originalWarn = console.warn;
+    console.warn = (): void => undefined;
+    try {
+      await expect(reader?.read()).rejects.toThrow("upstream interrupted");
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(records).toEqual([3, 502]);
+  });
+
   test("extracts usage from fragmented streaming events", async () => {
     const capture = createUsageCapture();
     const result = prepareClaudeUsageRequest(capture.onTokenUsage);
