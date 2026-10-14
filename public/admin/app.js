@@ -47,15 +47,18 @@ import {
   toggleProvider,
   updateOAuthProviderUI,
   usageHasTraffic,
+  waitForDailyTokens,
   waitForUsageDetail,
 } from "./app-data.js";
 import {
+  hideDailyTokensTip,
   menuHtml,
   renderOpenCodeSetup,
   renderAccounts,
   renderDashboard,
   renderKeys,
   setupSnippet,
+  showDailyTokensTip,
 } from "./app-render.js";
 import { initPwa } from "./app-pwa.js";
 
@@ -142,8 +145,11 @@ async function setExpandedAccount(id) {
   const seq = ++accountOpenSeq;
   const token = state.token;
   state.pendingExpandedAccountId = id;
-  if (id && usageHasTraffic("account", id))
-    await waitForUsageDetail("account", id);
+  if (id)
+    await Promise.all([
+      waitForUsageDetail("account", id),
+      waitForDailyTokens(id),
+    ]);
   if (
     seq !== accountOpenSeq ||
     token !== state.token ||
@@ -462,6 +468,18 @@ $("#accounts-list").addEventListener("click", (event) => {
   const row = event.target.closest(".row[data-account-id]");
   if (row) toggleAccount(row.dataset.accountId);
 });
+
+// Mouse hover and touch taps both point at a day in the daily tokens chart.
+for (const type of ["pointermove", "pointerdown"]) {
+  $("#accounts-list").addEventListener(type, (event) => {
+    const plot = event.target.closest(".daily-plot");
+    if (plot) showDailyTokensTip(plot, event.clientX);
+    else hideDailyTokensTip();
+  });
+}
+$("#accounts-list").addEventListener("pointerleave", () =>
+  hideDailyTokensTip()
+);
 
 $("#keys-list").addEventListener("click", (event) => {
   const menuButton = event.target.closest("[data-menu]");

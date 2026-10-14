@@ -20,6 +20,7 @@ import {
   queryCodexThreadUsage,
   redeemCodexResetCredit,
 } from "../../domain/providers/provider-account-tracking";
+import { listProviderAccountDailyTokens } from "../../db/repositories/account-daily-tokens";
 import {
   getProviderAccountUsageDetail,
   listProviderAccountUsageSummaries,
@@ -90,6 +91,39 @@ const codexThreadUsageBodySchema = z.strictObject({
 const codexResetCreditBodySchema = z.strictObject({
   creditId: z.string().trim().min(1).max(300).nullable().optional(),
   redeemRequestId: z.string().trim().min(1).max(200).nullable().optional(),
+});
+
+const DAILY_TOKENS_DEFAULT_DAYS = 30;
+const DAILY_TOKENS_MAX_DAYS = 90;
+
+const dailyTokensDaysSchema = z.coerce
+  .number()
+  .int()
+  .min(1)
+  .max(DAILY_TOKENS_MAX_DAYS)
+  .default(DAILY_TOKENS_DEFAULT_DAYS);
+
+const dailyTokensQuerySchema = z.strictObject({
+  days: dailyTokensDaysSchema,
+});
+
+const dailyTokensBatchQuerySchema = z.strictObject({
+  days: dailyTokensDaysSchema,
+  ids: z
+    .string()
+    .transform((value) =>
+      Array.from(
+        new Set(
+          value
+            .split(",")
+            .map((id) => id.trim())
+            .filter(Boolean)
+        )
+      )
+    )
+    .pipe(z.array(z.string().max(120)).min(1).max(50))
+    .optional(),
+  provider: z.enum(providers).optional(),
 });
 
 const accountNotFoundBody = {
@@ -216,6 +250,40 @@ export const adminAccountsRoutes = new Hono()
         now,
         usage,
       });
+    }
+  )
+  .get(
+    "/daily-tokens",
+    zValidator("query", dailyTokensBatchQuerySchema),
+    async (context) => {
+      const { days, ids, provider } = context.req.valid("query");
+      const now = Date.now();
+      const accounts = await listProviderAccountDailyTokens(db, {
+        days,
+        now,
+        ...(ids ? { accountIds: ids } : {}),
+        ...(provider ? { provider } : {}),
+      });
+      return context.json({ days, now, accounts });
+    }
+  )
+  .get(
+    "/:id/daily-tokens",
+    zValidator("param", accountIdParamsSchema),
+    zValidator("query", dailyTokensQuerySchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const { days } = context.req.valid("query");
+      const now = Date.now();
+      const [account] = await listProviderAccountDailyTokens(db, {
+        days,
+        now,
+        accountIds: [id],
+      });
+      if (!account) {
+        return context.json(accountNotFoundBody, 404);
+      }
+      return context.json({ days, now, ...account });
     }
   )
   .post(
