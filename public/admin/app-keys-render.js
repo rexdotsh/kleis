@@ -1,4 +1,8 @@
 import {
+  isAccountVisible,
+  isFreeTierAccount,
+} from "./app-account-visibility.js";
+import {
   $,
   $$,
   PROVIDER_ORDER,
@@ -85,6 +89,14 @@ function keyAccessHtml(mode, key = null) {
     ? new Set(key.providerScopes)
     : null;
   const selectedIds = new Set(key?.accountScopes || []);
+  const formId = mode === "create" ? "create-key" : `edit-key:${key?.id}`;
+  const current = $(config.accountContainer);
+  const keepIds = new Set(selectedIds);
+  if (current?.closest?.("[data-form]")?.dataset.form === formId) {
+    for (const select of current.querySelectorAll(config.pinSelector)) {
+      if (select.value) keepIds.add(select.value);
+    }
+  }
   const knownIds = new Set(state.accounts.map((account) => account.id));
   const unavailableIds =
     mode === "edit"
@@ -93,8 +105,13 @@ function keyAccessHtml(mode, key = null) {
 
   const rows = PROVIDER_ORDER.map((provider) => {
     const on = !allowed || allowed.has(provider);
-    const accounts = state.accounts
-      .filter((account) => account.provider === provider)
+    const connected = state.accounts.filter(
+      (account) => account.provider === provider
+    );
+    const accounts = connected
+      .filter((account) =>
+        isAccountVisible(account, { showFreeTier: state.showFreeTier, keepIds })
+      )
       .sort(
         (left, right) =>
           Number(right.isPrimary) - Number(left.isPrimary) ||
@@ -103,24 +120,24 @@ function keyAccessHtml(mode, key = null) {
     const primary = accounts.find((account) => account.isPrimary);
     const pinned = accounts.find((account) => selectedIds.has(account.id));
     const name = providerLabel(provider);
-    const first = accounts.length
+    const first = connected.length
       ? `Primary account${primary ? ` (${escapeHtml(accountLabel(primary))})` : ""}`
       : "No accounts connected";
     const options = accounts
       .map(
         (account) =>
-          `<option value="${account.id}"${account === pinned ? " selected" : ""}${account.enabled === false ? ' data-disabled="true"' : ""}>${escapeHtml(accountLabel(account))}${account.enabled === false ? " (disabled)" : ""}</option>`
+          `<option value="${account.id}"${account === pinned ? " selected" : ""}${account.enabled === false ? ' data-disabled="true"' : ""}>${escapeHtml(accountLabel(account))}${isFreeTierAccount(account) ? " (free)" : ""}${account.enabled === false ? " (disabled)" : ""}</option>`
       )
       .join("");
     const note = accessNote({
       on,
-      hasAccounts: accounts.length > 0,
+      hasAccounts: connected.length > 0,
       pinned: Boolean(pinned),
       pinnedDisabled: pinned?.enabled === false,
     });
     return `<div class="access-row${on ? "" : " off"}" data-provider="${provider}">
         <label class="access-provider"><input type="checkbox" role="switch" class="toggle ${config.providerSelector.slice(1)}" value="${provider}"${on ? " checked" : ""}><span>${name}</span></label>
-        <select class="field-input ${config.pinSelector.slice(1)}" data-provider="${provider}" aria-label="${name} account"${on && accounts.length ? "" : " disabled"}><option value="">${first}</option>${options}</select>
+        <select class="field-input ${config.pinSelector.slice(1)}" data-provider="${provider}" data-has-accounts="${connected.length > 0}" aria-label="${name} account"${on && connected.length ? "" : " disabled"}><option value="">${first}</option>${options}</select>
         ${accessNoteHtml(note)}
       </div>`;
   }).join("");
@@ -130,7 +147,11 @@ function keyAccessHtml(mode, key = null) {
         `<label class="scope-check"><input type="checkbox" value="${escapeHtml(id)}" class="${config.accountSelector.slice(1)}" data-preserved-scope="true" checked> Keep the pin to ${escapeHtml(shortId(id))}, which is not in the loaded account list</label>`
     )
     .join("");
-  return `${rows}${preserved}`;
+  const freeCount = state.accounts.filter(isFreeTierAccount).length;
+  const toggle = freeCount
+    ? `<button class="link small free-tier-toggle" type="button" data-action="toggle-free-tier" aria-pressed="${state.showFreeTier}" title="Primary accounts and current pins stay visible. Routing is unchanged.">${state.showFreeTier ? "Hide" : "Show"} free tier (${freeCount})</button>`
+    : "";
+  return `${rows}${preserved}${toggle}`;
 }
 
 // null when every provider is on (no restriction); [] when none is.
@@ -157,7 +178,7 @@ function syncScopedAccountAvailability(mode) {
     const select = row?.querySelector("select");
     if (!(row && select)) continue;
     const on = toggle.checked;
-    const hasAccounts = select.options.length > 1;
+    const hasAccounts = select.dataset.hasAccounts === "true";
     row.classList.toggle("off", !on);
     select.disabled = !(on && hasAccounts);
     const note = accessNote({

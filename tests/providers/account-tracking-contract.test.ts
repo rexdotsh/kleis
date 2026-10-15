@@ -189,6 +189,8 @@ describe("Codex account tracking contracts", () => {
 describe("Claude account tracking contracts", () => {
   // Synthetic profiles modeled on Claude Code 2.1.63's fetchProfileInfo contract.
   test.each([
+    ["claude_free", null, "free", "Free"],
+    ["claude_free", "default_claude_free", "free", "Free"],
     ["claude_pro", "default_claude_pro", "pro", "Pro"],
     ["claude_max", "default_claude_max_5x", "max_5x", "Max 5x"],
     ["claude_max", "default_claude_max_20x", "max_20x", "Max 20x"],
@@ -232,7 +234,6 @@ describe("Claude account tracking contracts", () => {
   test.each([
     {},
     { organization: null },
-    { organization: { organization_type: "claude_free" } },
     { organization: { organization_type: "api" } },
     { organization: { organization_type: "claude_future" } },
     { organization: { organization_type: 123 } },

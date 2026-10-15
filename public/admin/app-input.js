@@ -9,15 +9,19 @@ import {
   startEditAccount,
 } from "./app-accounts.js";
 import { renderAccounts } from "./app-accounts-render.js";
+import { isAccountVisible } from "./app-account-visibility.js";
 import {
   $,
   $$,
+  accountById,
+  accountUsageForId,
   copyToClipboard,
   keyById,
   modelsUrlForKey,
   resolveConfirm,
   runAction,
   setConfirmAnchor,
+  setShowFreeTier,
   state,
   syncAccountWindowButtons,
   syncDashboardWindowButtons,
@@ -57,6 +61,7 @@ const accountActions = {
   "redeem-reset-credit": (id, button) =>
     redeemResetCredit(id, button?.dataset.creditId || null),
   "delete-account": (id) => deleteAccount(id),
+  "toggle-free-tier": (_id, button) => toggleFreeTier(button),
   "clear-filter": () =>
     clearFilter("#accounts-filter", "accountFilter", renderAccounts),
 };
@@ -96,6 +101,7 @@ const keyActions = {
   "rotate-key": (id) => rotateKey(id),
   "revoke-key": (id) => revokeKey(id),
   "delete-key": (id) => deleteKey(id),
+  "toggle-free-tier": (_id, button) => toggleFreeTier(button),
   "clear-filter": () => clearFilter("#keys-filter", "keyFilter", renderKeys),
 };
 
@@ -108,6 +114,17 @@ function clearFilter(inputId, field, render) {
 }
 const accountRow = (id) => $(`#accounts-list .row[data-account-id="${id}"]`);
 const keyRow = (id) => $(`#keys-list .row[data-key-id="${id}"]`);
+
+function toggleFreeTier(button) {
+  const list = button?.closest("#keys-list") ? "#keys-list" : "#accounts-list";
+  setShowFreeTier(!state.showFreeTier);
+  renderAccounts();
+  if (state.keysLoaded || state.creatingKey || state.editingKeyId) renderKeys();
+  if (state.cursorAccountId && !accountRow(state.cursorAccountId)) {
+    state.cursorAccountId = null;
+  }
+  $(`${list} [data-action="toggle-free-tier"]`)?.focus({ preventScroll: true });
+}
 
 // Brings a newly opened row's details into view without jumping the page.
 function revealDetail(listId, id) {
@@ -287,6 +304,15 @@ function reveal(row) {
 }
 
 async function showAccount(id) {
+  const account = accountById(id);
+  if (!account) return;
+  if (
+    !state.showFreeTier &&
+    !isAccountVisible(account, { usage: accountUsageForId(id) })
+  ) {
+    setShowFreeTier(true);
+    if (state.keysLoaded) renderKeys();
+  }
   if (state.accountFilter) {
     state.accountFilter = "";
     $("#accounts-filter").value = "";

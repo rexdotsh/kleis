@@ -1,4 +1,8 @@
 import {
+  isAccountVisible,
+  isFreeTierAccount,
+} from "./app-account-visibility.js";
+import {
   $,
   accountUsageForId,
   escapeHtml,
@@ -103,7 +107,7 @@ function limitSummaryText(account) {
     .join(" \u00b7 ");
 }
 
-function accountRowHtml(account, serving) {
+function accountRowHtml(account, serving, grouped = false) {
   const name = accountName(account);
   const open = state.expandedAccountId === account.id;
   const issues = serving ? accountIssues(account) : [];
@@ -121,7 +125,7 @@ function accountRowHtml(account, serving) {
   const cursor = state.cursorAccountId === account.id ? " cursor" : "";
 
   return `<div class="row t-acc${open ? " open" : ""}${serving ? "" : " dim"}${cursor}" data-account-id="${account.id}" data-flip="account:${account.id}" tabindex="0" role="button" aria-expanded="${open}">
-    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag tag-primary">Primary</span>' : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}</span>
+    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag tag-primary">Primary</span>' : ""}${isFreeTierAccount(account) ? `<span class="tag">${grouped ? escapeHtml(providerName(account.provider)) : "Free"}</span>` : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}</span>
     <span class="meters d">${limitMetersHtml(account)}</span>
     <span class="num d ${token.cls}">${escapeHtml(token.text)}</span>
     <span class="num">${requestsCellHtml(usage)}</span>
@@ -397,6 +401,45 @@ function groupHtml(provider, status, count) {
   </div>`;
 }
 
+function accountGroupsHtml(accounts, statuses) {
+  const providers = [
+    ...new Set([...PROVIDERS, ...accounts.map((account) => account.provider)]),
+  ];
+  return providers
+    .map((provider) => {
+      const rows = accounts
+        .filter((account) => account.provider === provider)
+        .sort(
+          (a, b) =>
+            Number(b.isPrimary) - Number(a.isPrimary) ||
+            (a.createdAt ?? 0) - (b.createdAt ?? 0)
+        );
+      if (!rows.length) return "";
+      return `${groupHtml(provider, statuses.get(provider), rows.length)}<div class="group-rows" data-flip="rows:${provider}">${rows
+        .map((account) =>
+          accountRowHtml(account, isAccountServing(account, statuses))
+        )
+        .join("")}</div>`;
+    })
+    .join("");
+}
+
+function freeTierGroupHtml(accounts, statuses) {
+  if (!accounts.length) return "";
+  const open = state.showFreeTier;
+  const rows = open
+    ? accounts
+        .map((account) =>
+          accountRowHtml(account, isAccountServing(account, statuses), true)
+        )
+        .join("")
+    : "";
+  return `<section class="free-tier-group" aria-label="Free tier accounts">
+    <button class="free-tier-heading" type="button" data-action="toggle-free-tier" aria-expanded="${open}" aria-controls="free-tier-rows"><span class="free-tier-chevron">${icon("chev")}</span><span>Free tier <span class="muted">(${accounts.length})</span></span><span class="free-tier-note">${open ? "Shown in pickers" : "Hidden from pickers"}</span></button>
+    <div id="free-tier-rows"${open ? "" : " hidden"}>${open ? '<p class="free-tier-hint">Visibility only. Routing is unchanged.</p>' : ""}${rows}</div>
+  </section>`;
+}
+
 function renderAccounts() {
   renderAttention();
   renderReauthorizeList();
@@ -423,26 +466,19 @@ function renderAccounts() {
   }
 
   const statuses = providerStatusMap();
-  const providers = [
-    ...new Set([...PROVIDERS, ...matches.map((account) => account.provider)]),
-  ];
-  const groups = providers
-    .map((provider) => {
-      const rows = matches
-        .filter((account) => account.provider === provider)
-        .sort(
-          (a, b) =>
-            Number(b.isPrimary) - Number(a.isPrimary) ||
-            (a.createdAt ?? 0) - (b.createdAt ?? 0)
-        );
-      if (!rows.length) return "";
-      return `${groupHtml(provider, statuses.get(provider), rows.length)}<div class="group-rows" data-flip="rows:${provider}">${rows
-        .map((account) =>
-          accountRowHtml(account, isAccountServing(account, statuses))
-        )
-        .join("")}</div>`;
-    })
-    .join("");
+  const visible = [];
+  const free = [];
+  const keepIds = new Set([state.editingAccountId]);
+  for (const account of matches) {
+    const shown = isAccountVisible(account, {
+      showFreeTier: Boolean(filter),
+      keepIds,
+      usage: accountUsageForId(account.id),
+    });
+    (shown ? visible : free).push(account);
+  }
+  const groups =
+    accountGroupsHtml(visible, statuses) + freeTierGroupHtml(free, statuses);
 
   const list = $("#accounts-list");
   renderWithMotion(list, () => renderPreservingForm(list, groups), {
@@ -509,10 +545,15 @@ function renderReauthorizeList() {
   const el = $("#reauthorize-list");
   if (!el) return;
   const accounts = state.accounts.filter(
-    (account) => account.provider === "codex" || account.provider === "claude"
+    (account) =>
+      (account.provider === "codex" || account.provider === "claude") &&
+      isAccountVisible(account, {
+        showFreeTier: state.showFreeTier,
+        usage: accountUsageForId(account.id),
+      })
   );
   if (!accounts.length) {
-    el.innerHTML = '<p class="muted list-note">No accounts connected yet.</p>';
+    el.innerHTML = '<p class="muted list-note">No accounts to reauthorize.</p>';
     return;
   }
   const flagged = accounts.filter(needsReauthorization);
