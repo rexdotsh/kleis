@@ -142,6 +142,7 @@ describe("admin PWA", () => {
       (file) => file.endsWith(".js") && file !== "sw.js"
     );
     expect(modules.sort()).toEqual([
+      "app-account-visibility.js",
       "app-accounts-render.js",
       "app-accounts.js",
       "app-core.js",

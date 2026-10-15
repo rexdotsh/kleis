@@ -723,7 +723,7 @@ button.row {
 .row:focus-visible {
   outline-offset: -1px;
 }
-.row.cursor {
+:is(.row, .free-tier-heading).cursor {
   background: var(--cursor);
 }
 @media (hover: hover) {
@@ -731,7 +731,7 @@ button.row {
     background: none;
   }
 }
-.row.cursor:focus-visible {
+:is(.row, .free-tier-heading).cursor:focus-visible {
   outline: none;
   box-shadow: inset 2px 0 0 var(--muted);
 }
@@ -962,6 +962,44 @@ button.row {
 .group .col {
   font-size: 12px;
   color: var(--muted);
+}
+.free-tier-group {
+  margin-top: 8px;
+}
+.free-tier-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  text-align: left;
+}
+.free-tier-heading:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.free-tier-chevron {
+  display: flex;
+}
+.free-tier-heading[aria-expanded="true"] .free-tier-chevron {
+  transform: rotate(90deg);
+}
+.free-tier-note {
+  margin-left: auto;
+  font-size: 12px;
+}
+.free-tier-hint {
+  padding: 0 12px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.free-tier-toggle {
+  align-self: flex-start;
+  min-height: 32px;
 }
 .switch {
   position: relative;
@@ -2234,8 +2272,12 @@ input[type="checkbox"].toggle:checked::after {
     margin: 0 -16px;
   }
   .row,
-  .group {
+  .group,
+  .free-tier-heading {
     padding: 0 16px;
+  }
+  .free-tier-hint {
+    padding: 0 16px 12px;
   }
   .thead {
     display: none;

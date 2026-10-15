@@ -2,7 +2,9 @@ const DEFAULT_KEY_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const USAGE_DETAIL_TTL_MS = 30_000;
 const DAILY_TOKEN_DAYS = 30;
 const ADMIN_TOKEN_STORAGE_KEY = "kleis_admin_token";
+const FREE_TIER_STORAGE_KEY = "kleis_show_free_tier";
 const PROVIDER_ORDER = ["codex", "claude"];
+const FREE_TIER_CURSOR_ID = "free-tier-group";
 
 const readPersistedToken = () =>
   localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || "";
@@ -38,6 +40,7 @@ const state = {
   showRevokedKeys: false,
   keyFilter: "",
   accountFilter: "",
+  showFreeTier: localStorage.getItem(FREE_TIER_STORAGE_KEY) === "true",
   expandedAccountId: null,
   pendingExpandedAccountId: null,
   showAllReauthorize: false,
@@ -71,6 +74,11 @@ const state = {
 const APP_ORIGIN = window.location.origin;
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
+
+function setShowFreeTier(show) {
+  state.showFreeTier = show;
+  localStorage.setItem(FREE_TIER_STORAGE_KEY, String(show));
+}
 
 function syncDashboardWindowButtons() {
   for (const btn of $$("#dash-window-selector .dash-window-btn")) {
@@ -575,10 +583,12 @@ export {
   USAGE_DETAIL_TTL_MS,
   DAILY_TOKEN_DAYS,
   PROVIDER_ORDER,
+  FREE_TIER_CURSOR_ID,
   readPersistedToken,
   persistToken,
   clearPersistedToken,
   state,
+  setShowFreeTier,
   APP_ORIGIN,
   $,
   $$,

@@ -70,8 +70,15 @@ const {
 } = await import("../../public/admin/app-accounts.js");
 const { renderAccounts } =
   await import("../../public/admin/app-accounts-render.js");
-const { cancelOAuthFlow, logout, resolveConfirm, runAction, state } =
-  await import("../../public/admin/app-core.js");
+const {
+  cancelOAuthFlow,
+  logout,
+  resolveConfirm,
+  runAction,
+  state,
+  FREE_TIER_CURSOR_ID,
+  setShowFreeTier,
+} = await import("../../public/admin/app-core.js");
 const {
   createKey,
   deleteKey,
@@ -83,7 +90,12 @@ const {
   startCreateKey,
   startEditKey,
 } = await import("../../public/admin/app-keys.js");
-const { renderKeys } = await import("../../public/admin/app-keys-render.js");
+const { renderKeys, keyAccessHtml, selectedAccountScopes } =
+  await import("../../public/admin/app-keys-render.js");
+const { renderAttention, usageSlotHtml } =
+  await import("../../public/admin/app-usage-render.js");
+const { moveCursor, showAccount } =
+  await import("../../public/admin/app-input.js");
 const { completeOAuth, handleLogin, renderOAuthFlow, startOAuth } =
   await import("../../public/admin/app-oauth.js");
 const { loadDashboard, requestDailyTokens, requestUsageDetail, switchToTab } =
@@ -172,6 +184,7 @@ describe("admin mutation and session guards", () => {
   beforeEach(() => {
     installGlobals();
     logout();
+    setShowFreeTier(false);
     $("#menu").hidden = true;
     $("#toast-container").replaceChildren();
     state.token = "same-admin-token";
@@ -639,5 +652,224 @@ describe("admin mutation and session guards", () => {
     current.release(failure());
     await pending;
     expect($("#btn-oauth-start").disabled).toBe(false);
+  });
+
+  describe("free-tier visibility", () => {
+    const all = (selector: string) =>
+      Array.from(window.document.querySelectorAll(selector));
+    const codex = (id: string, planType: string | null = "free") => ({
+      ...account,
+      id,
+      label: id,
+      createdAt: 1,
+      quota: {
+        fetchedAt: Date.now(),
+        data: { provider: "codex", status: { planType } },
+      },
+    });
+    beforeEach(() => {
+      const accounts = [
+        { ...codex("primary-free"), isPrimary: true },
+        codex("paid", "plus"),
+        codex("unknown", null),
+        codex("idle-free"),
+        codex("traffic-free"),
+        {
+          ...codex("claude-free"),
+          provider: "claude",
+          profile: {
+            fetchedAt: Date.now(),
+            data: { organizationType: "claude_free", plan: null },
+          },
+        },
+      ];
+      state.expandedAccountId = null;
+      state.expandedKeyId = null;
+      state.overviewReady = true;
+      state.accounts = accounts;
+      state.accountsById = new Map(accounts.map((entry) => [entry.id, entry]));
+      state.accountUsageById = new Map([["traffic-free", { requestCount: 2 }]]);
+    });
+
+    test("groups idle free accounts at the bottom and reveals search matches", () => {
+      renderAccounts();
+      expect(
+        all("#accounts-list .t-acc[data-account-id]").map((row) =>
+          row.getAttribute("data-account-id")
+        )
+      ).toEqual(["primary-free", "paid", "unknown", "traffic-free"]);
+      expect($(".free-tier-heading").textContent).toContain("Free tier (2)");
+      expect($(".free-tier-heading").getAttribute("aria-expanded")).toBe(
+        "false"
+      );
+      expect($("#free-tier-rows").hidden).toBe(true);
+      expect($("#accounts-list").lastElementChild?.className).toBe(
+        "free-tier-group"
+      );
+      state.accountFilter = "claude-free";
+      renderAccounts();
+      expect(
+        $("#accounts-list .t-acc[data-account-id]").dataset.accountId
+      ).toBe("claude-free");
+      expect(state.showFreeTier).toBe(false);
+    });
+
+    test("remembers the group toggle, preserves focus, and includes expanded rows in keyboard navigation", () => {
+      renderAccounts();
+      $(".free-tier-heading").focus();
+      $(".free-tier-heading").click();
+      expect(state.showFreeTier).toBe(true);
+      expect(window.localStorage.getItem("kleis_show_free_tier")).toBe("true");
+      expect(window.document.activeElement).toBe($(".free-tier-heading"));
+      expect(all("#free-tier-rows .t-acc[data-account-id]")).toHaveLength(2);
+      state.cursorAccountId = "traffic-free";
+      moveCursor("accounts", 1);
+      expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+      moveCursor("accounts", 1);
+      expect(state.cursorAccountId).toBe("idle-free");
+      $(".free-tier-heading").click();
+      expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+      expect(all("#free-tier-rows .t-acc[data-account-id]")).toHaveLength(0);
+      expect(window.localStorage.getItem("kleis_show_free_tier")).toBe("false");
+    });
+
+    test("hides picker noise without losing existing or unsaved pins", () => {
+      expect(keyAccessHtml("create")).not.toContain('value="idle-free"');
+      expect(keyAccessHtml("create")).toContain('value="primary-free"');
+      expect(
+        keyAccessHtml("edit", { id: "pinned", accountScopes: ["idle-free"] })
+      ).toContain('value="idle-free" selected');
+      state.creatingKey = true;
+      renderKeys();
+      $("#key-label").value = "Unsaved label";
+      $("#keys-list [data-action='toggle-free-tier']").click();
+      expect(state.showFreeTier).toBe(true);
+      $(".key-account-pin[data-provider='codex']").value = "idle-free";
+      $("#keys-list [data-action='toggle-free-tier']").click();
+      expect(state.showFreeTier).toBe(false);
+      expect($("#key-label").value).toBe("Unsaved label");
+      expect(selectedAccountScopes("create")).toEqual(["idle-free"]);
+      expect($(".key-account-pin[data-provider='codex']").value).toBe(
+        "idle-free"
+      );
+      expect($(".free-tier-heading").getAttribute("aria-expanded")).toBe(
+        "false"
+      );
+    });
+
+    test("never conceals traffic, removed accounts, or not-routed errors in by-account usage", () => {
+      const id = "usage-key";
+      state.usageDetails.set(`key:${id}:${state.keyUsageWindowMs}`, {
+        data: {
+          totals: { requestCount: 4 },
+          accounts: [
+            { providerAccountId: "idle-free", requestCount: 1 },
+            { providerAccountId: "claude-free", requestCount: 0 },
+            { providerAccountId: "removed", requestCount: 1 },
+            { providerAccountId: "__missing__", requestCount: 2 },
+          ],
+        },
+      });
+      const html = usageSlotHtml("key", id);
+      expect(html).toContain("idle-free");
+      expect(html).not.toContain("claude-free");
+      expect(html).toContain("Removed account");
+      expect(html).toContain("Not routed");
+      setShowFreeTier(true);
+      expect(usageSlotHtml("key", id)).toContain("claude-free");
+    });
+
+    test("hides idle free alerts but retains primary and traffic alerts", () => {
+      for (const entry of state.accounts) entry.expiresAt = 1;
+      renderAttention();
+      const html = $("#attention").innerHTML;
+      expect(html).not.toContain('data-account-id="idle-free"');
+      expect(html).toContain('data-account-id="primary-free"');
+      expect(html).toContain('data-account-id="traffic-free"');
+      setShowFreeTier(true);
+      renderAttention();
+      expect($("#attention").innerHTML).toContain(
+        'data-account-id="idle-free"'
+      );
+    });
+
+    test("following an account link reveals a tucked-away free account", async () => {
+      await showAccount("idle-free");
+      expect(state.showFreeTier).toBe(true);
+      expect(state.expandedAccountId).toBe("idle-free");
+      expect($("#free-tier-rows [data-detail-for='idle-free']")).not.toBeNull();
+    });
+
+    test("following a visible free account leaves the preference unchanged", async () => {
+      await showAccount("traffic-free");
+      expect(state.showFreeTier).toBe(false);
+      expect(state.expandedAccountId).toBe("traffic-free");
+      expect(
+        $("#accounts-list [data-detail-for='traffic-free']")
+      ).not.toBeNull();
+    });
+
+    test.each([
+      ["j", "k"],
+      ["ArrowDown", "ArrowUp"],
+    ])(
+      "%s / %s navigate through the disclosure and its expanded rows",
+      (next, previous) => {
+        const requests: string[] = [];
+        globals.fetch = async (url: RequestInfo | URL) => {
+          requests.push(String(url));
+          return fresh(String(url));
+        };
+        renderAccounts();
+        $("#accounts-list .row[data-account-id='traffic-free']").focus();
+        keyboard(next);
+        expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+        expect(window.document.activeElement).toBe($(".free-tier-heading"));
+        keyboard("r");
+        keyboard("Enter", ".free-tier-heading");
+        expect(state.showFreeTier).toBe(true);
+        expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+        keyboard(next);
+        expect(state.cursorAccountId).toBe("idle-free");
+        keyboard(previous);
+        expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+        keyboard(" ", ".free-tier-heading");
+        expect(state.showFreeTier).toBe(false);
+        keyboard(previous);
+        expect(state.cursorAccountId).toBe("traffic-free");
+        keyboard(next);
+        keyboard(next);
+        expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+        keyboard("o");
+        expect(state.showFreeTier).toBe(true);
+        expect(requests).toEqual([]);
+      }
+    );
+
+    test("the disclosure is navigable when all accounts are tucked away", () => {
+      state.accounts = [codex("idle-free")];
+      state.accountsById = new Map([["idle-free", state.accounts[0]]]);
+      state.accountUsageById.clear();
+      renderAccounts();
+      keyboard("j");
+      expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+      keyboard("Enter", ".free-tier-heading");
+      keyboard("j");
+      expect(state.cursorAccountId).toBe("idle-free");
+      keyboard("k");
+      expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+    });
+
+    test("stale free profiles keep upgraded accounts in lists and pickers", () => {
+      state.accountsById.get("claude-free").profile.fetchedAt =
+        Date.now() - 3 * 86_400_000;
+      renderAccounts();
+      expect(
+        $("#accounts-list .row[data-account-id='claude-free']").closest(
+          "#free-tier-rows"
+        )
+      ).toBeNull();
+      expect(keyAccessHtml("create")).toContain('value="claude-free"');
+    });
   });
 });

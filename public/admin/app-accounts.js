@@ -123,7 +123,10 @@ async function loadMissingQuotas(requestSeq, missingQuotas) {
         changed = true;
       }
     }
-    if (changed) renderAccounts();
+    if (changed) {
+      renderAccounts();
+      if (state.keysLoaded) renderKeys();
+    }
   } catch (e) {
     if (requestSeq !== state.accountsRequestSeq) return;
     toast(`Failed to load account limits: ${e.message}`, "error");

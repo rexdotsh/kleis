@@ -18,6 +18,7 @@ const CLAUDE_USAGE_TIMEOUT_MS = 10_000;
 const CLAUDE_PROFILE_TIMEOUT_MS = 5000;
 
 const CLAUDE_PLAN_LABELS = {
+  free: "Free",
   pro: "Pro",
   max: "Max",
   max_5x: "Max 5x",
@@ -50,6 +51,8 @@ const readClaudePlanType = (
   seatTier: string | null
 ): ClaudePlanType | null => {
   switch (organizationType) {
+    case "claude_free":
+      return "free";
     case "claude_pro":
       return "pro";
     case "claude_max":

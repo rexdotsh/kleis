@@ -229,6 +229,7 @@ export type AccountProfile =
 type ProfileEntry = {
   profile: AccountProfile | null;
   fetchedAt: number | null;
+  error: string | null;
   expiresAt: number;
   // The token response's organization when the profile was looked up; a
   // different one means the account moved and the profile is out of date.
@@ -281,6 +282,7 @@ const getClaudeProfile = async (
     profiles.set(key, {
       profile,
       fetchedAt,
+      error: null,
       expiresAt: profileExpiry(fetchedAt),
       organizationKey: organizationKey ?? profileOrganizationKey(profile),
     });
@@ -296,6 +298,7 @@ const getClaudeProfile = async (
     profiles.set(key, {
       profile: cached?.profile ?? null,
       fetchedAt: cached?.fetchedAt ?? null,
+      error: errorMessage(error),
       expiresAt:
         Date.now() + Math.max(PROFILE_RETRY_MS, cacheDuration([error])),
       organizationKey: organizationKey ?? cached?.organizationKey ?? null,
@@ -340,6 +343,7 @@ const updateCodexProfile = async (
   let next: CodexAccountProfile = previous ?? emptyCodexProfile;
   let fetchedAt = cached?.fetchedAt ?? null;
   let expiresAt = cached?.expiresAt ?? 0;
+  let profileError = cached?.error ?? null;
   const planChanged =
     usagePlan !== null && previous !== null && previous.planType !== usagePlan;
   if (expiresAt <= Date.now() || planChanged) {
@@ -357,7 +361,9 @@ const updateCodexProfile = async (
       };
       fetchedAt = Date.now();
       expiresAt = profileExpiry(fetchedAt);
+      profileError = null;
     } catch (error) {
+      profileError = errorMessage(error);
       logWarn("codex_account_profile_fetch_failed", {
         provider: account.provider,
         status: errorStatus(error),
@@ -375,7 +381,13 @@ const updateCodexProfile = async (
     username: data.profile?.username ?? next.username,
   };
   const profile: AccountProfile = { provider: "codex", ...next };
-  profiles.set(key, { profile, fetchedAt, expiresAt, organizationKey: null });
+  profiles.set(key, {
+    profile,
+    fetchedAt,
+    error: profileError,
+    expiresAt,
+    organizationKey: null,
+  });
   if (
     fetchedAt !== (cached?.fetchedAt ?? null) ||
     JSON.stringify(profile) !== JSON.stringify(cached?.profile ?? null)
@@ -618,6 +630,7 @@ const restoreSnapshot = (
     profiles.set(key, {
       profile: restoredProfile,
       fetchedAt: row.profileFetchedAt,
+      error: null,
       expiresAt: row.profileFetchedAt ? profileExpiry(row.profileFetchedAt) : 0,
       organizationKey: profileOrganizationKey(restoredProfile),
     });
@@ -710,14 +723,25 @@ export const expireProviderAccountTracking = (
 
 export const peekProviderAccountProfiles = (
   providerAccounts: readonly ProviderAccountRecord[]
-): Map<string, { fetchedAt: number | null; data: AccountProfile } | null> =>
+): Map<
+  string,
+  {
+    fetchedAt: number | null;
+    error: string | null;
+    data: AccountProfile;
+  } | null
+> =>
   new Map(
     providerAccounts.filter(isTrackingAccount).map((account) => {
       const entry = profiles.get(quotaKey(account));
       return [
         account.id,
         entry?.profile
-          ? { fetchedAt: entry.fetchedAt, data: entry.profile }
+          ? {
+              fetchedAt: entry.fetchedAt,
+              error: entry.error,
+              data: entry.profile,
+            }
           : null,
       ];
     })

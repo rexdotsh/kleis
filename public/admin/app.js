@@ -313,10 +313,10 @@ for (const [listId, open] of [
       return;
     }
     if (event.key !== "Enter" && event.key !== " ") return;
-    const row = event.target.closest(".row[tabindex]");
+    const row = event.target.closest(".row[tabindex], button[data-cursor-id]");
     if (!row || event.target !== row) return;
     event.preventDefault();
-    if (row.closest(".usage-slot")) row.click();
+    if (row.matches("button") || row.closest(".usage-slot")) row.click();
     else runAction(open(row));
   });
 }

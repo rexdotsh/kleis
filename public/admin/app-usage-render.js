@@ -1,4 +1,12 @@
-import { $, accountById, escapeHtml, keyById, state } from "./app-core.js";
+import { isAccountVisible } from "./app-account-visibility.js";
+import {
+  $,
+  accountById,
+  accountUsageForId,
+  escapeHtml,
+  keyById,
+  state,
+} from "./app-core.js";
 import {
   DAY_MS,
   SKELETON_HTML,
@@ -124,6 +132,16 @@ const NOT_ROUTED_ACCOUNT_ID = "__missing__";
 function accountListHtml(rows, totals, message, loading) {
   const total = normalizeUsage(totals).requestCount;
   const body = (rows || [])
+    .filter((row) => {
+      const account = accountById(row.providerAccountId);
+      return (
+        !account ||
+        isAccountVisible(account, {
+          showFreeTier: state.showFreeTier,
+          usage: row,
+        })
+      );
+    })
     .map((row) => {
       const usage = normalizeUsage(row);
       const share = total
@@ -169,6 +187,13 @@ function renderAttention() {
   const statuses = providerStatusMap();
   const items = [];
   for (const account of state.accounts) {
+    if (
+      !isAccountVisible(account, {
+        showFreeTier: state.showFreeTier,
+        usage: accountUsageForId(account.id),
+      })
+    )
+      continue;
     if (!isAccountServing(account, statuses)) continue;
     const issues = accountIssues(account);
     if (!issues.length) continue;
