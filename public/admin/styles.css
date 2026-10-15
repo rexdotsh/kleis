@@ -972,7 +972,7 @@ button.row {
 .free-tier-heading {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   width: 100%;
   min-height: 32px;
   padding: 4px 12px;
@@ -984,12 +984,8 @@ button.row {
 .free-tier-heading:hover {
   color: var(--text);
 }
-/* Same footprint as an account row's status dot, so the label lines up with
-   account names. */
 .free-tier-chevron {
   display: flex;
-  justify-content: center;
-  width: 6px;
 }
 .free-tier-heading[aria-expanded="true"] .free-tier-chevron {
   transform: rotate(90deg);
