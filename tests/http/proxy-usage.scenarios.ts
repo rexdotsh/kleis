@@ -20,9 +20,10 @@ installErrorHandler(app);
 app.use("*", async (context, next) => {
   context.set("proxyApiKeyId", "fake-key");
   context.set("proxyApiKeyAccountScopeIds", null);
+  const text = await context.req.text();
   context.set("proxyRequestBody", {
-    text: "{}",
-    parsed: {},
+    text,
+    parsed: JSON.parse(text) as unknown,
     model: context.req.path.startsWith("/openai/") ? "gpt-fake" : "claude-fake",
   });
   await next();
@@ -227,6 +228,50 @@ for (const [provider, path] of [
     }
   );
 }
+
+test("Codex streaming HTTP errors without content-type retain bytes and log safe metadata once", async () => {
+  await flushProxyUsage();
+  await db.delete(requestUsageBuckets);
+  const original = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const error = spyOn(console, "error").mockImplementation(() => undefined);
+  const body =
+    '{ "error": { "type": "server_error", "code": "overloaded_error", "message": "PRIVATESECRETTOKEN" } }';
+  globalThis.fetch = (async () =>
+    new Response(new TextEncoder().encode(body), {
+      status: 503,
+      headers: { "retry-after": "3" },
+    })) as typeof fetch;
+  try {
+    const response = await app.request("/openai/v1/responses", {
+      method: "POST",
+      body: '{"stream":true}',
+    });
+    expect(response.status).toBe(503);
+    expect(response.headers.has("content-type")).toBe(false);
+    expect(response.headers.get("retry-after")).toBe("3");
+    expect(await response.text()).toBe(body);
+    expect(warn).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledTimes(1);
+    const line = String(error.mock.calls[0]?.[0]);
+    expect(JSON.parse(line)).toMatchObject({
+      event: "proxy_upstream_response_failed",
+      provider: "codex",
+      status: 503,
+      errorType: "server_error",
+      errorCode: "overloaded_error",
+    });
+    expect(line).not.toContain("PRIVATESECRETTOKEN");
+    await flushProxyUsage();
+    expect(await db.select().from(requestUsageBuckets)).toMatchObject([
+      { requestCount: 1, successCount: 0, serverErrorCount: 1 },
+    ]);
+  } finally {
+    warn.mockRestore();
+    error.mockRestore();
+    globalThis.fetch = original;
+  }
+});
 
 test("thrown upstream failures reach the global error handler exactly once", async () => {
   const original = globalThis.fetch;

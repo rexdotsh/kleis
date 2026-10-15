@@ -136,17 +136,24 @@ export const createOpenAiSseUsagePassthrough = (
     return input.response;
   }
 
+  const contentType = (
+    input.response.headers.get("content-type") ?? ""
+  ).toLowerCase();
+  // Codex omits content-type on successful SSE streams and some HTTP errors.
+  const isSseBody =
+    contentType.includes("text/event-stream") ||
+    (input.response.ok && !contentType);
+  if (!isSseBody) {
+    input.response.headers.delete("content-encoding");
+    input.response.headers.delete("content-length");
+    return input.response;
+  }
+
   const reader = input.response.body.getReader();
   const framer = createSseEventFramer();
   const validationDecoder = new TextDecoder("utf-8", { fatal: true });
   const encoder = new TextEncoder();
   const startedAt = Date.now();
-  const contentType = (
-    input.response.headers.get("content-type") ?? ""
-  ).toLowerCase();
-  // Codex omits the content-type header on SSE streams; anything explicitly
-  // non-SSE (e.g. JSON error bodies) must not receive keepalive comments.
-  const isSseBody = !contentType || contentType.includes("text/event-stream");
   const usageState = {
     latestUsage: null as TokenUsage | null,
     terminalAnomaly: null as SseTerminalAnomaly | null,
@@ -238,9 +245,6 @@ export const createOpenAiSseUsagePassthrough = (
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller): void {
-      if (!isSseBody) {
-        return;
-      }
       clearKeepAlive = createSseKeepAlive(controller, {
         onKeepAlive: () => {
           lastWriteAt = Date.now();
@@ -274,7 +278,7 @@ export const createOpenAiSseUsagePassthrough = (
               }
             }
             let output = transformEvents(events);
-            if (isSseBody && rest.trim()) {
+            if (rest.trim()) {
               output += transformEvent(rest);
               logStreamAnomaly("openai_sse_truncated_event", {
                 pendingBytes: Buffer.byteLength(rest),
@@ -303,12 +307,6 @@ export const createOpenAiSseUsagePassthrough = (
           bytes += value.byteLength;
           chunks++;
           lastChunkAt = Date.now();
-          if (!isSseBody) {
-            controller.enqueue(value);
-            lastWriteAt = Date.now();
-            return;
-          }
-
           if (utf8ValidationEnabled) {
             try {
               validationDecoder.decode(value, { stream: true });
