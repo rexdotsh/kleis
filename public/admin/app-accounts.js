@@ -332,15 +332,22 @@ async function redeemResetCreditAction(request, accountId) {
   } catch (e) {
     if (!request.isCurrent()) return;
     if (e.body?.redeemRequestId || !e.status || e.status >= 500 || pending) {
-      state.pendingResetRedemptions.set(accountId, {
+      const retry = {
         creditId,
         redeemRequestId: e.body?.redeemRequestId || redeemRequestId,
-      });
+      };
+      state.pendingResetRedemptions.set(accountId, retry);
       renderAccounts();
       toast(
         `${e.message} Reset not confirmed; retry safely with the same request.`,
         "error",
-        { label: "Retry", run: () => redeemResetCredit(accountId) }
+        {
+          label: "Retry",
+          run: () => {
+            if (state.pendingResetRedemptions.get(accountId) === retry)
+              return redeemResetCredit(accountId);
+          },
+        }
       );
       return;
     }

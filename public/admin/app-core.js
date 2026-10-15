@@ -331,6 +331,7 @@ function showConfirm(
   { extrasHtml = "", danger = false } = {}
 ) {
   if (confirmResolve) resolveConfirm(false);
+  $("#toast-container").replaceChildren();
   return new Promise((resolve) => {
     confirmResolve = resolve;
     const popover = $("#confirm");
