@@ -548,11 +548,22 @@ export const refreshProviderAccount = (
   now: number,
   input?: {
     force?: boolean;
+    signal?: AbortSignal;
   }
-): Promise<ProviderAccountRecord | null> =>
-  shareInFlightRefresh(accountId, () =>
-    refreshProviderAccountOnce(database, accountId, now, input?.force ?? false)
+): Promise<ProviderAccountRecord | null> => {
+  input?.signal?.throwIfAborted();
+  return unlessAborted(
+    shareInFlightRefresh(accountId, () =>
+      refreshProviderAccountOnce(
+        database,
+        accountId,
+        now,
+        input?.force ?? false
+      )
+    ),
+    input?.signal
   );
+};
 
 const refreshProviderAccountOnce = async (
   database: Database,

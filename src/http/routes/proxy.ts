@@ -299,9 +299,12 @@ const proxyRequest = async (
     }
     account = routing.accounts[0] ?? null;
     if (account && account.expiresAt <= now) {
-      account = await refreshProviderAccount(db, account.id, now);
+      account = await refreshProviderAccount(db, account.id, now, {
+        signal: context.req.raw.signal,
+      });
     }
-  } catch {
+  } catch (error) {
+    if (context.req.raw.signal.aborted) throw error;
     usageRecorder.recordImmediate(502);
     return context.json(
       proxyErrorResponse(

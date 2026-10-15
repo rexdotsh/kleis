@@ -28,7 +28,7 @@ const { proxyRoutes, flushProxyUsage } =
 const { adminAccountsRoutes } =
   await import("../../src/http/routes/admin-accounts");
 const { accountCooldowns } =
-  await import("../../src/domain/providers/rate-limit-failover");
+  await import("../../src/providers/account-tracking/rate-limit-cooldowns");
 type Account = Awaited<ReturnType<typeof upsertProviderAccount>>;
 type Provider = "claude" | "codex";
 let pins: string[] | null = null;
@@ -115,7 +115,16 @@ const limited = (provider: Provider, marker = "limited") =>
         message: marker,
       },
     },
-    { status: 429, headers: { "retry-after": "90", "x-fake-attempt": marker } }
+    {
+      status: 429,
+      headers: {
+        "retry-after": "90",
+        "x-fake-attempt": marker,
+        ...(provider === "claude"
+          ? { "anthropic-ratelimit-unified-status": "rejected" }
+          : {}),
+      },
+    }
   );
 const success = () =>
   Response.json({
@@ -230,7 +239,7 @@ for (const provider of ["claude", "codex"] as const) {
       await response.text();
     }
     expect(calls).toEqual(["Bearer fake-primary", "Bearer fake-primary"]);
-    expect(accountCooldowns.resetAt(primary.id)).toBe(0);
+    expect(accountCooldowns.resetAt(primary)).toBe(0);
     expect(info).not.toHaveBeenCalled();
   });
 
@@ -269,7 +278,7 @@ for (const provider of ["claude", "codex"] as const) {
     try {
       mockAttempts(() => success());
       await (await request(provider)).text();
-      expect(accountCooldowns.resetAt(primary.id)).toBe(0);
+      expect(accountCooldowns.resetAt(primary)).toBe(0);
       expect(
         (await buckets()).find((row) => row.providerAccountId === primary.id)
           ?.requestCount
@@ -300,6 +309,36 @@ for (const provider of ["claude", "codex"] as const) {
     );
     expect((await request(provider)).status).toBe(429);
     expect(calls).toHaveLength(1);
+  });
+
+  test(`${provider}: per-minute throttling neither fails over nor cools the account`, async () => {
+    const [primary] = await setup(provider);
+    const body = {
+      error: {
+        type:
+          provider === "claude" ? "rate_limit_error" : "rate_limit_exceeded",
+        code: "rate_limit_exceeded",
+      },
+    };
+    const calls = mockAttempts(() =>
+      Response.json(body, {
+        status: 429,
+        headers: {
+          "retry-after": "60",
+          ...(provider === "claude"
+            ? { "anthropic-ratelimit-unified-status": "allowed" }
+            : { "x-codex-primary-used-percent": "10" }),
+        },
+      })
+    );
+    for (let index = 0; index < 2; index++) {
+      const response = await request(provider);
+      expect(response.status).toBe(429);
+      expect(await response.json()).toEqual(body);
+    }
+    expect(calls).toEqual(["Bearer fake-primary", "Bearer fake-primary"]);
+    expect(accountCooldowns.resetAt(primary)).toBe(0);
+    expect(info).not.toHaveBeenCalled();
   });
 
   test(`${provider}: auth replay on the alternate composes with failover`, async () => {
@@ -373,7 +412,7 @@ for (const provider of ["claude", "codex"] as const) {
     let result = await reader.read();
     while (!result.done) result = await reader.read();
     expect(calls).toHaveLength(1);
-    expect(accountCooldowns.resetAt(primary.id)).toBe(0);
+    expect(accountCooldowns.resetAt(primary)).toBe(0);
     expect(
       (await buckets()).reduce((sum, row) => sum + row.requestCount, 0)
     ).toBe(1);
@@ -434,14 +473,50 @@ for (const provider of ["claude", "codex"] as const) {
     });
     const now = Date.now();
     await (await request(provider)).text();
-    expect(accountCooldowns.resetAt(primary.id)).toBeGreaterThanOrEqual(
+    expect(accountCooldowns.resetAt(primary)).toBeGreaterThanOrEqual(
       now + 30_000
     );
-    expect(accountCooldowns.resetAt(primary.id)).toBeLessThanOrEqual(
+    expect(accountCooldowns.resetAt(primary)).toBeLessThanOrEqual(
       Date.now() + 30_000
     );
   });
 }
+
+test("Codex delayed usage-limit JSON still fails over after the logging read expires", async () => {
+  const [, second] = await setup("codex");
+  const calls = mockAttempts((token) =>
+    token !== "Bearer fake-primary"
+      ? success()
+      : new Response(
+          new ReadableStream({
+            start(controller) {
+              setTimeout(() => {
+                controller.enqueue(
+                  new TextEncoder().encode(
+                    '{"error":{"code":"usage_limit_reached"}}'
+                  )
+                );
+                controller.close();
+              }, 350);
+            },
+          }),
+          {
+            status: 429,
+            headers: {
+              "content-type": "application/json",
+              "retry-after": "18000",
+            },
+          }
+        )
+  );
+  const response = await request("codex");
+  expect(response.status).toBe(200);
+  await response.text();
+  expect(calls).toEqual(["Bearer fake-primary", "Bearer fake-second"]);
+  expect(await buckets()).toMatchObject([
+    { providerAccountId: second.id, requestCount: 1, successCount: 1 },
+  ]);
+});
 
 test("Claude header-only subscription rejection cancels the discarded stream before retry", async () => {
   const [, second] = await setup("claude");

@@ -1,7 +1,6 @@
 import type { Database } from "../db";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
 import {
-  accountCooldowns,
   logRateLimitFailover,
   readRateLimitReset,
 } from "../domain/providers/rate-limit-failover";
@@ -9,7 +8,12 @@ import {
   refreshProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../domain/providers/provider-service";
-import { readUpstreamResponseError } from "../providers/proxies/upstream-error";
+import { accountCooldowns } from "../providers/account-tracking/rate-limit-cooldowns";
+import {
+  readClaudeLiveLimits,
+  readCodexLiveLimits,
+} from "../providers/account-tracking/live-limits";
+import { isSubscriptionLimitResponse } from "../providers/proxies/subscription-limit";
 import { sendWithAuthReplay } from "./auth-replay";
 
 export const sendWithRateLimitFailover = async <
@@ -45,21 +49,23 @@ export const sendWithRateLimitFailover = async <
     // Only HTTP rejections are replayable. Stream errors belong to the response
     // already returned to the client and never enter this loop.
     if (!input.enabled || response.status !== 429) return result;
-    const { errorType, errorCode } = await readUpstreamResponseError(response);
-    const limited =
-      account.provider === "claude"
-        ? errorType === "rate_limit_error" ||
-          response.headers.get("anthropic-ratelimit-unified-status") ===
-            "rejected"
-        : errorType === "usage_limit_reached" ||
-          errorCode === "usage_limit_reached";
-    if (!limited) return result;
+    if (
+      !(await isSubscriptionLimitResponse(
+        account.provider,
+        response,
+        input.signal
+      ))
+    )
+      return result;
     accountCooldowns.mark(
-      account.id,
-      readRateLimitReset(account.provider, response.headers)
+      account,
+      readRateLimitReset(account.provider, response.headers),
+      account.provider === "claude"
+        ? readClaudeLiveLimits(response.headers)
+        : readCodexLiveLimits(response.headers)
     );
     const next = remaining.find(
-      (candidate) => !accountCooldowns.resetAt(candidate.id)
+      (candidate) => !accountCooldowns.resetAt(candidate)
     );
     if (!next) return result;
     remaining.splice(0, remaining.indexOf(next) + 1);
@@ -68,7 +74,9 @@ export const sendWithRateLimitFailover = async <
     const ready =
       next.expiresAt > Date.now()
         ? next
-        : await refreshProviderAccount(input.database, next.id, Date.now());
+        : await refreshProviderAccount(input.database, next.id, Date.now(), {
+            signal: input.signal,
+          });
     if (!ready) throw new Error("Failover account is unavailable");
     logRateLimitFailover(account, ready);
     account = ready;

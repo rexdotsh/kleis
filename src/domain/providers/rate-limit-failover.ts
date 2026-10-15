@@ -11,6 +11,7 @@ import {
   readCodexLiveLimits,
 } from "../../providers/account-tracking/live-limits";
 import { logInfo } from "../../utils/log";
+import { accountCooldowns } from "../../providers/account-tracking/rate-limit-cooldowns";
 import {
   findPinnedProviderAccounts,
   getPreferredProviderAccount,
@@ -38,26 +39,6 @@ export const failoverCandidates = (
         right.createdAt - left.createdAt || left.id.localeCompare(right.id)
     ),
 ];
-
-export const createAccountCooldowns = () => {
-  const resets = new Map<string, number>();
-  return {
-    resetAt(id: string, now = Date.now()): number {
-      const reset = resets.get(id) ?? 0;
-      if (reset > now) return reset;
-      resets.delete(id);
-      return 0;
-    },
-    mark(id: string, reset: number, now = Date.now()): void {
-      for (const [key, value] of resets) {
-        if (value <= now) resets.delete(key);
-      }
-      resets.set(id, Math.max(resets.get(id) ?? 0, reset));
-    },
-  };
-};
-
-export const accountCooldowns = createAccountCooldowns();
 
 export const readRateLimitReset = (
   provider: Provider,
@@ -105,7 +86,7 @@ export const logRateLimitFailover = (
     toAccountId: to.id,
     resetInSeconds: Math.max(
       0,
-      Math.ceil((accountCooldowns.resetAt(from.id) - Date.now()) / 1000)
+      Math.ceil((accountCooldowns.resetAt(from) - Date.now()) / 1000)
     ),
   });
 };
@@ -136,10 +117,10 @@ export const getProviderAccountRouting = async (
   const candidates = failoverCandidates(preferred, all, pinned);
   const now = Date.now();
   const accounts = candidates.filter(
-    (account) => !accountCooldowns.resetAt(account.id, now)
+    (account) => !accountCooldowns.resetAt(account, now)
   );
   const nextReset = Math.min(
-    ...candidates.map((account) => accountCooldowns.resetAt(account.id, now))
+    ...candidates.map((account) => accountCooldowns.resetAt(account, now))
   );
   const retryAfterSeconds = accounts.length
     ? 0

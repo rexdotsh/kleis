@@ -1,4 +1,5 @@
 import type { Database } from "../../db";
+import { accountCooldowns } from "../../providers/account-tracking/rate-limit-cooldowns";
 import {
   findCodexResetCreditRedemption,
   saveCodexResetCreditRedemption,
@@ -804,6 +805,7 @@ export const recordProviderAccountLiveLimits = (
     const key = quotaKey(account);
     const now = Date.now();
     const entry = cache.get(key);
+    accountCooldowns.observe(account, limits);
     const quota: AccountQuota = {
       fetchedAt: now,
       error: null,
@@ -943,6 +945,13 @@ export const redeemCodexResetCredit = async (
         creditId,
       })
     );
+    if (
+      result.code === "reset" ||
+      result.code === "already_redeemed" ||
+      result.code === "nothing_to_reset"
+    ) {
+      accountCooldowns.clear(account.id);
+    }
     await save("completed", result.code, result.windowsReset, null);
     invalidateProviderAccountQuota(account);
     if (result.code === "reset" || result.code === "already_redeemed") {
