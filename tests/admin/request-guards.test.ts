@@ -70,7 +70,7 @@ const {
 } = await import("../../public/admin/app-accounts.js");
 const { renderAccounts } =
   await import("../../public/admin/app-accounts-render.js");
-const { cancelOAuthFlow, logout, resolveConfirm, runAction } =
+const { cancelOAuthFlow, logout, resolveConfirm, runAction, state } =
   await import("../../public/admin/app-core.js");
 const {
   createKey,
@@ -84,10 +84,8 @@ const {
   startEditKey,
 } = await import("../../public/admin/app-keys.js");
 const { renderKeys } = await import("../../public/admin/app-keys-render.js");
-const { completeOAuth, renderOAuthFlow, startOAuth } =
+const { completeOAuth, handleLogin, renderOAuthFlow, startOAuth } =
   await import("../../public/admin/app-oauth.js");
-const { handleLogin } = await import("../../public/admin/app-session.js");
-const { state } = await import("../../public/admin/app-state.js");
 const { loadDashboard, requestDailyTokens, requestUsageDetail, switchToTab } =
   await import("../../public/admin/app-usage.js");
 await import("../../public/admin/app.js");

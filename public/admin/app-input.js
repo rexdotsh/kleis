@@ -1,6 +1,7 @@
 import {
   cancelEditAccount,
   deleteAccount,
+  loadAccountUsage,
   redeemResetCredit,
   refreshAccount,
   saveAccountEdits,
@@ -8,13 +9,27 @@ import {
   startEditAccount,
 } from "./app-accounts.js";
 import { renderAccounts } from "./app-accounts-render.js";
-import { copyToClipboard, runAction, toast } from "./app-core.js";
-import { keyById, modelsUrlForKey } from "./app-format.js";
+import {
+  $,
+  $$,
+  copyToClipboard,
+  keyById,
+  modelsUrlForKey,
+  resolveConfirm,
+  runAction,
+  setConfirmAnchor,
+  state,
+  syncAccountWindowButtons,
+  syncDashboardWindowButtons,
+  syncKeyWindowButtons,
+  toast,
+} from "./app-core.js";
 import {
   cancelCreateKey,
   cancelEditKey,
   createKey,
   deleteKey,
+  loadKeyUsage,
   revokeKey,
   rotateKey,
   saveKeyEdits,
@@ -23,8 +38,8 @@ import {
 } from "./app-keys.js";
 import { renderKeys, renderOpenCodeSetup } from "./app-keys-render.js";
 import { reauthorizeAccount } from "./app-oauth.js";
-import { $, $$, state } from "./app-state.js";
 import {
+  loadDashboard,
   scheduleUsagePrefetch,
   switchToTab,
   usageHasTraffic,
@@ -298,6 +313,135 @@ function openOpenCodeSetup(id = null) {
   $("#opencode-setup").scrollIntoView({ block: "nearest" });
 }
 
+const WINDOW_CONTROLS = {
+  usage: {
+    selector: "#dash-window-selector",
+    field: "dashboardWindowMs",
+    sync: syncDashboardWindowButtons,
+    load: loadDashboard,
+  },
+  accounts: {
+    selector: "#accounts-window-selector",
+    field: "accountUsageWindowMs",
+    sync: syncAccountWindowButtons,
+    load: loadAccountUsage,
+  },
+  keys: {
+    selector: "#keys-window-selector",
+    field: "keyUsageWindowMs",
+    sync: syncKeyWindowButtons,
+    load: loadKeyUsage,
+  },
+};
+
+const isTyping = (target) =>
+  target instanceof HTMLElement &&
+  (target.isContentEditable ||
+    ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName));
+
+const TABS = ["usage", "accounts", "keys", "oauth"];
+const WINDOWS = [3_600_000, 21_600_000, 86_400_000, 604_800_000, 2_592_000_000];
+
+const ACCOUNT_SHORTCUTS = {
+  p: "set-primary",
+  r: "refresh-account",
+  a: "reauthorize-account",
+  e: "edit-account",
+  Backspace: "delete-account",
+  Delete: "delete-account",
+};
+
+const KEY_SHORTCUTS = {
+  c: "copy-key",
+  m: "copy-models-url",
+  s: "toggle-key",
+  e: "edit-key",
+  r: "rotate-key",
+  u: "open-setup",
+  Backspace: "revoke-key",
+  Delete: "revoke-key",
+};
+
+// Shortcuts act on the highlighted row (keyboard or mouse), or the open one.
+function runRowShortcut(tab, key) {
+  if (tab === "accounts") {
+    const id = state.cursorAccountId ?? state.expandedAccountId;
+    const action = ACCOUNT_SHORTCUTS[key];
+    const row = id ? accountRow(id) : null;
+    if (!(row && action)) return false;
+    setConfirmAnchor(row.querySelector(".more") ?? row);
+    runAction(accountActions[action](id, null));
+    return true;
+  }
+  const id = state.cursorKeyId ?? state.expandedKeyId;
+  const row = id ? keyRow(id) : null;
+  const record = row ? keyById(id) : null;
+  let action = KEY_SHORTCUTS[key];
+  if (!(record && action)) return false;
+  if (record.revokedAt) {
+    if (action === "revoke-key") action = "delete-key";
+    else if (action !== "edit-key") return false;
+  }
+  setConfirmAnchor(row.querySelector(".more") ?? row);
+  runAction(keyActions[action](id, null));
+  return true;
+}
+
+function stepWindow(tab, step) {
+  const control = WINDOW_CONTROLS[tab];
+  if (!control) return;
+  const index = WINDOWS.indexOf(state[control.field]);
+  const next = WINDOWS[Math.min(WINDOWS.length - 1, Math.max(0, index + step))];
+  if (next && next !== state[control.field]) {
+    state[control.field] = next;
+    control.sync();
+    control.load();
+  }
+}
+
+function toggleShortcuts(force) {
+  const sheet = $("#shortcuts");
+  const open = force ?? sheet.hidden;
+  sheet.hidden = !open;
+  $("#btn-shortcuts").setAttribute("aria-expanded", String(open));
+}
+
+$("#btn-shortcuts").addEventListener("click", () => toggleShortcuts());
+document.addEventListener("pointerdown", (event) => {
+  if (
+    !$("#shortcuts").hidden &&
+    !event.target.closest("#shortcuts, #btn-shortcuts")
+  ) {
+    toggleShortcuts(false);
+  }
+});
+
+function handleEscape() {
+  if (!$("#confirm").hidden) {
+    resolveConfirm(false);
+    return;
+  }
+  if (!$("#shortcuts").hidden) {
+    toggleShortcuts(false);
+    return;
+  }
+  const tab = activeTab();
+  if (tab === "accounts") {
+    const id = state.pendingExpandedAccountId || state.expandedAccountId;
+    if (state.editingAccountId) cancelEditAccount();
+    else if (id) runAction(setExpandedAccount(null));
+    else setCursor("accounts", null);
+    if (id) accountRow(id)?.focus();
+  } else if (tab === "keys") {
+    const id = state.pendingExpandedKeyId || state.expandedKeyId;
+    if (state.creatingKey) cancelCreateKey();
+    else if (state.editingKeyId) cancelEditKey();
+    else if (id) runAction(setExpandedKey(null));
+    else setCursor("keys", null);
+    if (id) keyRow(id)?.focus();
+  }
+}
+
 export {
   accountActions,
   keyActions,
@@ -314,4 +458,11 @@ export {
   showAccount,
   showKey,
   openOpenCodeSetup,
+  WINDOW_CONTROLS,
+  isTyping,
+  TABS,
+  runRowShortcut,
+  stepWindow,
+  toggleShortcuts,
+  handleEscape,
 };

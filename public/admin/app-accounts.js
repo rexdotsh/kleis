@@ -1,17 +1,24 @@
 import { renderAccounts } from "./app-accounts-render.js";
-import { api, mutation, runAction, toast } from "./app-core.js";
 import {
+  $,
   accountById,
+  api,
   escapeHtml,
-  normalizeUsage,
+  mutation,
   parseOptionalJsonObject,
-  providerLabel,
+  runAction,
+  state,
+  syncAccountWindowButtons,
+  toast,
   trimmedOrNull,
   usageMapFromList,
-} from "./app-format.js";
+} from "./app-core.js";
 import { renderKeys } from "./app-keys-render.js";
-import { showLoading } from "./app-render-shared.js";
-import { $, state, syncAccountWindowButtons } from "./app-state.js";
+import {
+  normalizeUsage,
+  providerLabel,
+  showLoading,
+} from "./app-render-shared.js";
 import {
   invalidateUsageDetails,
   pruneUsageDetails,

@@ -1,48 +1,129 @@
 import { importAccount, loadAccounts, toggleProvider } from "./app-accounts.js";
-import { renderAccounts } from "./app-accounts-render.js";
-import { hideDailyTokensTip, showDailyTokensTip } from "./app-charts.js";
+import { accountMenuItems, renderAccounts } from "./app-accounts-render.js";
 import {
+  $,
+  $$,
+  accountById,
   cancelOAuthFlow,
   clearReauthorization,
   copyToClipboard,
+  escapeHtml,
+  keyById,
   logout,
   resolveConfirm,
   runAction,
   setConfirmAnchor,
+  state,
   syncConnectControls,
   updateOAuthProviderUI,
 } from "./app-core.js";
-import { keyById } from "./app-format.js";
-import { syncScopedAccountAvailability } from "./app-key-access.js";
+import {
+  LISTS,
+  TABS,
+  WINDOW_CONTROLS,
+  accountActions,
+  activeTab,
+  handleEscape,
+  isTyping,
+  keyActions,
+  moveCursor,
+  openOpenCodeSetup,
+  runRowShortcut,
+  showAccount,
+  showKey,
+  stepWindow,
+  toggleAccount,
+  toggleKey,
+  toggleShortcuts,
+} from "./app-input.js";
 import { loadKeys, startCreateKey } from "./app-keys.js";
 import {
+  keyMenuItems,
   renderKeys,
   renderOpenCodeSetup,
   setupSnippet,
+  syncScopedAccountAvailability,
 } from "./app-keys-render.js";
 import {
-  accountActions,
-  activeTab,
-  keyActions,
-  openOpenCodeSetup,
-  showAccount,
-  showKey,
-  toggleAccount,
-  toggleKey,
-} from "./app-lists.js";
-import { closeMenu, menuAnchor, openMenu } from "./app-menu.js";
-import { reauthorizeAccount, startOAuth } from "./app-oauth.js";
-import { handleLogin, restoreSession } from "./app-session.js";
+  handleLogin,
+  reauthorizeAccount,
+  restoreSession,
+  startOAuth,
+} from "./app-oauth.js";
+import { actionMutationAttributes } from "./app-render-shared.js";
 import {
-  TABS,
-  WINDOW_CONTROLS,
-  handleEscape,
-  handleShortcut,
-} from "./app-shortcuts.js";
-import { $, $$, state } from "./app-state.js";
-import { loadDashboard, switchToTab } from "./app-usage.js";
+  hideDailyTokensTip,
+  loadDashboard,
+  showDailyTokensTip,
+  switchToTab,
+} from "./app-usage.js";
 import { renderDashboard } from "./app-usage-render.js";
 import { initPwa } from "./app-pwa.js";
+
+let menuAnchor = null;
+
+function closeMenu({ restoreFocus = false } = {}) {
+  const menu = $("#menu");
+  if (menu.hidden) return;
+  menu.hidden = true;
+  if (menuAnchor) {
+    menuAnchor.setAttribute("aria-expanded", "false");
+    menuAnchor.closest(".row")?.classList.remove("sel");
+    if (restoreFocus && menuAnchor.isConnected) menuAnchor.focus();
+  }
+  menuAnchor = null;
+}
+
+function openMenu(anchor) {
+  if (menuAnchor === anchor) {
+    closeMenu({ restoreFocus: true });
+    return;
+  }
+  closeMenu();
+  const kind = anchor.dataset.menu;
+  const id =
+    kind === "account" ? anchor.dataset.accountId : anchor.dataset.keyId;
+  const menu = $("#menu");
+  menu.innerHTML = menuHtml(kind, id);
+  if (!menu.innerHTML) return;
+  menu.dataset.kind = kind;
+  menu.dataset.title =
+    anchor.closest(".row")?.querySelector(".name")?.textContent.trim() ?? "";
+  menu.hidden = false;
+
+  const rect = anchor.getBoundingClientRect();
+  const left = Math.max(
+    8,
+    Math.min(rect.right - menu.offsetWidth, innerWidth - menu.offsetWidth - 8)
+  );
+  const below = rect.bottom + 4;
+  const top =
+    below + menu.offsetHeight > innerHeight - 8
+      ? Math.max(8, rect.top - menu.offsetHeight - 4)
+      : below;
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+
+  menuAnchor = anchor;
+  anchor.setAttribute("aria-expanded", "true");
+  anchor.closest(".row")?.classList.add("sel");
+  menu.querySelector(".menu-item:not(:disabled)")?.focus();
+}
+
+function menuHtml(kind, id) {
+  const subject = kind === "account" ? accountById(id) : keyById(id);
+  if (!subject) return "";
+  const items = (
+    kind === "account" ? accountMenuItems(subject) : keyMenuItems(subject)
+  ).filter(Boolean);
+  return items
+    .map((item) => {
+      if (item === "separator") return "<hr>";
+      const shortcut = item.shortcut === "Del" ? "Backspace" : item.shortcut;
+      return `<button class="menu-item${item.danger ? " danger" : ""}" type="button" role="menuitem" aria-label="${escapeHtml(item.label)}" data-action="${item.action}" data-${kind}-id="${id}" ${actionMutationAttributes(item.action, id)} data-shortcut="${shortcut}"><span>${item.label}</span><span class="kbd">${item.shortcut}</span></button>`;
+    })
+    .join("");
+}
 
 document.addEventListener(
   "click",
@@ -453,3 +534,58 @@ initPwa({
 });
 
 runAction(restoreSession());
+
+function handleShortcut(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) return false;
+  if (isTyping(event.target) || !$("#app").classList.contains("visible")) {
+    return false;
+  }
+  if (!($("#menu").hidden && $("#confirm").hidden)) return false;
+  const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  const tab = activeTab();
+  if (key === "?") {
+    toggleShortcuts();
+    return true;
+  }
+  if (/^[1-4]$/.test(key)) {
+    closeMenu();
+    switchToTab(TABS[Number(key) - 1]);
+    return true;
+  }
+  if (key === "[" || key === "]") {
+    stepWindow(tab, key === "]" ? 1 : -1);
+    return true;
+  }
+  if (tab !== "accounts" && tab !== "keys") return false;
+  if (key === "/") {
+    $(`#${tab}-filter`).focus();
+    return true;
+  }
+  if (key === "n") {
+    if (tab === "keys") startCreateKey();
+    else switchToTab("oauth");
+    return true;
+  }
+  if (key === "j" || key === "ArrowDown") {
+    moveCursor(tab, 1);
+    return true;
+  }
+  if (key === "k" || key === "ArrowUp") {
+    moveCursor(tab, -1);
+    return true;
+  }
+  // Enter keeps its normal meaning on buttons, links and focused rows.
+  const enterTaken =
+    key === "Enter" &&
+    event.target.closest?.("a, button, [tabindex], .inline-form");
+  if ((key === "Enter" || key === "o") && !enterTaken) {
+    const id = state[LISTS[tab].cursorField];
+    if (!id) return false;
+    if (tab === "accounts") runAction(toggleAccount(id));
+    else runAction(toggleKey(id));
+    return true;
+  }
+  return runRowShortcut(tab, key);
+}
+
+export { menuAnchor, closeMenu, openMenu, menuHtml, handleShortcut };

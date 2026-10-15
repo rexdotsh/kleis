@@ -1,26 +1,110 @@
-import { renderDailyTokens } from "./app-charts.js";
-import { api, toast } from "./app-core.js";
-import {
-  accountById,
-  accountUsageForId,
-  escapeHtml,
-  normalizeUsage,
-  usageForKey,
-} from "./app-format.js";
 import {
   $,
   $$,
   DAILY_TOKEN_DAYS,
   USAGE_DETAIL_TTL_MS,
+  accountById,
+  accountUsageForId,
+  api,
+  escapeHtml,
   prefetchTimers,
   state,
   syncDashboardWindowButtons,
-} from "./app-state.js";
+  toast,
+  usageForKey,
+} from "./app-core.js";
+import {
+  formatCompact,
+  formatCount,
+  normalizeUsage,
+} from "./app-render-shared.js";
 import {
   DASHBOARD_LOADING_HTML,
   renderDashboard,
   renderUsageSlot,
 } from "./app-usage-render.js";
+
+/* Daily tokens chart inside expanded Claude accounts */
+
+const utcDayFormat = new Intl.DateTimeFormat("en-US", {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+});
+const utcShortDateFormat = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  timeZone: "UTC",
+});
+
+function dailyTokensBodyHtml(id) {
+  const entry = state.usageDetails.get(`daily:${id}`);
+  const days = entry?.data?.daily || [];
+  const peak = Math.max(0, ...days.map((day) => day.totalTokens || 0));
+  const bars = days.length
+    ? days.map(
+        (day) =>
+          `<span class="daily-bar${day.totalTokens ? "" : " zero"}" style="height:${peak ? ((day.totalTokens || 0) / peak) * 100 : 0}%"></span>`
+      )
+    : Array.from(
+        { length: DAILY_TOKEN_DAYS },
+        () => '<span class="daily-bar zero"></span>'
+      );
+  let summary = "&nbsp;";
+  if (entry?.data) {
+    const total = entry.data.totals?.totalTokens || 0;
+    summary = `${escapeHtml(formatCompact(total))} tokens \u00b7 ${days.length} days`;
+  } else if (entry?.status === "error") {
+    summary = `<span class="err" title="${escapeHtml(entry.error)}">Unavailable</span>`;
+  }
+  const first = days[0]?.dayStart;
+  const label = entry?.data
+    ? `Tokens per UTC day through Kleis over the last ${days.length} days`
+    : "Loading tokens per day through Kleis";
+  return `<div class="daily-head"><span class="fact-label">Daily tokens via Kleis</span><span class="daily-total">${summary}</span></div>
+    <div class="daily-plot" role="img" aria-label="${label}">${bars.join("")}<div class="tip" hidden></div></div>
+    <div class="daily-axis"><span>${first === undefined ? "&nbsp;" : escapeHtml(utcShortDateFormat.format(first))}</span><span>Today (UTC)</span></div>`;
+}
+
+function renderDailyTokens(id) {
+  const slot = document.querySelector(`[data-daily-for="${id}"]`);
+  if (slot) slot.innerHTML = dailyTokensBodyHtml(id);
+}
+
+function showDailyTokensTip(plot, clientX) {
+  const id = plot.closest("[data-daily-for]")?.dataset.dailyFor;
+  const days = state.usageDetails.get(`daily:${id}`)?.data?.daily;
+  if (!days?.length) return;
+  const rect = plot.getBoundingClientRect();
+  const index = Math.max(
+    0,
+    Math.min(
+      days.length - 1,
+      Math.floor(((clientX - rect.left) / rect.width) * days.length)
+    )
+  );
+  const bars = plot.querySelectorAll(".daily-bar");
+  for (const [barIndex, bar] of bars.entries())
+    bar.classList.toggle("on", barIndex === index);
+  const day = days[index];
+  const tip = plot.querySelector(".tip");
+  tip.innerHTML = `<span class="muted">${escapeHtml(utcDayFormat.format(day.dayStart))}</span><span>${escapeHtml(formatCount(day.totalTokens || 0))} tokens</span><span class="muted">${escapeHtml(formatCount(day.requestCount || 0))} req</span>`;
+  tip.hidden = false;
+  const center = ((index + 0.5) / days.length) * rect.width;
+  const left = Math.min(
+    Math.max(0, center - tip.offsetWidth / 2),
+    rect.width - tip.offsetWidth
+  );
+  tip.style.left = `${Math.max(0, left)}px`;
+}
+
+function hideDailyTokensTip() {
+  for (const tip of document.querySelectorAll(".daily-plot .tip:not([hidden])"))
+    tip.hidden = true;
+  for (const bar of document.querySelectorAll(".daily-bar.on"))
+    bar.classList.remove("on");
+}
 
 function switchToTab(name) {
   if (name !== "accounts") {
@@ -246,6 +330,10 @@ function scheduleUsagePrefetch(kind, id) {
 }
 
 export {
+  dailyTokensBodyHtml,
+  renderDailyTokens,
+  showDailyTokensTip,
+  hideDailyTokensTip,
   switchToTab,
   loadDashboard,
   renderOverviewWhenReady,

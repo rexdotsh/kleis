@@ -59,14 +59,13 @@ const { loadAccounts, loadAccountUsage } =
   await import("../../public/admin/app-accounts.js");
 const { renderAccounts } =
   await import("../../public/admin/app-accounts-render.js");
-const { cancelOAuthFlow, logout } =
+const { cancelOAuthFlow, escapeHtml, logout, state } =
   await import("../../public/admin/app-core.js");
-const { cacheReadRate, escapeHtml, normalizeUsage } =
-  await import("../../public/admin/app-format.js");
+const { cacheReadRate, normalizeUsage } =
+  await import("../../public/admin/app-render-shared.js");
 const { startEditKey, saveKeyEdits } =
   await import("../../public/admin/app-keys.js");
 const { startOAuth } = await import("../../public/admin/app-oauth.js");
-const { state } = await import("../../public/admin/app-state.js");
 const {
   loadDashboard,
   requestUsageDetail,

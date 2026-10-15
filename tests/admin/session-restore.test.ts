@@ -79,7 +79,7 @@ const installGlobals = () => {
 };
 
 installGlobals();
-const { restoreSession } = await import("../../public/admin/app-session.js");
+const { restoreSession } = await import("../../public/admin/app-oauth.js");
 
 const respondToVerification = (status: number): string[] => {
   const requested: string[] = [];

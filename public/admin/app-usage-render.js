@@ -1,34 +1,24 @@
+import { $, accountById, escapeHtml, keyById, state } from "./app-core.js";
 import {
+  DAY_MS,
+  SKELETON_HTML,
   accountIssues,
-  isAccountServing,
-  providerStatusMap,
-} from "./app-account-status.js";
-import {
-  hideChartHover,
-  requestChartHtml,
-  showChartHover,
-} from "./app-charts.js";
-import {
-  accountById,
+  accountName,
   cacheReadRate,
-  escapeHtml,
   formatCompact,
   formatCount,
-  keyById,
-  normalizeUsage,
-  usageWindowLabel,
-} from "./app-format.js";
-import { renderWithMotion } from "./app-motion.js";
-import {
-  SKELETON_HTML,
-  accountName,
   icon,
+  isAccountServing,
   keyName,
+  normalizeUsage,
   providerName,
+  providerStatusMap,
+  renderWithMotion,
   requestsCellHtml,
+  shortDate,
   successRateText,
+  usageWindowLabel,
 } from "./app-render-shared.js";
-import { $, state } from "./app-state.js";
 
 /* Usage inside expanded rows */
 
@@ -371,10 +361,196 @@ function renderDashboard(rawData) {
   }
 }
 
+const TICK_STEPS_MS = [
+  5, 10, 15, 30, 60, 120, 180, 240, 360, 720, 1440, 2880, 7200, 10_080,
+].map((minutes) => minutes * 60_000);
+
+function chartTicks(start, end, plotWidth) {
+  const maxTicks = Math.max(2, Math.min(8, Math.floor(plotWidth / 80)));
+  const step =
+    TICK_STEPS_MS.find((ms) => (end - start) / ms <= maxTicks) ??
+    TICK_STEPS_MS.at(-1);
+  const ticks = [];
+  const cursor = new Date(start);
+  cursor.setHours(0, 0, 0, 0);
+  if (step >= DAY_MS) {
+    if (cursor.getTime() < start) cursor.setDate(cursor.getDate() + 1);
+    while (cursor.getTime() <= end) {
+      ticks.push({ at: cursor.getTime(), date: true });
+      cursor.setDate(cursor.getDate() + step / DAY_MS);
+    }
+    return ticks;
+  }
+  for (let at = cursor.getTime(); at <= end; at += step) {
+    if (at < start) continue;
+    const date = new Date(at);
+    ticks.push({
+      at,
+      date: date.getHours() === 0 && date.getMinutes() === 0,
+    });
+  }
+  return ticks;
+}
+
+function bucketLabel(bucketSizeMs) {
+  const minutes = Math.round(bucketSizeMs / 60_000);
+  if (minutes === 1) return "minute";
+  if (minutes < 60) return `${minutes} minutes`;
+  const hours = minutes / 60;
+  return hours === 1 ? "hour" : `${hours} hours`;
+}
+
+const timeFormat = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+const dayFormat = new Intl.DateTimeFormat("en-US", {
+  weekday: "short",
+  month: "short",
+  day: "numeric",
+});
+
+const timeLabel = (timestamp) => timeFormat.format(timestamp);
+
+const chart = {
+  slots: [],
+  current: [],
+  previous: null,
+  width: 0,
+  plotWidth: 0,
+  x: () => 0,
+  y: () => 0,
+};
+
+function niceCeil(value) {
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  for (const factor of [1, 2, 2.5, 5, 10]) {
+    if (factor * magnitude >= value) return factor * magnitude;
+  }
+  return 10 * magnitude;
+}
+
+function requestChartHtml(data, width) {
+  const size = data.bucketSizeMs;
+  const buckets = data.buckets || [];
+  if (!size || !buckets.length) return emptyChartHtml();
+  const windowMs = data.windowMs ?? state.dashboardWindowMs;
+  const end =
+    typeof data.now === "number" ? data.now : buckets.at(-1).bucketStart + size;
+  const since = typeof data.since === "number" ? data.since : end - windowMs;
+  const first = Math.floor(since / size) * size;
+  const last = Math.floor((end - 1) / size) * size;
+  const slots = [];
+  for (let at = first; at <= last; at += size) slots.push(at);
+  if (slots.length < 2) return emptyChartHtml();
+
+  const counts = new Map(
+    buckets.map((bucket) => [bucket.bucketStart, bucket.requestCount])
+  );
+  const previousCounts = new Map(
+    (data.previousBuckets || []).map((bucket) => [
+      bucket.bucketStart + windowMs,
+      bucket.requestCount,
+    ])
+  );
+  const current = slots.map((at) => counts.get(at) ?? 0);
+  const previous = data.previousBuckets?.length
+    ? slots.map((at) => previousCounts.get(at) ?? 0)
+    : null;
+
+  const height = width < 640 ? 128 : 160;
+  const top = 8;
+  const plotWidth = width - 48;
+  const plotHeight = height - top - 24;
+  const step = niceCeil(Math.max(3, ...current, ...(previous || [])) / 3);
+  const yMax = step * 3;
+  const x = (index) => (index / (slots.length - 1)) * plotWidth;
+  const y = (value) => top + (1 - value / yMax) * plotHeight;
+  const points = (series) =>
+    series
+      .map((value, index) => `${x(index).toFixed(1)},${y(value).toFixed(1)}`)
+      .join(" ");
+  Object.assign(chart, { slots, current, previous, width, plotWidth, x, y });
+
+  let svg = `<svg class="plot-svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Requests per ${bucketLabel(size)}"><g class="grid">`;
+  for (let k = 0; k <= 3; k++) {
+    const gy = Math.round(y(step * k)) + 0.5;
+    const label = formatCompact(step * k).replace(/\.0(?=[KMBT])/, "");
+    svg += `<line x1="0" x2="${plotWidth}" y1="${gy}" y2="${gy}"/><text x="${width}" y="${gy + 4}" text-anchor="end">${label}</text>`;
+  }
+  svg += "</g><g>";
+  for (const tick of chartTicks(first, last, plotWidth)) {
+    const tx = ((tick.at - first) / (last - first)) * plotWidth;
+    if (tx > plotWidth - 40) continue;
+    svg += `<text x="${tx.toFixed(1)}" y="${height - 4}">${escapeHtml(tick.date ? shortDate(tick.at) : timeLabel(tick.at))}</text>`;
+  }
+  svg += "</g>";
+  if (previous)
+    svg += `<polyline class="line-prev" points="${points(previous)}"/>`;
+  svg += `<polyline class="line" points="${points(current)}"/><g class="hover" visibility="hidden"><line class="hover-line" y1="${top}" y2="${top + plotHeight}"/><circle class="hover-dot" r="3"/></g></svg>`;
+
+  const windowLabel = usageWindowLabel(windowMs);
+  const range =
+    windowMs >= 2 * DAY_MS
+      ? `${shortDate(first)} \u2013 ${shortDate(end)}`
+      : `Last ${windowLabel}`;
+  return `<div class="chart">
+    <div class="sh"><h2>Requests</h2><span class="muted small">per ${bucketLabel(size)}</span>
+      <div class="right legend"><span><i class="sw"></i>${escapeHtml(range)}</span>${previous ? `<span><i class="sw prev"></i>Previous ${escapeHtml(windowLabel)}</span>` : ""}</div>
+    </div>
+    <div class="plot">${svg}<div class="tip" hidden></div></div>
+  </div>`;
+}
+
+function emptyChartHtml() {
+  return '<div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><p class="usage-note muted">No usage in this window.</p></div></div>';
+}
+
+function showChartHover(plot, clientX) {
+  if (chart.slots.length < 2) return;
+  const offset = clientX - plot.getBoundingClientRect().left;
+  const index = Math.max(
+    0,
+    Math.min(
+      chart.slots.length - 1,
+      Math.round((offset / chart.plotWidth) * (chart.slots.length - 1))
+    )
+  );
+  const hx = chart.x(index);
+  const hover = plot.querySelector(".hover");
+  hover.setAttribute("visibility", "visible");
+  const line = hover.querySelector(".hover-line");
+  line.setAttribute("x1", String(Math.round(hx) + 0.5));
+  line.setAttribute("x2", String(Math.round(hx) + 0.5));
+  const dot = hover.querySelector(".hover-dot");
+  dot.setAttribute("cx", hx.toFixed(1));
+  dot.setAttribute("cy", chart.y(chart.current[index]).toFixed(1));
+
+  const at = new Date(chart.slots[index]);
+  const day = dayFormat.format(at);
+  const tip = plot.querySelector(".tip");
+  tip.innerHTML = `<span class="muted">${escapeHtml(`${day} \u00b7 ${timeLabel(at)}`)}</span><span>${formatCount(chart.current[index])} requests</span>${chart.previous ? `<span class="muted">prev ${formatCount(chart.previous[index])}</span>` : ""}`;
+  tip.hidden = false;
+  const tipWidth = tip.offsetWidth;
+  const left =
+    hx + 12 + tipWidth > chart.plotWidth ? hx - 12 - tipWidth : hx + 12;
+  tip.style.left = `${Math.max(0, left)}px`;
+}
+
+function hideChartHover(plot) {
+  plot.querySelector(".hover")?.setAttribute("visibility", "hidden");
+  const tip = plot.querySelector(".tip");
+  if (tip) tip.hidden = true;
+}
+
 export {
   DASHBOARD_LOADING_HTML,
   usageSlotHtml,
   renderUsageSlot,
   renderAttention,
   renderDashboard,
+  requestChartHtml,
+  showChartHover,
+  hideChartHover,
 };

@@ -136,4 +136,43 @@ describe("admin PWA", () => {
       expect(html).not.toContain(`./${file}`);
     }
   });
+
+  test("the consolidated modules have an acyclic import graph", async () => {
+    const modules = readdirSync("public/admin").filter(
+      (file) => file.endsWith(".js") && file !== "sw.js"
+    );
+    expect(modules.sort()).toEqual([
+      "app-accounts-render.js",
+      "app-accounts.js",
+      "app-core.js",
+      "app-input.js",
+      "app-keys-render.js",
+      "app-keys.js",
+      "app-oauth.js",
+      "app-pwa.js",
+      "app-render-shared.js",
+      "app-usage-render.js",
+      "app-usage.js",
+      "app.js",
+    ]);
+    const imports = new Map<string, string[]>();
+    for (const file of modules) {
+      const source = await (await get(`/admin/${file}`)).text();
+      expect(source.split("\n").length).toBeLessThan(800);
+      imports.set(
+        file,
+        [...source.matchAll(/from "\.\/([^"\n]+\.js)"/g)].map(
+          (match) => match[1] ?? ""
+        )
+      );
+    }
+    const visit = (file: string, ancestors: string[]) => {
+      expect(ancestors).not.toContain(file);
+      for (const dependency of imports.get(file) ?? []) {
+        expect(imports.has(dependency)).toBe(true);
+        visit(dependency, [...ancestors, file]);
+      }
+    };
+    for (const file of modules) visit(file, []);
+  });
 });
