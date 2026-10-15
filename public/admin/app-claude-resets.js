@@ -1,6 +1,7 @@
-import { escapeHtml, mutationAttributes } from "./app-core.js";
+import { escapeHtml } from "./app-core.js";
 import {
   fact,
+  needsReauthorization,
   quotaTimestamp,
   relativeTime,
   shortDate,
@@ -14,6 +15,9 @@ const LIMIT_NAMES = {
   seven_day_overage_included: "7d",
   seven_day_opus: "Opus 7d",
   seven_day_sonnet: "Sonnet 7d",
+  seven_day_cowork: "Cowork 7d",
+  seven_day_omelette: "Omelette 7d",
+  seven_day_oauth_apps: "OAuth apps 7d",
 };
 
 const weekdayFormat = new Intl.DateTimeFormat(undefined, {
@@ -72,51 +76,55 @@ function claudeResetsFact(account) {
     ]);
   }
   if (!resets.saved) return "";
-  const offer = resets.offer;
-  const use = offer
-    ? `<button class="link small" type="button" data-action="claim-claude-reset" data-account-id="${account.id}" ${mutationAttributes("claim-claude-reset", account.id)} title="${escapeHtml(offer.label || "Saved limit reset")}">Use one</button>`
-    : "";
+  if (resets.offer) return "";
   const reason = UNAVAILABLE_TEXT[resets.unavailable];
   return fact(
     resets.saved === 1 ? "Limit reset" : "Limit resets",
-    `${resets.saved}${use}`,
+    String(resets.saved),
     [
-      escapeHtml(`refills ${limitsText(offer?.clears || resets.clears)}`),
-      escapeHtml(expiryText(offer?.endsAt ?? resets.nextEndsAt)),
+      escapeHtml(`refills ${limitsText(resets.clears)}`),
+      escapeHtml(expiryText(resets.nextEndsAt)),
       reason && escapeHtml(reason),
       reason && settingsLink(),
     ]
   );
 }
 
-function earlyUseText(earlyUse) {
-  if (!earlyUse) return "";
-  if (earlyUse.limit && typeof earlyUse.percentUsed === "number") {
-    return `You still have ${100 - earlyUse.percentUsed}% of the ${LIMIT_NAMES[earlyUse.limit] || "covered"} limit left. Using the reset now spends it early.`;
-  }
-  return "You haven't reached a limit it refills yet. Using the reset now spends it early.";
-}
-
-function confirmNotesHtml(resets) {
-  const offer = resets.offer;
+function claudeResetOffer(account) {
+  const resets = account?.claudeResets;
+  const offer = resets?.offer;
+  if (account?.provider !== "claude" || !offer || resets.claim || !resets.saved)
+    return null;
   const weekly = quotaTimestamp(offer.weeklyResetsAt);
-  const left = resets.saved - 1;
-  const notes = [
-    earlyUseText(offer.earlyUse) &&
-      `<p class="warn">${escapeHtml(earlyUseText(offer.earlyUse))}</p>`,
-    `<p>${escapeHtml(
-      [
-        `${left} saved reset${left === 1 ? "" : "s"} left after this`,
-        expiryText(offer.endsAt),
-      ]
-        .filter(Boolean)
-        .join(" \u00b7 ")
-    )}</p>`,
-    weekly &&
-      `<p>Your weekly reset day stays ${escapeHtml(weekdayFormat.format(weekly))}.</p>`,
-    "<p>Can't be undone, and applies to this Claude account everywhere: claude.ai, Claude Code and every Kleis key.</p>",
-  ];
-  return `<div class="confirm-notes">${notes.filter(Boolean).join("")}</div>`;
+  return {
+    count: resets.saved,
+    unit: "reset",
+    noun: "saved reset",
+    heading: "Limit reset",
+    action: "Use reset",
+    canUse: true,
+    retry: false,
+    scope: limitsText(offer.clears),
+    expiryText: expiryText(offer.endsAt),
+    title: offer.label,
+    description: "",
+    earlyUse: offer.earlyUse
+      ? {
+          scope: offer.earlyUse.limit
+            ? `${LIMIT_NAMES[offer.earlyUse.limit] || "covered"} limit`
+            : null,
+          percentUsed: offer.earlyUse.percentUsed,
+        }
+      : null,
+    notes: [
+      weekly && `Your weekly reset day stays ${weekdayFormat.format(weekly)}.`,
+      "Applies to this Claude account everywhere: claude.ai, Claude Code and every Kleis key.",
+    ].filter(Boolean),
+    useful:
+      !account.quota?.error &&
+      !needsReauthorization(account) &&
+      (!offer.earlyUse || offer.earlyUse.percentUsed >= 75),
+  };
 }
 
 const CLAIM_RESULT_TOASTS = {
@@ -151,11 +159,60 @@ function claimToast(claim) {
     "info",
   ];
   if (claim.result !== "reset") return [message, type];
-  const left =
-    typeof claim.resetsLeft === "number"
-      ? ` \u00b7 ${claim.resetsLeft} left`
-      : "";
-  return [`Refilled the ${limitsText(claim.cleared)}${left}`, type];
+  return [`Refilled the ${limitsText(claim.cleared)}`, type];
 }
 
-export { claimToast, claudeResetsFact, confirmNotesHtml, limitsText };
+function claudeClaimState(claim, error) {
+  if (!error) return claim.status === "ambiguous" ? "ambiguous" : null;
+  if (error.status === 409) {
+    if (error.body?.reason === "claim_in_progress") return "pending";
+    return error.body?.reason === "claim_unconfirmed" ? "ambiguous" : null;
+  }
+  if ([400, 401, 403, 404, 422, 429].includes(error.status)) return null;
+  return "ambiguous";
+}
+
+const claudeResets = {
+  offerFor: claudeResetOffer,
+  attemptFor(account) {
+    const offer = account.claudeResets.offer;
+    return { body: { grantId: offer.grantId, offerKey: offer.key } };
+  },
+  begin(account, attempt) {
+    attempt.startedAt = Date.now();
+    account.claudeResets = {
+      ...account.claudeResets,
+      offer: null,
+      claim: { status: "pending", startedAt: attempt.startedAt },
+    };
+  },
+  settle(account, attempt, response, error) {
+    const claim = response?.claim || { status: "ambiguous" };
+    const status = claudeClaimState(claim, error);
+    account.claudeResets = {
+      ...account.claudeResets,
+      saved:
+        typeof claim.resetsLeft === "number"
+          ? claim.resetsLeft
+          : (account.claudeResets?.saved ?? 0),
+      offer: null,
+      unavailable: "checking",
+      claim: status ? { status, startedAt: attempt.startedAt } : null,
+    };
+    if (error)
+      return {
+        message: `${error.message}${status === "ambiguous" ? " The reset may have been used; check Claude settings." : ""}`,
+        type: "error",
+        refresh: true,
+      };
+    const [message, type] = claimToast(claim);
+    return {
+      message,
+      type,
+      refresh: true,
+      remaining: type === "success" ? claim.resetsLeft : null,
+    };
+  },
+};
+
+export { claimToast, claudeResets, claudeResetsFact, limitsText };

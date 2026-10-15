@@ -1,10 +1,5 @@
 import { renderAccounts } from "./app-accounts-render.js";
 import {
-  claimToast,
-  confirmNotesHtml,
-  limitsText,
-} from "./app-claude-resets.js";
-import {
   $,
   accountById,
   api,
@@ -20,15 +15,15 @@ import {
 } from "./app-core.js";
 import { renderKeys } from "./app-keys-render.js";
 import {
-  accountName,
   normalizeUsage,
   providerLabel,
   showLoading,
 } from "./app-render-shared.js";
 import {
-  createResetRequestId,
-  resetCreditConfirmation,
-  resetCreditsFor,
+  resetConfirmation,
+  resetFeedback,
+  resetOfferFor,
+  resetProviders,
 } from "./app-reset-credits.js";
 import {
   invalidateUsageDetails,
@@ -280,127 +275,62 @@ async function refreshAccountAction(request, id) {
   await loadAccounts();
 }
 
-function resetResultToast(result) {
-  const windows =
-    typeof result?.windowsReset === "number" && result.windowsReset > 0
-      ? ` (${result.windowsReset} window${result.windowsReset === 1 ? "" : "s"} reset)`
-      : "";
-  switch (result?.code) {
-    case "reset":
-      return { message: `Limits restored${windows}`, type: "success" };
-    case "nothing_to_reset":
-      return {
-        message: "Nothing to reset - limits are already clear",
-        type: "info",
-      };
-    case "no_credit":
-      return {
-        message: "No reset credit available on this account",
-        type: "error",
-      };
-    case "already_redeemed":
-      return { message: `Credit was already redeemed${windows}`, type: "info" };
-    default:
-      return {
-        message: `Codex reset result: ${result?.code || "complete"}`,
-        type: "info",
-      };
-  }
-}
-
 async function redeemResetCreditAction(request, accountId) {
   const account = accountById(accountId);
-  if (!account || account.provider !== "codex") return;
-  const pending = state.pendingResetRedemptions.get(accountId);
-  const credits = resetCreditsFor(account);
-  if (!pending && !credits?.count) return;
-  const creditId = pending ? pending.creditId : credits.next?.id;
-  const confirmation = resetCreditConfirmation(account, Boolean(pending));
+  const offer = resetOfferFor(account);
+  if (!offer?.canUse) return;
+  const reset = resetProviders[account.provider];
+  const attempt = reset.attemptFor(account, offer);
+  const confirmation = resetConfirmation(account, offer);
   const confirmed = await request.confirm(
     confirmation.title,
     confirmation.message,
     confirmation.action,
-    { extrasHtml: confirmation.extrasHtml }
+    { extrasHtml: confirmation.extrasHtml, danger: confirmation.danger }
   );
   if (!confirmed) return;
 
-  const redeemRequestId = pending?.redeemRequestId || createResetRequestId();
+  const current = accountById(accountId);
+  if (!current || current.provider !== account.provider) return;
+  reset.begin?.(current, attempt);
+  renderAccounts();
+  let response;
+  let error;
   try {
-    const body = { redeemRequestId };
-    if (creditId) body.creditId = creditId;
-    const response = await request(
-      `/admin/accounts/${accountId}/tracking/codex/reset-credits/consume`,
-      { method: "POST", body: JSON.stringify(body) }
+    response = await request(
+      `/admin/accounts/${accountId}/tracking/${account.provider}/reset-credits/consume`,
+      { method: "POST", body: JSON.stringify(attempt.body) }
     );
-    state.pendingResetRedemptions.delete(accountId);
-    const refreshed = await loadAccounts();
-    if (!request.isCurrent()) return;
-    const { message, type } = resetResultToast(response.result);
-    const remaining = resetCreditsFor(
-      refreshed?.find((entry) => entry.id === accountId)
-    )?.count;
-    const balance =
-      type === "success" && remaining !== undefined
-        ? ` · ${remaining} credit${remaining === 1 ? "" : "s"} left`
-        : "";
-    toast(`${message}${balance}`, type);
-  } catch (e) {
-    if (!request.isCurrent()) return;
-    if (e.body?.redeemRequestId || !e.status || e.status >= 500 || pending) {
-      const retry = {
-        creditId,
-        redeemRequestId: e.body?.redeemRequestId || redeemRequestId,
-      };
-      state.pendingResetRedemptions.set(accountId, retry);
-      renderAccounts();
-      toast(
-        `${e.message} Reset not confirmed; retry safely with the same request.`,
-        "error",
-        {
+  } catch (cause) {
+    error = cause;
+  }
+  if (!request.isCurrent()) return;
+  const feedback = reset.settle(
+    accountById(accountId) || current,
+    attempt,
+    response,
+    error
+  );
+  renderAccounts();
+  const refreshed = feedback.refresh ? await loadAccounts() : null;
+  if (!request.isCurrent()) return;
+  const { message, type } = resetFeedback(
+    feedback,
+    offer,
+    refreshed?.find((entry) => entry.id === accountId)
+  );
+  toast(
+    message,
+    type,
+    feedback.retryAllowed
+      ? {
           label: "Retry",
           run: () => {
-            if (state.pendingResetRedemptions.get(accountId) === retry)
-              return redeemResetCredit(accountId);
+            if (feedback.retryAllowed()) return redeemResetCredit(accountId);
           },
         }
-      );
-      return;
-    }
-    toast(e.message, "error");
-  }
-}
-
-async function claimClaudeResetAction(request, accountId) {
-  const account = accountById(accountId);
-  const resets = account?.claudeResets;
-  const offer = resets?.offer;
-  if (!offer) {
-    toast("No reset can be used on this account right now", "error");
-    return;
-  }
-  const confirmed = await request.confirm(
-    "Use a saved limit reset?",
-    `Refills the ${limitsText(offer.clears)} on \u201c${accountName(account)}\u201d now.`,
-    "Use reset",
-    { extrasHtml: confirmNotesHtml(resets), danger: Boolean(offer.earlyUse) }
+      : null
   );
-  if (!confirmed) return;
-
-  try {
-    const { claim } = await request(
-      `/admin/accounts/${accountId}/tracking/claude/reset-credits/consume`,
-      {
-        method: "POST",
-        body: JSON.stringify({ grantId: offer.grantId, offerKey: offer.key }),
-      }
-    );
-    const [message, type] = claimToast(claim);
-    toast(message, type);
-  } catch (e) {
-    if (!request.isCurrent()) return;
-    toast(e.message, "error");
-  }
-  await loadAccounts();
 }
 
 function startEditAccount(id) {
@@ -509,7 +439,6 @@ const redeemResetCredit = mutation(
   "redeem-reset-credit",
   redeemResetCreditAction
 );
-const claimClaudeReset = mutation("claim-claude-reset", claimClaudeResetAction);
 const saveAccountEdits = mutation(
   "save-account",
   saveAccountEditsAction,
@@ -532,7 +461,6 @@ export {
   deleteAccount,
   refreshAccount,
   redeemResetCredit,
-  claimClaudeReset,
   saveAccountEdits,
   importAccount,
 };

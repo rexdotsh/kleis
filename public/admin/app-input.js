@@ -1,6 +1,5 @@
 import {
   cancelEditAccount,
-  claimClaudeReset,
   deleteAccount,
   loadAccountUsage,
   redeemResetCredit,
@@ -46,7 +45,7 @@ import {
 } from "./app-keys.js";
 import { renderKeys, renderOpenCodeSetup } from "./app-keys-render.js";
 import { reauthorizeAccount } from "./app-oauth.js";
-import { resetCreditsFor } from "./app-reset-credits.js";
+import { resetOfferFor } from "./app-reset-credits.js";
 import {
   loadDashboard,
   scheduleUsagePrefetch,
@@ -64,7 +63,6 @@ const accountActions = {
   "refresh-account": (id) => refreshAccount(id),
   "reauthorize-account": (id) => reauthorizeAccount(id),
   "redeem-reset-credit": (id) => redeemResetCredit(id),
-  "claim-claude-reset": (id) => claimClaudeReset(id),
   "delete-account": (id) => deleteAccount(id),
   "toggle-free-tier": (_id, button) => toggleFreeTier(button),
   "clear-filter": () =>
@@ -429,8 +427,7 @@ function runRowShortcut(tab, key) {
     if (!(row && action)) return false;
     if (
       action === "redeem-reset-credit" &&
-      !resetCreditsFor(accountById(id))?.count &&
-      !state.pendingResetRedemptions.has(id)
+      !resetOfferFor(accountById(id))?.canUse
     )
       return false;
     setConfirmAnchor(row.querySelector(".more") ?? row);
