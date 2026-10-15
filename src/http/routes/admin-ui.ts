@@ -92,6 +92,7 @@ const JAVASCRIPT_FILES = [
   "app-oauth.js",
   "app-pwa.js",
   "app-render-shared.js",
+  "app-reset-credits.js",
   "app-usage.js",
   "app-usage-render.js",
   "app.js",

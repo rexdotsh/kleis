@@ -37,7 +37,6 @@ import {
   needsReauthorization,
   providerName,
   providerStatusMap,
-  quotaTimestamp,
   reauthorizeDeadline,
   relativeTime,
   renderPreservingForm,
@@ -57,6 +56,7 @@ import {
   requestUsageDetail,
 } from "./app-usage.js";
 import { renderAttention, usageSlotHtml } from "./app-usage-render.js";
+import { resetCreditsFact, resetCreditsFor } from "./app-reset-credits.js";
 
 // Rows show the main windows (5h, 7d); model-specific windows stay in the
 // expanded row.
@@ -154,9 +154,14 @@ function accountRowHtml(account, serving, grouped = false) {
       `<span class="${resetSeverity}">${escapeHtml(reset.label)} resets ${escapeHtml(countdown)}</span>`,
   ].filter(Boolean);
   const cursor = state.cursorAccountId === account.id ? " cursor" : "";
+  const credits = resetCreditsFor(account);
+  const creditHint =
+    serving && credits?.useful
+      ? `<span class="tag">${credits.count} reset credit${credits.count === 1 ? "" : "s"}</span>`
+      : "";
 
   return `<div class="row t-acc${open ? " open" : ""}${serving ? "" : " dim"}${cursor}" data-account-id="${account.id}" data-flip="account:${account.id}" tabindex="0" role="button" aria-expanded="${open}">
-    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag tag-primary">Primary</span>' : ""}${isFreeTierAccount(account) ? `<span class="tag">${grouped ? escapeHtml(providerName(account.provider)) : "Free"}</span>` : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}${tokenNote ? `<span class="token-note err small d">${tokenNote}</span>` : ""}</span>
+    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag tag-primary">Primary</span>' : ""}${isFreeTierAccount(account) ? `<span class="tag">${grouped ? escapeHtml(providerName(account.provider)) : "Free"}</span>` : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}${creditHint}${tokenNote ? `<span class="token-note err small d">${tokenNote}</span>` : ""}</span>
     <span class="meters d">${limitMetersHtml(account, windows)}</span>
     <span class="num d reset ${resetSeverity || "muted"}">${reset ? `<small>${escapeHtml(reset.label)}</small> ` : ""}${escapeHtml(countdown)}</span>
     <span class="num">${requestsCellHtml(usage)}</span>
@@ -210,42 +215,6 @@ function limitFacts(account) {
   else if (!facts.length)
     facts.push(fact("Rate limits", '<span class="muted">None reported</span>'));
   return facts;
-}
-
-function creditsFact(account) {
-  const data = account.quota?.data;
-  if (data?.provider !== "codex") return "";
-  const credits = (data?.resetCredits?.credits || [])
-    .filter((credit) => credit.status === "available")
-    .sort(
-      (a, b) =>
-        (quotaTimestamp(a.expiresAt) ?? Number.POSITIVE_INFINITY) -
-        (quotaTimestamp(b.expiresAt) ?? Number.POSITIVE_INFINITY)
-    );
-  const available =
-    data?.resetCredits?.availableCount ?? data?.status?.resetCreditsAvailable;
-  const count = Math.max(
-    credits.length,
-    typeof available === "number" ? available : 0
-  );
-  if (!count) return "";
-  const next = credits[0];
-  const expiry = quotaTimestamp(next?.expiresAt);
-  const title = next
-    ? `${next.title || "Reset credit"}: ${next.description || "restores this account's Codex limits"}`
-    : "Consume a reset credit to restore limits";
-  const use = `<button class="link small" type="button" data-action="redeem-reset-credit" data-account-id="${account.id}"${next ? ` data-credit-id="${escapeHtml(next.id)}"` : ""} ${mutationAttributes("redeem-reset-credit", `${account.id}:${next?.id || "auto"}`)} title="${escapeHtml(title)}">Use one</button>`;
-  let expiryText = "";
-  if (next) {
-    expiryText = expiry
-      ? `${count > 1 ? "next expires" : "expires"} ${untilText(expiry)}`
-      : "does not expire";
-  }
-  return fact(
-    count === 1 ? "Reset credit" : "Reset credits",
-    `${count}${use}`,
-    [escapeHtml(expiryText)]
-  );
 }
 
 function tokenFact(account) {
@@ -394,7 +363,7 @@ function accountDetailHtml(account) {
   return `<div class="detail${entering}" data-detail-for="${account.id}" data-flip="detail:${account.id}">
     <div class="facts">${[
       ...limitFacts(account),
-      creditsFact(account),
+      resetCreditsFact(account),
       tokenFact(account),
       usageFact(accountUsageForId(account.id), state.accountUsageWindowMs),
       accountFact(account),
@@ -537,6 +506,14 @@ function accountMenuItems(account) {
   const supportsOAuth =
     account.provider === "codex" || account.provider === "claude";
   return [
+    (resetCreditsFor(account)?.count > 0 ||
+      state.pendingResetRedemptions.has(account.id)) && {
+      label: state.pendingResetRedemptions.has(account.id)
+        ? "Retry reset"
+        : "Use reset credit",
+      action: "redeem-reset-credit",
+      shortcut: "U",
+    },
     !account.isPrimary && {
       label: "Make primary",
       action: "set-primary",
