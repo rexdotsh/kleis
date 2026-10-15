@@ -723,8 +723,11 @@ button.row {
 .row:focus-visible {
   outline-offset: -1px;
 }
-:is(.row, .free-tier-heading).cursor {
+.row.cursor {
   background: var(--cursor);
+}
+.free-tier-heading.cursor {
+  color: var(--text);
 }
 @media (hover: hover) {
   :is(#accounts-list, #keys-list) .row:hover:not(.cursor, .open, .thead) {
@@ -971,15 +974,14 @@ button.row {
   align-items: center;
   gap: 8px;
   width: 100%;
-  min-height: 48px;
-  padding: 8px 12px;
+  min-height: 32px;
+  padding: 4px 12px;
   border: 0;
   background: none;
   color: var(--muted);
   text-align: left;
 }
 .free-tier-heading:hover {
-  background: var(--hover);
   color: var(--text);
 }
 .free-tier-chevron {
@@ -2275,6 +2277,9 @@ input[type="checkbox"].toggle:checked::after {
   .group,
   .free-tier-heading {
     padding: 0 16px;
+  }
+  .free-tier-heading {
+    min-height: 44px;
   }
   .free-tier-hint {
     padding: 0 16px 12px;
