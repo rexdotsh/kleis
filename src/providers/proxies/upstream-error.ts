@@ -49,11 +49,12 @@ export const readUpstreamResponseError = async (
   response: Response
 ): Promise<ReturnType<typeof readUpstreamErrorFields>> => {
   const empty = readUpstreamErrorFields(null);
+  const contentType = (
+    response.headers.get("content-type") ?? ""
+  ).toLowerCase();
   if (
     !response.body ||
-    !(response.headers.get("content-type") ?? "")
-      .toLowerCase()
-      .includes("application/json")
+    (contentType && !contentType.includes("application/json"))
   ) {
     return empty;
   }

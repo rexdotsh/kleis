@@ -967,6 +967,80 @@ describe("proxy contract: codex", () => {
     });
   });
 
+  test.each([400, 503])(
+    "passes headerless HTTP %s bytes through without SSE framing or keepalives",
+    async (status) => {
+      const body = new Uint8Array([
+        0xff,
+        ...new TextEncoder().encode('{ "error": { "message": "failed" } }'),
+        0xfe,
+      ]);
+      const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        const response = createOpenAiSseUsagePassthrough({
+          response: new Response(
+            new ReadableStream<Uint8Array>({
+              async start(controller): Promise<void> {
+                controller.enqueue(body.slice(0, 4));
+                await new Promise((resolve) => setTimeout(resolve, 30));
+                controller.enqueue(body.slice(4));
+                controller.close();
+              },
+            }),
+            {
+              status,
+              statusText: "Upstream failure",
+              headers: {
+                "content-encoding": "gzip",
+                "content-length": String(body.length),
+                "retry-after": "3",
+              },
+            }
+          ),
+          extractUsage: () => null,
+          keepAliveIntervalMs: 5,
+        });
+
+        expect(response.status).toBe(status);
+        expect(response.statusText).toBe("Upstream failure");
+        expect(response.headers.has("content-type")).toBe(false);
+        expect(response.headers.has("content-encoding")).toBe(false);
+        expect(response.headers.has("content-length")).toBe(false);
+        expect(response.headers.get("retry-after")).toBe("3");
+        expect(new Uint8Array(await response.arrayBuffer())).toEqual(body);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    }
+  );
+
+  test("normalizes and tracks explicitly declared non-2xx SSE", async () => {
+    const capture = createUsageCapture();
+    const result = prepareCodexUsageRequest(
+      codexStreamingUsageBody,
+      capture.onTokenUsage
+    );
+    const body =
+      'event: response.done\ndata: {"type":"response.done","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":3}}}\n\n';
+    const response = await result.transformResponse(
+      new Response(body, {
+        status: 503,
+        headers: { "content-type": "text/event-stream" },
+      })
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("content-type")).toBe("text/event-stream");
+    expect(await response.text()).toContain('"type":"response.completed"');
+    expect(capture.read()).toEqual({
+      inputTokens: 5,
+      outputTokens: 3,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+
   test("injects keepalives only at SSE event boundaries", async () => {
     const encoder = new TextEncoder();
     const createSlowResponse = (
