@@ -726,7 +726,7 @@ button.row {
 .row.cursor {
   background: var(--cursor);
 }
-.free-tier-heading.cursor {
+.free-tier-heading.cursor .free-tier-chevron {
   color: var(--text);
 }
 @media (hover: hover) {
@@ -967,25 +967,27 @@ button.row {
   color: var(--muted);
 }
 .free-tier-group {
-  margin-top: 8px;
+  margin-top: 16px;
 }
 .free-tier-heading {
   display: flex;
   align-items: center;
-  gap: 8px;
   width: 100%;
-  min-height: 32px;
-  padding: 4px 12px;
+  height: 40px;
+  padding: 0 12px;
   border: 0;
   background: none;
-  color: var(--muted);
+  color: inherit;
   text-align: left;
-}
-.free-tier-heading:hover {
-  color: var(--text);
 }
 .free-tier-chevron {
   display: flex;
+  margin-left: 4px;
+  color: var(--muted);
+  transition: transform 160ms ease;
+}
+.free-tier-heading:hover .free-tier-chevron {
+  color: var(--text);
 }
 .free-tier-heading[aria-expanded="true"] .free-tier-chevron {
   transform: rotate(90deg);
@@ -993,6 +995,7 @@ button.row {
 .free-tier-note {
   margin-left: auto;
   font-size: 12px;
+  color: var(--muted);
 }
 .free-tier-hint {
   padding: 0 12px 12px;
@@ -2277,9 +2280,6 @@ input[type="checkbox"].toggle:checked::after {
   .group,
   .free-tier-heading {
     padding: 0 16px;
-  }
-  .free-tier-heading {
-    min-height: 44px;
   }
   .free-tier-hint {
     padding: 0 16px 12px;

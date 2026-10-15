@@ -698,7 +698,9 @@ describe("admin mutation and session guards", () => {
           row.getAttribute("data-account-id")
         )
       ).toEqual(["primary-free", "paid", "unknown", "traffic-free"]);
-      expect($(".free-tier-heading").textContent).toContain("Free tier (2)");
+      expect($(".free-tier-heading .group-name").textContent).toBe(
+        "Free tier2"
+      );
       expect($(".free-tier-heading").getAttribute("aria-expanded")).toBe(
         "false"
       );

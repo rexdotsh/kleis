@@ -436,7 +436,7 @@ function freeTierGroupHtml(accounts, statuses) {
         .join("")
     : "";
   return `<section class="free-tier-group" aria-label="Free tier accounts">
-    <button class="free-tier-heading${state.cursorAccountId === FREE_TIER_CURSOR_ID ? " cursor" : ""}" type="button" data-cursor-id="${FREE_TIER_CURSOR_ID}" data-action="toggle-free-tier" aria-expanded="${open}" aria-controls="free-tier-rows"><span class="free-tier-chevron">${icon("chev")}</span><span>Free tier <span class="muted">(${accounts.length})</span></span><span class="free-tier-note">${open ? "Shown in pickers" : "Hidden from pickers"}</span></button>
+    <button class="free-tier-heading${state.cursorAccountId === FREE_TIER_CURSOR_ID ? " cursor" : ""}" type="button" data-cursor-id="${FREE_TIER_CURSOR_ID}" data-action="toggle-free-tier" aria-expanded="${open}" aria-controls="free-tier-rows"><span class="group-name"><span class="cap">Free tier</span><span class="muted small">${accounts.length}</span><span class="free-tier-chevron">${icon("chev")}</span></span><span class="free-tier-note">${open ? "Shown in pickers" : "Hidden from pickers"}</span></button>
     <div id="free-tier-rows"${open ? "" : " hidden"}>${open ? '<p class="free-tier-hint">Visibility only. Routing is unchanged.</p>' : ""}${rows}</div>
   </section>`;
 }
