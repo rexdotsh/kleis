@@ -129,7 +129,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+      - name: Check current main revision
+        id: revision
+        run: |
+          set -euo pipefail
+          main_sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          # Image builds can finish out of order; only current main may deploy.
+          if [ "$main_sha" = "$GITHUB_SHA" ]; then
+            echo 'deploy=true' >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping stale revision $GITHUB_SHA; main is $main_sha"
+            echo 'deploy=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Log in to GHCR
+        if: steps.revision.outputs.deploy == 'true'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -137,6 +151,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Promote verified images
+        if: steps.revision.outputs.deploy == 'true'
         env:
           APP_IMAGE: ${{ env.REGISTRY }}/${{ env.APP_IMAGE_NAME }}:sha-${{ github.sha }}
           MIGRATE_IMAGE: ${{ needs.publish.outputs.migrate_image }}
@@ -145,6 +160,7 @@ jobs:
           docker buildx imagetools create --tag "$REGISTRY/$MIGRATE_IMAGE_NAME:latest" "$MIGRATE_IMAGE"
 
       - name: Configure SSH
+        if: steps.revision.outputs.deploy == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -155,6 +171,7 @@ jobs:
           ssh-keyscan -H "$DEPLOY_HOST" > ~/.ssh/known_hosts
 
       - name: Deploy release
+        if: steps.revision.outputs.deploy == 'true'
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
