@@ -203,6 +203,40 @@ describe("models registry contract", () => {
     });
   });
 
+  test("gives Codex GPT-6.1 Sol its larger subscription window", () => {
+    const registry = buildProxyModelsRegistry({
+      upstreamRegistry: {
+        ...upstreamRegistry,
+        openai: {
+          ...upstreamRegistry.openai,
+          models: {
+            ...upstreamRegistry.openai.models,
+            "gpt-6.1-sol": {
+              id: "gpt-6.1-sol",
+              name: "GPT-6.1 Sol",
+              limit: { context: 1_050_000, input: 922_000, output: 128_000 },
+              provider: {
+                api: "https://api.openai.com/v1",
+                npm: "@ai-sdk/openai",
+              },
+            },
+          },
+        },
+      },
+      baseOrigin: "https://kleis.example/",
+      configuredProviders: ["codex"],
+    });
+    const kleis = registry.kleis as {
+      models?: Record<string, { limit?: unknown }>;
+    };
+
+    expect(kleis.models?.["gpt-6.1-sol"]?.limit).toEqual({
+      context: 628_000,
+      input: 500_000,
+      output: 128_000,
+    });
+  });
+
   test("caps GPT-6 Sol and Luna limits only for the Codex proxy", () => {
     const model = (id: string, output: number) => ({
       id,

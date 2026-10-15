@@ -198,6 +198,13 @@ const removeProReasoningModes = (model: JsonObject): void => {
   }
 };
 
+// ChatGPT's Codex models endpoint (context_window) and OpenCode's ChatGPT
+// OAuth transform: GPT-6.1 Sol has a 500k input window, every other model 272k.
+const DEFAULT_CODEX_LIMITS = { context: 400_000, input: 272_000 };
+const CODEX_SUBSCRIPTION_LIMITS: Record<string, typeof DEFAULT_CODEX_LIMITS> = {
+  "gpt-6.1-sol": { context: 628_000, input: 500_000 },
+};
+
 const cloneProviderModels = (input: {
   sourceModels: Record<string, unknown>;
   apiUrl: string;
@@ -306,7 +313,7 @@ const mergeKleisProviderModels = (input: {
             route,
             modelScopes: input.modelScopes,
           }),
-        transformModel: (_modelId, model) => {
+        transformModel: (modelId, model) => {
           if (mapping.internalProvider !== "codex") {
             return;
           }
@@ -315,8 +322,7 @@ const mergeKleisProviderModels = (input: {
           // only known IDs. Preserve the model's output limit from models.dev.
           model.limit = {
             ...getObjectProperty(model, "limit"),
-            context: 400_000,
-            input: 272_000,
+            ...(CODEX_SUBSCRIPTION_LIMITS[modelId] ?? DEFAULT_CODEX_LIMITS),
           };
           removeProReasoningModes(model);
         },
