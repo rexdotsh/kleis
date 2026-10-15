@@ -114,10 +114,22 @@ over SSH. Releases alternate between two containers, `kleis-blue`
 (`127.0.0.1:3003`) and `kleis-green` (`127.0.0.1:3004`), and Caddy proxies to
 whichever is healthy (`deploy/Caddyfile`).
 
+Image publishing overlaps verification, but deployment and promotion of the
+`latest` image tags require both jobs to succeed. Production deployments are
+serialized. CI runs the slow refresh-lock tests in a separate process alongside
+the rest of the tests; each process keeps its own mocks and shared modules.
+
+Every deployment recreates and runs the `kleis-migrate` service before starting
+the new slot. Its stopped container retains the migration image between deploys,
+so image pruning can reclaim obsolete images without evicting it. Deploy logs
+include elapsed seconds for pulls, migrations, slot readiness, and drain launch.
+
 A new release must pass `/healthz` before it gets traffic; if it never does,
 the current release keeps serving. The old release then fails its health check,
 stops accepting connections, and exits once its in-flight streams finish (up to
 14 minutes), so deploys don't cut off running requests.
+The drain runs in the background; a subsequent deployment waits if it needs to
+reuse a slot that is still draining.
 
 ---
 

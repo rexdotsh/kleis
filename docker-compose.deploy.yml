@@ -22,6 +22,7 @@ x-app: &app
 services:
   migrate:
     image: ${KLEIS_MIGRATE_IMAGE:?set KLEIS_MIGRATE_IMAGE}
+    container_name: kleis-migrate
     env_file:
       - path: .env
         required: false

@@ -2,8 +2,12 @@
 set -euo pipefail
 
 CADDY_ADMIN="${CADDY_ADMIN:-http://localhost:2019}"
-STATE_FILE=active-slot
+STATE_FILE="active-slot"
 LEGACY_CONTAINER=kleis-app
+
+log() {
+  printf '[%ss] %s\n' "$SECONDS" "$*"
+}
 
 compose() {
   docker compose -f docker-compose.deploy.yml "$@"
@@ -26,7 +30,8 @@ in_flight() {
 # The legacy container exits on SIGTERM without draining, so wait until Caddy
 # has no requests in flight to it.
 retire_legacy() {
-  local deadline=$(($(date +%s) + 900))
+  local deadline
+  deadline=$(($(date +%s) + 900))
   while [ "$(date +%s)" -lt "$deadline" ]; do
     if [ "$(in_flight 3003 2>/dev/null || true)" = "0" ]; then
       break
@@ -56,7 +61,7 @@ else
   target_port=3004
 fi
 target_container="kleis-$target"
-echo "Deploying $KLEIS_APP_IMAGE to $target (:$target_port); $active is serving"
+log "Deploying $KLEIS_APP_IMAGE to $target (:$target_port); $active is serving"
 
 if ! healthy "$active_port"; then
   if is_running "$target_container" && healthy "$target_port"; then
@@ -67,11 +72,15 @@ if ! healthy "$active_port"; then
 fi
 
 compose pull migrate "app-$target"
-compose run --rm --interactive=false migrate
+log "Images pulled; applying migrations"
+# A stopped service container pins the migration image through image pruning.
+compose up --no-deps --force-recreate --exit-code-from migrate migrate
+log "Migrations complete"
 
 if is_running "$target_container"; then
-  echo "Draining $target_container before reuse"
+  log "Draining $target_container before reuse"
   docker stop -t 900 "$target_container" >/dev/null
+  log "$target_container ready for reuse"
 fi
 if [ "$target" = "blue" ] && is_running "$LEGACY_CONTAINER"; then
   echo "Waiting for $LEGACY_CONTAINER to finish its requests"
@@ -79,6 +88,7 @@ if [ "$target" = "blue" ] && is_running "$LEGACY_CONTAINER"; then
 fi
 
 compose up -d --no-deps "app-$target"
+log "New slot started; waiting for health"
 
 for _ in $(seq 1 60); do
   if healthy "$target_port"; then
@@ -92,6 +102,7 @@ if ! healthy "$target_port"; then
   setsid nohup docker stop -t 900 "$target_container" >/dev/null 2>&1 </dev/null &
   exit 1
 fi
+log "New slot healthy"
 
 printf '%s\n' "$target" >"$STATE_FILE.tmp"
 mv "$STATE_FILE.tmp" "$STATE_FILE"
@@ -105,9 +116,9 @@ if [ "$active" = "legacy" ]; then
     setsid nohup "$0" retire-legacy >/dev/null 2>&1 </dev/null &
   fi
 elif is_running "$active_container"; then
-  echo "Draining $active_container"
+  log "Draining $active_container in the background"
   setsid nohup docker stop -t 900 "$active_container" >/dev/null 2>&1 </dev/null &
 fi
 
 docker image prune -af >/dev/null
-echo "Release live on $target"
+log "Release live on $target"
