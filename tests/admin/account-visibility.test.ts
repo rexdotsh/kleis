@@ -114,11 +114,7 @@ describe("free-tier account detection", () => {
       claude(NOW - 72 * HOUR),
       false,
     ],
-    [
-      "profile at the earliest refresh boundary",
-      claude(NOW - 23 * HOUR),
-      false,
-    ],
+    ["profile at the earliest refresh boundary", claude(NOW - 23 * HOUR), true],
     [
       "profile just inside the refresh boundary",
       claude(NOW - 23 * HOUR + 1),
@@ -143,8 +139,14 @@ describe("free-tier account detection", () => {
       false,
     ],
     [
-      "failed profile retry retaining its timestamp despite successful usage sync",
-      claude(NOW - 23.5 * HOUR),
+      "failed profile retry despite successful usage sync",
+      {
+        ...claude(NOW - 23.5 * HOUR),
+        profile: {
+          ...claude(NOW - 23.5 * HOUR).profile,
+          error: "Profile request failed (503)",
+        },
+      },
       false,
     ],
     [
@@ -166,12 +168,12 @@ describe("free-tier account detection", () => {
       false,
     ],
     [
-      "stale Codex usage with a fresh free profile",
+      "Codex SWR snapshot with a fresh free profile",
       {
         ...codex("free", NOW - 60_000),
         profile: { fetchedAt: NOW, data: { planType: "free" } },
       },
-      false,
+      true,
     ],
     [
       "failed Codex usage with a fresh free profile",
@@ -195,6 +197,23 @@ describe("free-tier account detection", () => {
       { provider: "codex", quota: { data: { status: { planType: "free" } } } },
       false,
     ],
+    [
+      "Claude profile across the full jitter window",
+      claude(NOW - (23 * HOUR + 59 * 60_000)),
+      true,
+    ],
+    [
+      "Claude profile during revalidation grace",
+      claude(NOW - (24 * HOUR + 4 * 60_000)),
+      true,
+    ],
+    ["abandoned Claude profile", claude(NOW - (24 * HOUR + 5 * 60_000)), false],
+    [
+      "Codex quota during revalidation grace",
+      codex("free", NOW - 5 * 60_000),
+      true,
+    ],
+    ["abandoned Codex quota", codex("free", NOW - 6 * 60_000), false],
   ])("%s", (_name, account, expected) => {
     expect(isFreeTierAccount(account)).toBe(expected);
   });

@@ -1,8 +1,9 @@
-// Profile refreshes start at 23h; failed attempts retain the last fetchedAt.
-const PROFILE_FRESH_MS = 23 * 60 * 60 * 1000;
-const CODEX_QUOTA_FRESH_MS = 60_000;
+const PROFILE_REFRESH_MS = 24 * 60 * 60 * 1000;
+const CODEX_QUOTA_REFRESH_MS = 60_000;
+// The full daily interval covers profile jitter; grace covers SWR and in-flight requests.
+const REVALIDATION_GRACE_MS = 5 * 60 * 1000;
 
-function isFresh(snapshot, maxAge, now) {
+function isFresh(snapshot, refreshInterval, now) {
   const fetchedAt = snapshot?.fetchedAt;
   return (
     !snapshot?.error &&
@@ -10,7 +11,7 @@ function isFresh(snapshot, maxAge, now) {
     Number.isFinite(fetchedAt) &&
     fetchedAt > 0 &&
     fetchedAt <= now &&
-    now - fetchedAt < maxAge
+    now - fetchedAt < refreshInterval + REVALIDATION_GRACE_MS
   );
 }
 
@@ -28,17 +29,17 @@ export function isFreeTierAccount(account) {
   if (account.provider === "codex") {
     const planType = quota?.data?.status?.planType;
     if (planType != null) {
-      return isFresh(quota, CODEX_QUOTA_FRESH_MS, now) && planType === "free";
+      return isFresh(quota, CODEX_QUOTA_REFRESH_MS, now) && planType === "free";
     }
     return (
-      isFresh(profile, PROFILE_FRESH_MS, now) &&
+      isFresh(profile, PROFILE_REFRESH_MS, now) &&
       profile.data?.planType === "free"
     );
   }
   // Claude usage syncs copy the cached plan; only the profile dates its verification.
   if (
     account.provider !== "claude" ||
-    !isFresh(profile, PROFILE_FRESH_MS, now)
+    !isFresh(profile, PROFILE_REFRESH_MS, now)
   ) {
     return false;
   }
