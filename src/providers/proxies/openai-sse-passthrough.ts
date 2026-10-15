@@ -144,14 +144,9 @@ export const createOpenAiSseUsagePassthrough = (
     contentType.includes("text/event-stream") ||
     (input.response.ok && !contentType);
   if (!isSseBody) {
-    const headers = new Headers(input.response.headers);
-    headers.delete("content-encoding");
-    headers.delete("content-length");
-    return new Response(input.response.body, {
-      status: input.response.status,
-      statusText: input.response.statusText,
-      headers,
-    });
+    input.response.headers.delete("content-encoding");
+    input.response.headers.delete("content-length");
+    return input.response;
   }
 
   const reader = input.response.body.getReader();
