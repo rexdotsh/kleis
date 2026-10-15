@@ -76,6 +76,7 @@ const {
   resolveConfirm,
   runAction,
   state,
+  FREE_TIER_CURSOR_ID,
   setShowFreeTier,
 } = await import("../../public/admin/app-core.js");
 const {
@@ -661,7 +662,10 @@ describe("admin mutation and session guards", () => {
       id,
       label: id,
       createdAt: 1,
-      quota: { data: { provider: "codex", status: { planType } } },
+      quota: {
+        fetchedAt: Date.now(),
+        data: { provider: "codex", status: { planType } },
+      },
     });
     beforeEach(() => {
       const accounts = [
@@ -673,7 +677,10 @@ describe("admin mutation and session guards", () => {
         {
           ...codex("claude-free"),
           provider: "claude",
-          profile: { data: { organizationType: "claude_free", plan: null } },
+          profile: {
+            fetchedAt: Date.now(),
+            data: { organizationType: "claude_free", plan: null },
+          },
         },
       ];
       state.expandedAccountId = null;
@@ -717,9 +724,11 @@ describe("admin mutation and session guards", () => {
       expect(all("#free-tier-rows .t-acc[data-account-id]")).toHaveLength(2);
       state.cursorAccountId = "traffic-free";
       moveCursor("accounts", 1);
+      expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+      moveCursor("accounts", 1);
       expect(state.cursorAccountId).toBe("idle-free");
       $(".free-tier-heading").click();
-      expect(state.cursorAccountId).toBeNull();
+      expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
       expect(all("#free-tier-rows .t-acc[data-account-id]")).toHaveLength(0);
       expect(window.localStorage.getItem("kleis_show_free_tier")).toBe("false");
     });
@@ -798,6 +807,69 @@ describe("admin mutation and session guards", () => {
       expect(
         $("#accounts-list [data-detail-for='traffic-free']")
       ).not.toBeNull();
+    });
+
+    test.each([
+      ["j", "k"],
+      ["ArrowDown", "ArrowUp"],
+    ])(
+      "%s / %s navigate through the disclosure and its expanded rows",
+      (next, previous) => {
+        const requests: string[] = [];
+        globals.fetch = async (url: RequestInfo | URL) => {
+          requests.push(String(url));
+          return fresh(String(url));
+        };
+        renderAccounts();
+        $("#accounts-list .row[data-account-id='traffic-free']").focus();
+        keyboard(next);
+        expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+        expect(window.document.activeElement).toBe($(".free-tier-heading"));
+        keyboard("r");
+        keyboard("Enter", ".free-tier-heading");
+        expect(state.showFreeTier).toBe(true);
+        expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+        keyboard(next);
+        expect(state.cursorAccountId).toBe("idle-free");
+        keyboard(previous);
+        expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+        keyboard(" ", ".free-tier-heading");
+        expect(state.showFreeTier).toBe(false);
+        keyboard(previous);
+        expect(state.cursorAccountId).toBe("traffic-free");
+        keyboard(next);
+        keyboard(next);
+        expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+        keyboard("o");
+        expect(state.showFreeTier).toBe(true);
+        expect(requests).toEqual([]);
+      }
+    );
+
+    test("the disclosure is navigable when all accounts are tucked away", () => {
+      state.accounts = [codex("idle-free")];
+      state.accountsById = new Map([["idle-free", state.accounts[0]]]);
+      state.accountUsageById.clear();
+      renderAccounts();
+      keyboard("j");
+      expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+      keyboard("Enter", ".free-tier-heading");
+      keyboard("j");
+      expect(state.cursorAccountId).toBe("idle-free");
+      keyboard("k");
+      expect(state.cursorAccountId).toBe(FREE_TIER_CURSOR_ID);
+    });
+
+    test("stale free profiles keep upgraded accounts in lists and pickers", () => {
+      state.accountsById.get("claude-free").profile.fetchedAt =
+        Date.now() - 3 * 86_400_000;
+      renderAccounts();
+      expect(
+        $("#accounts-list .row[data-account-id='claude-free']").closest(
+          "#free-tier-rows"
+        )
+      ).toBeNull();
+      expect(keyAccessHtml("create")).toContain('value="claude-free"');
     });
   });
 });

@@ -4,6 +4,7 @@ const DAILY_TOKEN_DAYS = 30;
 const ADMIN_TOKEN_STORAGE_KEY = "kleis_admin_token";
 const FREE_TIER_STORAGE_KEY = "kleis_show_free_tier";
 const PROVIDER_ORDER = ["codex", "claude"];
+const FREE_TIER_CURSOR_ID = "free-tier-group";
 
 const readPersistedToken = () =>
   localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || "";
@@ -582,6 +583,7 @@ export {
   USAGE_DETAIL_TTL_MS,
   DAILY_TOKEN_DAYS,
   PROVIDER_ORDER,
+  FREE_TIER_CURSOR_ID,
   readPersistedToken,
   persistToken,
   clearPersistedToken,

@@ -13,6 +13,7 @@ import { isAccountVisible } from "./app-account-visibility.js";
 import {
   $,
   $$,
+  FREE_TIER_CURSOR_ID,
   accountById,
   accountUsageForId,
   copyToClipboard,
@@ -114,13 +115,15 @@ function clearFilter(inputId, field, render) {
 }
 const accountRow = (id) => $(`#accounts-list .row[data-account-id="${id}"]`);
 const keyRow = (id) => $(`#keys-list .row[data-key-id="${id}"]`);
+const accountCursorRow = (id) =>
+  id === FREE_TIER_CURSOR_ID ? $(".free-tier-heading") : accountRow(id);
 
 function toggleFreeTier(button) {
   const list = button?.closest("#keys-list") ? "#keys-list" : "#accounts-list";
   setShowFreeTier(!state.showFreeTier);
   renderAccounts();
   if (state.keysLoaded || state.creatingKey || state.editingKeyId) renderKeys();
-  if (state.cursorAccountId && !accountRow(state.cursorAccountId)) {
+  if (state.cursorAccountId && !accountCursorRow(state.cursorAccountId)) {
     state.cursorAccountId = null;
   }
   $(`${list} [data-action="toggle-free-tier"]`)?.focus({ preventScroll: true });
@@ -203,8 +206,8 @@ async function setExpandedKey(id) {
 const LISTS = {
   accounts: {
     container: "#accounts-list",
-    selector: "#accounts-list .row[data-account-id]",
-    idOf: (row) => row.dataset.accountId,
+    selector: "#accounts-list :is(.row[data-account-id], [data-cursor-id])",
+    idOf: (row) => row.dataset.accountId ?? row.dataset.cursorId,
     cursorField: "cursorAccountId",
   },
   keys: {
@@ -237,7 +240,7 @@ function setCursor(tab, row, { focus = false, mouse = false } = {}) {
   state[list.cursorField] = row ? list.idOf(row) : null;
   scheduleUsagePrefetch(
     tab === "accounts" ? "account" : "key",
-    row ? list.idOf(row) : null
+    row?.dataset.accountId ?? row?.dataset.keyId ?? null
   );
   if (!row) return;
   row.classList.add("cursor");
@@ -283,6 +286,10 @@ for (const tab of ["accounts", "keys"]) {
 }
 
 async function toggleAccount(id) {
+  if (id === FREE_TIER_CURSOR_ID) {
+    accountCursorRow(id)?.click();
+    return;
+  }
   const applied = await setExpandedAccount(
     (state.pendingExpandedAccountId || state.expandedAccountId) === id
       ? null

@@ -723,7 +723,7 @@ button.row {
 .row:focus-visible {
   outline-offset: -1px;
 }
-.row.cursor {
+:is(.row, .free-tier-heading).cursor {
   background: var(--cursor);
 }
 @media (hover: hover) {
@@ -731,7 +731,7 @@ button.row {
     background: none;
   }
 }
-.row.cursor:focus-visible {
+:is(.row, .free-tier-heading).cursor:focus-visible {
   outline: none;
   box-shadow: inset 2px 0 0 var(--muted);
 }
