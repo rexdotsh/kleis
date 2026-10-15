@@ -1,5 +1,6 @@
 import {
   cancelEditAccount,
+  claimClaudeReset,
   deleteAccount,
   loadAccountUsage,
   redeemResetCredit,
@@ -63,6 +64,7 @@ const accountActions = {
   "refresh-account": (id) => refreshAccount(id),
   "reauthorize-account": (id) => reauthorizeAccount(id),
   "redeem-reset-credit": (id) => redeemResetCredit(id),
+  "claim-claude-reset": (id) => claimClaudeReset(id),
   "delete-account": (id) => deleteAccount(id),
   "toggle-free-tier": (_id, button) => toggleFreeTier(button),
   "clear-filter": () =>

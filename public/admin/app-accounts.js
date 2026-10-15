@@ -1,5 +1,10 @@
 import { renderAccounts } from "./app-accounts-render.js";
 import {
+  claimToast,
+  confirmNotesHtml,
+  limitsText,
+} from "./app-claude-resets.js";
+import {
   $,
   accountById,
   api,
@@ -15,6 +20,7 @@ import {
 } from "./app-core.js";
 import { renderKeys } from "./app-keys-render.js";
 import {
+  accountName,
   normalizeUsage,
   providerLabel,
   showLoading,
@@ -57,6 +63,9 @@ async function loadAccounts() {
       ...account,
       quota: account.quota || state.accountsById.get(account.id)?.quota,
       profile: account.profile || state.accountsById.get(account.id)?.profile,
+      claudeResets: account.quota
+        ? account.claudeResets
+        : state.accountsById.get(account.id)?.claudeResets,
     }));
     state.accountsById = usageMapFromList(state.accounts, "id");
     pruneUsageDetails("account", state.accountsById);
@@ -114,7 +123,9 @@ async function loadMissingQuotas(requestSeq, missingQuotas) {
   );
   if (!missing) return;
   try {
-    const { quotas, profiles } = await api("/admin/accounts/quotas");
+    const { quotas, profiles, claudeResets } = await api(
+      "/admin/accounts/quotas"
+    );
     if (requestSeq !== state.accountsRequestSeq) return;
     let changed = false;
     for (const account of state.accounts) {
@@ -126,6 +137,10 @@ async function loadMissingQuotas(requestSeq, missingQuotas) {
       const profile = profiles?.[account.id];
       if (profile) {
         account.profile = profile;
+        changed = true;
+      }
+      if (claudeResets && account.id in claudeResets) {
+        account.claudeResets = claudeResets[account.id];
         changed = true;
       }
     }
@@ -355,6 +370,39 @@ async function redeemResetCreditAction(request, accountId) {
   }
 }
 
+async function claimClaudeResetAction(request, accountId) {
+  const account = accountById(accountId);
+  const resets = account?.claudeResets;
+  const offer = resets?.offer;
+  if (!offer) {
+    toast("No reset can be used on this account right now", "error");
+    return;
+  }
+  const confirmed = await request.confirm(
+    "Use a saved limit reset?",
+    `Refills the ${limitsText(offer.clears)} on \u201c${accountName(account)}\u201d now.`,
+    "Use reset",
+    { extrasHtml: confirmNotesHtml(resets), danger: Boolean(offer.earlyUse) }
+  );
+  if (!confirmed) return;
+
+  try {
+    const { claim } = await request(
+      `/admin/accounts/${accountId}/tracking/claude/reset-credits/consume`,
+      {
+        method: "POST",
+        body: JSON.stringify({ grantId: offer.grantId, offerKey: offer.key }),
+      }
+    );
+    const [message, type] = claimToast(claim);
+    toast(message, type);
+  } catch (e) {
+    if (!request.isCurrent()) return;
+    toast(e.message, "error");
+  }
+  await loadAccounts();
+}
+
 function startEditAccount(id) {
   if (!accountById(id)) {
     toast("Account was not found", "error");
@@ -461,6 +509,7 @@ const redeemResetCredit = mutation(
   "redeem-reset-credit",
   redeemResetCreditAction
 );
+const claimClaudeReset = mutation("claim-claude-reset", claimClaudeResetAction);
 const saveAccountEdits = mutation(
   "save-account",
   saveAccountEditsAction,
@@ -483,6 +532,7 @@ export {
   deleteAccount,
   refreshAccount,
   redeemResetCredit,
+  claimClaudeReset,
   saveAccountEdits,
   importAccount,
 };

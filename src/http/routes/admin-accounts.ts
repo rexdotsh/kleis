@@ -20,6 +20,13 @@ import {
   queryCodexThreadUsage,
   redeemCodexResetCredit,
 } from "../../domain/providers/provider-account-tracking";
+import {
+  CLAUDE_RESET_CLAIM_LOOKBACK_MS,
+  ClaudeResetClaimConflict,
+  claimClaudeReset,
+  describeClaudeResets,
+} from "../../domain/providers/claude-reset-claims";
+import { listProviderAccountsWithClaudeResetClaims } from "../../db/repositories/claude-reset-claims";
 import { listProviderAccountDailyTokens } from "../../db/repositories/account-daily-tokens";
 import {
   getProviderAccountUsageDetail,
@@ -28,7 +35,6 @@ import {
 import {
   deleteProviderAccount,
   findProviderAccountById,
-  listProviderAccounts,
   listProviderStatuses,
   summarizeProviderStatuses,
   setProviderAccountsEnabled,
@@ -38,6 +44,7 @@ import {
   ProviderAccountReauthorizationConflict,
 } from "../../db/repositories/provider-accounts";
 import { providers } from "../../db/schema";
+import { isClaudeResetGrantId } from "../../providers/account-tracking/claude-resets";
 import {
   parseImportedProviderAccountMetadata,
   providerAccountMetadataSchema,
@@ -91,6 +98,11 @@ const codexThreadUsageBodySchema = z.strictObject({
 const codexResetCreditBodySchema = z.strictObject({
   creditId: z.string().trim().min(1).max(300).nullable().optional(),
   redeemRequestId: z.string().trim().min(1).max(200).nullable().optional(),
+});
+
+const claudeResetClaimBodySchema = z.strictObject({
+  grantId: z.string().refine(isClaudeResetGrantId, "Invalid grant ID"),
+  offerKey: z.string().regex(/^[0-9a-f]{32}$/),
 });
 
 const DAILY_TOKENS_DEFAULT_DAYS = 30;
@@ -170,9 +182,7 @@ const resolveUpdatedAccountMetadata = (input: {
   return parsedMetadata.data;
 };
 
-const toAdminAccountView = (
-  account: Awaited<ReturnType<typeof listProviderAccounts>>[number]
-) => ({
+const toAdminAccountView = (account: ProviderAccountRecord) => ({
   id: account.id,
   provider: account.provider,
   label: account.label,
@@ -189,8 +199,11 @@ const toAdminAccountView = (
 
 export const adminAccountsRoutes = new Hono()
   .get("/", async (context) => {
-    const [accounts] = await Promise.all([
-      listProviderAccounts(db),
+    const [{ accounts, claims }] = await Promise.all([
+      listProviderAccountsWithClaudeResetClaims(
+        db,
+        Date.now() - CLAUDE_RESET_CLAIM_LOOKBACK_MS
+      ),
       providerAccountSnapshotsRestored(),
     ]);
     const quotas = peekProviderAccountQuotas(db, accounts);
@@ -200,19 +213,29 @@ export const adminAccountsRoutes = new Hono()
         ...toAdminAccountView(account),
         quota: quotas.get(account.id) ?? null,
         profile: profiles.get(account.id) ?? null,
+        claudeResets: describeClaudeResets(account, claims),
       })),
       providers: summarizeProviderStatuses(accounts),
     });
   })
   .get("/quotas", async (context) => {
-    const [accounts] = await Promise.all([
-      listProviderAccounts(db),
+    const [{ accounts, claims }] = await Promise.all([
+      listProviderAccountsWithClaudeResetClaims(
+        db,
+        Date.now() - CLAUDE_RESET_CLAIM_LOOKBACK_MS
+      ),
       providerAccountSnapshotsRestored(),
     ]);
     const quotas = await listProviderAccountQuotas(db, accounts);
     return context.json({
       quotas: Object.fromEntries(quotas),
       profiles: Object.fromEntries(peekProviderAccountProfiles(accounts)),
+      claudeResets: Object.fromEntries(
+        accounts.map((account) => [
+          account.id,
+          describeClaudeResets(account, claims),
+        ])
+      ),
     });
   })
   .get("/providers", async (context) => {
@@ -341,6 +364,39 @@ export const adminAccountsRoutes = new Hono()
               retryable: true,
             },
             502
+          );
+        }
+        throw error;
+      }
+    }
+  )
+  .post(
+    "/:id/tracking/claude/reset-credits/consume",
+    zValidator("param", accountIdParamsSchema),
+    zValidator("json", claudeResetClaimBodySchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const body = context.req.valid("json");
+      const account = await findProviderAccountById(db, id);
+      if (!account) {
+        return context.json(accountNotFoundBody, 404);
+      }
+      if (account.provider !== "claude") {
+        return context.json(
+          { error: "bad_request", message: "Account is not a Claude account" },
+          400
+        );
+      }
+      try {
+        const claim = await claimClaudeReset(db, id, body);
+        return claim
+          ? context.json({ claim })
+          : context.json(accountNotFoundBody, 404);
+      } catch (error) {
+        if (error instanceof ClaudeResetClaimConflict) {
+          return context.json(
+            { error: "conflict", reason: error.reason, message: error.message },
+            409
           );
         }
         throw error;

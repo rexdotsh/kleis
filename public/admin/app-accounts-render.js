@@ -57,6 +57,7 @@ import {
 } from "./app-usage.js";
 import { renderAttention, usageSlotHtml } from "./app-usage-render.js";
 import { resetCreditsFact, resetCreditsFor } from "./app-reset-credits.js";
+import { claudeResetsFact } from "./app-claude-resets.js";
 
 // Rows show the main windows (5h, 7d); model-specific windows stay in the
 // expanded row.
@@ -364,6 +365,7 @@ function accountDetailHtml(account) {
     <div class="facts">${[
       ...limitFacts(account),
       resetCreditsFact(account),
+      claudeResetsFact(account),
       tokenFact(account),
       usageFact(accountUsageForId(account.id), state.accountUsageWindowMs),
       accountFact(account),

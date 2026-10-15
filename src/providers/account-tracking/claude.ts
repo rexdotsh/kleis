@@ -4,6 +4,13 @@ import {
   CLAUDE_OAUTH_BETA_HEADER,
 } from "../constants";
 import {
+  CLAUDE_RESET_CLAIM_TIMEOUT_MS,
+  CLAUDE_RESET_PROGRAM,
+  type ClaudeResetClaimResult,
+  decodeClaudeResetClaimResult,
+  decodeClaudeResetStatus,
+} from "./claude-resets";
+import {
   decodeArray,
   decodeFields,
   readBoolean,
@@ -237,12 +244,42 @@ export type ClaudeSubscriptionUsage = ReturnType<
   typeof decodeClaudeSubscriptionUsage
 >;
 
+// cedar_ember=1 adds the saved limit resets to the usual usage response, so
+// one request reads both. Claude Code adds skip_spend=1, which drops
+// extra_usage; Kleis shows extra usage, so it leaves that out.
 export const fetchClaudeSubscriptionUsage = async (accessToken: string) => {
   const data = await fetchTrackingJson({
-    url: `${ANTHROPIC_API_BASE_URL}/api/oauth/usage`,
+    url: `${ANTHROPIC_API_BASE_URL}/api/oauth/usage?${CLAUDE_RESET_PROGRAM}=1`,
     headers: claudeOAuthHeaders(accessToken),
     timeoutMs: CLAUDE_USAGE_TIMEOUT_MS,
     errorPrefix: "Claude subscription usage request failed",
   });
-  return decodeClaudeSubscriptionUsage(data);
+  return {
+    usage: decodeClaudeSubscriptionUsage(data),
+    resets: decodeClaudeResetStatus(readObject(data)?.[CLAUDE_RESET_PROGRAM]),
+  };
+};
+
+export const claimClaudeResetCredit = async (input: {
+  accessToken: string;
+  organizationUuid: string;
+  grantId: string;
+  requestId: string;
+}): Promise<ClaudeResetClaimResult> => {
+  const value = await fetchTrackingJson({
+    url: `${ANTHROPIC_API_BASE_URL}/api/organizations/${encodeURIComponent(input.organizationUuid)}/reset_rate_limits`,
+    method: "POST",
+    headers: {
+      ...claudeOAuthHeaders(input.accessToken),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      program: CLAUDE_RESET_PROGRAM,
+      grant_id: input.grantId,
+      request_id: input.requestId,
+    }),
+    timeoutMs: CLAUDE_RESET_CLAIM_TIMEOUT_MS,
+    errorPrefix: "Claude reset claim failed",
+  });
+  return decodeClaudeResetClaimResult(value);
 };
