@@ -1,13 +1,7 @@
-import {
-  $,
-  loadAccounts,
-  loadDashboard,
-  loadKeys,
-  resolveConfirm,
-  runAction,
-  state,
-  toast,
-} from "./app-data.js";
+import { loadAccounts } from "./app-accounts.js";
+import { $, resolveConfirm, runAction, state, toast } from "./app-core.js";
+import { loadKeys } from "./app-keys.js";
+import { loadDashboard } from "./app-usage.js";
 
 const root = document.documentElement;
 const standalone = root.classList.contains("standalone");

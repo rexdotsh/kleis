@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readdirSync } from "node:fs";
 
 import { adminUiRoutes } from "../../src/http/routes/admin-ui";
 
@@ -104,5 +105,74 @@ describe("admin PWA", () => {
         /^\.\/($|[\w-]+\.(js|css|webmanifest)$|fonts\/|icons\/)/
       );
     }
+  });
+
+  test("serves and pins every admin JavaScript module for offline imports", async () => {
+    const { shell } = await readShell();
+    const modules = readdirSync("public/admin").filter(
+      (file) => file.endsWith(".js") && file !== "sw.js"
+    );
+    for (const file of modules) {
+      expect(Object.keys(shell.files)).toContain(`./${file}`);
+      const response = await get(`/admin/${file}`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Type")).toContain("text/javascript");
+      expect(response.headers.get("Cache-Control")).toBe("no-cache");
+      const body = await response.arrayBuffer();
+      expect(sha256(body)).toBe(shell.files[`./${file}`]);
+      const source = new TextDecoder().decode(body);
+      for (const match of source.matchAll(/from "(\.\/[^"\n]+\.js)"/g)) {
+        expect(Object.keys(shell.files)).toContain(match[1]);
+      }
+    }
+  });
+
+  test("does not serve, preload, or cache compatibility entry points", async () => {
+    const { shell } = await readShell();
+    const html = await (await get("/admin/")).text();
+    for (const file of ["app-data.js", "app-render.js"]) {
+      expect((await get(`/admin/${file}`)).status).toBe(404);
+      expect(Object.keys(shell.files)).not.toContain(`./${file}`);
+      expect(html).not.toContain(`./${file}`);
+    }
+  });
+
+  test("the consolidated modules have an acyclic import graph", async () => {
+    const modules = readdirSync("public/admin").filter(
+      (file) => file.endsWith(".js") && file !== "sw.js"
+    );
+    expect(modules.sort()).toEqual([
+      "app-accounts-render.js",
+      "app-accounts.js",
+      "app-core.js",
+      "app-input.js",
+      "app-keys-render.js",
+      "app-keys.js",
+      "app-oauth.js",
+      "app-pwa.js",
+      "app-render-shared.js",
+      "app-usage-render.js",
+      "app-usage.js",
+      "app.js",
+    ]);
+    const imports = new Map<string, string[]>();
+    for (const file of modules) {
+      const source = await (await get(`/admin/${file}`)).text();
+      expect(source.split("\n").length).toBeLessThan(800);
+      imports.set(
+        file,
+        [...source.matchAll(/from "\.\/([^"\n]+\.js)"/g)].map(
+          (match) => match[1] ?? ""
+        )
+      );
+    }
+    const visit = (file: string, ancestors: string[]) => {
+      expect(ancestors).not.toContain(file);
+      for (const dependency of imports.get(file) ?? []) {
+        expect(imports.has(dependency)).toBe(true);
+        visit(dependency, [...ancestors, file]);
+      }
+    };
+    for (const file of modules) visit(file, []);
   });
 });

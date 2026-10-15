@@ -81,14 +81,26 @@ const serveAsset =
     );
   };
 
+const JAVASCRIPT_FILES = [
+  "app-accounts.js",
+  "app-accounts-render.js",
+  "app-core.js",
+  "app-input.js",
+  "app-keys.js",
+  "app-keys-render.js",
+  "app-oauth.js",
+  "app-pwa.js",
+  "app-render-shared.js",
+  "app-usage.js",
+  "app-usage-render.js",
+  "app.js",
+];
+
 // The app shell the service worker keeps for instant and offline launches.
 // Only these static files are cached; admin API responses never are.
 const SHELL_FILES = [
   "index.html",
-  "app.js",
-  "app-data.js",
-  "app-render.js",
-  "app-pwa.js",
+  ...JAVASCRIPT_FILES,
   "styles.css",
   "manifest.webmanifest",
   "fonts/geist-latin.v1.woff2",
@@ -132,12 +144,7 @@ export const adminUiRoutes = new Hono()
   .get("/admin/index.html", serveAdminIndex)
   .get("/admin/sw.js", serveServiceWorker);
 
-for (const fileName of [
-  "app-data.js",
-  "app-render.js",
-  "app-pwa.js",
-  "app.js",
-]) {
+for (const fileName of JAVASCRIPT_FILES) {
   adminUiRoutes.get(
     `/admin/${fileName}`,
     serveAsset(fileName, JAVASCRIPT, REVALIDATE)
