@@ -70,6 +70,8 @@ const {
 } = await import("../../public/admin/app-accounts.js");
 const { renderAccounts } =
   await import("../../public/admin/app-accounts-render.js");
+const { loadFailover, toggleFailover } =
+  await import("../../public/admin/app-failover.js");
 const {
   cancelOAuthFlow,
   logout,
@@ -144,6 +146,8 @@ function deferred() {
 }
 const failure = () => Response.json({ message: "Try again" }, { status: 503 });
 const fresh = (path: string) => {
+  if (path === "/admin/accounts/failover")
+    return Response.json({ enabled: false });
   if (path === "/admin/accounts")
     return Response.json({
       accounts: state.accounts,
@@ -382,12 +386,49 @@ describe("admin mutation and session guards", () => {
     const pending = refreshAccount(account.id);
     await tick();
     const repeated = refreshAccount(account.id);
-    expect(calls).toBe(3);
+    expect(calls).toBe(4);
     renderAccounts();
     expect($('[data-action="refresh-account"]').disabled).toBe(true);
-    reload.release(Response.json({ accounts: [account], usage: [] }));
+    reload.release(
+      Response.json({ accounts: [account], usage: [], enabled: false })
+    );
     await Promise.all([pending, repeated]);
     expect($('[data-action="refresh-account"]').disabled).toBe(false);
+  });
+
+  test("failover switch is persisted and deduplicates repeated clicks", async () => {
+    globals.fetch = () => Promise.resolve(Response.json({ enabled: false }));
+    await loadFailover();
+    const response = deferred();
+    let calls = 0;
+    globals.fetch = (url: RequestInfo | URL, init: RequestInit) => {
+      calls++;
+      expect(String(url)).toBe("/admin/accounts/failover");
+      expect(init.method).toBe("PATCH");
+      expect(JSON.parse(String(init.body))).toEqual({ enabled: true });
+      return response.respond();
+    };
+    const pending = toggleFailover();
+    const repeated = toggleFailover();
+    expect($('[data-action="toggle-failover"]').disabled).toBe(true);
+    response.release(Response.json({ enabled: true }));
+    await Promise.all([pending, repeated]);
+    expect(calls).toBe(1);
+    expect(
+      $('[data-action="toggle-failover"]').getAttribute("aria-checked")
+    ).toBe("true");
+  });
+
+  test("account edits submit the exclusion switch", async () => {
+    startEditAccount(account.id);
+    $("#edit-account-exclude-failover").checked = true;
+    let patch: unknown;
+    globals.fetch = (url: RequestInfo | URL, init: RequestInit) => {
+      if (init.method === "PATCH") patch = JSON.parse(String(init.body));
+      return Promise.resolve(fresh(String(url)));
+    };
+    await saveAccountEdits();
+    expect(patch).toMatchObject({ excludeFromFailover: true });
   });
 
   test("different targets and operations run independently", async () => {

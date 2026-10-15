@@ -10,9 +10,12 @@ import type { ProviderAccountRecord } from "../../db/repositories/provider-accou
 import { recordProviderAccountLiveLimits } from "../../domain/providers/provider-account-tracking";
 import {
   findPinnedProviderAccounts,
-  getRoutableProviderAccount,
-  refreshProviderAccountAfterAuthFailure,
+  refreshProviderAccount,
 } from "../../domain/providers/provider-service";
+import {
+  getProviderAccountRouting,
+  logRateLimitFailover,
+} from "../../domain/providers/rate-limit-failover";
 import {
   readClaudeLiveLimits,
   readCodexLiveLimits,
@@ -36,7 +39,7 @@ import {
 } from "../../usage/token-usage";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 import { hashLogId } from "../../utils/log";
-import { sendWithAuthReplay } from "../auth-replay";
+import { sendWithRateLimitFailover } from "../rate-limit-failover";
 import { createUpstreamProxyHeaders } from "../proxy-headers";
 import { createUpstreamFailureLogger } from "../upstream-failure-log";
 import {
@@ -275,11 +278,29 @@ const proxyRequest = async (
   }
 
   const now = Date.now();
-  let account: Awaited<ReturnType<typeof getRoutableProviderAccount>>;
+  let account: ProviderAccountRecord | null;
+  let routing: Awaited<ReturnType<typeof getProviderAccountRouting>>;
   try {
-    account = await getRoutableProviderAccount(db, route.provider, now, {
-      allowedAccountIds: accountScopeIds,
-    });
+    routing = await getProviderAccountRouting(
+      db,
+      route.provider,
+      accountScopeIds
+    );
+    if (routing.preferred && routing.retryAfterSeconds) {
+      usageRecorder.recordImmediate(429);
+      context.header("retry-after", String(routing.retryAfterSeconds));
+      return context.json(
+        proxyErrorResponse(
+          "All eligible accounts are temporarily rate limited",
+          "rate_limit_error"
+        ),
+        429
+      );
+    }
+    account = routing.accounts[0] ?? null;
+    if (account && account.expiresAt <= now) {
+      account = await refreshProviderAccount(db, account.id, now);
+    }
   } catch {
     usageRecorder.recordImmediate(502);
     return context.json(
@@ -315,17 +336,49 @@ const proxyRequest = async (
   });
 
   const headers = createUpstreamProxyHeaders(context.req.raw.headers);
+  if (routing.preferred && routing.preferred.id !== account.id) {
+    logRateLimitFailover(routing.preferred, account);
+  }
+  const initialAccount = account;
+  const sendWithAccounts = <Attempt extends { response: Response }>(
+    send: (attemptAccount: ProviderAccountRecord) => Promise<Attempt>
+  ) =>
+    sendWithRateLimitFailover({
+      database: db,
+      account: initialAccount,
+      remaining: routing.accounts.filter(
+        (candidate) => candidate.id !== initialAccount.id
+      ),
+      enabled: routing.enabled,
+      signal: context.req.raw.signal,
+      send: (attemptAccount) => {
+        providerAccountId = attemptAccount.id;
+        context.set("proxyLogContext", {
+          provider: route.provider,
+          endpoint: route.endpoint,
+          providerAccountId,
+        });
+        return send(attemptAccount);
+      },
+      onResponse: async (attemptAccount, response) => {
+        await logUpstreamResponse(
+          response,
+          route,
+          attemptAccount.id,
+          startedAt
+        );
+        recordProviderAccountLiveLimits(
+          attemptAccount,
+          route.provider === "codex"
+            ? readCodexLiveLimits(response.headers)
+            : readClaudeLiveLimits(response.headers)
+        );
+      },
+    });
 
   switch (route.provider) {
     case "codex": {
-      const initialCodexAccount = account;
       const codexSessionId = readCodexSessionId(requestBodyJson, headers);
-      const codexUpstreamSessionId = codexSessionId
-        ? await deriveCodexSessionId(
-            `${apiKeyId}:${account.id}`,
-            codexSessionId
-          )
-        : null;
       const baseHeaders = new Headers(headers);
       const baseRequestBody = requestBody;
       const sendAttempt = async (
@@ -334,6 +387,12 @@ const proxyRequest = async (
         response: Response;
         transformResponse: ((response: Response) => Promise<Response>) | null;
       }> => {
+        const codexUpstreamSessionId = codexSessionId
+          ? await deriveCodexSessionId(
+              `${apiKeyId}:${attemptAccount.id}`,
+              codexSessionId
+            )
+          : null;
         const attemptHeaders = new Headers(baseHeaders);
         const codexProxy = prepareCodexProxyRequest({
           ...(route.operation ? { operation: route.operation } : {}),
@@ -381,25 +440,13 @@ const proxyRequest = async (
         return { response, transformResponse: codexProxy.transformResponse };
       };
 
-      const sendCodexWithAuthReplay = () =>
-        sendWithAuthReplay<
-          ProviderAccountRecord,
-          Awaited<ReturnType<typeof sendAttempt>>
-        >({
-          account: initialCodexAccount,
-          signal: context.req.raw.signal,
-          send: sendAttempt,
-          refresh: (accountId, failedAccessToken) =>
-            refreshProviderAccountAfterAuthFailure(
-              db,
-              accountId,
-              failedAccessToken,
-              context.req.raw.signal
-            ),
-        });
-      let result: Awaited<ReturnType<typeof sendCodexWithAuthReplay>>;
+      let result: Awaited<
+        ReturnType<
+          typeof sendWithAccounts<Awaited<ReturnType<typeof sendAttempt>>>
+        >
+      >;
       try {
-        result = await sendCodexWithAuthReplay();
+        result = await sendWithAccounts(sendAttempt);
       } catch (error) {
         if (context.req.raw.signal.aborted) {
           throw error;
@@ -407,13 +454,7 @@ const proxyRequest = async (
         usageRecorder.recordImmediate(500);
         throw error;
       }
-      account = result.account;
       const { attempt } = result;
-      await logUpstreamResponse(attempt.response, route, account.id, startedAt);
-      recordProviderAccountLiveLimits(
-        account,
-        readCodexLiveLimits(attempt.response.headers)
-      );
 
       let responseToClient = attempt.response;
       if (attempt.transformResponse) {
@@ -436,7 +477,6 @@ const proxyRequest = async (
     }
 
     case "claude": {
-      const initialClaudeAccount = account;
       const baseHeaders = new Headers(headers);
       const sendAttempt = async (attemptAccount: ProviderAccountRecord) => {
         const attemptHeaders = new Headers(baseHeaders);
@@ -469,25 +509,11 @@ const proxyRequest = async (
       };
       let result: Awaited<
         ReturnType<
-          typeof sendWithAuthReplay<
-            ProviderAccountRecord,
-            Awaited<ReturnType<typeof sendAttempt>>
-          >
+          typeof sendWithAccounts<Awaited<ReturnType<typeof sendAttempt>>>
         >
       >;
       try {
-        result = await sendWithAuthReplay({
-          account: initialClaudeAccount,
-          signal: context.req.raw.signal,
-          send: sendAttempt,
-          refresh: (accountId, failedAccessToken) =>
-            refreshProviderAccountAfterAuthFailure(
-              db,
-              accountId,
-              failedAccessToken,
-              context.req.raw.signal
-            ),
-        });
+        result = await sendWithAccounts(sendAttempt);
       } catch (error) {
         if (context.req.raw.signal.aborted) {
           throw error;
@@ -495,13 +521,7 @@ const proxyRequest = async (
         usageRecorder.recordImmediate(500);
         throw error;
       }
-      account = result.account;
       const { attempt } = result;
-      await logUpstreamResponse(attempt.response, route, account.id, startedAt);
-      recordProviderAccountLiveLimits(
-        account,
-        readClaudeLiveLimits(attempt.response.headers)
-      );
       let responseToClient = attempt.response;
       try {
         responseToClient = await attempt.transformResponse(attempt.response);

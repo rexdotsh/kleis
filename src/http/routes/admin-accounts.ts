@@ -4,6 +4,10 @@ import { z } from "zod";
 
 import { db } from "../../db";
 import {
+  getRateLimitFailoverEnabled,
+  setRateLimitFailoverEnabled,
+} from "../../db/repositories/proxy-settings";
+import {
   completeProviderOAuth,
   importProviderAccount,
   ProviderReauthorizationTargetError,
@@ -79,6 +83,7 @@ const importAccountBodySchema = z.strictObject({
 });
 
 const updateAccountBodySchema = z.strictObject({
+  excludeFromFailover: z.boolean().optional(),
   accountId: z.string().trim().max(200).nullable().optional(),
   label: z.string().trim().max(160).nullable().optional(),
   metadata: z.record(z.string(), z.unknown()).nullable().optional(),
@@ -179,6 +184,7 @@ const toAdminAccountView = (
   accountId: account.accountId,
   isPrimary: account.isPrimary,
   enabled: account.enabled,
+  excludeFromFailover: account.excludeFromFailover,
   metadata: account.metadata,
   expiresAt: account.expiresAt,
   lastRefreshAt: account.lastRefreshAt,
@@ -188,6 +194,18 @@ const toAdminAccountView = (
 });
 
 export const adminAccountsRoutes = new Hono()
+  .get("/failover", async (context) =>
+    context.json({ enabled: await getRateLimitFailoverEnabled(db) })
+  )
+  .patch(
+    "/failover",
+    zValidator("json", updateProviderStatusBodySchema),
+    async (context) => {
+      const { enabled } = context.req.valid("json");
+      await setRateLimitFailoverEnabled(db, enabled);
+      return context.json({ enabled });
+    }
+  )
   .get("/", async (context) => {
     const [accounts] = await Promise.all([
       listProviderAccounts(db),
@@ -405,6 +423,9 @@ export const adminAccountsRoutes = new Hono()
         label,
         accountId,
         metadata,
+        ...(body.excludeFromFailover !== undefined
+          ? { excludeFromFailover: body.excludeFromFailover }
+          : {}),
         now: Date.now(),
       });
 

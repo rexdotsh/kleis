@@ -667,23 +667,11 @@ const routableAccountCache = createLookupCache<ProviderAccountRecord | null>(
 
 const getPrimaryProviderAccount = async (
   database: Database,
-  provider: Provider,
-  now: number
+  provider: Provider
 ): Promise<ProviderAccountRecord | null> => {
-  const account = await routableAccountCache.get(
-    database,
-    `primary:${provider}`,
-    () => findPrimaryProviderAccount(database, provider)
+  return routableAccountCache.get(database, `primary:${provider}`, () =>
+    findPrimaryProviderAccount(database, provider)
   );
-  if (!account) {
-    return null;
-  }
-
-  if (account.expiresAt > now) {
-    return account;
-  }
-
-  return refreshProviderAccount(database, account.id, now);
 };
 
 const pinnedAccountCache = createLookupCache<ProviderAccountRecord[]>(
@@ -724,10 +712,9 @@ export const findPinnedProviderAccounts = (
 
 // Requests use the key's pinned account for the provider when it has one, and
 // the provider's primary account otherwise.
-export const getRoutableProviderAccount = async (
+export const getPreferredProviderAccount = async (
   database: Database,
   provider: Provider,
-  now: number,
   input?: {
     allowedAccountIds?: readonly string[] | null;
   }
@@ -738,12 +725,21 @@ export const getRoutableProviderAccount = async (
     input?.allowedAccountIds
   );
   if (!pinned.length) {
-    return getPrimaryProviderAccount(database, provider, now);
+    return getPrimaryProviderAccount(database, provider);
   }
 
-  const account = pickPreferredProviderAccount(
+  return pickPreferredProviderAccount(
     pinned.filter((candidate) => candidate.enabled)
   );
+};
+
+export const getRoutableProviderAccount = async (
+  database: Database,
+  provider: Provider,
+  now: number,
+  input?: { allowedAccountIds?: readonly string[] | null }
+): Promise<ProviderAccountRecord | null> => {
+  const account = await getPreferredProviderAccount(database, provider, input);
   if (!account) {
     return null;
   }

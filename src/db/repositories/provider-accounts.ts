@@ -29,6 +29,7 @@ export type ProviderAccountRecord = {
   accountId: string | null;
   isPrimary: boolean;
   enabled: boolean;
+  excludeFromFailover: boolean;
   accessToken: string;
   refreshToken: string;
   refreshLockToken: string | null;
@@ -50,6 +51,7 @@ export const toProviderAccountRecord = (
   accountId: row.accountId,
   isPrimary: row.isPrimary,
   enabled: row.enabled,
+  excludeFromFailover: row.excludeFromFailover,
   accessToken: row.accessToken,
   refreshToken: row.refreshToken,
   refreshLockToken: row.refreshLockToken,
@@ -646,6 +648,7 @@ export const updateProviderAccountProfile = withInvalidation(
       label: string | null;
       accountId: string | null;
       metadata: ProviderAccountMetadata | null;
+      excludeFromFailover?: boolean;
       now: number;
     }
   ): Promise<ProviderAccountRecord | "account_id_conflict" | null> => {
@@ -656,6 +659,7 @@ export const updateProviderAccountProfile = withInvalidation(
           label: input.label,
           accountId: input.accountId,
           metadataJson: serializeProviderAccountMetadata(input.metadata),
+          excludeFromFailover: input.excludeFromFailover,
           updatedAt: input.now,
         })
         .where(eq(providerAccounts.id, id));
