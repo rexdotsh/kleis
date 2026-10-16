@@ -1,5 +1,8 @@
 import type { Database } from "../../db";
-import { accountCooldowns } from "../../providers/account-tracking/rate-limit-cooldowns";
+import {
+  accountCooldowns,
+  type AccountCooldownObservation,
+} from "../../providers/account-tracking/rate-limit-cooldowns";
 import {
   findCodexResetCreditRedemption,
   saveCodexResetCreditRedemption,
@@ -793,7 +796,8 @@ const mergeLiveLimits = (
 // endpoint, so it stays.
 export const recordProviderAccountLiveLimits = (
   account: ProviderAccountRecord,
-  limits: LiveLimits | null
+  limits: LiveLimits | null,
+  observation: AccountCooldownObservation
 ): void => {
   if (
     !(limits && isTrackingAccount(account)) ||
@@ -805,7 +809,7 @@ export const recordProviderAccountLiveLimits = (
     const key = quotaKey(account);
     const now = Date.now();
     const entry = cache.get(key);
-    accountCooldowns.observe(account, limits);
+    observation.observe(limits);
     const quota: AccountQuota = {
       fetchedAt: now,
       error: null,

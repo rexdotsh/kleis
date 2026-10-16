@@ -31,79 +31,103 @@ const windowUsage = (limits: LiveLimits): Record<string, number | undefined> =>
       };
 
 type Cooldown = {
-  identity: string;
-  provider: Provider;
   reset: number;
   windows: Set<string>;
 };
 
+type AccountState = {
+  identity: string;
+  provider: Provider;
+  cooldown: Cooldown | null;
+};
+
+export type AccountCooldownObservation = {
+  mark(reset: number, limits?: LiveLimits | null): void;
+  observe(limits: LiveLimits): void;
+};
+
 export const createAccountCooldowns = () => {
-  const resets = new Map<string, Cooldown>();
+  const states = new Map<string, AccountState>();
   return {
     resetAt(account: ProviderAccountRecord, now = Date.now()): number {
-      const entry = resets.get(account.id);
-      if (!entry || entry.identity !== identity(account)) return 0;
-      if (entry.reset > now) return entry.reset;
-      resets.delete(account.id);
+      const entry = states.get(account.id);
+      if (!entry?.cooldown || entry.identity !== identity(account)) return 0;
+      if (entry.cooldown.reset > now) return entry.cooldown.reset;
+      states.delete(account.id);
       return 0;
     },
-    mark(
-      account: ProviderAccountRecord,
-      reset: number,
-      limits: LiveLimits | null = null,
-      now = Date.now()
-    ): void {
-      for (const [key, value] of resets) {
-        if (value.reset <= now) resets.delete(key);
-      }
-      const current = resets.get(account.id);
-      const previous =
-        current?.identity === identity(account) ? current : undefined;
-      const exhausted = limits
-        ? Object.entries(windowUsage(limits))
-            .filter(([, percent]) => percent !== undefined && percent >= 100)
-            .map(([key]) => key)
-        : [];
-      const windows = exhausted.length
-        ? exhausted
-        : account.provider === "claude"
-          ? ["five_hour", "seven_day"]
-          : ["primary", "secondary"];
-      resets.set(account.id, {
-        identity: identity(account),
-        provider: account.provider,
-        reset: Math.max(previous?.reset ?? 0, reset),
-        windows: new Set([...(previous?.windows ?? []), ...windows]),
-      });
+    capture(account: ProviderAccountRecord): AccountCooldownObservation {
+      const accountIdentity = identity(account);
+      const current = states.get(account.id);
+      let revision: AccountState =
+        current?.identity === accountIdentity
+          ? current
+          : {
+              identity: accountIdentity,
+              provider: account.provider,
+              cooldown: null,
+            };
+      states.set(account.id, revision);
+      // A revision includes an empty cooldown so clears also fence pending 429s.
+      // Only this observation can advance its revision after applying an update.
+      const commit = (cooldown: Cooldown | null): void => {
+        revision = { ...revision, cooldown };
+        states.set(account.id, revision);
+      };
+      return {
+        mark(reset, limits = null): void {
+          if (states.get(account.id) !== revision) return;
+          const previous = revision.cooldown;
+          const exhausted = limits
+            ? Object.entries(windowUsage(limits))
+                .filter(
+                  ([, percent]) => percent !== undefined && percent >= 100
+                )
+                .map(([key]) => key)
+            : [];
+          const windows = exhausted.length
+            ? exhausted
+            : account.provider === "claude"
+              ? ["five_hour", "seven_day"]
+              : ["primary", "secondary"];
+          commit({
+            reset: Math.max(previous?.reset ?? 0, reset),
+            windows: new Set([...(previous?.windows ?? []), ...windows]),
+          });
+        },
+        observe(limits): void {
+          if (
+            states.get(account.id) !== revision ||
+            limits.provider !== account.provider
+          )
+            return;
+          const previous = revision.cooldown;
+          if (!previous) {
+            commit(null);
+            return;
+          }
+          const windows = new Set(previous.windows);
+          for (const [key, percent] of Object.entries(windowUsage(limits))) {
+            if (percent === undefined) continue;
+            if (percent >= 100) windows.add(key);
+            else windows.delete(key);
+          }
+          commit(windows.size ? { ...previous, windows } : null);
+        },
+      };
     },
     clear(id: string): void {
-      resets.delete(id);
+      states.delete(id);
     },
     clearChangedIdentity(account: ProviderAccountRecord): void {
-      const entry = resets.get(account.id);
+      const entry = states.get(account.id);
       if (entry && entry.identity !== identity(account))
-        resets.delete(account.id);
+        states.delete(account.id);
     },
     clearProvider(provider: Provider): void {
-      for (const [id, entry] of resets) {
-        if (entry.provider === provider) resets.delete(id);
+      for (const [id, entry] of states) {
+        if (entry.provider === provider) states.delete(id);
       }
-    },
-    observe(account: ProviderAccountRecord, limits: LiveLimits): void {
-      const entry = resets.get(account.id);
-      if (
-        !entry ||
-        entry.identity !== identity(account) ||
-        limits.provider !== account.provider
-      )
-        return;
-      const usage = windowUsage(limits);
-      for (const [key, percent] of Object.entries(usage)) {
-        if (percent === undefined) continue;
-        if (percent >= 100) entry.windows.add(key);
-        else entry.windows.delete(key);
-      }
-      if (!entry.windows.size) resets.delete(account.id);
     },
   };
 };

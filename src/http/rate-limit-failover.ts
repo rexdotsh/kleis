@@ -8,7 +8,10 @@ import {
   refreshProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../domain/providers/provider-service";
-import { accountCooldowns } from "../providers/account-tracking/rate-limit-cooldowns";
+import {
+  accountCooldowns,
+  type AccountCooldownObservation,
+} from "../providers/account-tracking/rate-limit-cooldowns";
 import {
   readClaudeLiveLimits,
   readCodexLiveLimits,
@@ -24,17 +27,28 @@ export const sendWithRateLimitFailover = async <
   remaining: readonly ProviderAccountRecord[];
   enabled: boolean;
   signal: AbortSignal;
-  send(account: ProviderAccountRecord): Promise<Attempt>;
-  onResponse(account: ProviderAccountRecord, response: Response): Promise<void>;
+  send(
+    account: ProviderAccountRecord,
+    observation: AccountCooldownObservation
+  ): Promise<Attempt>;
+  onResponse(
+    account: ProviderAccountRecord,
+    response: Response,
+    observation: AccountCooldownObservation
+  ): Promise<void>;
 }): Promise<{ account: ProviderAccountRecord; attempt: Attempt }> => {
   let account = input.account;
   const remaining = [...input.remaining];
   while (true) {
     input.signal.throwIfAborted();
-    const result = await sendWithAuthReplay({
+    const sent = await sendWithAuthReplay({
       account,
       signal: input.signal,
-      send: input.send,
+      send: async (current) => {
+        const observation = accountCooldowns.capture(current);
+        const attempt = await input.send(current, observation);
+        return { response: attempt.response, attempt, observation };
+      },
       refresh: (id, token) =>
         refreshProviderAccountAfterAuthFailure(
           input.database,
@@ -43,9 +57,11 @@ export const sendWithRateLimitFailover = async <
           input.signal
         ),
     });
-    account = result.account;
-    const response = result.attempt.response;
-    await input.onResponse(account, response);
+    account = sent.account;
+    const { attempt, observation } = sent.attempt;
+    const result = { account, attempt };
+    const response = attempt.response;
+    await input.onResponse(account, response, observation);
     // Only HTTP rejections are replayable. Stream errors belong to the response
     // already returned to the client and never enter this loop.
     if (!input.enabled || response.status !== 429) return result;
@@ -57,8 +73,7 @@ export const sendWithRateLimitFailover = async <
       ))
     )
       return result;
-    accountCooldowns.mark(
-      account,
+    observation.mark(
       readRateLimitReset(account.provider, response.headers),
       account.provider === "claude"
         ? readClaudeLiveLimits(response.headers)

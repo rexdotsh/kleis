@@ -8,6 +8,7 @@ import {
 } from "../../db/repositories/request-usage";
 import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
 import { recordProviderAccountLiveLimits } from "../../domain/providers/provider-account-tracking";
+import type { AccountCooldownObservation } from "../../providers/account-tracking/rate-limit-cooldowns";
 import {
   findPinnedProviderAccounts,
   refreshProviderAccount,
@@ -344,7 +345,10 @@ const proxyRequest = async (
   }
   const initialAccount = account;
   const sendWithAccounts = <Attempt extends { response: Response }>(
-    send: (attemptAccount: ProviderAccountRecord) => Promise<Attempt>
+    send: (
+      attemptAccount: ProviderAccountRecord,
+      observation: AccountCooldownObservation
+    ) => Promise<Attempt>
   ) =>
     sendWithRateLimitFailover({
       database: db,
@@ -354,16 +358,16 @@ const proxyRequest = async (
       ),
       enabled: routing.enabled,
       signal: context.req.raw.signal,
-      send: (attemptAccount) => {
+      send: (attemptAccount, observation) => {
         providerAccountId = attemptAccount.id;
         context.set("proxyLogContext", {
           provider: route.provider,
           endpoint: route.endpoint,
           providerAccountId,
         });
-        return send(attemptAccount);
+        return send(attemptAccount, observation);
       },
-      onResponse: async (attemptAccount, response) => {
+      onResponse: async (attemptAccount, response, observation) => {
         await logUpstreamResponse(
           response,
           route,
@@ -374,7 +378,8 @@ const proxyRequest = async (
           attemptAccount,
           route.provider === "codex"
             ? readCodexLiveLimits(response.headers)
-            : readClaudeLiveLimits(response.headers)
+            : readClaudeLiveLimits(response.headers),
+          observation
         );
       },
     });
@@ -385,7 +390,8 @@ const proxyRequest = async (
       const baseHeaders = new Headers(headers);
       const baseRequestBody = requestBody;
       const sendAttempt = async (
-        attemptAccount: ProviderAccountRecord
+        attemptAccount: ProviderAccountRecord,
+        observation: AccountCooldownObservation
       ): Promise<{
         response: Response;
         transformResponse: ((response: Response) => Promise<Response>) | null;
@@ -423,7 +429,11 @@ const proxyRequest = async (
             upstreamSessionId: codexUpstreamSessionId,
             onTokenUsage: usageRecorder.onTokenUsage,
             onLiveLimits: (limits) =>
-              recordProviderAccountLiveLimits(attemptAccount, limits),
+              recordProviderAccountLiveLimits(
+                attemptAccount,
+                limits,
+                observation
+              ),
             signal: context.req.raw.signal,
           });
           if (webSocketResponse) {

@@ -29,6 +29,8 @@ const { adminAccountsRoutes } =
   await import("../../src/http/routes/admin-accounts");
 const { accountCooldowns } =
   await import("../../src/providers/account-tracking/rate-limit-cooldowns");
+const { redeemCodexResetCredit } =
+  await import("../../src/domain/providers/provider-account-tracking");
 type Account = Awaited<ReturnType<typeof upsertProviderAccount>>;
 type Provider = "claude" | "codex";
 let pins: string[] | null = null;
@@ -517,6 +519,150 @@ test("Codex delayed usage-limit JSON still fails over after the logging read exp
     { providerAccountId: second.id, requestCount: 1, successCount: 1 },
   ]);
 });
+
+test("Codex delayed 429 cannot recreate a cooldown after reset-credit recovery", async () => {
+  const [primary] = await setup("codex");
+  pins = [primary.id];
+  let release = () => {};
+  let started = () => {};
+  const entered = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let proxyCalls = 0;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith("/rate-limit-reset-credits/consume")) {
+      return Response.json({ code: "reset", windows_reset: 1 });
+    }
+    if (!url.endsWith("/responses")) return Response.json({});
+    proxyCalls++;
+    if (proxyCalls === 1) {
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            release = () => {
+              controller.enqueue(
+                new TextEncoder().encode(
+                  '{"error":{"code":"usage_limit_reached"}}'
+                )
+              );
+              controller.close();
+              release = () => {};
+            };
+            started();
+          },
+        }),
+        {
+          status: 429,
+          headers: {
+            "content-type": "application/json",
+            "retry-after": "18000",
+          },
+        }
+      );
+    }
+    if (proxyCalls === 2) {
+      const response = limited("codex");
+      response.headers.set("retry-after", "18000");
+      return response;
+    }
+    return success();
+  }) as typeof fetch;
+  const pending = request("codex");
+  try {
+    await entered;
+    const rejected = await request("codex");
+    expect(rejected.status).toBe(429);
+    await rejected.text();
+    expect(accountCooldowns.resetAt(primary)).toBeGreaterThan(
+      Date.now() + 17_999_000
+    );
+    expect(await redeemCodexResetCredit(db, primary.id, {})).toMatchObject({
+      code: "reset",
+    });
+    expect(accountCooldowns.resetAt(primary)).toBe(0);
+    release();
+    const old = await pending;
+    expect(old.status).toBe(429);
+    await old.text();
+    expect(accountCooldowns.resetAt(primary)).toBe(0);
+    const fresh = await request("codex");
+    expect(fresh.status).toBe(200);
+    await fresh.text();
+    expect(proxyCalls).toBe(3);
+  } finally {
+    release();
+    await (await pending).body?.cancel().catch(() => undefined);
+  }
+});
+
+for (const provider of ["claude", "codex"] as const) {
+  test(`${provider}: older successful headers cannot erase a newer cooldown`, async () => {
+    const [primary] = await setup(provider);
+    pins = [primary.id];
+    let release: (response: Response) => void = () => {};
+    const held = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    let started = () => {};
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let attempts = 0;
+    const calls = mockAttempts(() => {
+      attempts++;
+      if (attempts === 1) {
+        started();
+        return held;
+      }
+      const response = limited(provider);
+      response.headers.set("retry-after", "18000");
+      if (provider === "claude") {
+        response.headers.set(
+          "anthropic-ratelimit-unified-representative-claim",
+          "five_hour"
+        );
+      } else {
+        response.headers.set("x-codex-primary-used-percent", "100");
+      }
+      return response;
+    });
+    const recovered = success();
+    if (provider === "claude") {
+      recovered.headers.set("anthropic-ratelimit-unified-status", "allowed");
+      recovered.headers.set(
+        "anthropic-ratelimit-unified-5h-utilization",
+        "0.1"
+      );
+    } else {
+      recovered.headers.set("x-codex-primary-used-percent", "10");
+    }
+    const pending = request(provider);
+    try {
+      await entered;
+      const rejected = await request(provider);
+      expect(rejected.status).toBe(429);
+      await rejected.text();
+      const reset = accountCooldowns.resetAt(primary);
+      expect(reset).toBeGreaterThan(Date.now() + 17_999_000);
+      release(recovered);
+      const old = await pending;
+      expect(old.status).toBe(200);
+      await old.text();
+      expect(accountCooldowns.resetAt(primary)).toBe(reset);
+      const cooling = await request(provider);
+      expect(cooling.status).toBe(429);
+      expect(Number(cooling.headers.get("retry-after"))).toBeGreaterThan(
+        17_999
+      );
+      await cooling.text();
+      expect(calls).toEqual(["Bearer fake-primary", "Bearer fake-primary"]);
+    } finally {
+      release(recovered);
+      await (await pending).body?.cancel().catch(() => undefined);
+    }
+  });
+}
 
 test("Claude header-only subscription rejection cancels the discarded stream before retry", async () => {
   const [, second] = await setup("claude");

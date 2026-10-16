@@ -96,8 +96,8 @@ test("pins restrict alternates even when another primary is available", () => {
 test("cooldowns expire and concurrent marks cannot shorten them", () => {
   const cooldowns = createAccountCooldowns();
   const entry = account("a");
-  cooldowns.mark(entry, 2000, null, 1000);
-  cooldowns.mark(entry, 1500, null, 1000);
+  cooldowns.capture(entry).mark(2000);
+  cooldowns.capture(entry).mark(1500);
   expect(cooldowns.resetAt(entry, 1999)).toBe(2000);
   expect(cooldowns.resetAt(entry, 2000)).toBe(0);
   expect(cooldowns.resetAt(entry, 1000)).toBe(0);
@@ -110,7 +110,7 @@ test("a replacement provider identity cannot inherit a row's cooldown", () => {
     accountId: "old-identity",
   });
   const replacement = { ...previous, accountId: "new-identity" };
-  cooldowns.mark(previous, Date.now() + 18_000_000);
+  cooldowns.capture(previous).mark(Date.now() + 18_000_000);
   expect(cooldowns.resetAt(replacement)).toBe(0);
   expect(cooldowns.resetAt(previous)).toBeGreaterThan(Date.now());
 });
@@ -142,10 +142,18 @@ test.each(["claude", "codex"] as const)(
           : { "x-codex-primary-used-percent": "10" }
       )
     );
-    accountCooldowns.mark(entry, Date.now() + 18_000_000, blocked);
-    recordProviderAccountLiveLimits(entry, unrelated);
+    accountCooldowns.capture(entry).mark(Date.now() + 18_000_000, blocked);
+    recordProviderAccountLiveLimits(
+      entry,
+      unrelated,
+      accountCooldowns.capture(entry)
+    );
     expect(accountCooldowns.resetAt(entry)).toBeGreaterThan(Date.now());
-    recordProviderAccountLiveLimits(entry, recovered);
+    recordProviderAccountLiveLimits(
+      entry,
+      recovered,
+      accountCooldowns.capture(entry)
+    );
     expect(accountCooldowns.resetAt(entry)).toBe(0);
   }
 );
@@ -159,7 +167,7 @@ test("partial live readings retain each blocking window until it recovers", () =
       "x-codex-secondary-used-percent": "100",
     })
   );
-  cooldowns.mark(entry, Date.now() + 18_000_000, blocked);
+  cooldowns.capture(entry).mark(Date.now() + 18_000_000, blocked);
   const primary = readCodexLiveLimits(
     new Headers({ "x-codex-primary-used-percent": "10" })
   );
@@ -167,10 +175,61 @@ test("partial live readings retain each blocking window until it recovers", () =
     new Headers({ "x-codex-secondary-used-percent": "10" })
   );
   if (!primary || !secondary) throw new Error("Missing live limits");
-  cooldowns.observe(entry, primary);
+  cooldowns.capture(entry).observe(primary);
   expect(cooldowns.resetAt(entry)).toBeGreaterThan(Date.now());
-  cooldowns.observe(entry, secondary);
+  cooldowns.capture(entry).observe(secondary);
   expect(cooldowns.resetAt(entry)).toBe(0);
+});
+
+test.each(["account", "provider", "identity"])(
+  "%s clear invalidates pending observations even without a cooldown",
+  (kind) => {
+    const cooldowns = createAccountCooldowns();
+    const entry = account("pending");
+    const pending = cooldowns.capture(entry);
+    if (kind === "account") cooldowns.clear(entry.id);
+    else if (kind === "provider") cooldowns.clearProvider(entry.provider);
+    else cooldowns.clearChangedIdentity({ ...entry, accountId: "replacement" });
+    pending.mark(Date.now() + 18_000_000);
+    expect(cooldowns.resetAt(entry)).toBe(0);
+    cooldowns.capture(entry).mark(Date.now() + 30_000);
+    expect(cooldowns.resetAt(entry)).toBeGreaterThan(Date.now());
+  }
+);
+
+test("stale observations cannot set or clear a newer cooldown revision", () => {
+  const cooldowns = createAccountCooldowns();
+  const entry = account("revision", { provider: "codex" });
+  const blocked = readCodexLiveLimits(
+    new Headers({ "x-codex-primary-used-percent": "100" })
+  );
+  const recovered = readCodexLiveLimits(
+    new Headers({ "x-codex-primary-used-percent": "10" })
+  );
+  if (!blocked || !recovered) throw new Error("Missing live limits");
+  const stale = cooldowns.capture(entry);
+  const current = cooldowns.capture(entry);
+  current.observe(blocked);
+  current.mark(2000, blocked);
+  expect(cooldowns.resetAt(entry, 1000)).toBe(2000);
+  stale.observe(recovered);
+  stale.mark(18_000_000, blocked);
+  expect(cooldowns.resetAt(entry, 1000)).toBe(2000);
+  const lateRejection = cooldowns.capture(entry);
+  current.observe(recovered);
+  expect(cooldowns.resetAt(entry, 1000)).toBe(0);
+  lateRejection.mark(18_000_000, blocked);
+  expect(cooldowns.resetAt(entry, 1000)).toBe(0);
+});
+
+test("cooldown expiry invalidates pending observations", () => {
+  const cooldowns = createAccountCooldowns();
+  const entry = account("expiry");
+  const observation = cooldowns.capture(entry);
+  observation.mark(2000);
+  expect(cooldowns.resetAt(entry, 2000)).toBe(0);
+  observation.mark(18_000_000);
+  expect(cooldowns.resetAt(entry, 2001)).toBe(0);
 });
 
 test.each(["claude", "codex"] as const)(
@@ -315,7 +374,7 @@ describe("failover routing persistence", () => {
 
   test("reauthorization and credential import clear same-identity cooldowns", async () => {
     const primary = await insert("codex", "one");
-    accountCooldowns.mark(primary, Date.now() + 18_000_000);
+    accountCooldowns.capture(primary).mark(Date.now() + 18_000_000);
     const updated = await replaceProviderAccountCredentials(
       database,
       primary.id,
@@ -331,7 +390,7 @@ describe("failover routing persistence", () => {
     );
     expect(updated).not.toBeNull();
     expect(accountCooldowns.resetAt(primary)).toBe(0);
-    accountCooldowns.mark(primary, Date.now() + 18_000_000);
+    accountCooldowns.capture(primary).mark(Date.now() + 18_000_000);
     await insert("codex", "one");
     expect(accountCooldowns.resetAt(primary)).toBe(0);
   });
@@ -339,7 +398,7 @@ describe("failover routing persistence", () => {
   test("editing identity restores preferred routing immediately", async () => {
     const primary = await insert("codex", "one");
     await setRateLimitFailoverEnabled(database, true);
-    accountCooldowns.mark(primary, Date.now() + 18_000_000);
+    accountCooldowns.capture(primary).mark(Date.now() + 18_000_000);
     expect(
       (await getProviderAccountRouting(database, "codex", null))
         .retryAfterSeconds
@@ -358,7 +417,7 @@ describe("failover routing persistence", () => {
 
   test("token rotation and label edits preserve cooldowns, but a refreshed identity clears them", async () => {
     const primary = await insert("codex", "one");
-    accountCooldowns.mark(primary, Date.now() + 18_000_000);
+    accountCooldowns.capture(primary).mark(Date.now() + 18_000_000);
     const tokens = {
       accessToken: "fake-rotated",
       refreshToken: "fake-rotated-refresh",
@@ -385,8 +444,8 @@ describe("failover routing persistence", () => {
     const primary = await insert("codex", "one");
     const claude = await insert("claude", "two");
     await setRateLimitFailoverEnabled(database, true);
-    accountCooldowns.mark(primary, Date.now() + 18_000_000);
-    accountCooldowns.mark(claude, Date.now() + 18_000_000);
+    accountCooldowns.capture(primary).mark(Date.now() + 18_000_000);
+    accountCooldowns.capture(claude).mark(Date.now() + 18_000_000);
     await setProviderAccountsEnabled(database, "codex", false, Date.now());
     await setProviderAccountsEnabled(database, "codex", true, Date.now());
     expect(accountCooldowns.resetAt(primary)).toBe(0);
@@ -401,7 +460,7 @@ describe("failover routing persistence", () => {
     async (code) => {
       const primary = await insert("codex", "one");
       await setRateLimitFailoverEnabled(database, true);
-      accountCooldowns.mark(primary, Date.now() + 18_000_000);
+      accountCooldowns.capture(primary).mark(Date.now() + 18_000_000);
       expect(
         (await getProviderAccountRouting(database, "codex", null))
           .retryAfterSeconds
