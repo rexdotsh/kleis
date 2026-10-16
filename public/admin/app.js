@@ -364,13 +364,6 @@ $("#opencode-setup").addEventListener("click", (event) => {
     runAction(copyToClipboard(setupSnippet(key), button, "Commands copied"));
 });
 
-$("#keys-foot").addEventListener("click", (event) => {
-  const button = event.target.closest("button[data-action]");
-  if (!button) return;
-  state.showRevokedKeys = button.dataset.action === "show-revoked";
-  renderKeys();
-});
-
 $("#reauthorize-list").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-action]");
   if (!button) return;

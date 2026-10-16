@@ -222,6 +222,18 @@ const KEY_LOADING_HTML = `<div class="row thead t-key"><span>Label</span><span c
 
 const kbd = (key) => `<span class="kbd" aria-hidden="true">${key}</span>`;
 
+function disclosureHeadingHtml({
+  id,
+  label,
+  count,
+  open,
+  cursor,
+  action,
+  note = "",
+}) {
+  return `<button class="disclosure-heading ${id}-heading${cursor === `${id}-group` ? " cursor" : ""}" type="button" data-cursor-id="${id}-group" data-action="${action}" aria-expanded="${open}" aria-controls="${id}-rows"><span class="group-name"><span class="cap">${escapeHtml(label)}</span><span class="muted small">${count}</span><span class="disclosure-chevron">${icon("chev")}</span></span>${note ? `<span class="disclosure-note">${escapeHtml(note)}</span>` : ""}</button>`;
+}
+
 function requestsCellHtml(usage) {
   const metrics = normalizeUsage(usage);
   const failed = failedCount(metrics);
@@ -736,6 +748,7 @@ export {
   ACCOUNT_LOADING_HTML,
   KEY_LOADING_HTML,
   kbd,
+  disclosureHeadingHtml,
   requestsCellHtml,
   fact,
   usageFact,

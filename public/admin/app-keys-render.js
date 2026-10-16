@@ -24,6 +24,7 @@ import {
   actionMutationAttributes,
   cacheReadRate,
   dateInputValue,
+  disclosureHeadingHtml,
   fact,
   formFoot,
   formRow,
@@ -429,14 +430,14 @@ function keyRowHtml(key) {
   const name = keyName(key);
   const cursor = state.cursorKeyId === key.id ? " cursor" : "";
 
-  return `<div class="row t-key${open ? " open" : ""}${active || open ? "" : " dim"}${cursor}" data-key-id="${key.id}" data-flip="key:${key.id}" tabindex="0" role="button" aria-expanded="${open}">
+  return `<div class="row t-key${open ? " open" : ""}${active || open ? "" : " dim"}${revoked ? " revoked" : ""}${cursor}" data-key-id="${key.id}" data-flip="key:${key.id}" tabindex="0" role="button" aria-expanded="${open}">
     <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${tag ? `<span class="tag${expiringSoon ? " warn" : ""}">${escapeHtml(tag)}</span>` : ""}</span>
-    <span class="mono muted ellipsis d">${escapeHtml(maskKey(key.key))}</span>
+    <span class="key-mask mono muted ellipsis d">${escapeHtml(maskKey(key.key))}</span>
     <span class="ellipsis d">${keyScopeHtml(key)}</span>
     <span class="num">${revoked && !metrics.requestCount ? '<span class="muted">\u2014</span>' : requestsCellHtml(usage)}</span>
     <span class="num muted d">${escapeHtml(lastUsed)}</span>
     <button class="more" type="button" data-menu="key" data-key-id="${key.id}" aria-label="Actions for ${escapeHtml(name)}" aria-haspopup="menu" aria-expanded="false">${icon("more")}</button>
-    <span class="l2">${escapeHtml([maskKey(key.key), keyScopeText(key), metrics.lastRequestAt ? lastUsed : ""].filter(Boolean).join(" \u00b7 "))}</span>
+    <span class="l2"><span class="key-mask">${escapeHtml(maskKey(key.key))}</span> \u00b7 ${escapeHtml([keyScopeText(key), metrics.lastRequestAt ? lastUsed : ""].filter(Boolean).join(" \u00b7 "))}</span>
   </div>${open ? keyDetailHtml(key) : ""}`;
 }
 
@@ -463,33 +464,23 @@ function compareKeys(a, b) {
 function renderKeys() {
   const { keys, showRevokedKeys } = state;
   const activeCount = keys.filter(isKeyActive).length;
-  const revokedCount = keys.filter((key) => key.revokedAt).length;
   const filter = state.keyFilter.trim().toLowerCase();
-  $("#keys-count").textContent = keys.length
-    ? `${activeCount} active \u00b7 ${keys.length} total`
-    : "";
-
-  let visible = keys.filter(
-    (key) => showRevokedKeys || !key.revokedAt || key.id === state.expandedKeyId
-  );
-  if (filter) visible = visible.filter((key) => keyMatches(key, filter));
-  visible = [...visible].sort(compareKeys);
-
+  $("#keys-count").textContent = String(activeCount);
+  const matches = keys
+    .filter((key) => !filter || keyMatches(key, filter))
+    .sort(compareKeys);
+  const listed = matches.filter((key) => filter || !key.revokedAt);
+  const revoked = filter ? [] : matches.filter((key) => key.revokedAt);
+  const open =
+    showRevokedKeys ||
+    revoked.some(
+      (key) => key.id === state.expandedKeyId || key.id === state.editingKeyId
+    );
+  const visible = [...listed, ...(open ? revoked : [])];
   const visibleIds = new Set(visible.map((key) => key.id));
   for (const id of state.revealedKeyIds) {
     if (!visibleIds.has(id)) state.revealedKeyIds.delete(id);
   }
-
-  const toggle = revokedCount
-    ? ` \u00b7 <button class="link" type="button" data-action="${showRevokedKeys ? "hide-revoked" : "show-revoked"}">${showRevokedKeys ? "Hide revoked" : `Show ${revokedCount} revoked`}</button>`
-    : "";
-  let foot = "";
-  if (filter) {
-    foot = `${visible.length} match${visible.length === 1 ? "" : "es"}${toggle}`;
-  } else if (keys.length) {
-    foot = `Showing ${visible.length === keys.length ? "all " : ""}${visible.length}${visible.length === keys.length ? "" : ` of ${keys.length}`}, most active first${toggle}`;
-  }
-  $("#keys-foot").innerHTML = foot ? `<span>${foot}</span>` : "";
 
   const createForm = state.creatingKey ? keyFormHtml("create") : "";
   let body;
@@ -497,12 +488,19 @@ function renderKeys() {
     body = createForm
       ? ""
       : '<div class="empty-state"><p>No API keys yet.</p><button class="btn btn-primary btn-sm" type="button" data-action="open-create-key">Create a key</button></div>';
-  } else if (visible.length) {
-    body = `<div class="row thead t-key"><span>Label</span><span class="d">Key</span><span class="d">Access</span><span class="num">Requests ${escapeHtml(usageWindowLabel(state.keyUsageWindowMs))}</span><span class="num d">Last used</span><span></span></div>${visible.map(keyRowHtml).join("")}`;
+  } else if (matches.length) {
+    body =
+      listed.length || open
+        ? `<div class="row thead t-key"><span>Label</span><span class="d">Key</span><span class="d">Access</span><span class="num">Requests ${escapeHtml(usageWindowLabel(state.keyUsageWindowMs))}</span><span class="num d">Last used</span><span></span></div><div class="group-rows">${listed.map(keyRowHtml).join("")}</div>`
+        : "";
+    if (revoked.length) {
+      body += `<section class="revoked-group" aria-label="Revoked keys">
+        ${disclosureHeadingHtml({ id: "revoked", label: "Revoked", count: revoked.length, open, cursor: state.cursorKeyId, action: "toggle-revoked" })}
+        <div id="revoked-rows" class="group-rows"${open ? "" : " hidden"}>${open ? revoked.map(keyRowHtml).join("") : ""}</div>
+      </section>`;
+    }
   } else {
-    body = filter
-      ? `<div class="empty-state"><p>No keys match \u201c${escapeHtml(state.keyFilter.trim())}\u201d.</p><button class="link small" type="button" data-action="clear-filter">Clear filter</button></div>`
-      : '<div class="empty-state"><p>No active API keys.</p><button class="btn btn-primary btn-sm" type="button" data-action="open-create-key">Create a key</button></div>';
+    body = `<div class="empty-state"><p>No keys match \u201c${escapeHtml(state.keyFilter.trim())}\u201d.</p><button class="link small" type="button" data-action="clear-filter">Clear filter</button></div>`;
   }
 
   const list = $("#keys-list");

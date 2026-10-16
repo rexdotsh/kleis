@@ -3,8 +3,10 @@ const USAGE_DETAIL_TTL_MS = 30_000;
 const DAILY_TOKEN_DAYS = 30;
 const ADMIN_TOKEN_STORAGE_KEY = "kleis_admin_token";
 const FREE_TIER_STORAGE_KEY = "kleis_show_free_tier";
+const REVOKED_KEYS_STORAGE_KEY = "kleis_show_revoked_keys";
 const PROVIDER_ORDER = ["codex", "claude"];
 const FREE_TIER_CURSOR_ID = "free-tier-group";
+const REVOKED_KEYS_CURSOR_ID = "revoked-group";
 
 const readPersistedToken = () =>
   localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY) || "";
@@ -37,7 +39,7 @@ const state = {
   keyUsageById: new Map(),
   keyUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   keysLoaded: false,
-  showRevokedKeys: false,
+  showRevokedKeys: localStorage.getItem(REVOKED_KEYS_STORAGE_KEY) === "true",
   keyFilter: "",
   accountFilter: "",
   showFreeTier: localStorage.getItem(FREE_TIER_STORAGE_KEY) === "true",
@@ -78,6 +80,11 @@ const $$ = (sel) => document.querySelectorAll(sel);
 function setShowFreeTier(show) {
   state.showFreeTier = show;
   localStorage.setItem(FREE_TIER_STORAGE_KEY, String(show));
+}
+
+function setShowRevokedKeys(show) {
+  state.showRevokedKeys = show;
+  localStorage.setItem(REVOKED_KEYS_STORAGE_KEY, String(show));
 }
 
 function syncDashboardWindowButtons() {
@@ -449,7 +456,6 @@ function logout() {
   state.keyUsageById = new Map();
   state.keyUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
   state.keysLoaded = false;
-  state.showRevokedKeys = false;
   state.keyFilter = "";
   state.accountFilter = "";
   state.expandedAccountId = null;
@@ -584,6 +590,8 @@ export {
   DAILY_TOKEN_DAYS,
   PROVIDER_ORDER,
   FREE_TIER_CURSOR_ID,
+  REVOKED_KEYS_CURSOR_ID,
+  setShowRevokedKeys,
   readPersistedToken,
   persistToken,
   clearPersistedToken,
