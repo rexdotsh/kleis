@@ -172,55 +172,155 @@ describe("account snapshots", () => {
     );
   });
 
+  type PollRaceScenario = {
+    name: string;
+    poll: number;
+    traffic: number | null;
+    pollReset: number | null;
+    trafficReset: number | null;
+    pollRelativeReset?: number;
+    windowSeconds?: number;
+    completeAfterMs?: number;
+    expectedReset?: number;
+    expected: number;
+    source: "poll" | "traffic";
+  };
+
   test.each(
     (["codex", "claude"] as const).flatMap((provider) =>
-      [
-        {
-          name: "higher traffic in the same window",
-          poll: 10,
-          traffic: 70,
-          pollReset: 5,
-          trafficReset: 5,
-          expected: 70,
-          source: "traffic",
-        },
-        {
-          name: "delayed traffic below an exhausted poll",
-          poll: 100,
-          traffic: 20,
-          pollReset: 5,
-          trafficReset: 5,
-          expected: 100,
-          source: "poll",
-        },
-        {
-          name: "expired traffic before a rolled-over poll",
-          poll: 5,
-          traffic: 100,
-          pollReset: 5,
-          trafficReset: -1,
-          expected: 5,
-          source: "poll",
-        },
-        {
-          name: "rolled-over traffic after an exhausted poll",
-          poll: 100,
-          traffic: 5,
-          pollReset: -1,
-          trafficReset: 5,
-          expected: 5,
-          source: "traffic",
-        },
-        {
-          name: "unplaceable traffic",
-          poll: 10,
-          traffic: 70,
-          pollReset: 5,
-          trafficReset: null,
-          expected: 10,
-          source: "poll",
-        },
-      ].map((scenario) => ({ provider, ...scenario }))
+      (
+        [
+          {
+            name: "higher traffic in the same window",
+            poll: 10,
+            traffic: 70,
+            pollReset: 18_000,
+            trafficReset: 18_000,
+            expected: 70,
+            source: "traffic",
+          },
+          {
+            name: "delayed traffic below an exhausted poll",
+            poll: 100,
+            traffic: 20,
+            pollReset: 18_000,
+            trafficReset: 18_000,
+            expected: 100,
+            source: "poll",
+          },
+          {
+            name: "expired traffic before a rolled-over poll",
+            poll: 5,
+            traffic: 100,
+            pollReset: 18_000,
+            trafficReset: -3600,
+            expected: 5,
+            source: "poll",
+          },
+          {
+            name: "rolled-over traffic after an exhausted poll",
+            poll: 100,
+            traffic: 5,
+            pollReset: -3600,
+            trafficReset: 18_000,
+            expected: 5,
+            source: "traffic",
+          },
+          {
+            name: "unplaceable traffic",
+            poll: 10,
+            traffic: 70,
+            pollReset: 18_000,
+            trafficReset: null,
+            expected: 10,
+            source: "poll",
+          },
+          {
+            name: "later reset jitter below an exhausted poll",
+            poll: 100,
+            traffic: 20,
+            pollReset: 18_000,
+            trafficReset: 18_003,
+            expected: 100,
+            source: "poll",
+          },
+          {
+            name: "exhausted traffic with earlier reset jitter",
+            poll: 20,
+            traffic: 100,
+            pollReset: 18_000,
+            trafficReset: 17_997,
+            expectedReset: 18_000,
+            expected: 100,
+            source: "traffic",
+          },
+          {
+            name: "expired traffic against a poll without a reset",
+            poll: 5,
+            traffic: 100,
+            pollReset: null,
+            trafficReset: -1,
+            expected: 5,
+            source: "poll",
+          },
+          {
+            name: "traffic expiring before the poll completes",
+            poll: 5,
+            traffic: 100,
+            pollReset: null,
+            trafficReset: 2,
+            completeAfterMs: 3000,
+            expected: 5,
+            source: "poll",
+          },
+          ...(provider === "claude"
+            ? [
+                {
+                  name: "reset-only jitter below an exhausted poll",
+                  poll: 100,
+                  traffic: null,
+                  pollReset: 18_000,
+                  trafficReset: 18_003,
+                  expected: 100,
+                  source: "poll" as const,
+                },
+              ]
+            : [
+                {
+                  name: "expired traffic against a relative-reset poll",
+                  poll: 5,
+                  traffic: 100,
+                  pollReset: null,
+                  pollRelativeReset: 18_000,
+                  trafficReset: -1,
+                  expectedReset: 18_000,
+                  expected: 5,
+                  source: "poll" as const,
+                },
+                {
+                  name: "reset jitter below an exhausted relative-reset poll",
+                  poll: 100,
+                  traffic: 20,
+                  pollReset: null,
+                  pollRelativeReset: 18_000,
+                  trafficReset: 18_003,
+                  expectedReset: 18_000,
+                  expected: 100,
+                  source: "poll" as const,
+                },
+                {
+                  name: "a distinct reset for a short known window",
+                  poll: 100,
+                  traffic: 5,
+                  pollReset: 30,
+                  trafficReset: 33,
+                  windowSeconds: 60,
+                  expected: 5,
+                  source: "traffic" as const,
+                },
+              ]),
+        ] satisfies PollRaceScenario[]
+      ).map((scenario: PollRaceScenario) => ({ provider, ...scenario }))
     )
   )(
     "$provider publishes and persists $name",
@@ -230,6 +330,10 @@ describe("account snapshots", () => {
       traffic,
       pollReset,
       trafficReset,
+      pollRelativeReset,
+      windowSeconds,
+      completeAfterMs = 1000,
+      expectedReset: expectedResetOffset,
       expected: percent,
       source,
     }) => {
@@ -241,8 +345,8 @@ describe("account snapshots", () => {
       setAccountSnapshotStore(store);
       const startedAt = Date.now();
       setSystemTime(startedAt);
-      const resetAt = (hours: number) =>
-        Math.floor((startedAt + hours * HOUR_MS) / 1000);
+      const resetAt = (seconds: number) =>
+        Math.floor(startedAt / 1000) + seconds;
       const trafficResetHeaders: Record<string, string> =
         trafficReset === null
           ? {}
@@ -271,19 +375,26 @@ describe("account snapshots", () => {
         provider === "codex"
           ? readCodexLiveLimits(
               new Headers({
-                "x-codex-primary-used-percent": String(traffic),
+                ...(traffic === null
+                  ? {}
+                  : { "x-codex-primary-used-percent": String(traffic) }),
                 ...trafficResetHeaders,
               })
             )
           : readClaudeLiveLimits(
               new Headers({
-                "anthropic-ratelimit-unified-5h-utilization": String(
-                  traffic / 100
-                ),
+                ...(traffic === null
+                  ? {}
+                  : {
+                      "anthropic-ratelimit-unified-5h-utilization": String(
+                        traffic / 100
+                      ),
+                    }),
                 ...trafficResetHeaders,
               })
             )
       );
+      setSystemTime(startedAt + completeAfterMs);
       finish(
         Response.json(
           provider === "codex"
@@ -291,7 +402,9 @@ describe("account snapshots", () => {
                 rate_limit: {
                   primary_window: {
                     used_percent: poll,
-                    reset_at: resetAt(pollReset),
+                    reset_at: pollReset === null ? null : resetAt(pollReset),
+                    reset_after_seconds: pollRelativeReset,
+                    limit_window_seconds: windowSeconds,
                   },
                   secondary_window: { used_percent: 20 },
                 },
@@ -299,15 +412,26 @@ describe("account snapshots", () => {
             : {
                 five_hour: {
                   utilization: poll,
-                  resets_at: new Date(resetAt(pollReset) * 1000).toISOString(),
+                  resets_at:
+                    pollReset === null
+                      ? null
+                      : new Date(resetAt(pollReset) * 1000).toISOString(),
                 },
                 seven_day: { utilization: 20 },
               }
         )
       );
-      const expectedReset = resetAt(
-        source === "traffic" && trafficReset !== null ? trafficReset : pollReset
-      );
+      const winningReset =
+        expectedResetOffset ??
+        (source === "traffic" && trafficReset !== null
+          ? trafficReset
+          : pollReset);
+      const expectedReset =
+        winningReset === null
+          ? null
+          : expectedResetOffset !== undefined && pollRelativeReset !== undefined
+            ? (startedAt + expectedResetOffset * 1000) / 1000
+            : resetAt(winningReset);
       const expected =
         provider === "codex"
           ? {
@@ -320,7 +444,10 @@ describe("account snapshots", () => {
               subscription: {
                 fiveHour: {
                   utilization: percent,
-                  resetsAt: new Date(expectedReset * 1000).toISOString(),
+                  resetsAt:
+                    expectedReset === null
+                      ? null
+                      : new Date(expectedReset * 1000).toISOString(),
                 },
                 sevenDay: { utilization: 20 },
               },

@@ -39,6 +39,7 @@ import {
   type LiveLimits,
   mergeClaudeLiveLimits,
   mergeCodexLiveLimits,
+  normalizeCodexPollResets,
   selectLiveLimitsForPoll,
 } from "../../providers/account-tracking/live-limits";
 import { errorLogFields, logWarn } from "../../utils/log";
@@ -231,6 +232,7 @@ const codexFetchers = [
 ] as const;
 
 const fetchCodexData = async (account: TrackingAccount) => {
+  const observedAt = Date.now();
   const results = await Promise.allSettled(
     codexFetchers.map(([, fetcher]) =>
       fetcher(account.accessToken, account.accountId)
@@ -247,6 +249,8 @@ const fetchCodexData = async (account: TrackingAccount) => {
       errors.push(result.reason);
     }
   }
+  if (data.status)
+    data.status = normalizeCodexPollResets(data.status, observedAt);
   return { data, errors };
 };
 
@@ -626,7 +630,11 @@ const fetchProviderAccountQuota = async (
     }
     let quota = toQuota(result.data, result.errors, now, latest());
     for (const { limits, observedAt } of result.live ?? []) {
-      const selected = selectLiveLimitsForPoll(quota.data, limits);
+      const selected = selectLiveLimitsForPoll(
+        quota.data,
+        limits,
+        Math.max(Date.now(), quota.fetchedAt ?? now, observedAt)
+      );
       if (!selected) continue;
       quota = {
         ...quota,
