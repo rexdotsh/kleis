@@ -101,8 +101,6 @@ export type AccountQuota = {
 
 type QuotaEntry = {
   expiresAt: number;
-  // Live traffic cannot postpone reset discovery.
-  resetPollAt: number;
   credential: string;
   quota: AccountQuota;
 };
@@ -567,7 +565,7 @@ const fetchProviderAccountQuota = async (
   const publish = (quota: AccountQuota, expiresAt: number): AccountQuota => {
     // A lookup started later, or an invalidation, owns the cache entry.
     if (generations.get(key) === generation) {
-      cache.set(key, { expiresAt, resetPollAt: expiresAt, credential, quota });
+      cache.set(key, { expiresAt, credential, quota });
       snapshots?.recordQuota(stored, quota, quotaSignature(quota.data));
     }
     return quota;
@@ -680,8 +678,7 @@ const quotaRefreshDue = (
 ): boolean =>
   entry.expiresAt <= Date.now() ||
   (account.provider === "claude" &&
-    (entry.credential !== credentialBinding(account) ||
-      entry.resetPollAt <= Date.now()));
+    entry.credential !== credentialBinding(account));
 
 const toResetTimestamp = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -769,12 +766,12 @@ const restoreSnapshot = (
   if (!cache.has(key)) {
     cache.set(key, {
       // Restored limits count as fresh only for what is left of the usual
-      // interval since they were fetched, so normal refreshes continue.
-      expiresAt: (row.quotaFetchedAt ?? 0) + baseMs,
-      resetPollAt:
-        (data.provider === "claude"
-          ? (data.resetCredits?.observedAt ?? row.quotaFetchedAt ?? 0)
-          : 0) + baseMs,
+      // interval since they (or Claude's resets) were fetched, so normal
+      // refreshes continue.
+      expiresAt:
+        ((data.provider === "claude" ? data.resetCredits?.observedAt : null) ??
+          row.quotaFetchedAt ??
+          0) + baseMs,
       credential:
         data.provider === "claude" && data.resetCredits
           ? data.resetCredits.credential
@@ -848,7 +845,6 @@ export const expireProviderAccountTracking = (
   for (const [key, entry] of cache) {
     if (key.startsWith(prefix)) {
       entry.expiresAt = 0;
-      entry.resetPollAt = 0;
       dropCachedResetCredits(key);
       inFlight.delete(key);
       nextGeneration(key);
@@ -920,8 +916,9 @@ const mergeLiveLimits = (
   };
 };
 
-// Traffic refreshes ordinary limits, but Claude reset discovery keeps its
-// own due time. This hot path only updates memory and buffered snapshots.
+// Limits read from a proxied response refresh the shown limits. For Codex
+// they count as a fresh sync; Claude polls stay due, since they also discover
+// saved resets. This hot path only updates memory and buffered snapshots.
 export const recordProviderAccountLiveLimits = (
   account: ProviderAccountRecord,
   limits: LiveLimits | null
@@ -953,14 +950,15 @@ export const recordProviderAccountLiveLimits = (
       source: "traffic",
       data: mergeLiveLimits(entry?.quota.data, limits, now),
     };
-    const baseMs = account.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS;
     cache.set(key, {
       quota,
       credential,
-      resetPollAt: entry?.resetPollAt ?? now,
       // Without an earlier poll the plan and the limits only the usage
       // endpoints report are missing, so the next read still polls.
-      expiresAt: entry ? Math.max(entry.expiresAt, now + baseMs) : now,
+      expiresAt:
+        entry && account.provider === "codex"
+          ? Math.max(entry.expiresAt, now + CACHE_MS)
+          : (entry?.expiresAt ?? now),
     });
     snapshots?.recordQuota(account, quota, quotaSignature(quota.data));
   } catch (error) {
