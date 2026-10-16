@@ -92,7 +92,8 @@ const usageBody = (block: unknown) => ({
 type ClaimCall = { url: string; body: Record<string, unknown> };
 
 const upstream = {
-  usage: (): Response | Promise<Response> => Response.json(usageBody(cedar())),
+  usage: (_headers: Headers): Response | Promise<Response> =>
+    Response.json(usageBody(cedar())),
   claim: (_call: ClaimCall): Response | Promise<Response> =>
     Response.json({
       result: "reset",
@@ -134,7 +135,7 @@ const mockAnthropic = (() =>
     }
     if (url.pathname === "/api/oauth/usage") {
       upstream.usageUrls.push(url.toString());
-      return Promise.resolve(upstream.usage());
+      return Promise.resolve(upstream.usage(new Headers(init?.headers)));
     }
     if (url.pathname === "/api/oauth/profile") {
       return Promise.resolve(upstream.profile());
@@ -1482,5 +1483,126 @@ describe("Claude reset claims", () => {
       limit: null,
       percentUsed: null,
     });
+  });
+
+  test.each([false, true])(
+    "usage 401 recovery preserves a newer refreshed-token live reading before claim dispatch (late old-token header: %s)",
+    async (lateOldHeader) => {
+      const account = await addAccount();
+      const block = cedar(
+        [grant({ clears: ["five_hour"], percent_used: { five_hour: 100 } })],
+        { exhausted: ["five_hour"] }
+      );
+      const body = {
+        ...usageBody(block),
+        five_hour: {
+          utilization: 100,
+          resets_at: new Date(startedAt + 5 * 60 * MINUTE).toISOString(),
+        },
+      };
+      upstream.usage = () => Response.json(body);
+      await readQuota(account);
+      const confirmed = await offerOf(account);
+      expect((await view(account))?.offer?.earlyUse).toBeNull();
+      upstream.refresh = () =>
+        Response.json({
+          access_token: "fake-recovered-access",
+          refresh_token: "fake-recovered-refresh",
+          expires_in: 3600,
+          account: { uuid: ACCOUNT },
+          organization: { uuid: ORGANIZATION },
+        });
+      const retryStarted = gate();
+      let finish: (response: Response) => void = () => undefined;
+      upstream.usage = (headers) => {
+        if (headers.get("authorization") === `Bearer ${account.accessToken}`)
+          return Response.json({}, { status: 401 });
+        expect(headers.get("authorization")).toBe(
+          "Bearer fake-recovered-access"
+        );
+        retryStarted.release();
+        return new Promise<Response>((resolve) => {
+          finish = resolve;
+        });
+      };
+      setSystemTime(new Date(startedAt + 3 * MINUTE));
+      await readQuota(account);
+      await retryStarted.promise;
+      const refreshed = await findProviderAccountById(database, account.id);
+      if (!refreshed) throw new Error("refreshed account missing");
+      setSystemTime(new Date(startedAt + 3 * MINUTE + 1000));
+      recordProviderAccountLiveLimits(
+        refreshed,
+        readClaudeLiveLimits(
+          new Headers({ "anthropic-ratelimit-unified-5h-utilization": "0" })
+        )
+      );
+      if (lateOldHeader)
+        recordProviderAccountLiveLimits(
+          account,
+          readClaudeLiveLimits(
+            new Headers({ "anthropic-ratelimit-unified-5h-utilization": "1" })
+          )
+        );
+      upstream.usage = () => Response.json(body);
+      finish(Response.json(body));
+      await flush();
+      const outcome = await claimClaudeReset(
+        database,
+        account.id,
+        confirmed
+      ).catch((error: unknown) => error);
+      expect(outcome).toBeInstanceOf(ClaudeResetClaimConflict);
+      expect((outcome as ClaudeResetClaimConflict).reason).toBe(
+        "offer_changed"
+      );
+      expect(upstream.claims).toHaveLength(0);
+      expect((await readQuota(refreshed)).get(account.id)?.data).toMatchObject({
+        subscription: { fiveHour: { utilization: 0 } },
+      });
+      expect((await view(refreshed))?.offer?.earlyUse?.percentUsed).toBe(0);
+      expect((await offerOf(refreshed)).offerKey).not.toBe(confirmed.offerKey);
+    }
+  );
+
+  test("a retried usage poll does not inherit readings collected for the rejected credential", async () => {
+    const account = await addAccount();
+    upstream.usage = () => Response.json(usageBody(cedar()));
+    await readQuota(account);
+    upstream.refresh = () =>
+      Response.json({
+        access_token: "fake-recovered-access",
+        refresh_token: "fake-recovered-refresh",
+        expires_in: 3600,
+        account: { uuid: ACCOUNT },
+        organization: { uuid: ORGANIZATION },
+      });
+    upstream.usage = (headers) => {
+      if (headers.get("authorization") === `Bearer ${account.accessToken}`) {
+        recordProviderAccountLiveLimits(
+          account,
+          readClaudeLiveLimits(
+            new Headers({ "anthropic-ratelimit-unified-5h-utilization": "0" })
+          )
+        );
+        return Response.json({}, { status: 401 });
+      }
+      return Response.json({
+        ...usageBody(cedar()),
+        five_hour: {
+          utilization: 100,
+          resets_at: new Date(startedAt + 5 * 60 * MINUTE).toISOString(),
+        },
+      });
+    };
+    setSystemTime(new Date(startedAt + 3 * MINUTE));
+    await readQuota(account);
+    await flush();
+    const refreshed = await findProviderAccountById(database, account.id);
+    if (!refreshed) throw new Error("refreshed account missing");
+    expect((await readQuota(refreshed)).get(account.id)?.data).toMatchObject({
+      subscription: { fiveHour: { utilization: 100 } },
+    });
+    expect(upstream.claims).toHaveLength(0);
   });
 });

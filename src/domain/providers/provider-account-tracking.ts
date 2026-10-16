@@ -112,10 +112,11 @@ const cache = new Map<string, QuotaEntry>();
 const credentialBinding = (account: ProviderAccountRecord): string =>
   Bun.CryptoHasher.hash("sha256", account.accessToken, "hex");
 
-// Only readings received during a poll can supersede that poll's windows.
+// Each usage attempt collects readings for its credential. Cache generations
+// prevent superseded lookups from replacing the active collector.
 const claudeLiveDuringPoll = new Map<
   string,
-  { credential: string; limits: ClaudeLiveLimits }
+  { credential: string; generation: number; limits: ClaudeLiveLimits }
 >();
 
 let snapshots: AccountSnapshotStore | null = null;
@@ -448,20 +449,29 @@ const updateCodexProfile = async (
 const fetchAccountData = async (
   database: Database,
   account: TrackingAccount,
-  now: number
-): Promise<{ data: TrackingData; errors: unknown[] }> => {
+  now: number,
+  observeClaudeUsage: (current: TrackingAccount) => ClaudeLiveLimits
+): Promise<{
+  data: TrackingData;
+  errors: unknown[];
+  live?: ClaudeLiveLimits;
+}> => {
   if (account.provider === "claude") {
     const plan = getClaudeProfile(account).then(
       (profile) => profile?.plan ?? null
     );
     try {
-      const { usage, resets, current } = await retryAfter401(
+      const { usage, resets, current, live } = await retryAfter401(
         database,
         account,
-        async (current) => ({
-          ...(await fetchClaudeSubscriptionUsage(current.accessToken)),
-          current,
-        })
+        async (current) => {
+          const live = observeClaudeUsage(current);
+          return {
+            ...(await fetchClaudeSubscriptionUsage(current.accessToken)),
+            current,
+            live,
+          };
+        }
       );
       const resolvedPlan = await plan;
       const organization = claudeOrganization(current);
@@ -486,6 +496,7 @@ const fetchAccountData = async (
           }),
         },
         errors: [],
+        live,
       };
     } catch (error) {
       return {
@@ -623,18 +634,23 @@ const fetchProviderAccountQuota = async (
       return null;
     }
     credential = credentialBinding(account);
-    const duringPoll: ClaudeLiveLimits = { provider: "claude", windows: {} };
-    if (account.provider === "claude")
-      claudeLiveDuringPoll.set(key, { credential, limits: duringPoll });
-    const result = await fetchAccountData(database, account, now);
-    if (result.data.provider === "claude") {
-      credential = result.data.resetCredits?.credential ?? credential;
-      if (result.data.subscription && Object.keys(duringPoll.windows).length) {
-        result.data.subscription = mergeClaudeLiveLimits(
-          result.data.subscription,
-          duringPoll
-        );
+    const result = await fetchAccountData(database, account, now, (current) => {
+      credential = credentialBinding(current);
+      const limits: ClaudeLiveLimits = { provider: "claude", windows: {} };
+      if (generations.get(key) === generation) {
+        claudeLiveDuringPoll.set(key, { credential, generation, limits });
       }
+      return limits;
+    });
+    if (
+      result.data.provider === "claude" &&
+      result.data.subscription &&
+      result.live
+    ) {
+      result.data.subscription = mergeClaudeLiveLimits(
+        result.data.subscription,
+        result.live
+      );
     }
     keepClaudeResetCredits(key, result.data, latest()?.data, now, credential);
     let expiresAt = now + Math.max(baseMs, cacheDuration(result.errors));
@@ -961,7 +977,11 @@ export const recordProviderAccountLiveLimits = (
     const credential = credentialBinding(account);
     const entry = cached?.credential === credential ? cached : undefined;
     const poll = claudeLiveDuringPoll.get(key);
-    if (limits.provider === "claude" && poll?.credential === credential) {
+    if (
+      limits.provider === "claude" &&
+      poll?.credential === credential &&
+      poll.generation === generations.get(key)
+    ) {
       for (const [type, reading] of Object.entries(limits.windows)) {
         const previous = poll.limits.windows[type];
         poll.limits.windows[type] = {

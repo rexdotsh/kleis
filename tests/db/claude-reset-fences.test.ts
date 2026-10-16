@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Database } from "../../src/db";
@@ -17,8 +18,8 @@ import {
 import * as schema from "../../src/db/schema";
 import { claudeResetClaims, providerAccounts } from "../../src/db/schema";
 
-let directory: string;
-let clients: ReturnType<typeof createClient>[];
+let directory: string | null = null;
+let clients: ReturnType<typeof createClient>[] = [];
 let database: Database;
 let other: Database;
 const originalFetch = globalThis.fetch;
@@ -43,10 +44,9 @@ beforeEach(async () => {
   globalThis.fetch = (() => {
     throw new Error("Network access is forbidden in fence tests");
   }) as typeof fetch;
-  directory = await mkdtemp("/tmp/opencode/claude-fence-db-");
-  clients = [0, 1].map(() =>
-    createClient({ url: `file:${join(directory, "claims.db")}` })
-  );
+  directory = await mkdtemp(join(tmpdir(), "kleis-claude-fence-db-"));
+  const url = `file:${join(directory, "claims.db")}`;
+  clients = [0, 1].map(() => createClient({ url }));
   const first = clients[0];
   const second = clients[1];
   if (!first || !second) throw new Error("Test clients missing");
@@ -66,7 +66,9 @@ beforeEach(async () => {
 afterEach(async () => {
   globalThis.fetch = originalFetch;
   for (const client of clients) client.close();
-  await rm(directory, { recursive: true, force: true });
+  clients = [];
+  if (directory) await rm(directory, { recursive: true, force: true });
+  directory = null;
 });
 
 test("a second database connection cannot reserve the version already completed by the first", async () => {
