@@ -105,9 +105,48 @@ describe("graceful shutdown", () => {
 
     const shutdown = createGracefulShutdown();
     shutdown.trackServer(server);
+    expect(server.pendingRequests).toBe(1);
     expect(await shutdown.drain({ graceMs: 0, timeoutMs: 20 })).toBe(
       "timed_out"
     );
     expect(cancelled).toBe(true);
+  });
+
+  test("pendingRequests tracks a live stream until it finishes during draining", async () => {
+    let source: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      idleTimeout: 0,
+      fetch: () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              source = controller;
+              controller.enqueue(new TextEncoder().encode("data: x\n\n"));
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } }
+        ),
+    });
+    try {
+      const response = await fetch(server.url);
+      const reader = response.body?.getReader();
+      if (!reader || !source) {
+        throw new Error("Missing response stream");
+      }
+      await reader.read();
+      expect(server.pendingRequests).toBe(1);
+
+      const shutdown = createGracefulShutdown();
+      shutdown.trackServer(server);
+      const drained = shutdown.drain({ graceMs: 0, timeoutMs: 2000 });
+      source.close();
+      expect((await reader.read()).done).toBe(true);
+      expect(await drained).toBe("drained");
+      expect(server.pendingRequests).toBe(0);
+    } finally {
+      await server.stop(true);
+    }
   });
 });
