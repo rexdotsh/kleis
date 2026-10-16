@@ -22,6 +22,7 @@ import {
   readCodexLiveLimits,
   readCodexLiveLimitsEvent,
 } from "../../src/providers/account-tracking/live-limits";
+import { accountCooldowns } from "../../src/providers/account-tracking/rate-limit-cooldowns";
 
 const claudeAccount = (
   accountId: string | null = null,
@@ -441,7 +442,11 @@ describe("limits from proxied traffic", () => {
     expect(usageCalls).toBe(1);
 
     setSystemTime(new Date(startedAt + 120_000));
-    recordProviderAccountLiveLimits(account, claudeHeaders(0.42, 0.25));
+    recordProviderAccountLiveLimits(
+      account,
+      claudeHeaders(0.42, 0.25),
+      accountCooldowns.capture(account)
+    );
 
     const quotas = await listProviderAccountQuotas(database, [account]);
     expect(quotas.get(account.id)).toMatchObject({
@@ -499,7 +504,11 @@ describe("limits from proxied traffic", () => {
     expect(first.get(limited.id)).toMatchObject({ errorStatus: 429 });
     expect(usageCalls).toBe(1);
 
-    recordProviderAccountLiveLimits(limited, claudeHeaders(0.3));
+    recordProviderAccountLiveLimits(
+      limited,
+      claudeHeaders(0.3),
+      accountCooldowns.capture(limited)
+    );
     const fresh = await listProviderAccountQuotas(database, [limited]);
     expect(fresh.get(limited.id)).toMatchObject({
       error: null,
@@ -572,7 +581,8 @@ describe("limits from proxied traffic", () => {
         new Headers({
           "x-codex-primary-used-percent": "45",
         })
-      )
+      ),
+      accountCooldowns.capture(account)
     );
     const fromHeaders = await listProviderAccountQuotas(database, [account]);
     expect(fromHeaders.get(account.id)).toMatchObject({
@@ -604,7 +614,11 @@ describe("limits from proxied traffic", () => {
         },
       },
     });
-    recordProviderAccountLiveLimits(account, event);
+    recordProviderAccountLiveLimits(
+      account,
+      event,
+      accountCooldowns.capture(account)
+    );
     const fromEvent = await listProviderAccountQuotas(database, [account]);
     expect(fromEvent.get(account.id)).toMatchObject({
       data: {
@@ -619,10 +633,17 @@ describe("limits from proxied traffic", () => {
 
     // A reading never lands on another provider's or identity's limits.
     const moved = { ...account, accountId: "workspace-2" };
-    recordProviderAccountLiveLimits(moved, claudeHeaders(0.9));
     recordProviderAccountLiveLimits(
       moved,
-      readCodexLiveLimits(new Headers({ "x-codex-primary-used-percent": "70" }))
+      claudeHeaders(0.9),
+      accountCooldowns.capture(moved)
+    );
+    recordProviderAccountLiveLimits(
+      moved,
+      readCodexLiveLimits(
+        new Headers({ "x-codex-primary-used-percent": "70" })
+      ),
+      accountCooldowns.capture(moved)
     );
     const original = await listProviderAccountQuotas(database, [account]);
     expect(original.get(account.id)).toMatchObject({
@@ -641,7 +662,11 @@ describe("limits from proxied traffic", () => {
     const account = claudeAccount();
     const pending = listProviderAccountQuotas(database, [account]);
     await Bun.sleep(0);
-    recordProviderAccountLiveLimits(account, claudeHeaders(0.6));
+    recordProviderAccountLiveLimits(
+      account,
+      claudeHeaders(0.6),
+      accountCooldowns.capture(account)
+    );
     release?.(Response.json({}, { status: 500 }));
     const quotas = await pending;
     expect(quotas.get(account.id)).toMatchObject({
@@ -661,7 +686,11 @@ describe("limits from proxied traffic", () => {
       });
     });
     const account = claudeAccount();
-    recordProviderAccountLiveLimits(account, claudeHeaders(0.5));
+    recordProviderAccountLiveLimits(
+      account,
+      claudeHeaders(0.5),
+      accountCooldowns.capture(account)
+    );
 
     const peeked = peekProviderAccountQuotas(database, [account]);
     expect(peeked.get(account.id)).toMatchObject({
@@ -683,8 +712,16 @@ describe("limits from proxied traffic", () => {
     const { store, recorded } = snapshotSpy();
     setAccountSnapshotStore(store);
     const account = claudeAccount();
-    recordProviderAccountLiveLimits(account, claudeHeaders(0.2));
-    recordProviderAccountLiveLimits(account, claudeHeaders(0.3));
+    recordProviderAccountLiveLimits(
+      account,
+      claudeHeaders(0.2),
+      accountCooldowns.capture(account)
+    );
+    recordProviderAccountLiveLimits(
+      account,
+      claudeHeaders(0.3),
+      accountCooldowns.capture(account)
+    );
 
     expect(recorded).toHaveLength(2);
     const [stored, quota, signature] = recorded[1] ?? [];

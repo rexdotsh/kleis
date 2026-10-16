@@ -86,6 +86,7 @@ const JAVASCRIPT_FILES = [
   "app-accounts.js",
   "app-accounts-render.js",
   "app-core.js",
+  "app-failover.js",
   "app-input.js",
   "app-keys.js",
   "app-keys-render.js",

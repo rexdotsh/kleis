@@ -22,6 +22,9 @@ export const providerAccounts = sqliteTable(
       .notNull()
       .default(false),
     enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    excludeFromFailover: integer("exclude_from_failover", { mode: "boolean" })
+      .notNull()
+      .default(false),
     accessToken: text("access_token").notNull(),
     refreshToken: text("refresh_token").notNull(),
     refreshLockToken: text("refresh_lock_token"),
@@ -69,6 +72,13 @@ export const apiKeys = sqliteTable(
     ),
   ]
 );
+
+export const proxySettings = sqliteTable("proxy_settings", {
+  id: text("id").primaryKey(),
+  rateLimitFailover: integer("rate_limit_failover", { mode: "boolean" })
+    .notNull()
+    .default(false),
+});
 
 export const oauthStates = sqliteTable("oauth_states", {
   state: text("state").primaryKey(),

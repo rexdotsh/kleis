@@ -603,6 +603,8 @@ describe("admin UI request state", () => {
     let release: ((response: Response) => void) | undefined;
     globalThis.fetch = ((url: RequestInfo | URL) => {
       const path = String(url);
+      if (path === "/admin/accounts/failover")
+        return Promise.resolve(Response.json({ enabled: false }));
       if (path === "/admin/accounts")
         return Promise.resolve(
           Response.json({
@@ -670,6 +672,8 @@ describe("admin UI request state", () => {
     let releaseQuotas: ((response: Response) => void) | undefined;
     globalThis.fetch = ((url: RequestInfo | URL) => {
       const path = String(url);
+      if (path === "/admin/accounts/failover")
+        return Promise.resolve(Response.json({ enabled: false }));
       if (path === "/admin/accounts/quotas")
         return new Promise<Response>((resolve) => {
           releaseQuotas = resolve;
@@ -721,6 +725,8 @@ describe("admin UI request state", () => {
     });
     let accountCalls = 0;
     globalThis.fetch = ((url: RequestInfo | URL) => {
+      if (String(url) === "/admin/accounts/failover")
+        return Promise.resolve(Response.json({ enabled: false }));
       if (String(url).startsWith("/admin/accounts/usage?")) {
         return Promise.resolve(
           Response.json({ usage: [], windowMs: 86_400_000 })
@@ -769,11 +775,13 @@ describe("admin UI request state", () => {
   test("a response arriving after logout cannot restore account state", async () => {
     let release: ((response: Response) => void) | undefined;
     globalThis.fetch = ((url: RequestInfo | URL) =>
-      String(url).startsWith("/admin/accounts/usage?")
-        ? Promise.resolve(Response.json({ usage: [], windowMs: 86_400_000 }))
-        : new Promise<Response>((resolve) => {
-            release = resolve;
-          })) as typeof fetch;
+      String(url) === "/admin/accounts/failover"
+        ? Promise.resolve(Response.json({ enabled: false }))
+        : String(url).startsWith("/admin/accounts/usage?")
+          ? Promise.resolve(Response.json({ usage: [], windowMs: 86_400_000 }))
+          : new Promise<Response>((resolve) => {
+              release = resolve;
+            })) as typeof fetch;
 
     const loading = loadAccounts();
     logout();

@@ -1,5 +1,9 @@
 import type { Database } from "../../db";
 import {
+  accountCooldowns,
+  type AccountCooldownObservation,
+} from "../../providers/account-tracking/rate-limit-cooldowns";
+import {
   findCodexResetCreditRedemption,
   saveCodexResetCreditRedemption,
 } from "../../db/repositories/codex-reset-redemptions";
@@ -792,7 +796,8 @@ const mergeLiveLimits = (
 // endpoint, so it stays.
 export const recordProviderAccountLiveLimits = (
   account: ProviderAccountRecord,
-  limits: LiveLimits | null
+  limits: LiveLimits | null,
+  observation: AccountCooldownObservation
 ): void => {
   if (
     !(limits && isTrackingAccount(account)) ||
@@ -804,6 +809,7 @@ export const recordProviderAccountLiveLimits = (
     const key = quotaKey(account);
     const now = Date.now();
     const entry = cache.get(key);
+    observation.observe(limits);
     const quota: AccountQuota = {
       fetchedAt: now,
       error: null,
@@ -943,6 +949,13 @@ export const redeemCodexResetCredit = async (
         creditId,
       })
     );
+    if (
+      result.code === "reset" ||
+      result.code === "already_redeemed" ||
+      result.code === "nothing_to_reset"
+    ) {
+      accountCooldowns.clear(account.id);
+    }
     await save("completed", result.code, result.windowsReset, null);
     invalidateProviderAccountQuota(account);
     if (result.code === "reset" || result.code === "already_redeemed") {
