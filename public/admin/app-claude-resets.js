@@ -106,7 +106,11 @@ function claudeResetOffer(account) {
   const windowLabels =
     resets.unavailable === "unsupported_limits"
       ? []
-      : [...new Set(clears.map((type) => CLAUDE_LIMIT_NAMES[type]).filter(Boolean))];
+      : [
+          ...new Set(
+            clears.map((type) => CLAUDE_LIMIT_NAMES[type]).filter(Boolean)
+          ),
+        ];
   const endsAt = offer?.endsAt ?? resets.nextEndsAt;
   const weekly = quotaTimestamp(offer?.weeklyResetsAt);
   return {
