@@ -177,14 +177,13 @@ export const codexResetCreditRedemptions = sqliteTable(
   ]
 );
 
-export const claudeResetClaimStatuses = [
+const claudeResetClaimStatuses = [
   "pending",
   "ambiguous",
   "completed",
   "failed",
   "reconciled",
 ] as const;
-export type ClaudeResetClaimStatus = (typeof claudeResetClaimStatuses)[number];
 
 export const claudeResetClaimFences = sqliteTable(
   "claude_reset_claim_fences",
@@ -198,28 +197,16 @@ export const claudeResetClaimFences = sqliteTable(
   ]
 );
 
-// Canonical OAuth user + organization fences survive local account removal.
-// A claim is recorded before sending, across every Kleis process.
+// Claims and fences belong to the canonical OAuth user + organization, not a
+// local account row. A claim is recorded before sending, across every process.
 export const claudeResetClaims = sqliteTable(
   "claude_reset_claims",
   {
     requestId: text("request_id").primaryKey(),
-    providerAccountId: text("provider_account_id").references(
-      () => providerAccounts.id,
-      { onDelete: "set null" }
-    ),
     accountIdentity: text("account_identity").notNull(),
     organizationUuid: text("organization_uuid").notNull(),
-    program: text("program").notNull(),
     grantId: text("grant_id").notNull(),
-    offerKey: text("offer_key").notNull(),
     status: text("status", { enum: claudeResetClaimStatuses }).notNull(),
-    result: text("result"),
-    reason: text("reason"),
-    resetsLeft: integer("resets_left", { mode: "number" }),
-    clearedJson: text("cleared_json"),
-    weeklyResetsAt: text("weekly_resets_at"),
-    lastError: text("last_error"),
     createdAt: integer("created_at", { mode: "number" }).notNull(),
     updatedAt: integer("updated_at", { mode: "number" }).notNull(),
   },

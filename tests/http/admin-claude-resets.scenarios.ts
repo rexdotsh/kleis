@@ -84,7 +84,7 @@ test("the Claude reset claim route checks the account and body before anything i
   expect(unknownOrganization.status).toBe(409);
   expect(await unknownOrganization.json()).toMatchObject({
     error: "conflict",
-    reason: "organization_unknown",
+    reason: "identity_unverified",
   });
   expect(sent.filter((url) => url.includes("reset_rate_limits"))).toEqual([]);
 });

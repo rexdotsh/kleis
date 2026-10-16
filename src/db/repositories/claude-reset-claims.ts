@@ -62,10 +62,13 @@ export const listProviderAccountsWithClaudeResetClaims = async (
   return { accounts: accountRows.map(toProviderAccountRecord), claims, fences };
 };
 
-const matchingIdentity = (identity: ClaudeResetClaimIdentity) =>
+const sameIdentity = (
+  table: typeof claudeResetClaims | typeof claudeResetClaimFences,
+  identity: ClaudeResetClaimIdentity
+) =>
   and(
-    eq(claudeResetClaims.accountIdentity, identity.accountIdentity),
-    eq(claudeResetClaims.organizationUuid, identity.organizationUuid)
+    eq(table.accountIdentity, identity.accountIdentity),
+    eq(table.organizationUuid, identity.organizationUuid)
   );
 
 export const readClaudeResetClaimLedger = async (
@@ -81,16 +84,13 @@ export const readClaudeResetClaimLedger = async (
     database
       .select()
       .from(claudeResetClaimFences)
-      .where(
-        and(
-          eq(claudeResetClaimFences.accountIdentity, identity.accountIdentity),
-          eq(claudeResetClaimFences.organizationUuid, identity.organizationUuid)
-        )
-      ),
+      .where(sameIdentity(claudeResetClaimFences, identity)),
     database
       .select()
       .from(claudeResetClaims)
-      .where(and(matchingIdentity(identity), relevantClaims(since)))
+      .where(
+        and(sameIdentity(claudeResetClaims, identity), relevantClaims(since))
+      )
       .orderBy(desc(claudeResetClaims.updatedAt)),
   ]);
   const fence = fences[0];
@@ -98,108 +98,63 @@ export const readClaudeResetClaimLedger = async (
   return { version: fence.version, claims };
 };
 
-type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
-
-const advanceFence = async (
-  tx: Transaction,
-  identity: ClaudeResetClaimIdentity,
-  version: number
-): Promise<void> => {
-  const rows = await tx
-    .update(claudeResetClaimFences)
-    .set({ version: sql`${claudeResetClaimFences.version} + 1` })
-    .where(
-      and(
-        eq(claudeResetClaimFences.accountIdentity, identity.accountIdentity),
-        eq(claudeResetClaimFences.organizationUuid, identity.organizationUuid),
-        eq(claudeResetClaimFences.version, version)
-      )
-    )
-    .returning({ version: claudeResetClaimFences.version });
-  if (!rows.length) throw new ClaudeResetReservationConflict();
-};
-
-// The version read with the validated ledger must still own this reservation,
-// including when a competing claim has already settled.
-export const insertClaudeResetClaim = async (
+// Atomically advances the identity's version, which must still be the one the
+// claim was validated against, then records `claim` as pending. The open
+// claim read with that version is reopened when `claim` reuses its request
+// ID, and closed otherwise; it too must be unchanged.
+export const reserveClaudeResetClaim = async (
   database: Database,
-  claim: typeof claudeResetClaims.$inferInsert,
-  closing: { requestId: string; updatedAt: number } | null,
-  version: number
+  claim: Omit<ClaudeResetClaimRow, "status">,
+  version: number,
+  open: Pick<ClaudeResetClaimRow, "requestId" | "updatedAt"> | null
 ): Promise<void> => {
+  const reopen = open?.requestId === claim.requestId;
   await database.transaction(async (tx) => {
-    await advanceFence(tx, claim, version);
-    if (closing) {
-      const rows = await tx
+    const fenced = await tx
+      .update(claudeResetClaimFences)
+      .set({ version: sql`${claudeResetClaimFences.version} + 1` })
+      .where(
+        and(
+          sameIdentity(claudeResetClaimFences, claim),
+          eq(claudeResetClaimFences.version, version)
+        )
+      )
+      .returning({ version: claudeResetClaimFences.version });
+    if (!fenced.length) throw new ClaudeResetReservationConflict();
+    if (open) {
+      const updated = await tx
         .update(claudeResetClaims)
-        .set({ status: "reconciled", updatedAt: claim.createdAt })
+        .set({
+          status: reopen ? "pending" : "reconciled",
+          updatedAt: claim.updatedAt,
+        })
         .where(
           and(
-            matchingIdentity(claim),
-            eq(claudeResetClaims.requestId, closing.requestId),
-            eq(claudeResetClaims.updatedAt, closing.updatedAt),
+            sameIdentity(claudeResetClaims, claim),
+            eq(claudeResetClaims.requestId, open.requestId),
+            eq(claudeResetClaims.updatedAt, open.updatedAt),
             inArray(claudeResetClaims.status, activeStatuses)
           )
         )
         .returning({ requestId: claudeResetClaims.requestId });
-      if (!rows.length) throw new ClaudeResetReservationConflict();
+      if (!updated.length) throw new ClaudeResetReservationConflict();
     }
-    await tx.insert(claudeResetClaims).values(claim);
-  });
-};
-
-// Both the identity version and open claim must still match the validated read.
-export const reopenClaudeResetClaim = async (
-  database: Database,
-  claim: ClaudeResetClaimIdentity & {
-    requestId: string;
-    updatedAt: number;
-    offerKey: string;
-  },
-  now: number,
-  version: number
-): Promise<void> => {
-  await database.transaction(async (tx) => {
-    await advanceFence(tx, claim, version);
-    const rows = await tx
-      .update(claudeResetClaims)
-      .set({
-        status: "pending",
-        offerKey: claim.offerKey,
-        lastError: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          matchingIdentity(claim),
-          eq(claudeResetClaims.requestId, claim.requestId),
-          eq(claudeResetClaims.updatedAt, claim.updatedAt),
-          inArray(claudeResetClaims.status, activeStatuses)
-        )
-      )
-      .returning({ requestId: claudeResetClaims.requestId });
-    if (!rows.length) throw new ClaudeResetReservationConflict();
+    if (!reopen) {
+      await tx
+        .insert(claudeResetClaims)
+        .values({ ...claim, status: "pending" });
+    }
   });
 };
 
 export const settleClaudeResetClaim = async (
   database: Database,
   requestId: string,
-  settlement: Pick<
-    typeof claudeResetClaims.$inferInsert,
-    | "status"
-    | "result"
-    | "reason"
-    | "resetsLeft"
-    | "clearedJson"
-    | "weeklyResetsAt"
-    | "lastError"
-    | "updatedAt"
-  >
+  status: "ambiguous" | "completed" | "failed"
 ): Promise<void> => {
   await database
     .update(claudeResetClaims)
-    .set(settlement)
+    .set({ status, updatedAt: Date.now() })
     .where(
       and(
         eq(claudeResetClaims.requestId, requestId),

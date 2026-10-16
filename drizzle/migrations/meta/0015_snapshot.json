@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "a51cf542-62f4-4183-b38c-e448596ee6da",
+  "id": "63729c27-6b92-4d57-8244-41cb0441b9c2",
   "prevId": "27127e14-ce95-48d6-8712-517ddfbb22fe",
   "tables": {
     "api_keys": {
@@ -142,13 +142,6 @@
           "notNull": true,
           "autoincrement": false
         },
-        "provider_account_id": {
-          "name": "provider_account_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "account_identity": {
           "name": "account_identity",
           "type": "text",
@@ -163,22 +156,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "program": {
-          "name": "program",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
         "grant_id": {
           "name": "grant_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "offer_key": {
-          "name": "offer_key",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -189,48 +168,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
-        },
-        "result": {
-          "name": "result",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "resets_left": {
-          "name": "resets_left",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "cleared_json": {
-          "name": "cleared_json",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "weekly_resets_at": {
-          "name": "weekly_resets_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "last_error": {
-          "name": "last_error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
           "autoincrement": false
         },
         "created_at": {
@@ -261,17 +198,7 @@
           "where": "\"claude_reset_claims\".\"status\" in ('pending', 'ambiguous')"
         }
       },
-      "foreignKeys": {
-        "claude_reset_claims_provider_account_id_provider_accounts_id_fk": {
-          "name": "claude_reset_claims_provider_account_id_provider_accounts_id_fk",
-          "tableFrom": "claude_reset_claims",
-          "tableTo": "provider_accounts",
-          "columnsFrom": ["provider_account_id"],
-          "columnsTo": ["id"],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
