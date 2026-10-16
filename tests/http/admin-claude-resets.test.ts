@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 // The routes import a shared database module, so they need a separate process.
-test("Claude reset admin routes validate claims and expose scoped account views", () => {
+test("Claude reset admin routes reject untrusted claims before dispatch", () => {
   const result = Bun.spawnSync(
     [process.execPath, "test", "./tests/http/admin-claude-resets.scenarios.ts"],
     {

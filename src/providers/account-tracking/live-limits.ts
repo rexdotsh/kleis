@@ -195,9 +195,7 @@ const mergeClaudeWindow = (
         usedDollars: null,
         remainingDollars: null,
         ...previous,
-        ...(reading.resetsAt &&
-        previous?.resetsAt &&
-        reading.resetsAt !== previous.resetsAt
+        ...(reading.resetsAt && reading.resetsAt !== previous?.resetsAt
           ? { utilization: null }
           : {}),
         ...reading,

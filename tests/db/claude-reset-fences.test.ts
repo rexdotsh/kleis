@@ -1,10 +1,4 @@
-import { createClient } from "@libsql/client";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { drizzle } from "drizzle-orm/libsql";
-import { migrate } from "drizzle-orm/libsql/migrator";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import {
@@ -13,11 +7,10 @@ import {
   reserveClaudeResetClaim,
   settleClaudeResetClaim,
 } from "../../src/db/repositories/claude-reset-claims";
-import * as schema from "../../src/db/schema";
 import { claudeResetClaims } from "../../src/db/schema";
+import { createResetDatabase } from "../helpers/reset-database";
 
-let directory: string;
-let clients: ReturnType<typeof createClient>[] = [];
+let fixture: Awaited<ReturnType<typeof createResetDatabase>>;
 let database: Database;
 let other: Database;
 const identity = {
@@ -37,23 +30,14 @@ const statuses = async () =>
     (row) => `${row.requestId}:${row.status}`
   );
 
-// Two connections to one file stand in for two Kleis processes.
 beforeEach(async () => {
-  directory = await mkdtemp(join(tmpdir(), "kleis-claude-fence-db-"));
-  const url = `file:${join(directory, "claims.db")}`;
-  clients = [createClient({ url }), createClient({ url })];
-  [database, other] = clients.map((client) => drizzle(client, { schema })) as [
-    Database,
-    Database,
-  ];
-  await migrate(database, { migrationsFolder: "./drizzle/migrations" });
+  fixture = await createResetDatabase();
+  database = fixture.database;
+  other = fixture.contender;
 });
-afterEach(async () => {
-  for (const client of clients) client.close();
-  await rm(directory, { recursive: true, force: true });
-});
+afterEach(async () => fixture.close());
 
-test("a connection cannot reserve with a version another connection already used", async () => {
+test("a stale reservation cannot use a version another claim already consumed", async () => {
   const validated = await read(other);
   await reserveClaudeResetClaim(database, claim("a"), validated.version, null);
   await settleClaudeResetClaim(database, "a", { status: "completed" });

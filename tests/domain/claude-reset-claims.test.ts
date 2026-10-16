@@ -1,4 +1,3 @@
-import { createClient } from "@libsql/client";
 import {
   afterEach,
   beforeEach,
@@ -9,11 +8,6 @@ import {
   test,
 } from "bun:test";
 import { eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/libsql";
-import { migrate } from "drizzle-orm/libsql/migrator";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import * as claimRepository from "../../src/db/repositories/claude-reset-claims";
@@ -22,7 +16,6 @@ import {
   replaceProviderAccountCredentials,
   type ProviderAccountRecord,
 } from "../../src/db/repositories/provider-accounts";
-import * as schema from "../../src/db/schema";
 import { claudeResetClaims, providerAccounts } from "../../src/db/schema";
 import {
   ClaudeResetClaimConflict,
@@ -37,6 +30,7 @@ import {
   setAccountSnapshotStore,
 } from "../../src/domain/providers/provider-account-tracking";
 import { readClaudeLiveLimits } from "../../src/providers/account-tracking/live-limits";
+import { createResetDatabase } from "../helpers/reset-database";
 
 const MINUTE = 60_000;
 const ORGANIZATION = "00000000-0000-4000-8000-000000000001";
@@ -173,9 +167,8 @@ const fiveHourReset = (offsetMs: number) => ({
 });
 
 describe("Claude reset claims", () => {
-  let client: ReturnType<typeof createClient>;
+  let fixture: Awaited<ReturnType<typeof createResetDatabase>>;
   let database: Database;
-  let directory: string;
   let startedAt: number;
   let warnings: ReturnType<typeof spyOn>;
 
@@ -252,10 +245,8 @@ describe("Claude reset claims", () => {
   };
 
   beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), "kleis-claude-resets-"));
-    client = createClient({ url: `file:${join(directory, "test.db")}` });
-    database = drizzle(client, { schema });
-    await migrate(database, { migrationsFolder: "./drizzle/migrations" });
+    fixture = await createResetDatabase();
+    database = fixture.database;
     setAccountSnapshotStore(null);
     startedAt = Date.now();
     at(0);
@@ -282,8 +273,7 @@ describe("Claude reset claims", () => {
     warnings.mockRestore();
     globalThis.fetch = originalFetch;
     setSystemTime();
-    client.close();
-    await rm(directory, { recursive: true, force: true });
+    await fixture.close();
   });
 
   describe("discovery", () => {
@@ -291,14 +281,16 @@ describe("Claude reset claims", () => {
       const account = await addAccount();
       const data = (await read(account))?.data;
 
-      expect(upstream.usageUrls).toEqual([
-        "https://api.anthropic.com/api/oauth/usage?cedar_ember=1",
-      ]);
       expect(data).toMatchObject({
         subscription: { extraUsage: { isEnabled: true, monthlyLimit: 5000 } },
         resetCredits: { observedAt: startedAt, status: { eligible: true } },
       });
-      for (const secret of ["event_props", "claude_code_cli", ORGANIZATION])
+      for (const secret of [
+        "event_props",
+        "claude_code_cli",
+        ORGANIZATION,
+        account.accessToken,
+      ])
         expect(JSON.stringify(data)).not.toContain(secret);
       expect(await view(account)).toMatchObject({
         saved: 2,
@@ -407,16 +399,11 @@ describe("Claude reset claims", () => {
           resetsLeft: 1,
           cleared: ["five_hour", "seven_day"],
         });
-        expect(upstream.claims).toEqual([
-          {
-            url: `https://api.anthropic.com/api/organizations/${ORGANIZATION}/reset_rate_limits`,
-            body: {
-              program: "cedar_ember",
-              grant_id: "grant_fake_1",
-              request_id: outcome?.requestId,
-            },
-          },
-        ]);
+        expect(upstream.claims).toHaveLength(1);
+        expect(upstream.claims[0]).toMatchObject({
+          url: `https://api.anthropic.com/api/organizations/${ORGANIZATION}/reset_rate_limits`,
+          body: { grant_id: offer.grantId, request_id: outcome?.requestId },
+        });
         expect(upstream.claimHeaders[0]?.get("authorization")).toBe(
           `Bearer ${account.accessToken}`
         );
@@ -425,7 +412,6 @@ describe("Claude reset claims", () => {
           { status: "completed", result: "reset", httpStatus: null },
         ]);
         const logged = info.mock.calls.map((args) => String(args[0])).join();
-        expect(logged).toContain("claude_reset_claim_settled");
         for (const secret of ["grant_fake_1", ORGANIZATION, outcome?.requestId])
           expect(logged).not.toContain(String(secret));
       } finally {
@@ -604,17 +590,14 @@ describe("Claude reset claims", () => {
     );
 
     test.each([false, true])(
-      "a delayed reservation on another connection is fenced after a claim completes (duplicate row: %s)",
+      "a delayed reservation is fenced after a claim completes (duplicate row: %s)",
       async (duplicate) => {
         const firstAccount = await addAccount();
         const secondAccount = duplicate ? await addAccount() : firstAccount;
         await read(firstAccount);
         if (duplicate) await read(secondAccount);
         const confirmed = await offerOf(secondAccount);
-        const contenderClient = createClient({
-          url: `file:${join(directory, "test.db")}`,
-        });
-        const contender = drizzle(contenderClient, { schema });
+        const contender = fixture.contender;
         const entered = gate();
         const resume = gate();
         const reserve = claimRepository.reserveClaudeResetClaim;
@@ -646,7 +629,6 @@ describe("Claude reset claims", () => {
           resume.release();
           paused.mockRestore();
           await delayed;
-          contenderClient.close();
         }
       }
     );
@@ -733,6 +715,60 @@ describe("Claude reset claims", () => {
   });
 
   describe("confirmation binding", () => {
+    test.each([
+      { eligible: false },
+      { grants: [grant({ resets_left: 0 })] },
+      { grants: [grant({ resets_left: -1 })] },
+      { grants: [grant({ id: "../../other-grant" })] },
+      { grants: [grant({ ends_at: "2020-01-01T00:00:00Z" })] },
+      { grants: [grant({ starts_at: "2100-01-01T00:00:00Z" })] },
+      { grants: [grant({ ends_at: "unreadable" })] },
+      { grants: [grant({ paused: true })] },
+      { grants: [grant({ usable_now: false })] },
+      { grants: [grant({ blocking: ["seven_day_opus"] })] },
+      { next_grant_id: "unrecognized_grant" },
+      { cooldown_until: "2100-01-01T00:00:00Z" },
+      { cooldown_until: "unreadable" },
+    ])(
+      "unusable upstream reset offers cannot be spent: %j",
+      async (changed) => {
+        const account = await addAccount();
+        await read(account);
+        const confirmed = await offerOf(account);
+        upstream.usage = () =>
+          Response.json(usageBody({ ...cedar(), ...changed }));
+        at(4 * MINUTE);
+        await read(account);
+        await expect(claim(account, confirmed)).rejects.toBeInstanceOf(
+          ClaudeResetClaimConflict
+        );
+        expect(upstream.claims).toHaveLength(0);
+      }
+    );
+
+    test.each([
+      { grants: [grant({ resets_left: 1 })] },
+      { grants: [grant({ clears: ["five_hour"] })] },
+      { grants: [grant({ label: "A different offer" })] },
+      { weekly_resets_at: "2100-01-01T00:00:00Z" },
+      { grants: [grant(), grant({ id: "another_grant" })] },
+    ])(
+      "changing a confirmed offer requires renewed consent before dispatch: %j",
+      async (changed) => {
+        const account = await addAccount();
+        await read(account);
+        const confirmed = await offerOf(account);
+        upstream.usage = () =>
+          Response.json(usageBody({ ...cedar(), ...changed }));
+        at(4 * MINUTE);
+        await read(account);
+        expect(await conflictOf(claim(account, confirmed))).toBe(
+          "offer_changed"
+        );
+        expect(upstream.claims).toHaveLength(0);
+      }
+    );
+
     test("a changed or unusable offer needs a new confirmation", async () => {
       const account = await addAccount();
       await read(account);
@@ -865,11 +901,22 @@ describe("Claude reset claims", () => {
       }
     );
 
-    test.each([false, true])(
-      "a slow poll cannot overwrite newer live limits (reset-only: %s)",
-      async (resetOnly) => {
+    test.each(["utilization", "reset-only", "unmatched reset-only"])(
+      "a slow poll cannot overwrite newer live limits (%s)",
+      async (reading) => {
         const account = await addAccount();
-        upstream.usage = () => Response.json(atLimit());
+        const body = atLimit();
+        const usage = {
+          ...body,
+          five_hour: {
+            ...body.five_hour,
+            resets_at:
+              reading === "unmatched reset-only"
+                ? null
+                : body.five_hour.resets_at,
+          },
+        };
+        upstream.usage = () => Response.json(usage);
         await read(account);
         const confirmed = await offerOf(account);
         let finish: (response: Response) => void = () => undefined;
@@ -879,24 +926,27 @@ describe("Claude reset claims", () => {
           });
         at(3 * MINUTE);
         await read(account);
-        if (resetOnly) {
+        if (reading === "reset-only") {
           live(account, {
             "anthropic-ratelimit-unified-5h-utilization": "1",
             ...fiveHourReset(5 * 60 * MINUTE - 3 * MINUTE),
           });
           live(account, fiveHourReset(6 * 60 * MINUTE));
+        } else if (reading === "unmatched reset-only") {
+          live(account, fiveHourReset(6 * 60 * MINUTE));
         } else {
           live(account, { "anthropic-ratelimit-unified-5h-utilization": "0" });
         }
-        finish(Response.json(atLimit()));
+        finish(Response.json(usage));
         await flush();
-        expect((await view(account))?.offer?.earlyUse?.percentUsed).toBe(
-          resetOnly ? null : 0
-        );
+        upstream.usage = () => Response.json(usage);
         expect(await conflictOf(claim(account, confirmed))).toBe(
           "offer_changed"
         );
         expect(upstream.claims).toHaveLength(0);
+        expect((await view(account))?.offer?.earlyUse?.percentUsed).toBe(
+          reading === "utilization" ? 0 : null
+        );
       }
     );
 

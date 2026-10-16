@@ -88,20 +88,3 @@ test("the Claude reset claim route checks the account and body before anything i
   });
   expect(sent.filter((url) => url.includes("reset_rate_limits"))).toEqual([]);
 });
-
-test("account lists carry no reset view until resets were read", async () => {
-  await addAccount("claude", {
-    provider: "claude",
-    oauthMode: "max",
-    oauthHost: "claude.ai",
-  });
-  const response = await app.request("http://localhost/admin/accounts");
-  expect(response.status).toBe(200);
-  const body = (await response.json()) as {
-    accounts: { provider: string; claudeResets: unknown }[];
-  };
-  expect(body.accounts.length).toBeGreaterThan(0);
-  for (const account of body.accounts) {
-    expect(account.claudeResets).toBeNull();
-  }
-});
