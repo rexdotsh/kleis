@@ -68,6 +68,18 @@ Most code needs no comment. Add one only when a reader can't get it from the cod
 - One or two short lines. Don't hedge or pad.
 - When code changes, fix or delete the comments it makes wrong.
 
+### Tests
+
+A test exists to catch a bug that would hurt: lost or leaked credentials, a request routed to the wrong account, a double spend, broken proxying or streaming, corrupted or lost data, a security hole. If breaking the code under test wouldn't hurt anyone, don't write the test.
+
+- Test behavior through the code's real entry points (proxy routes, domain functions, repositories), not its internals.
+- No UI tests. Don't test the admin UI's DOM, markup, rendering, copy, CSS or screenshots. Check UI changes in a browser instead. Logic that must not break (such as double-submit protection for spending actions) belongs on the server, where it can be tested.
+- No tests of hardcoded values: pinned versions, constants, config, header or model lists, default strings, file contents. A test that only repeats what the code says is not a test.
+- No tests that restate the implementation, such as asserting mocks were called in the same order the code calls them.
+- One focused test per behavior. Use a table for variants of the same behavior; don't add permutations that exercise the same path.
+- A regression test must fail without its fix. Keep it to the smallest case that reproduces the bug.
+- Tests never call real upstreams (Anthropic, OpenAI) or a real database; use mocks and in-memory databases, isolated as described above.
+
 ---
 
 ## Pull Requests
