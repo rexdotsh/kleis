@@ -1004,7 +1004,10 @@ describe("Claude reset claims", () => {
         } else if (reading === "unmatched reset-only") {
           live(account, fiveHourReset(6 * 60 * MINUTE));
         } else {
-          live(account, { "anthropic-ratelimit-unified-5h-utilization": "0" });
+          live(account, {
+            "anthropic-ratelimit-unified-5h-utilization": "0",
+            ...fiveHourReset(6 * 60 * MINUTE),
+          });
         }
         finish(Response.json(usage));
         await flush();
@@ -1021,7 +1024,8 @@ describe("Claude reset claims", () => {
 
     test("usage 401 recovery keeps only the refreshed token's live readings", async () => {
       const account = await addAccount();
-      upstream.usage = () => Response.json(atLimit());
+      const usage = atLimit();
+      upstream.usage = () => Response.json(usage);
       await read(account);
       const confirmed = await offerOf(account);
       upstream.refresh = () => tokens("fake-recovered-access");
@@ -1042,10 +1046,20 @@ describe("Claude reset claims", () => {
       await retryStarted.promise;
       const refreshed = await findProviderAccountById(database, account.id);
       if (!refreshed) throw new Error("refreshed account missing");
-      live(refreshed, { "anthropic-ratelimit-unified-5h-utilization": "0.3" });
+      live(refreshed, {
+        "anthropic-ratelimit-unified-5h-utilization": "0.3",
+        "anthropic-ratelimit-unified-5h-reset": String(
+          Date.parse(usage.five_hour.resets_at) / 1000
+        ),
+      });
       live(account, { "anthropic-ratelimit-unified-5h-utilization": "0" });
       upstream.usage = () => Response.json(atLimit());
-      finish(Response.json(atLimit()));
+      finish(
+        Response.json({
+          ...usage,
+          five_hour: { ...usage.five_hour, utilization: 10 },
+        })
+      );
       await reading;
       await flush();
       expect((await read(refreshed))?.data).toMatchObject({

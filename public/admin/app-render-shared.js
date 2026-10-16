@@ -550,12 +550,15 @@ function claudeNamedWindows(subscription) {
     if (!Number.isFinite(window?.utilization)) return;
     const key = label.toLowerCase();
     const previous = windows.get(key)?.[1];
-    if (previous?.utilization > window.utilization) return;
     windows.set(key, [
       label,
       {
         ...window,
-        resetsAt: window.resetsAt ?? previous?.resetsAt,
+        utilization: Math.max(previous?.utilization ?? 0, window.utilization),
+        resetsAt:
+          previous?.utilization > window.utilization
+            ? (previous.resetsAt ?? window.resetsAt)
+            : (window.resetsAt ?? previous?.resetsAt),
       },
     ]);
   };

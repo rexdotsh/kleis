@@ -271,3 +271,74 @@ export const mergeCodexLiveLimits = (
     credits: limits.credits ?? previous?.credits ?? null,
   };
 };
+
+type LimitWindow = {
+  usedPercent?: number | null;
+  utilization?: number | null;
+  resetAt?: number | null;
+  resetsAt?: string | null;
+};
+
+const windowReset = (window: LimitWindow | null | undefined): number | null => {
+  const reset =
+    window?.resetAt !== null && window?.resetAt !== undefined
+      ? window.resetAt * 1000
+      : Date.parse(window?.resetsAt ?? "");
+  return Number.isFinite(reset) ? reset : null;
+};
+
+// Reset times, not arrival order, identify windows. Within a window, keeping
+// the higher utilization prevents delayed responses from hiding exhaustion.
+const windowForPoll = <T extends LimitWindow>(
+  polled: LimitWindow | null | undefined,
+  traffic: T | null | undefined
+): T | null => {
+  const trafficReset = windowReset(traffic);
+  if (!traffic || trafficReset === null) return null;
+  const pollReset = windowReset(polled);
+  if (pollReset === null || trafficReset > pollReset) return traffic;
+  const pollPercent = polled?.usedPercent ?? polled?.utilization ?? 0;
+  const trafficPercent =
+    traffic.usedPercent ?? traffic.utilization ?? pollPercent;
+  return trafficReset === pollReset && trafficPercent >= pollPercent
+    ? traffic
+    : null;
+};
+
+export const selectLiveLimitsForPoll = (
+  polled:
+    | { provider: "claude"; subscription?: ClaudeSubscriptionUsage }
+    | { provider: "codex"; status?: CodexUsageStatus },
+  traffic: LiveLimits
+): LiveLimits | null => {
+  if (polled.provider === "claude" && traffic.provider === "claude") {
+    const usage = polled.subscription;
+    const windows: ClaudeLiveLimits["windows"] = {};
+    for (const [key, reading] of Object.entries(traffic.windows)) {
+      const previous =
+        key === "five_hour"
+          ? usage?.fiveHour
+          : key === "seven_day"
+            ? usage?.sevenDay
+            : usage?.modelWindows?.[key];
+      const window = windowForPoll(previous, reading);
+      if (window) windows[key] = window;
+    }
+    return Object.keys(windows).length ? { provider: "claude", windows } : null;
+  }
+  if (polled.provider === "codex" && traffic.provider === "codex") {
+    return codexLiveLimits({
+      credits: traffic.credits,
+      planType: traffic.planType,
+      primaryWindow: windowForPoll(
+        polled.status?.primaryWindow,
+        traffic.primaryWindow
+      ),
+      secondaryWindow: windowForPoll(
+        polled.status?.secondaryWindow,
+        traffic.secondaryWindow
+      ),
+    });
+  }
+  return null;
+};

@@ -39,6 +39,7 @@ import {
   type LiveLimits,
   mergeClaudeLiveLimits,
   mergeCodexLiveLimits,
+  selectLiveLimitsForPoll,
 } from "../../providers/account-tracking/live-limits";
 import { errorLogFields, logWarn } from "../../utils/log";
 import type {
@@ -108,8 +109,8 @@ const cache = new Map<string, QuotaEntry>();
 const credentialBinding = (account: ProviderAccountRecord): string =>
   Bun.CryptoHasher.hash("sha256", account.accessToken, "hex");
 
-// Live readings that arrive while a usage attempt runs are newer than its
-// result. Each attempt collects them for its own credential and generation.
+// Polls and proxied responses can finish out of order. Each attempt collects
+// traffic readings for its own credential and generation to reconcile windows.
 type LiveReading = { limits: LiveLimits; observedAt: number };
 const liveDuringPoll = new Map<
   string,
@@ -566,8 +567,7 @@ const fetchProviderAccountQuota = async (
 ): Promise<AccountQuota | null> => {
   const now = Date.now();
   let credential = credentialBinding(stored);
-  // Limits read from proxied traffic while this lookup ran are newer than
-  // what was cached when it started.
+  // Failed polls keep the last published limits, including concurrent traffic.
   const latest = (): AccountQuota | undefined => cache.get(key)?.quota;
   const publish = (quota: AccountQuota, expiresAt: number): AccountQuota => {
     // A lookup started later, or an invalidation, owns the cache entry.
@@ -626,9 +626,11 @@ const fetchProviderAccountQuota = async (
     }
     let quota = toQuota(result.data, result.errors, now, latest());
     for (const { limits, observedAt } of result.live ?? []) {
+      const selected = selectLiveLimitsForPoll(quota.data, limits);
+      if (!selected) continue;
       quota = {
         ...quota,
-        data: mergeLiveLimits(quota.data, limits, observedAt),
+        data: mergeLiveLimits(quota.data, selected, observedAt),
         fetchedAt: observedAt,
         source: "traffic",
       };

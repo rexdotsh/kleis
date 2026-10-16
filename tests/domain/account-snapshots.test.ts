@@ -172,9 +172,67 @@ describe("account snapshots", () => {
     );
   });
 
-  test.each(["codex", "claude"] as const)(
-    "%s publishes and persists traffic newer than an in-flight poll",
-    async (provider) => {
+  test.each(
+    (["codex", "claude"] as const).flatMap((provider) =>
+      [
+        {
+          name: "higher traffic in the same window",
+          poll: 10,
+          traffic: 70,
+          pollReset: 5,
+          trafficReset: 5,
+          expected: 70,
+          source: "traffic",
+        },
+        {
+          name: "delayed traffic below an exhausted poll",
+          poll: 100,
+          traffic: 20,
+          pollReset: 5,
+          trafficReset: 5,
+          expected: 100,
+          source: "poll",
+        },
+        {
+          name: "expired traffic before a rolled-over poll",
+          poll: 5,
+          traffic: 100,
+          pollReset: 5,
+          trafficReset: -1,
+          expected: 5,
+          source: "poll",
+        },
+        {
+          name: "rolled-over traffic after an exhausted poll",
+          poll: 100,
+          traffic: 5,
+          pollReset: -1,
+          trafficReset: 5,
+          expected: 5,
+          source: "traffic",
+        },
+        {
+          name: "unplaceable traffic",
+          poll: 10,
+          traffic: 70,
+          pollReset: 5,
+          trafficReset: null,
+          expected: 10,
+          source: "poll",
+        },
+      ].map((scenario) => ({ provider, ...scenario }))
+    )
+  )(
+    "$provider publishes and persists $name",
+    async ({
+      provider,
+      poll,
+      traffic,
+      pollReset,
+      trafficReset,
+      expected: percent,
+      source,
+    }) => {
       const id = await insertAccount(provider);
       const accounts = await accountsById(id);
       const account = accounts[0];
@@ -183,6 +241,18 @@ describe("account snapshots", () => {
       setAccountSnapshotStore(store);
       const startedAt = Date.now();
       setSystemTime(startedAt);
+      const resetAt = (hours: number) =>
+        Math.floor((startedAt + hours * HOUR_MS) / 1000);
+      const trafficResetHeaders: Record<string, string> =
+        trafficReset === null
+          ? {}
+          : provider === "codex"
+            ? { "x-codex-primary-reset-at": String(resetAt(trafficReset)) }
+            : {
+                "anthropic-ratelimit-unified-5h-reset": String(
+                  resetAt(trafficReset)
+                ),
+              };
       let finish: (response: Response) => void = () => undefined;
       globalThis.fetch = ((input: string | URL | Request) => {
         const path = new URL(String(input)).pathname;
@@ -200,11 +270,17 @@ describe("account snapshots", () => {
         account,
         provider === "codex"
           ? readCodexLiveLimits(
-              new Headers({ "x-codex-primary-used-percent": "70" })
+              new Headers({
+                "x-codex-primary-used-percent": String(traffic),
+                ...trafficResetHeaders,
+              })
             )
           : readClaudeLiveLimits(
               new Headers({
-                "anthropic-ratelimit-unified-5h-utilization": "0.7",
+                "anthropic-ratelimit-unified-5h-utilization": String(
+                  traffic / 100
+                ),
+                ...trafficResetHeaders,
               })
             )
       );
@@ -213,33 +289,45 @@ describe("account snapshots", () => {
           provider === "codex"
             ? {
                 rate_limit: {
-                  primary_window: { used_percent: 10 },
+                  primary_window: {
+                    used_percent: poll,
+                    reset_at: resetAt(pollReset),
+                  },
                   secondary_window: { used_percent: 20 },
                 },
               }
             : {
-                five_hour: { utilization: 10 },
+                five_hour: {
+                  utilization: poll,
+                  resets_at: new Date(resetAt(pollReset) * 1000).toISOString(),
+                },
                 seven_day: { utilization: 20 },
               }
         )
+      );
+      const expectedReset = resetAt(
+        source === "traffic" && trafficReset !== null ? trafficReset : pollReset
       );
       const expected =
         provider === "codex"
           ? {
               status: {
-                primaryWindow: { usedPercent: 70 },
+                primaryWindow: { usedPercent: percent, resetAt: expectedReset },
                 secondaryWindow: { usedPercent: 20 },
               },
             }
           : {
               subscription: {
-                fiveHour: { utilization: 70 },
+                fiveHour: {
+                  utilization: percent,
+                  resetsAt: new Date(expectedReset * 1000).toISOString(),
+                },
                 sevenDay: { utilization: 20 },
               },
             };
       expect((await polling).get(id)).toMatchObject({
-        source: "traffic",
-        fetchedAt: startedAt + 1000,
+        source,
+        fetchedAt: startedAt + (source === "traffic" ? 1000 : 0),
         data: expected,
       });
       expect(
