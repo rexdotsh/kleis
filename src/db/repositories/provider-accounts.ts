@@ -296,16 +296,36 @@ export const replaceProviderAccountCredentials = withInvalidation(
     if (!existing || existing.provider !== input.provider) {
       return null;
     }
-    const persistedIdentity =
-      existing.accountId ||
-      (existing.metadata?.provider === "codex"
-        ? existing.metadata.chatgptAccountId
-        : null);
-    if (
-      persistedIdentity &&
-      persistedIdentity !== input.accountId &&
-      !(input.provider === "claude" && input.accountId === null)
-    ) {
+    const previous = existing.metadata;
+    const incoming = input.metadata;
+    const identities =
+      input.provider === "claude"
+        ? [
+            [
+              (previous?.provider === "claude" ? previous.accountUuid : null) ||
+                existing.accountId,
+              (incoming?.provider === "claude" ? incoming.accountUuid : null) ||
+                input.accountId,
+            ],
+            [
+              previous?.provider === "claude"
+                ? previous.organizationUuid
+                : null,
+              incoming?.provider === "claude"
+                ? incoming.organizationUuid
+                : null,
+            ],
+          ]
+        : [
+            [
+              existing.accountId ||
+                (previous?.provider === "codex"
+                  ? previous.chatgptAccountId
+                  : null),
+              input.accountId,
+            ],
+          ];
+    if (identities.some(([known, received]) => known && known !== received)) {
       throw new ProviderAccountReauthorizationConflict(
         "OAuth account identity does not match the selected account"
       );
