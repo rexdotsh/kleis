@@ -16,11 +16,36 @@ const OAUTH_ERROR_CODES = new Set([
   "refresh_token_expired",
   "refresh_token_reused",
   "refresh_token_invalidated",
+  "rate_limit_error",
+  "deviceauth_authorization_pending",
 ]);
 
+export const CLAUDE_ACCOUNT_ON_HOLD = "account_on_hold";
+
+export class OAuthError extends Error {
+  constructor(
+    messagePrefix: string,
+    readonly status: number,
+    readonly code: string | null
+  ) {
+    super(`${messagePrefix} (HTTP ${status}${code ? `, ${code}` : ""})`);
+    this.name = "OAuthError";
+  }
+}
+
 // Provider error bodies can echo request details, so only an allowlisted code
-// from `error` or `error.code` is kept.
-const readOAuthErrorCode = (text: string): string | null => {
+// from `error`, `error.code` or `error.type` is kept.
+export const readOAuthErrorCode = async (
+  response: Response
+): Promise<string | null> => {
+  const text = await response
+    .clone()
+    .text()
+    .catch(() => "");
+  // Anthropic reports a suspended account through error_uri.
+  if (text.includes(CLAUDE_ACCOUNT_ON_HOLD)) {
+    return CLAUDE_ACCOUNT_ON_HOLD;
+  }
   let body: unknown;
   try {
     body = JSON.parse(text);
@@ -31,9 +56,48 @@ const readOAuthErrorCode = (text: string): string | null => {
     return null;
   }
   const { error } = body;
-  const code =
-    error && typeof error === "object" && "code" in error ? error.code : error;
-  return typeof code === "string" && OAUTH_ERROR_CODES.has(code) ? code : null;
+  const candidates =
+    error && typeof error === "object"
+      ? [
+          "code" in error ? error.code : null,
+          "type" in error ? error.type : null,
+        ]
+      : [error];
+  return (
+    candidates.find(
+      (code): code is string =>
+        typeof code === "string" && OAUTH_ERROR_CODES.has(code)
+    ) ?? null
+  );
+};
+
+export const classifyOAuthRefreshError = (
+  error: unknown,
+  unknownFailureStatus: "indeterminate" | "failed"
+) => {
+  if (!(error instanceof OAuthError)) {
+    return unknownFailureStatus;
+  }
+  if (error.status === 429) {
+    return "rate_limited";
+  }
+  if (error.status >= 500 && error.status < 600) {
+    return "transient";
+  }
+  if (
+    (error.status === 400 || error.status === 401 || error.status === 403) &&
+    (error.code === "invalid_grant" ||
+      error.code === "expired_token" ||
+      error.code === "refresh_token_expired" ||
+      error.code === "refresh_token_reused" ||
+      error.code === "refresh_token_invalidated")
+  ) {
+    return "reauthorize";
+  }
+  if (error.code === CLAUDE_ACCOUNT_ON_HOLD) {
+    return CLAUDE_ACCOUNT_ON_HOLD;
+  }
+  return "transient";
 };
 
 export const requireOkResponse = async (
@@ -44,8 +108,9 @@ export const requireOkResponse = async (
     return;
   }
 
-  const code = readOAuthErrorCode(await response.text().catch(() => ""));
-  throw new Error(
-    `${messagePrefix} (HTTP ${response.status}${code ? `, ${code}` : ""})`
+  throw new OAuthError(
+    messagePrefix,
+    response.status,
+    await readOAuthErrorCode(response)
   );
 };

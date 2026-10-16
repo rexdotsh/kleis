@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 
 import type { Database } from "../index";
 import { oauthStates, type Provider } from "../schema";
@@ -38,20 +38,16 @@ export const consumeOAuthState = async (
   provider: Provider,
   now: number
 ): Promise<OAuthStateRecord | null> => {
-  const row = await findOAuthState(database, state, provider, now);
-  if (!row) {
-    return null;
-  }
-
-  const deleteResult = await database
+  const [row] = await database
     .delete(oauthStates)
     .where(
-      and(eq(oauthStates.state, state), eq(oauthStates.provider, provider))
-    );
+      and(
+        eq(oauthStates.state, state),
+        eq(oauthStates.provider, provider),
+        gt(oauthStates.expiresAt, now)
+      )
+    )
+    .returning();
 
-  if (deleteResult.rowsAffected < 1) {
-    return null;
-  }
-
-  return row;
+  return row ?? null;
 };

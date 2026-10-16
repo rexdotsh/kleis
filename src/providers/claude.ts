@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { readResponseJson } from "../utils/response-json";
 
 import {
   consumeOAuthState,
@@ -10,9 +9,16 @@ import type { ClaudeAccountMetadata } from "./metadata";
 import {
   generatePkce,
   generateState,
-  parseAuthorizationCodeInput,
+  readOAuthCallbackCode,
 } from "./oauth-utils";
 import { parseOAuthStateMetadata } from "./oauth-state";
+import { requireOkResponse } from "./http";
+import {
+  buildOAuthTokenFields,
+  readOAuthText,
+  readOAuthTokenResponse,
+  type OAuthTokenResponse,
+} from "./oauth-tokens";
 import type {
   ProviderAdapter,
   ProviderOAuthCompleteInput,
@@ -29,7 +35,6 @@ const CLAUDE_SCOPE =
 const CLAUDE_STATE_TTL_MS = 15 * 60 * 1000;
 const CLAUDE_TOKEN_TIMEOUT_MS = 15_000;
 const CLAUDE_EXPIRY_SKEW_MS = 60_000;
-const CLAUDE_MIN_TOKEN_LIFETIME_MS = 60_000;
 
 const claudeStateMetadataSchema = z.strictObject({
   mode: z.enum(["max", "console"]),
@@ -37,61 +42,11 @@ const claudeStateMetadataSchema = z.strictObject({
   replaceAccountId: z.string().uuid().optional(),
 });
 
-type ClaudeTokenResponse = {
-  access_token: string;
-  refresh_token?: string;
-  expires_in?: number;
+type ClaudeTokenResponse = OAuthTokenResponse & {
   refresh_token_expires_in?: number;
-  scope?: string;
   account?: { uuid?: unknown; email_address?: unknown };
   organization?: { uuid?: unknown; name?: unknown };
   workspace?: { id?: unknown; name?: unknown };
-};
-
-export const CLAUDE_ACCOUNT_ON_HOLD = "account_on_hold";
-
-export class ClaudeOAuthError extends Error {
-  readonly status: number;
-  readonly code: string | null;
-
-  constructor(status: number, code: string | null) {
-    super(
-      `Claude OAuth request failed (HTTP ${status}${code ? `, ${code}` : ""})`
-    );
-    this.name = "ClaudeOAuthError";
-    this.status = status;
-    this.code = code;
-  }
-}
-
-// Only allowlisted codes leave this function; the rest of the provider text is
-// dropped. A suspended account is reported only through error_uri.
-const readClaudeOAuthErrorCode = (text: string): string | null => {
-  if (text.includes(CLAUDE_ACCOUNT_ON_HOLD)) {
-    return CLAUDE_ACCOUNT_ON_HOLD;
-  }
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!raw || typeof raw !== "object" || !("error" in raw)) {
-    return null;
-  }
-  const value = raw.error;
-  const candidate =
-    typeof value === "string"
-      ? value
-      : value && typeof value === "object" && "type" in value
-        ? value.type
-        : null;
-  return typeof candidate === "string" &&
-    /^(invalid_grant|invalid_client|invalid_scope|rate_limit_error|temporarily_unavailable)$/u.test(
-      candidate
-    )
-    ? candidate
-    : null;
 };
 
 const requestClaudeTokens = async (
@@ -107,22 +62,8 @@ const requestClaudeTokens = async (
     signal: AbortSignal.timeout(CLAUDE_TOKEN_TIMEOUT_MS),
     redirect: "error",
   });
-  if (!response.ok) {
-    throw new ClaudeOAuthError(
-      response.status,
-      readClaudeOAuthErrorCode(await response.text().catch(() => ""))
-    );
-  }
-
-  const value = await readResponseJson(response, "Claude token response");
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Claude OAuth response is not an object");
-  }
-  const tokens = value as ClaudeTokenResponse;
-  if (typeof tokens.access_token !== "string" || !tokens.access_token.trim()) {
-    throw new Error("Claude OAuth response has invalid token fields");
-  }
-  return tokens;
+  await requireOkResponse(response, "Claude OAuth request failed");
+  return readOAuthTokenResponse<ClaudeTokenResponse>(response, "Claude");
 };
 
 const exchangeCodeForTokens = async (input: {
@@ -130,7 +71,7 @@ const exchangeCodeForTokens = async (input: {
   state: string;
   verifier: string;
 }): Promise<ClaudeTokenResponse> => {
-  const tokens = await requestClaudeTokens({
+  return requestClaudeTokens({
     code: input.code,
     state: input.state,
     grant_type: "authorization_code",
@@ -138,10 +79,6 @@ const exchangeCodeForTokens = async (input: {
     redirect_uri: CLAUDE_REDIRECT_URI,
     code_verifier: input.verifier,
   });
-  if (!tokens.refresh_token) {
-    throw new Error("Claude OAuth response is missing tokens");
-  }
-  return tokens;
 };
 
 const refreshClaudeTokens = (
@@ -152,9 +89,6 @@ const refreshClaudeTokens = (
     client_id: CLAUDE_CLIENT_ID,
     refresh_token: refreshToken,
   });
-
-const readText = (value: unknown): string | null =>
-  typeof value === "string" && value.trim() ? value : null;
 
 const buildTokenResult = (input: {
   tokens: ClaudeTokenResponse;
@@ -173,14 +107,15 @@ const buildTokenResult = (input: {
     scope: tokens.scope ?? existing?.scope ?? null,
     oauthMode: input.mode,
     oauthHost: input.host,
-    accountUuid: readText(tokens.account?.uuid) ?? existing?.accountUuid,
-    email: readText(tokens.account?.email_address) ?? existing?.email,
+    accountUuid: readOAuthText(tokens.account?.uuid) ?? existing?.accountUuid,
+    email: readOAuthText(tokens.account?.email_address) ?? existing?.email,
     organizationUuid:
-      readText(tokens.organization?.uuid) ?? existing?.organizationUuid,
+      readOAuthText(tokens.organization?.uuid) ?? existing?.organizationUuid,
     organizationName:
-      readText(tokens.organization?.name) ?? existing?.organizationName,
-    workspaceId: readText(tokens.workspace?.id) ?? existing?.workspaceId,
-    workspaceName: readText(tokens.workspace?.name) ?? existing?.workspaceName,
+      readOAuthText(tokens.organization?.name) ?? existing?.organizationName,
+    workspaceId: readOAuthText(tokens.workspace?.id) ?? existing?.workspaceId,
+    workspaceName:
+      readOAuthText(tokens.workspace?.name) ?? existing?.workspaceName,
     refreshTokenExpiresAt:
       typeof refreshLifetime === "number" &&
       Number.isFinite(refreshLifetime) &&
@@ -188,29 +123,13 @@ const buildTokenResult = (input: {
         ? now + refreshLifetime * 1000
         : existing?.refreshTokenExpiresAt,
   };
-  // Claude Code 2.1.299 keeps the current refresh token when a refresh
-  // response omits it, and derives expiry from expires_in without validating it.
-  // An unusable expiry gets a short lifetime so a rotated token is still kept.
-  const refreshToken =
-    readText(input.tokens.refresh_token) ?? input.fallbackRefreshToken;
-  if (!refreshToken) {
-    throw new Error("Claude OAuth response is missing refresh_token");
-  }
-  const expiresIn = input.tokens.expires_in;
-  const lifetimeMs =
-    typeof expiresIn === "number" && Number.isFinite(expiresIn)
-      ? expiresIn * 1000
-      : 0;
-
   return {
-    accessToken: tokens.access_token,
-    refreshToken,
-    expiresAt:
-      now +
-      Math.max(
-        lifetimeMs - CLAUDE_EXPIRY_SKEW_MS,
-        CLAUDE_MIN_TOKEN_LIFETIME_MS
-      ),
+    ...buildOAuthTokenFields("Claude", tokens, {
+      now,
+      fallbackRefreshToken: input.fallbackRefreshToken,
+      expirySkewMs: CLAUDE_EXPIRY_SKEW_MS,
+      minimumLifetimeMs: 60_000,
+    }),
     // A Claude user UUID is shared across Max/Console and organizations. It
     // cannot be used as the unique provider account identity in our schema.
     accountId: input.fallbackAccountId || null,
@@ -267,10 +186,7 @@ export const claudeAdapter: ProviderAdapter = {
   async completeOAuth(
     input: ProviderOAuthCompleteInput
   ): Promise<ProviderTokenResult> {
-    if (!input.code) {
-      throw new Error("Claude OAuth completion requires a code");
-    }
-
+    const codeInput = readOAuthCallbackCode(input, "Claude");
     const stateRecord = await consumeOAuthState(
       input.database,
       input.state,
@@ -289,14 +205,6 @@ export const claudeAdapter: ProviderAdapter = {
 
     if (!stateRecord.pkceVerifier) {
       throw new Error("Claude OAuth state is missing PKCE verifier");
-    }
-
-    const codeInput = parseAuthorizationCodeInput(
-      input.code,
-      "Claude OAuth completion requires a code"
-    );
-    if (codeInput.state && codeInput.state !== input.state) {
-      throw new Error("Claude OAuth callback state mismatch");
     }
 
     const tokens = await exchangeCodeForTokens({
