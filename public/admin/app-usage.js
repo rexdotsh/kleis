@@ -331,7 +331,6 @@ function scheduleUsagePrefetch(kind, id) {
 
 export {
   dailyTokensBodyHtml,
-  renderDailyTokens,
   showDailyTokensTip,
   hideDailyTokensTip,
   switchToTab,

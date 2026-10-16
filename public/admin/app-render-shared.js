@@ -13,7 +13,7 @@ function relativeTime(ts) {
     const hours = Math.floor(abs / 3_600_000);
     return d >= 0 ? `in ${hours}h` : `${hours}h ago`;
   }
-  return formatShortDate(ts);
+  return shortDate(ts);
 }
 
 function tokenStatus(expiresAt) {
@@ -50,7 +50,7 @@ function formatCount(value) {
   return countFormat.format(usageNumber(value));
 }
 
-function formatShortDate(timestamp) {
+function shortDate(timestamp) {
   return shortDateFormat.format(timestamp);
 }
 
@@ -71,79 +71,49 @@ function cacheReadRate(inputTotalTokens, cacheReadTokens) {
 
 function normalizeUsage(rawUsage) {
   const usage = rawUsage || {};
-  const requestCount = usageNumber(usage.requestCount);
-  const successCount = usageNumber(usage.successCount);
-  const clientErrorCount = usageNumber(usage.clientErrorCount);
-  const serverErrorCount = usageNumber(usage.serverErrorCount);
-  const authErrorCount = usageNumber(usage.authErrorCount);
-  const rateLimitCount = usageNumber(usage.rateLimitCount);
-  const proxyErrorCount = usageNumber(usage.proxyErrorCount);
-  const upstreamErrorCount = usageNumber(usage.upstreamErrorCount);
-  const avgLatencyMs = usageNumber(usage.avgLatencyMs);
-  const maxLatencyMs = usageNumber(usage.maxLatencyMs);
-  const inputTokens = usageNumber(usage.inputTokens);
-  const inputTotalTokens = usageNumber(
+  const metrics = {};
+  for (const field of [
+    "requestCount",
+    "successCount",
+    "clientErrorCount",
+    "serverErrorCount",
+    "authErrorCount",
+    "rateLimitCount",
+    "proxyErrorCount",
+    "upstreamErrorCount",
+    "avgLatencyMs",
+    "maxLatencyMs",
+    "inputTokens",
+    "outputTokens",
+    "reasoningTokens",
+    "cacheReadTokens",
+    "cacheWriteTokens",
+  ]) {
+    metrics[field] = usageNumber(usage[field]);
+  }
+  metrics.inputTotalTokens = usageNumber(
     usage.inputTotalTokens ??
-      inputTokens +
-        usageNumber(usage.cacheReadTokens) +
-        usageNumber(usage.cacheWriteTokens)
+      metrics.inputTokens + metrics.cacheReadTokens + metrics.cacheWriteTokens
   );
-  const outputTokens = usageNumber(usage.outputTokens);
-  const reasoningTokens = usageNumber(usage.reasoningTokens);
-  const cacheReadTokens = usageNumber(usage.cacheReadTokens);
-  const cacheWriteTokens = usageNumber(usage.cacheWriteTokens);
-  const successRate =
+  metrics.totalTokens = usageNumber(
+    usage.totalTokens ?? metrics.inputTotalTokens + metrics.outputTokens
+  );
+  metrics.successRate =
     typeof usage.successRate === "number" && Number.isFinite(usage.successRate)
       ? Math.max(0, Math.min(100, Math.trunc(usage.successRate)))
       : null;
-  const unclassifiedFailureCount = Math.max(
+  metrics.unclassifiedFailureCount = Math.max(
     0,
-    clientErrorCount +
-      serverErrorCount +
-      authErrorCount -
-      proxyErrorCount -
-      upstreamErrorCount
+    metrics.clientErrorCount +
+      metrics.serverErrorCount +
+      metrics.authErrorCount -
+      metrics.proxyErrorCount -
+      metrics.upstreamErrorCount
   );
-
-  return {
-    requestCount,
-    successCount,
-    clientErrorCount,
-    serverErrorCount,
-    authErrorCount,
-    rateLimitCount,
-    proxyErrorCount,
-    upstreamErrorCount,
-    successRate,
-    unclassifiedFailureCount,
-    avgLatencyMs,
-    maxLatencyMs,
-    inputTokens,
-    inputTotalTokens,
-    outputTokens,
-    reasoningTokens,
-    cacheReadTokens,
-    cacheWriteTokens,
-    totalTokens: usageNumber(
-      usage.totalTokens ?? inputTotalTokens + outputTokens
-    ),
-    lastRequestAt:
-      typeof usage.lastRequestAt === "number" &&
-      Number.isFinite(usage.lastRequestAt)
-        ? usage.lastRequestAt
-        : null,
-  };
-}
-
-function hasUsageMetrics(metrics) {
-  if (!metrics) return false;
-  return (
-    metrics.requestCount > 0 ||
-    metrics.totalTokens > 0 ||
-    metrics.cacheReadTokens > 0 ||
-    metrics.cacheWriteTokens > 0 ||
-    metrics.lastRequestAt !== null
-  );
+  metrics.lastRequestAt = Number.isFinite(usage.lastRequestAt)
+    ? usage.lastRequestAt
+    : null;
+  return metrics;
 }
 
 function formatMetadataForInput(metadata) {
@@ -168,21 +138,17 @@ function dateInputValue(timestamp) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-function providerLabel(provider) {
-  return { codex: "Codex", claude: "Claude" }[provider] || provider || "";
-}
-
 const PROVIDERS = ["codex", "claude"];
 const PROVIDER_NAMES = { codex: "Codex", claude: "Claude" };
 const DAY_MS = 86_400_000;
 
 const providerName = (provider) => PROVIDER_NAMES[provider] || provider;
+const providerLabel = (provider) => providerName(provider) || "";
 const icon = (name) =>
   `<svg width="16" height="16" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
 const accountName = (account) =>
   account.label || account.accountId || maskKey(account.id);
 const keyName = (key) => key.label || maskKey(key.key);
-const shortDate = formatShortDate;
 const hasTraffic = (usage) => normalizeUsage(usage).requestCount > 0;
 
 const actionMutationAttributes = (action, target) =>
@@ -743,11 +709,9 @@ export {
   maskKey,
   usageWindowLabel,
   formatCount,
-  formatShortDate,
   formatCompact,
   cacheReadRate,
   normalizeUsage,
-  hasUsageMetrics,
   formatMetadataForInput,
   shortId,
   accountLabel,
@@ -765,8 +729,6 @@ export {
   untilText,
   SKELETON_HTML,
   accountColumnsHtml,
-  ACCOUNT_LOADING_HTML,
-  KEY_LOADING_HTML,
   kbd,
   disclosureHeadingHtml,
   requestsCellHtml,

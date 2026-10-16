@@ -38,14 +38,11 @@
   --ok: #57575c;
   --warn: #e08a3c;
   --err: #e5534b;
-  --err-soft: rgba(229, 83, 75, 0.1);
   --focus: rgba(230, 228, 223, 0.3);
   --line-focus: #48484e;
   --cursor: rgba(255, 255, 255, 0.04);
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-pop: cubic-bezier(0.16, 1, 0.3, 1);
-  --codex: #8f88d6;
-  --claude: #d08a5c;
   --font-sans: "Geist", ui-sans-serif, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, monospace;
 }
@@ -189,31 +186,6 @@ code,
   color: var(--warn);
 }
 .tag-primary {
-  color: var(--accent);
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--muted);
-  text-transform: capitalize;
-}
-.badge-codex::before,
-.badge-claude::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-.badge-codex::before {
-  background: var(--codex);
-}
-.badge-claude::before {
-  background: var(--claude);
-}
-.badge-primary {
   color: var(--accent);
 }
 
@@ -693,20 +665,21 @@ a.link {
 .list {
   margin: 0 -12px;
 }
-.row {
+.row,
+.group {
   display: grid;
   gap: 16px;
   align-items: center;
   height: 40px;
   padding: 0 12px;
+}
+.row {
   border-top: 1px solid var(--line);
+  transition: background-color 90ms ease;
 }
 .row[tabindex],
 button.row {
   cursor: pointer;
-}
-.row {
-  transition: background-color 90ms ease;
 }
 @media (hover: hover) {
   .row:hover {
@@ -760,7 +733,7 @@ button.row {
     background: var(--hover);
   }
 }
-.list > :is(.row, .detail, .key-full):last-child,
+.list > :is(.row, .detail):last-child,
 .group-rows > :last-child {
   border-bottom: 1px solid var(--line);
 }
@@ -843,24 +816,6 @@ button.row {
     background-position: 0 0;
   }
 }
-.loading-indicator {
-  display: flex;
-  justify-content: center;
-  padding: 48px 20px;
-}
-.spinner {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid var(--line-strong);
-  border-top-color: var(--muted);
-  border-radius: 50%;
-  animation: spin 700ms linear infinite;
-}
-.spinner-lg {
-  width: 18px;
-  height: 18px;
-}
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -929,13 +884,6 @@ button.row {
 .meter.err .meter-bar i {
   background: var(--err);
 }
-.group {
-  display: grid;
-  gap: 16px;
-  align-items: center;
-  height: 40px;
-  padding: 0 12px;
-}
 .group-rows + .group {
   margin-top: 16px;
 }
@@ -1001,36 +949,6 @@ button.row {
   border: 1px solid var(--line-strong);
   border-radius: 99px;
 }
-.switch {
-  position: relative;
-  transition: background 160ms ease;
-  width: 24px;
-  height: 14px;
-  background: var(--line-strong);
-  border: 0;
-  border-radius: 7px;
-}
-.switch::after {
-  content: "";
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 10px;
-  height: 10px;
-  background: var(--muted);
-  border-radius: 50%;
-  transition:
-    transform 160ms var(--ease-out),
-    background 160ms ease;
-}
-.switch[aria-checked="true"] {
-  background: #44444a;
-}
-.switch[aria-checked="true"]::after {
-  background: var(--text);
-  transform: translateX(10px);
-}
-
 .row.open,
 .detail {
   background: var(--surface);
@@ -1152,36 +1070,6 @@ button.row {
 .t-key {
   grid-template-columns: minmax(0, 1.1fr) 152px minmax(0, 1fr) 120px 88px 24px;
 }
-.key-full {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 8px 12px 8px 30px;
-  background: var(--surface);
-}
-.key-full code {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  user-select: all;
-}
-.key-reveal {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  margin: 8px 0;
-  padding: 8px 8px 8px 12px;
-  border: 1px solid var(--line);
-  border-left-color: var(--accent);
-  border-radius: 6px;
-}
-.key-reveal-value {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  user-select: all;
-}
-
 .menu {
   position: fixed;
   z-index: 950;
@@ -1666,7 +1554,7 @@ input[type="checkbox"]:disabled {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  *:not(.spinner),
+  *,
   *::before,
   *::after {
     animation-duration: 1ms !important;
@@ -1756,8 +1644,11 @@ input[type="checkbox"]:disabled {
   font-size: 12px;
 }
 input[type="checkbox"].toggle {
-  position: relative;
   display: block;
+}
+.switch,
+input[type="checkbox"].toggle {
+  position: relative;
   width: 24px;
   height: 14px;
   background: var(--line-strong);
@@ -1765,6 +1656,7 @@ input[type="checkbox"].toggle {
   border-radius: 7px;
   transition: background 160ms ease;
 }
+.switch::after,
 input[type="checkbox"].toggle::after {
   content: "";
   position: absolute;
@@ -1779,9 +1671,11 @@ input[type="checkbox"].toggle::after {
     transform 160ms var(--ease-out),
     background 160ms ease;
 }
+.switch[aria-checked="true"],
 input[type="checkbox"].toggle:checked {
   background: #44444a;
 }
+.switch[aria-checked="true"]::after,
 input[type="checkbox"].toggle:checked::after {
   background: var(--text);
   transform: translateX(10px);
@@ -1824,13 +1718,6 @@ input[type="checkbox"].toggle:checked::after {
   gap: 0 40px;
   padding-bottom: 20px;
 }
-.usage-slot.usage-grid,
-.usage-grid > .usage-slot {
-  padding-bottom: 0;
-}
-.usage-slot.usage-grid {
-  padding-bottom: 20px;
-}
 .usage-panel {
   min-width: 0;
 }
@@ -1864,9 +1751,7 @@ input[type="checkbox"].toggle:checked::after {
 .usage-grid .thead {
   height: 28px;
 }
-.t-model {
-  grid-template-columns: minmax(0, 1fr) 96px 56px 56px 64px;
-}
+.t-model,
 .t-bykey {
   grid-template-columns: minmax(0, 1fr) 96px 56px 56px 64px;
 }
@@ -2094,9 +1979,6 @@ input[type="checkbox"].toggle:checked::after {
   transform-origin: top right;
   animation: menu-in 160ms var(--ease-pop);
 }
-.shortcuts[hidden] {
-  display: none;
-}
 .shortcuts dl {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -2184,14 +2066,7 @@ input[type="checkbox"].toggle:checked::after {
     min-height: 54px;
     flex: none;
   }
-  .top-right:not(:has(> .top-ctl:not([hidden]))) {
-    display: flex;
-  }
-  .top-ctl {
-    width: 100%;
-  }
   .top-ctl .filter {
-    flex: 1;
     width: auto;
     max-width: none;
   }
@@ -2350,9 +2225,6 @@ input[type="checkbox"].toggle:checked::after {
   .actions {
     gap: 0;
   }
-  .key-full {
-    padding: 8px 16px;
-  }
   .kpis {
     grid-template-columns: 1fr 1fr;
     gap: 0;
@@ -2399,9 +2271,6 @@ input[type="checkbox"].toggle:checked::after {
   .form-row-label > :first-child {
     padding-top: 0;
   }
-  .create-form {
-    padding: 16px;
-  }
   .facts {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px 20px;
@@ -2417,15 +2286,10 @@ input[type="checkbox"].toggle:checked::after {
   .fact {
     padding: 0;
   }
-  .fact-label {
-    font-size: 12px;
-    line-height: 16px;
-  }
   .fact > :not(.fact-label) {
     min-width: 0;
   }
   .fact-value {
-    margin: 4px 0 2px;
     font-size: 13px;
     line-height: 20px;
   }
