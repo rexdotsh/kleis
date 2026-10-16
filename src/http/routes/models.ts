@@ -81,30 +81,15 @@ const buildRegistryForRequest = async (
     listConfiguredProviders(db),
   ]);
 
-  return buildProxyModelsRegistry({
+  const registry = buildProxyModelsRegistry({
     upstreamRegistry,
     baseOrigin: resolveBaseOriginWithPath(requestUrl),
     configuredProviders,
     ...(apiKeyScopes ? { apiKeyScopes } : {}),
   });
-};
-
-const findApiKeyScopesByToken = async (
-  modelsToken: string
-): Promise<ApiKeyScopes | null> => {
-  const apiKey = await findActiveApiKeyByModelsDiscoveryToken(
-    db,
-    modelsToken,
-    Date.now()
-  );
-  if (!apiKey) {
-    return null;
-  }
-
-  return {
-    providerScopes: apiKey.providerScopes,
-    modelScopes: apiKey.modelScopes,
-  };
+  return context.json(registry, {
+    headers: { "Cache-Control": "no-store" },
+  });
 };
 
 export const modelsRoutes = new Hono()
@@ -113,12 +98,7 @@ export const modelsRoutes = new Hono()
     if (unauthorized) {
       return unauthorized;
     }
-    const registry = await buildRegistryForRequest(context);
-    return context.json(registry, {
-      headers: {
-        "Cache-Control": "no-store",
-      },
-    });
+    return buildRegistryForRequest(context);
   })
   .get(SCOPED_MODELS_ROUTE_PATH, async (context) => {
     const modelsToken = parseModelsTokenParam(context.req.param("modelsToken"));
@@ -126,7 +106,11 @@ export const modelsRoutes = new Hono()
       return context.json(SCOPED_MODELS_NOT_FOUND, 404);
     }
 
-    const apiKeyScopes = await findApiKeyScopesByToken(modelsToken);
+    const apiKeyScopes = await findActiveApiKeyByModelsDiscoveryToken(
+      db,
+      modelsToken,
+      Date.now()
+    );
     if (!apiKeyScopes) {
       return context.json(SCOPED_MODELS_NOT_FOUND, 404);
     }
@@ -136,10 +120,5 @@ export const modelsRoutes = new Hono()
       return unauthorized;
     }
 
-    const registry = await buildRegistryForRequest(context, apiKeyScopes);
-    return context.json(registry, {
-      headers: {
-        "Cache-Control": "no-store",
-      },
-    });
+    return buildRegistryForRequest(context, apiKeyScopes);
   });

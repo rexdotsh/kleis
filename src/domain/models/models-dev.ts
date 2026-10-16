@@ -1,7 +1,8 @@
 import type { Provider } from "../../db/schema";
-import { isModelInScope, type ModelScopeRoute } from "../../http/proxy-routing";
+import { isModelInScope } from "../../http/proxy-routing";
 import { proxyProviderMappings } from "../../providers/proxy-provider";
 import { readResponseJson } from "../../utils/response-json";
+import { normalizeStringList } from "../../utils/string-list";
 import {
   getObjectProperty,
   isObjectRecord,
@@ -37,16 +38,6 @@ const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
 ]);
 const CODEX_DISALLOWED_OPENAI_MODEL_IDS = new Set(["gpt-5.5-pro", "gpt-5.6"]);
 const CODEX_DYNAMIC_GPT_VERSION_THRESHOLD = { major: 5, minor: 4 };
-
-const modelScopeRouteByCanonicalProvider = new Map<string, ModelScopeRoute>(
-  proxyProviderMappings.map((mapping) => [
-    mapping.canonicalProvider,
-    {
-      publicProvider: mapping.canonicalProvider,
-      provider: mapping.internalProvider,
-    },
-  ])
-);
 
 const parseRegistry = (value: unknown): ModelsDevRegistry => {
   if (!isObjectRecord(value)) {
@@ -118,24 +109,6 @@ export const fetchModelsDevRegistry = async (options?: {
 
 const normalizeOrigin = (value: string): string => value.replace(/\/+$/u, "");
 
-const normalizeScopeList = (
-  scopes: readonly string[] | null | undefined
-): string[] | null => {
-  if (!scopes?.length) {
-    return null;
-  }
-
-  const normalized = new Set<string>();
-  for (const scope of scopes) {
-    const value = scope.trim();
-    if (value) {
-      normalized.add(value);
-    }
-  }
-
-  return normalized.size ? Array.from(normalized) : null;
-};
-
 const cloneJsonValue = <T>(value: T): T => {
   if (typeof structuredClone === "function") {
     return structuredClone(value);
@@ -205,70 +178,6 @@ const CODEX_SUBSCRIPTION_LIMITS: Record<string, typeof DEFAULT_CODEX_LIMITS> = {
   "gpt-6.1-sol": { context: 628_000, input: 500_000 },
 };
 
-const cloneProviderModels = (input: {
-  sourceModels: Record<string, unknown>;
-  apiUrl: string;
-  npm: string;
-  modelPrefix?: string;
-  shouldIncludeModel?: (modelId: string) => boolean;
-  transformModel?: (modelId: string, model: JsonObject) => void;
-}): JsonObject => {
-  const models: JsonObject = {};
-  for (const [modelId, modelValue] of Object.entries(input.sourceModels)) {
-    if (input.shouldIncludeModel && !input.shouldIncludeModel(modelId)) {
-      continue;
-    }
-
-    const proxyModelId = input.modelPrefix
-      ? `${input.modelPrefix}/${modelId}`
-      : modelId;
-
-    if (!isObjectRecord(modelValue)) {
-      models[proxyModelId] = modelValue;
-      continue;
-    }
-
-    const model = cloneJsonValue(modelValue);
-    const baseName =
-      typeof model.name === "string" && model.name.trim()
-        ? model.name
-        : modelId;
-    const providerOverrides = getObjectProperty(model, "provider") ?? {};
-    input.transformModel?.(modelId, model);
-
-    model.id = proxyModelId;
-    model.name = baseName;
-    model.provider = {
-      ...providerOverrides,
-      api: input.apiUrl,
-      npm: input.npm,
-    };
-    models[proxyModelId] = model;
-  }
-
-  return models;
-};
-
-const resolveAllowedMappings = (input: {
-  configuredProviders: ReadonlySet<Provider>;
-  providerScopes: readonly string[] | null;
-}): ProxyMapping[] => {
-  return proxyProviderMappings.filter((mapping) => {
-    if (!input.configuredProviders.has(mapping.internalProvider)) {
-      return false;
-    }
-
-    if (
-      input.providerScopes &&
-      !input.providerScopes.includes(mapping.internalProvider)
-    ) {
-      return false;
-    }
-
-    return true;
-  });
-};
-
 const mergeKleisProviderModels = (input: {
   upstreamRegistry: ModelsDevRegistry;
   baseOrigin: string;
@@ -286,89 +195,94 @@ const mergeKleisProviderModels = (input: {
       continue;
     }
 
-    const route = modelScopeRouteByCanonicalProvider.get(
-      mapping.canonicalProvider
-    );
-    if (!route) {
-      continue;
-    }
+    const route = {
+      publicProvider: mapping.canonicalProvider,
+      provider: mapping.internalProvider,
+    };
+    for (const [modelId, modelValue] of Object.entries(
+      getObjectProperty(sourceProvider, "models") ?? {}
+    )) {
+      if (
+        !isModelSupportedByProxyProvider(mapping.internalProvider, modelId) ||
+        !isModelInScope({
+          model: modelId,
+          route,
+          modelScopes: input.modelScopes,
+        })
+      ) {
+        continue;
+      }
 
-    Object.assign(
-      models,
-      cloneProviderModels({
-        sourceModels: getObjectProperty(sourceProvider, "models") ?? {},
-        apiUrl: `${input.baseOrigin}${mapping.routeBasePath}`,
+      // The SDK detects GPT reasoning from unprefixed IDs; other providers
+      // stay prefixed to avoid collisions with same-named OpenAI models.
+      const proxyModelId =
+        mapping.internalProvider === "codex"
+          ? modelId
+          : `${mapping.canonicalProvider}/${modelId}`;
+      if (!isObjectRecord(modelValue)) {
+        models[proxyModelId] = modelValue;
+        continue;
+      }
+
+      const model = cloneJsonValue(modelValue);
+      if (mapping.internalProvider === "codex") {
+        // Preserve models.dev's output limit while applying subscription limits.
+        model.limit = {
+          ...getObjectProperty(model, "limit"),
+          ...(CODEX_SUBSCRIPTION_LIMITS[modelId] ?? DEFAULT_CODEX_LIMITS),
+        };
+        removeProReasoningModes(model);
+      }
+      model.id = proxyModelId;
+      model.name =
+        typeof model.name === "string" && model.name.trim()
+          ? model.name
+          : modelId;
+      model.provider = {
+        ...getObjectProperty(model, "provider"),
+        api: `${input.baseOrigin}${mapping.routeBasePath}`,
         npm: mapping.npm,
-        // Keep the aggregate registry key equal to model.id. Codex/OpenAI must
-        // stay unprefixed because @ai-sdk/openai detects GPT-5 reasoning from
-        // ids that start with "gpt-5"; other providers stay prefixed to avoid
-        // collisions with same-named OpenAI models in clients like opencode.
-        ...(mapping.internalProvider === "codex"
-          ? {}
-          : { modelPrefix: mapping.canonicalProvider }),
-        shouldIncludeModel: (modelId) =>
-          isModelSupportedByProxyProvider(mapping.internalProvider, modelId) &&
-          isModelInScope({
-            model: modelId,
-            route,
-            modelScopes: input.modelScopes,
-          }),
-        transformModel: (modelId, model) => {
-          if (mapping.internalProvider !== "codex") {
-            return;
-          }
-
-          // Codex subscription limits apply to every eligible GPT model, not
-          // only known IDs. Preserve the model's output limit from models.dev.
-          model.limit = {
-            ...getObjectProperty(model, "limit"),
-            ...(CODEX_SUBSCRIPTION_LIMITS[modelId] ?? DEFAULT_CODEX_LIMITS),
-          };
-          removeProReasoningModes(model);
-        },
-      })
-    );
+      };
+      models[proxyModelId] = model;
+    }
   }
 
   return models;
 };
 
-const toKleisProviderEntry = (input: {
-  upstreamRegistry: ModelsDevRegistry;
-  baseOrigin: string;
-  mappings: readonly ProxyMapping[];
-  modelScopes: readonly string[] | null;
-}): JsonObject => {
-  return {
+export const buildProxyModelsRegistry = (
+  input: BuildProxyModelsRegistryInput
+): ModelsDevRegistry => {
+  const providerScopes = normalizeStringList(
+    input.apiKeyScopes?.providerScopes
+  );
+  const modelScopes = normalizeStringList(input.apiKeyScopes?.modelScopes);
+  const mappings = proxyProviderMappings.filter(
+    (mapping) =>
+      input.configuredProviders.includes(mapping.internalProvider) &&
+      (!providerScopes || providerScopes.includes(mapping.internalProvider))
+  );
+  const registry = cloneJsonValue(input.upstreamRegistry);
+  const generatedModels = mergeKleisProviderModels({
+    upstreamRegistry: input.upstreamRegistry,
+    baseOrigin: normalizeOrigin(input.baseOrigin),
+    mappings,
+    modelScopes,
+  });
+  const generatedProvider = {
     id: KLEIS_PROVIDER_ID,
     name: KLEIS_PROVIDER_NAME,
     env: [PROXY_API_KEY_ENV],
-    models: mergeKleisProviderModels(input),
+    models: generatedModels,
   };
-};
-
-const appendKleisProviderEntry = (input: {
-  registry: ModelsDevRegistry;
-  upstreamRegistry: ModelsDevRegistry;
-  baseOrigin: string;
-  mappings: readonly ProxyMapping[];
-  modelScopes: readonly string[] | null;
-}): void => {
-  const generatedProvider = toKleisProviderEntry({
-    upstreamRegistry: input.upstreamRegistry,
-    baseOrigin: input.baseOrigin,
-    mappings: input.mappings,
-    modelScopes: input.modelScopes,
-  });
-  const existingProvider = getObjectProperty(input.registry, KLEIS_PROVIDER_ID);
+  const existingProvider = getObjectProperty(registry, KLEIS_PROVIDER_ID);
 
   if (!existingProvider) {
-    input.registry[KLEIS_PROVIDER_ID] = generatedProvider;
-    return;
+    registry[KLEIS_PROVIDER_ID] = generatedProvider;
+    return registry;
   }
 
   const existingModels = getObjectProperty(existingProvider, "models") ?? {};
-  const generatedModels = getObjectProperty(generatedProvider, "models") ?? {};
   const existingEnv = Array.isArray(existingProvider.env)
     ? existingProvider.env.filter(
         (entry): entry is string =>
@@ -380,7 +294,7 @@ const appendKleisProviderEntry = (input: {
     existingEnv.push(PROXY_API_KEY_ENV);
   }
 
-  input.registry[KLEIS_PROVIDER_ID] = {
+  registry[KLEIS_PROVIDER_ID] = {
     ...generatedProvider,
     ...cloneJsonValue(existingProvider),
     env: existingEnv,
@@ -389,27 +303,5 @@ const appendKleisProviderEntry = (input: {
       ...cloneJsonValue(existingModels),
     },
   };
-};
-
-export const buildProxyModelsRegistry = (
-  input: BuildProxyModelsRegistryInput
-): ModelsDevRegistry => {
-  const providerScopes = normalizeScopeList(input.apiKeyScopes?.providerScopes);
-  const modelScopes = normalizeScopeList(input.apiKeyScopes?.modelScopes);
-  const mappings = resolveAllowedMappings({
-    configuredProviders: new Set(input.configuredProviders),
-    providerScopes,
-  });
-  const registry = cloneJsonValue(input.upstreamRegistry);
-  const baseOrigin = normalizeOrigin(input.baseOrigin);
-
-  appendKleisProviderEntry({
-    registry,
-    upstreamRegistry: input.upstreamRegistry,
-    baseOrigin,
-    mappings,
-    modelScopes,
-  });
-
   return registry;
 };

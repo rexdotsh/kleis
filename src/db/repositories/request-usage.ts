@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, sql } from "drizzle-orm";
 
 import type { ProxyEndpoint } from "../../providers/proxy-endpoints";
 import {
@@ -10,19 +10,16 @@ import { toNonNegativeInteger } from "../../utils/number";
 import type { Database } from "../index";
 import { apiKeys, requestUsageBuckets, type Provider } from "../schema";
 import {
-  applyTotalsRow,
-  DETAIL_BUCKET_LIMIT,
-  emptyUsageTotals,
+  averageUsageRow,
   mapEndpointUsageRows,
   mapModelUsageRows,
   mapUsageBucketRows,
   selectUsageCounterSums,
-  selectUsageLastRequestAtMax,
-  selectUsageLatencySums,
   selectUsageTokenSums,
+  selectUsageTotals,
   summarizeGroupedUsageRows,
-  toAveragedTotals,
   toUsageBucketStart,
+  usageDetailQueries,
   type AveragedUsageTotals,
   type UsageBucketRow,
   type UsageEndpointBreakdown,
@@ -118,13 +115,7 @@ export const buildRequestUsageRow = (
     endpoint: input.endpoint,
     model: input.model,
     requestCount: 1,
-    successCount: counters.successCount,
-    clientErrorCount: counters.clientErrorCount,
-    serverErrorCount: counters.serverErrorCount,
-    authErrorCount: counters.authErrorCount,
-    rateLimitCount: counters.rateLimitCount,
-    proxyErrorCount: counters.proxyErrorCount,
-    upstreamErrorCount: counters.upstreamErrorCount,
+    ...counters,
     totalLatencyMs: durationMs,
     maxLatencyMs: durationMs,
     ...tokenColumns(input.tokenUsage),
@@ -227,10 +218,7 @@ export const listApiKeyUsageSummaries = async (
     database
       .select({
         groupKey: requestUsageBuckets.apiKeyId,
-        ...selectUsageCounterSums(requestUsageBuckets),
-        ...selectUsageLatencySums(requestUsageBuckets),
-        ...selectUsageTokenSums(requestUsageBuckets),
-        ...selectUsageLastRequestAtMax(requestUsageBuckets),
+        ...selectUsageTotals(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(gte(requestUsageBuckets.bucketStart, sinceBucket))
@@ -257,24 +245,16 @@ export const listApiKeyUsageSummaries = async (
   }));
 };
 
-type ApiKeyUsageEndpointBreakdown = UsageEndpointBreakdown;
-
-type ApiKeyUsageModelBreakdown = UsageModelBreakdown;
-
-type ApiKeyUsageBucketRow = UsageBucketRow;
-
-type ApiKeyUsageAccountBreakdown = AveragedUsageTotals & {
-  providerAccountId: string;
-  provider: Provider;
-};
-
 type ApiKeyUsageDetail = {
   apiKeyId: string;
-  totals: Omit<ApiKeyUsageSummary, "apiKeyId" | "providers">;
-  accounts: ApiKeyUsageAccountBreakdown[];
-  endpoints: ApiKeyUsageEndpointBreakdown[];
-  models: ApiKeyUsageModelBreakdown[];
-  buckets: ApiKeyUsageBucketRow[];
+  totals: AveragedUsageTotals;
+  accounts: (AveragedUsageTotals & {
+    providerAccountId: string;
+    provider: Provider;
+  })[];
+  endpoints: UsageEndpointBreakdown[];
+  models: UsageModelBreakdown[];
+  buckets: UsageBucketRow[];
 };
 
 export const getApiKeyUsageDetail = async (
@@ -302,22 +282,14 @@ export const getApiKeyUsageDetail = async (
       .where(eq(apiKeys.id, apiKeyId))
       .limit(1),
     database
-      .select({
-        ...selectUsageCounterSums(requestUsageBuckets),
-        ...selectUsageLatencySums(requestUsageBuckets),
-        ...selectUsageTokenSums(requestUsageBuckets),
-        ...selectUsageLastRequestAtMax(requestUsageBuckets),
-      })
+      .select(selectUsageTotals(requestUsageBuckets))
       .from(requestUsageBuckets)
       .where(windowFilter),
     database
       .select({
         providerAccountId: requestUsageBuckets.providerAccountId,
         provider: requestUsageBuckets.provider,
-        ...selectUsageCounterSums(requestUsageBuckets),
-        ...selectUsageLatencySums(requestUsageBuckets),
-        ...selectUsageTokenSums(requestUsageBuckets),
-        ...selectUsageLastRequestAtMax(requestUsageBuckets),
+        ...selectUsageTotals(requestUsageBuckets),
       })
       .from(requestUsageBuckets)
       .where(windowFilter)
@@ -325,87 +297,31 @@ export const getApiKeyUsageDetail = async (
         requestUsageBuckets.providerAccountId,
         requestUsageBuckets.provider
       ),
-    database
-      .select({
-        provider: requestUsageBuckets.provider,
-        endpoint: requestUsageBuckets.endpoint,
-        ...selectUsageCounterSums(requestUsageBuckets),
-        ...selectUsageLatencySums(requestUsageBuckets),
-        ...selectUsageTokenSums(requestUsageBuckets),
-        ...selectUsageLastRequestAtMax(requestUsageBuckets),
-      })
-      .from(requestUsageBuckets)
-      .where(windowFilter)
-      .groupBy(requestUsageBuckets.provider, requestUsageBuckets.endpoint),
-    database
-      .select({
-        provider: requestUsageBuckets.provider,
-        endpoint: requestUsageBuckets.endpoint,
-        model: requestUsageBuckets.model,
-        ...selectUsageCounterSums(requestUsageBuckets),
-        ...selectUsageLatencySums(requestUsageBuckets),
-        ...selectUsageTokenSums(requestUsageBuckets),
-        ...selectUsageLastRequestAtMax(requestUsageBuckets),
-      })
-      .from(requestUsageBuckets)
-      .where(windowFilter)
-      .groupBy(
-        requestUsageBuckets.provider,
-        requestUsageBuckets.endpoint,
-        requestUsageBuckets.model
-      ),
-    database
-      .select({
-        bucketStart: requestUsageBuckets.bucketStart,
-        ...selectUsageCounterSums(requestUsageBuckets),
-        ...selectUsageTokenSums(requestUsageBuckets),
-      })
-      .from(requestUsageBuckets)
-      .where(windowFilter)
-      .groupBy(requestUsageBuckets.bucketStart)
-      .orderBy(desc(requestUsageBuckets.bucketStart))
-      .limit(DETAIL_BUCKET_LIMIT),
+    ...usageDetailQueries(database, windowFilter),
   ]);
 
   if (!keyRows.length) {
     return null;
   }
 
-  const totals = emptyUsageTotals();
-  const totalsRow = totalsRows[0];
-  if (totalsRow) {
-    applyTotalsRow(totals, totalsRow);
-  }
-
   const accounts = accountRows
-    .map((row): ApiKeyUsageAccountBreakdown => {
-      const accountTotals = emptyUsageTotals();
-      applyTotalsRow(accountTotals, row);
-      return {
-        providerAccountId: row.providerAccountId,
-        provider: row.provider,
-        ...toAveragedTotals(accountTotals),
-      };
-    })
+    .map((row) => ({
+      providerAccountId: row.providerAccountId,
+      provider: row.provider,
+      ...averageUsageRow(row),
+    }))
     .sort(
       (left, right) =>
         right.requestCount - left.requestCount ||
         (right.lastRequestAt ?? 0) - (left.lastRequestAt ?? 0)
     );
 
-  const endpoints: ApiKeyUsageEndpointBreakdown[] =
-    mapEndpointUsageRows(endpointRows);
-
-  const models: ApiKeyUsageModelBreakdown[] = mapModelUsageRows(modelRows);
-
-  const buckets: ApiKeyUsageBucketRow[] = mapUsageBucketRows(bucketRows);
-
   return {
     apiKeyId,
-    totals: toAveragedTotals(totals),
+    totals: averageUsageRow(totalsRows[0]),
     accounts,
-    endpoints,
-    models,
-    buckets,
+    endpoints: mapEndpointUsageRows(endpointRows),
+    models: mapModelUsageRows(modelRows),
+    buckets: mapUsageBucketRows(bucketRows),
   };
 };
