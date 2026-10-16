@@ -11,6 +11,9 @@ CREATE TABLE `claude_reset_claims` (
 	`organization_uuid` text NOT NULL,
 	`grant_id` text NOT NULL,
 	`status` text NOT NULL,
+	`result` text,
+	`reason` text,
+	`http_status` integer,
 	`created_at` integer NOT NULL,
 	`updated_at` integer NOT NULL
 );

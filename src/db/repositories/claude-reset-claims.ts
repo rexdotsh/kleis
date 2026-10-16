@@ -104,7 +104,10 @@ export const readClaudeResetClaimLedger = async (
 // ID, and closed otherwise; it too must be unchanged.
 export const reserveClaudeResetClaim = async (
   database: Database,
-  claim: Omit<ClaudeResetClaimRow, "status">,
+  claim: Omit<
+    ClaudeResetClaimRow,
+    "status" | "result" | "reason" | "httpStatus"
+  >,
   version: number,
   open: Pick<ClaudeResetClaimRow, "requestId" | "updatedAt"> | null
 ): Promise<void> => {
@@ -150,11 +153,22 @@ export const reserveClaudeResetClaim = async (
 export const settleClaudeResetClaim = async (
   database: Database,
   requestId: string,
-  status: "ambiguous" | "completed" | "failed"
+  outcome: {
+    status: "ambiguous" | "completed" | "failed";
+    result?: string | null;
+    reason?: string | null;
+    httpStatus?: number | null;
+  }
 ): Promise<void> => {
   await database
     .update(claudeResetClaims)
-    .set({ status, updatedAt: Date.now() })
+    .set({
+      status: outcome.status,
+      result: outcome.result ?? null,
+      reason: outcome.reason?.slice(0, 64) ?? null,
+      httpStatus: outcome.httpStatus ?? null,
+      updatedAt: Date.now(),
+    })
     .where(
       and(
         eq(claudeResetClaims.requestId, requestId),

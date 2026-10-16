@@ -56,7 +56,7 @@ afterEach(async () => {
 test("a connection cannot reserve with a version another connection already used", async () => {
   const validated = await read(other);
   await reserveClaudeResetClaim(database, claim("a"), validated.version, null);
-  await settleClaudeResetClaim(database, "a", "completed");
+  await settleClaudeResetClaim(database, "a", { status: "completed" });
   await expect(
     reserveClaudeResetClaim(other, claim("b"), validated.version, null)
   ).rejects.toBeInstanceOf(ClaudeResetReservationConflict);
@@ -76,7 +76,7 @@ test("a second open claim is refused and rolls back the version", async () => {
 test("reopening or closing an open claim needs its exact record and the version", async () => {
   await read();
   await reserveClaudeResetClaim(database, claim("a"), 0, null);
-  await settleClaudeResetClaim(database, "a", "ambiguous");
+  await settleClaudeResetClaim(database, "a", { status: "ambiguous" });
   const [row] = (await read()).claims;
   if (!row) throw new Error("claim missing");
   const stale = { requestId: "a", updatedAt: row.updatedAt - 1 };
@@ -92,7 +92,7 @@ test("reopening or closing an open claim needs its exact record and the version"
 
   await reserveClaudeResetClaim(other, claim("a", 30), 1, row);
   expect(await statuses()).toEqual(["a:pending"]);
-  await settleClaudeResetClaim(other, "a", "ambiguous");
+  await settleClaudeResetClaim(other, "a", { status: "ambiguous" });
   const [reopened] = (await read()).claims;
   if (!reopened) throw new Error("claim missing");
   await reserveClaudeResetClaim(database, claim("b", 50), 2, reopened);

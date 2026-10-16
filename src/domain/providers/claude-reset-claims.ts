@@ -75,6 +75,7 @@ export type ClaudeResetClaimOutcome = {
   // request, so nothing was used. ambiguous: the reset may have been used.
   status: "completed" | "failed" | "ambiguous";
   result: ClaudeResetClaimResultCode | null;
+  reason: string | null;
   resetsLeft: number | null;
   cleared: ClaudeResetLimitType[];
   httpStatus: number | null;
@@ -222,6 +223,7 @@ const fromResult = (
       ? "ambiguous"
       : "completed",
   result,
+  reason: reason ?? null,
   resetsLeft,
   cleared,
   httpStatus: null,
@@ -240,6 +242,7 @@ const fromError = (
         ? "failed"
         : "ambiguous",
     result: null,
+    reason: null,
     resetsLeft: null,
     cleared: [],
     httpStatus,
@@ -250,10 +253,11 @@ const settle = async (
   database: Database,
   account: TrackingAccount,
   requestId: string,
-  status: ClaudeResetClaimOutcome["status"]
+  outcome: Pick<ClaudeResetClaimOutcome, "status"> &
+    Partial<Pick<ClaudeResetClaimOutcome, "result" | "reason" | "httpStatus">>
 ): Promise<void> => {
   try {
-    await settleClaudeResetClaim(database, requestId, status);
+    await settleClaudeResetClaim(database, requestId, outcome);
   } catch (error) {
     // The claim stays pending and is treated as unconfirmed once orphaned.
     logWarn("claude_reset_claim_record_failed", {
@@ -377,18 +381,15 @@ export const claimClaudeReset = async (
     );
   } catch (error) {
     if (error instanceof ClaudeResetClaimConflict) {
-      await settle(
-        database,
-        account,
-        requestId,
-        reused ? "ambiguous" : "failed"
-      );
+      await settle(database, account, requestId, {
+        status: reused ? "ambiguous" : "failed",
+      });
       reloadClaudeResetCredits(database, account);
       throw error;
     }
     outcome = fromError(requestId, error);
   }
-  await settle(database, account, requestId, outcome.status);
+  await settle(database, account, requestId, outcome);
   reloadClaudeResetCredits(database, account);
   (outcome.status === "completed" ? logInfo : logWarn)(
     "claude_reset_claim_settled",

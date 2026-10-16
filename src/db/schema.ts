@@ -207,6 +207,10 @@ export const claudeResetClaims = sqliteTable(
     organizationUuid: text("organization_uuid").notNull(),
     grantId: text("grant_id").notNull(),
     status: text("status", { enum: claudeResetClaimStatuses }).notNull(),
+    // Anthropic's answer, kept so an unconfirmed claim can be looked into later.
+    result: text("result"),
+    reason: text("reason"),
+    httpStatus: integer("http_status", { mode: "number" }),
     createdAt: integer("created_at", { mode: "number" }).notNull(),
     updatedAt: integer("updated_at", { mode: "number" }).notNull(),
   },

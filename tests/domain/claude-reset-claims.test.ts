@@ -421,7 +421,9 @@ describe("Claude reset claims", () => {
           `Bearer ${account.accessToken}`
         );
         expect(recordedBeforeSend).toMatchObject([{ status: "pending" }]);
-        expect(await rows()).toMatchObject([{ status: "completed" }]);
+        expect(await rows()).toMatchObject([
+          { status: "completed", result: "reset", httpStatus: null },
+        ]);
         const logged = info.mock.calls.map((args) => String(args[0])).join();
         expect(logged).toContain("claude_reset_claim_settled");
         for (const secret of ["grant_fake_1", ORGANIZATION, outcome?.requestId])
