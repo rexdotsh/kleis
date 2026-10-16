@@ -27,10 +27,9 @@ import {
   type ClaudeResetCredits,
   claudeResetIdentity,
   claudeResetLimitUsage,
+  invalidateClaudeResetCredits,
   isTrackingAccount,
   peekClaudeResetCredits,
-  refreshClaudeResetCredits,
-  reloadClaudeResetCredits,
   resolveAccount,
   retryAfter401,
   type TrackingAccount,
@@ -57,7 +56,8 @@ const conflictMessages = {
   claim_in_progress: "A reset is already being claimed for this account",
   claim_unconfirmed:
     "An earlier reset claim couldn't be confirmed; check Claude settings",
-  stale: "Couldn't check this account's resets right now; nothing was used",
+  stale:
+    "Reset details are out of date; wait for the next scheduled sync and review again. Nothing was used",
   not_claimable: "This account has no reset that can be used now",
   offer_changed: "The reset on offer changed; review it again",
 } as const;
@@ -115,6 +115,16 @@ const isCurrent = (
   credits: ClaudeResetCredits,
   claims: readonly ClaudeResetClaimRow[]
 ): boolean => !claims[0] || credits.observedAt >= claims[0].updatedAt;
+
+const isFresh = (
+  credits: ClaudeResetCredits | null,
+  claims: readonly ClaudeResetClaimRow[],
+  now: number
+): credits is ClaudeResetCredits =>
+  credits !== null &&
+  credits.observedAt >= now - OFFER_MAX_AGE_MS &&
+  credits.observedAt <= now &&
+  isCurrent(credits, claims);
 
 const isSameIdentity = (
   a: ClaudeResetClaimIdentity | null,
@@ -185,9 +195,9 @@ const describeClaudeResets = (
     });
   }
   if (!credits) {
-    return null;
+    return own.length ? emptyView("checking") : null;
   }
-  if (!isCurrent(credits, own)) {
+  if (!isFresh(credits, own, now)) {
     return emptyView("checking");
   }
   const version =
@@ -297,18 +307,8 @@ export const claimClaudeReset = async (
     throw new ClaudeResetClaimConflict("claim_unconfirmed");
   }
   const account = await resolveAccount(database, stored);
-  const isFresh = (
-    credits: ClaudeResetCredits | null
-  ): credits is ClaudeResetCredits =>
-    credits !== null &&
-    credits.observedAt >= Date.now() - OFFER_MAX_AGE_MS &&
-    credits.observedAt <= Date.now() &&
-    isCurrent(credits, claims);
-  let credits = account && peekClaudeResetCredits(account);
-  if (account && !isFresh(credits)) {
-    credits = await refreshClaudeResetCredits(database, account);
-  }
-  if (!(account && isFresh(credits))) {
+  const credits = account && peekClaudeResetCredits(account);
+  if (!(account && isFresh(credits, claims, Date.now()))) {
     throw new ClaudeResetClaimConflict("stale");
   }
   // Runs before reserving and again right before each send, including after
@@ -323,7 +323,7 @@ export const claimClaudeReset = async (
     ) {
       throw new ClaudeResetClaimConflict("identity_changed");
     }
-    if (!isFresh(latest)) {
+    if (!isFresh(latest, claims, Date.now())) {
       throw new ClaudeResetClaimConflict("stale");
     }
     const { offer } = summarize(current, latest, version, identity, Date.now());
@@ -384,13 +384,13 @@ export const claimClaudeReset = async (
       await settle(database, account, requestId, {
         status: reused ? "ambiguous" : "failed",
       });
-      reloadClaudeResetCredits(database, account);
+      invalidateClaudeResetCredits(account);
       throw error;
     }
     outcome = fromError(requestId, error);
   }
   await settle(database, account, requestId, outcome);
-  reloadClaudeResetCredits(database, account);
+  invalidateClaudeResetCredits(account);
   (outcome.status === "completed" ? logInfo : logWarn)(
     "claude_reset_claim_settled",
     {

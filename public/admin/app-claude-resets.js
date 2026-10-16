@@ -1,5 +1,6 @@
 import { escapeHtml } from "./app-core.js";
 import {
+  CLAUDE_LIMIT_NAMES,
   fact,
   needsReauthorization,
   quotaTimestamp,
@@ -8,17 +9,6 @@ import {
 } from "./app-render-shared.js";
 
 const CLAUDE_USAGE_SETTINGS_URL = "https://claude.ai/settings/usage";
-
-const LIMIT_NAMES = {
-  five_hour: "5h",
-  seven_day: "7d",
-  seven_day_overage_included: "7d",
-  seven_day_opus: "Opus 7d",
-  seven_day_sonnet: "Sonnet 7d",
-  seven_day_cowork: "Cowork 7d",
-  seven_day_omelette: "Omelette 7d",
-  seven_day_oauth_apps: "OAuth apps 7d",
-};
 
 const weekdayFormat = new Intl.DateTimeFormat(undefined, {
   weekday: "short",
@@ -30,9 +20,9 @@ const settingsLink = (label = "Claude settings") =>
   `<a class="link small" href="${CLAUDE_USAGE_SETTINGS_URL}" target="_blank" rel="noopener">${label}</a>`;
 
 function limitsText(types) {
-  const names = [...new Set(types.map((type) => LIMIT_NAMES[type]))].filter(
-    Boolean
-  );
+  const names = [
+    ...new Set(types.map((type) => CLAUDE_LIMIT_NAMES[type])),
+  ].filter(Boolean);
   if (!names.length) return "limits";
   const last = names.pop();
   return names.length
@@ -50,7 +40,6 @@ const UNAVAILABLE_TEXT = {
   paused: "paused",
   cooldown: "another reset was just used \u00b7 try later",
   not_usable: "can't be used right now",
-  checking: "checking again",
   unsupported_limits: "unrecognized limits",
 };
 
@@ -76,6 +65,11 @@ function claudeResetsFact(account) {
       '<span class="muted">Identity not verified</span>',
       ["reconnect or wait for sync"]
     );
+  }
+  if (resets.unavailable === "checking") {
+    return fact("Limit resets", '<span class="muted">Waiting for sync</span>', [
+      "next scheduled poll",
+    ]);
   }
   if (resets.ineligibleReason === "surface") {
     return fact("Limit resets", '<span class="muted">claude.ai only</span>', [
@@ -119,7 +113,7 @@ function claudeResetOffer(account) {
     earlyUse: offer.earlyUse
       ? {
           scope: offer.earlyUse.limit
-            ? `${LIMIT_NAMES[offer.earlyUse.limit] || "covered"} limit`
+            ? `${CLAUDE_LIMIT_NAMES[offer.earlyUse.limit] || "covered"} limit`
             : null,
           percentUsed: offer.earlyUse.percentUsed,
         }

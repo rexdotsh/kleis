@@ -271,3 +271,132 @@ export const mergeCodexLiveLimits = (
     credits: limits.credits ?? previous?.credits ?? null,
   };
 };
+
+type LimitWindow = {
+  usedPercent?: number | null;
+  utilization?: number | null;
+  resetAt?: number | null;
+  resetsAt?: string | null;
+  resetAfterSeconds?: number | null;
+  windowSeconds?: number | null;
+};
+
+const windowReset = (
+  window: LimitWindow | null | undefined,
+  observedAt?: number
+): number | null => {
+  const reset =
+    window?.resetAt !== null && window?.resetAt !== undefined
+      ? window.resetAt * 1000
+      : Date.parse(window?.resetsAt ?? "");
+  if (Number.isFinite(reset)) return reset;
+  const relative = window?.resetAfterSeconds;
+  return observedAt !== undefined &&
+    typeof relative === "number" &&
+    Number.isFinite(relative) &&
+    relative >= 0
+    ? observedAt + relative * 1000
+    : null;
+};
+
+export const normalizeCodexPollResets = (
+  status: CodexUsageStatus,
+  observedAt: number
+): CodexUsageStatus => {
+  const normalize = (window: CodexRateLimitWindow | null | undefined) => {
+    if (!window) return null;
+    const reset = windowReset(window, observedAt);
+    return { ...window, resetAt: reset === null ? null : reset / 1000 };
+  };
+  return {
+    ...status,
+    primaryWindow: normalize(status.primaryWindow),
+    secondaryWindow: normalize(status.secondaryWindow),
+    additionalRateLimits: status.additionalRateLimits.map((limit) => ({
+      ...limit,
+      primaryWindow: normalize(limit.primaryWindow),
+      secondaryWindow: normalize(limit.secondaryWindow),
+    })),
+  };
+};
+
+// Allow two minutes of reset jitter, capped at 1% of either known window so
+// short windows remain distinguishable. A matched window keeps the poll reset.
+const windowForPoll = (
+  polled: LimitWindow | null | undefined,
+  traffic: LimitWindow | null | undefined,
+  now: number
+): number | null => {
+  const trafficReset = windowReset(traffic);
+  if (!traffic || trafficReset === null || trafficReset <= now) return null;
+  const pollReset = windowReset(polled);
+  if (pollReset === null || pollReset <= now) return trafficReset;
+  const tolerance = Math.min(
+    120_000,
+    ...[polled?.windowSeconds, traffic.windowSeconds]
+      .filter(
+        (seconds): seconds is number =>
+          typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0
+      )
+      .map((seconds) => seconds * 1000 * 0.01)
+  );
+  const difference = trafficReset - pollReset;
+  if (difference > tolerance) return trafficReset;
+  if (difference < -tolerance) return null;
+  const pollPercent = polled?.usedPercent ?? polled?.utilization ?? 0;
+  const trafficPercent = traffic.usedPercent ?? traffic.utilization;
+  return trafficPercent !== undefined &&
+    trafficPercent !== null &&
+    trafficPercent >= pollPercent
+    ? pollReset
+    : null;
+};
+
+export const selectLiveLimitsForPoll = (
+  polled:
+    | { provider: "claude"; subscription?: ClaudeSubscriptionUsage }
+    | { provider: "codex"; status?: CodexUsageStatus },
+  traffic: LiveLimits,
+  now: number
+): LiveLimits | null => {
+  if (polled.provider === "claude" && traffic.provider === "claude") {
+    const usage = polled.subscription;
+    const windows: ClaudeLiveLimits["windows"] = {};
+    for (const [key, reading] of Object.entries(traffic.windows)) {
+      const previous =
+        key === "five_hour"
+          ? usage?.fiveHour
+          : key === "seven_day"
+            ? usage?.sevenDay
+            : usage?.modelWindows?.[key];
+      const reset = windowForPoll(previous, reading, now);
+      if (reset !== null)
+        windows[key] = { ...reading, resetsAt: new Date(reset).toISOString() };
+    }
+    return Object.keys(windows).length ? { provider: "claude", windows } : null;
+  }
+  if (polled.provider === "codex" && traffic.provider === "codex") {
+    const select = (
+      previous: CodexRateLimitWindow | null | undefined,
+      reading: CodexWindowReading | null
+    ) => {
+      const reset = windowForPoll(previous, reading, now);
+      return reset !== null && reading
+        ? { ...reading, resetAt: reset / 1000 }
+        : null;
+    };
+    return codexLiveLimits({
+      credits: traffic.credits,
+      planType: traffic.planType,
+      primaryWindow: select(
+        polled.status?.primaryWindow,
+        traffic.primaryWindow
+      ),
+      secondaryWindow: select(
+        polled.status?.secondaryWindow,
+        traffic.secondaryWindow
+      ),
+    });
+  }
+  return null;
+};
