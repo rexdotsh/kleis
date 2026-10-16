@@ -13,6 +13,7 @@ import {
   type TokenUsage,
 } from "../../usage/token-usage";
 import { errorLogFields, hashLogId, logError, logWarn } from "../../utils/log";
+import { toNonNegativeInteger } from "../../utils/number";
 import { isObjectRecord, type JsonObject, withField } from "../../utils/object";
 import {
   type ClaudeToolNames,
@@ -26,10 +27,7 @@ import {
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 import { readUpstreamErrorFields } from "./upstream-error";
 
-// Anthropic OAuth sessions reject the feedback repo path used in OpenCode's
-// prompt URL and the opening `<directories>` wrapper emitted by OpenCode's
-// system prompt assembly. Apply the smallest known working rewrite to all
-// Claude system prompts so primary-agent and subagent requests behave the same.
+// Anthropic OAuth rejects these system-prompt markers from third-party clients.
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/prompt/anthropic.txt
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/system.ts#L32-L72
 const sanitizeClaudeSystemText = (text: string): string =>
@@ -54,10 +52,7 @@ const isTextBlock = (
   block.type === "text" &&
   typeof block.text === "string";
 
-const withClaudeSystemIdentity = (
-  system: unknown,
-  systemIdentity: string
-): unknown => {
+const withClaudeSystemIdentity = (system: unknown): unknown => {
   let blocks = system || [];
   if (typeof blocks === "string") {
     blocks = [{ type: "text", text: blocks }];
@@ -72,24 +67,10 @@ const withClaudeSystemIdentity = (
       : block
   );
   return sanitized.some(
-    (block) => isTextBlock(block) && block.text === systemIdentity
+    (block) => isTextBlock(block) && block.text === CLAUDE_SYSTEM_IDENTITY
   )
     ? sanitized
-    : [{ type: "text", text: systemIdentity }, ...sanitized];
-};
-
-const transformClaudeRequestPayload = (
-  payload: unknown,
-  systemIdentity: string
-): unknown => {
-  if (!isObjectRecord(payload)) {
-    return payload;
-  }
-
-  return {
-    ...payload,
-    system: withClaudeSystemIdentity(payload.system, systemIdentity),
-  };
+    : [{ type: "text", text: CLAUDE_SYSTEM_IDENTITY }, ...sanitized];
 };
 
 const restoreToolUseName = (
@@ -189,8 +170,7 @@ const readSseEventName = (chunk: string): string | null => {
 const transformSseEventChunk = (
   chunk: string,
   toolNames: ClaudeToolNames,
-  readStreamUsage: (payload: unknown) => void,
-  readStreamAnomaly: (payload: unknown) => void
+  observePayload: (payload: unknown) => void
 ): string => {
   const eventName = readSseEventName(chunk);
   if (
@@ -208,8 +188,7 @@ const transformSseEventChunk = (
 
   try {
     const jsonBody = JSON.parse(payload) as unknown;
-    readStreamUsage(jsonBody);
-    readStreamAnomaly(jsonBody);
+    observePayload(jsonBody);
     const transformed = transformClaudeResponsePayload(jsonBody, toolNames);
     return transformed === jsonBody
       ? chunk
@@ -309,24 +288,13 @@ const maybeTransformClaudeStreamResponse = (
     usage: Record<string, unknown>,
     key: string
   ): number | null => {
-    if (!(key in usage)) {
-      return null;
-    }
-
     const value = usage[key];
-    if (value === null || value === undefined) {
-      return null;
-    }
-
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) {
-      return 0;
-    }
-
-    return Math.max(0, Math.trunc(parsed));
+    return value === null || value === undefined
+      ? null
+      : toNonNegativeInteger(value);
   };
 
-  const readStreamUsage = (payload: unknown): void => {
+  const observePayload = (payload: unknown): void => {
     if (!isObjectRecord(payload)) {
       return;
     }
@@ -350,36 +318,18 @@ const maybeTransformClaudeStreamResponse = (
       }
 
       sawStreamUsage = true;
-      const inputTokens = readOptionalUsageToken(usage, "input_tokens");
-      if (inputTokens !== null) {
-        streamUsage.inputTokens = inputTokens;
-      }
-
-      const outputTokens = readOptionalUsageToken(usage, "output_tokens");
-      if (outputTokens !== null) {
-        streamUsage.outputTokens = outputTokens;
-      }
-
-      const cacheReadTokens = readOptionalUsageToken(
-        usage,
-        "cache_read_input_tokens"
-      );
-      if (cacheReadTokens !== null) {
-        streamUsage.cacheReadTokens = cacheReadTokens;
-      }
-
-      const cacheWriteTokens = readOptionalUsageToken(
-        usage,
-        "cache_creation_input_tokens"
-      );
-      if (cacheWriteTokens !== null) {
-        streamUsage.cacheWriteTokens = cacheWriteTokens;
-      }
-    }
-  };
-
-  const readStreamAnomaly = (payload: unknown): void => {
-    if (!isObjectRecord(payload)) {
+      streamUsage.inputTokens =
+        readOptionalUsageToken(usage, "input_tokens") ??
+        streamUsage.inputTokens;
+      streamUsage.outputTokens =
+        readOptionalUsageToken(usage, "output_tokens") ??
+        streamUsage.outputTokens;
+      streamUsage.cacheReadTokens =
+        readOptionalUsageToken(usage, "cache_read_input_tokens") ??
+        streamUsage.cacheReadTokens;
+      streamUsage.cacheWriteTokens =
+        readOptionalUsageToken(usage, "cache_creation_input_tokens") ??
+        streamUsage.cacheWriteTokens;
       return;
     }
 
@@ -396,19 +346,13 @@ const maybeTransformClaudeStreamResponse = (
           ...readUpstreamErrorFields(payload),
         });
       }
-      return;
     }
   };
 
   const transformEvents = (events: string[]): string => {
     let output = "";
     for (const event of events) {
-      output += transformSseEventChunk(
-        event,
-        toolNames,
-        readStreamUsage,
-        readStreamAnomaly
-      );
+      output += transformSseEventChunk(event, toolNames, observePayload);
     }
     return output;
   };
@@ -588,7 +532,6 @@ type ClaudeProxyPreparationResult = {
 export const prepareClaudeProxyRequest = (
   input: ClaudeProxyPreparationInput
 ): ClaudeProxyPreparationResult => {
-  const systemIdentity = CLAUDE_SYSTEM_IDENTITY;
   const mergedBetas = mergeBetaHeaders(
     input.headers,
     CLAUDE_REQUIRED_BETA_HEADERS
@@ -603,16 +546,13 @@ export const prepareClaudeProxyRequest = (
   // Claude Code's SDK uses JSON Accept even for SSE responses.
   // https://unpkg.com/@anthropic-ai/sdk@0.128.0/src/client.ts
   input.headers.set("accept", "application/json");
-  // Keep existing accounts on the minimum supported Claude Code version even
-  // when their persisted metadata still contains an older user agent.
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
   input.headers.set("x-app", "cli");
 
   const { payload, toolNames } = mapClaudeRequestToolNames(input.bodyJson);
-  const transformedPayload = transformClaudeRequestPayload(
-    payload,
-    systemIdentity
-  );
+  const transformedPayload = isObjectRecord(payload)
+    ? { ...payload, system: withClaudeSystemIdentity(payload.system) }
+    : payload;
   const bodyText =
     transformedPayload !== input.bodyJson
       ? JSON.stringify(transformedPayload)
