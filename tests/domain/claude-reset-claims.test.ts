@@ -248,7 +248,7 @@ describe("Claude reset claims", () => {
   const clearRateLimitPause = async (account: ProviderAccountRecord) => {
     upstream.usage = () => Response.json(usageBody(cedar()));
     at(30 * MINUTE);
-    await read(account);
+    expect(await refreshClaudeResetCredits(database, account)).not.toBeNull();
   };
 
   beforeEach(async () => {
