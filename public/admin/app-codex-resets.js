@@ -23,13 +23,16 @@ function codexResetOffer(account) {
   if (account?.provider !== "codex") return null;
   const data = account.quota?.data;
   const action = data?.resetCreditAction;
+  const confirmation = action?.kind === "offer" ? action : action?.recovery;
   const retry =
     action?.kind === "pending" || state.pendingResetRedemptions.has(account.id);
   const fresh =
-    action?.kind === "offer" &&
-    action.observedAt <= Date.now() &&
-    action.observedAt >= Date.now() - 10 * 60_000 &&
-    (action.expiresAt === null || action.expiresAt > Date.now());
+    confirmation &&
+    confirmation.observedAt <= Date.now() &&
+    confirmation.observedAt >= Date.now() - 10 * 60_000 &&
+    (confirmation.mode !== "spend" ||
+      confirmation.expiresAt === null ||
+      confirmation.expiresAt > Date.now());
   if (!fresh && !retry) return null;
   if (
     !data?.resetCredits &&
@@ -62,15 +65,22 @@ function codexResetOffer(account) {
   const expiry = quotaTimestamp(next?.expiresAt);
   const windows = accountWindows(account).filter((window) => !window.named);
   return {
-    key: fresh ? action.offerKey : null,
+    key: fresh ? confirmation.offerKey : null,
     count,
     next,
     unit: "credit",
     noun: "reset credit",
     heading: "Reset credit",
-    action: "Use credit",
+    action:
+      confirmation?.mode === "review"
+        ? "Mark reviewed"
+        : retry && confirmation?.mode === "spend"
+          ? "Retry original credit"
+          : "Use credit",
     canUse: Boolean((fresh && next && count) || retry),
     retry,
+    requiresConfirmation: retry && fresh && confirmation.mode === "spend",
+    review: retry && fresh && confirmation.mode === "review",
     scope:
       next?.resetType === "codex_rate_limits"
         ? windows.length
@@ -82,8 +92,14 @@ function codexResetOffer(account) {
       : "expiry not reported",
     title: next?.title,
     description: next?.description,
-    earlyUse: fresh ? action.earlyUse : null,
-    notes: [],
+    earlyUse: fresh ? confirmation.earlyUse : null,
+    notes: retry
+      ? [
+          confirmation?.mode === "review"
+            ? "Verify this is the original login and check its reset status in Codex settings. Marking reviewed closes the old record without sending a reset request or spending a credit."
+            : "Reuses the original request and credit. A new request ID will not be created.",
+        ]
+      : [],
     useful:
       count > 0 &&
       !account.quota?.error &&
@@ -120,6 +136,11 @@ function codexResultToast(result) {
       };
     case "already_redeemed":
       return { message: `Credit was already redeemed${windows}`, type: "info" };
+    case "reconciled":
+      return {
+        message: "Reset marked reviewed; no credit was spent",
+        type: "info",
+      };
     default:
       return {
         message: `Codex reset result: ${result?.code || "complete"}`,
@@ -138,7 +159,12 @@ const codexResets = {
         : state.pendingResetRedemptions.get(account.id);
     return {
       body: pending
-        ? { redeemRequestId: pending.redeemRequestId }
+        ? {
+            redeemRequestId: pending.redeemRequestId,
+            ...((offer.requiresConfirmation || offer.review) && {
+              offerKey: offer.key,
+            }),
+          }
         : {
             redeemRequestId: createResetRequestId(),
             creditId: offer.next.id,
@@ -174,6 +200,7 @@ const codexResets = {
     return {
       message: `${error.message} Reset not confirmed; retry safely with the same request.`,
       type: "error",
+      refresh: true,
       retryAllowed: () =>
         state.pendingResetRedemptions.get(account.id) === retry,
     };

@@ -1130,16 +1130,21 @@ export const redeemCodexResetCredit = async (
   const now = Date.now();
   const action =
     cached?.provider === "codex" ? currentCodexResetAction(cached, now) : null;
-  const offerGeneration =
-    action?.kind === "offer" &&
-    action.accountIdentity === accountIdentity &&
-    action.creditId === input.creditId &&
-    action.offerKey === input.offerKey &&
-    action.observedAt <= now &&
-    action.observedAt >= now - CODEX_RESET_OFFER_MAX_AGE_MS &&
-    (action.expiresAt === null || action.expiresAt > now)
-      ? action.generation
-      : null;
+  const confirmation = action?.kind === "offer" ? action : action?.recovery;
+  const recovering =
+    action?.kind === "pending" && action.redeemRequestId === redeemRequestId;
+  const validConfirmation =
+    confirmation &&
+    confirmation.accountIdentity === accountIdentity &&
+    (recovering || confirmation.creditId === input.creditId) &&
+    (confirmation.mode === "resolve" ||
+      confirmation.offerKey === input.offerKey) &&
+    confirmation.observedAt <= now &&
+    confirmation.observedAt >= now - CODEX_RESET_OFFER_MAX_AGE_MS &&
+    (confirmation.mode !== "spend" ||
+      confirmation.expiresAt === null ||
+      confirmation.expiresAt > now);
+  const offerGeneration = validConfirmation ? confirmation.generation : null;
   try {
     reserved = await reserveCodexResetCredit(database, {
       accountIdentity,
@@ -1147,13 +1152,15 @@ export const redeemCodexResetCredit = async (
       redeemRequestId,
       creditId: input.creditId ?? null,
       offerGeneration,
+      recovery: recovering && validConfirmation ? confirmation.mode : null,
       now: Date.now(),
     });
   } catch (error) {
     if (error instanceof CodexResetReservationConflict) {
       if (
-        error.redeemRequestId === null &&
-        !(action?.kind === "offer" && action.offerKey !== input.offerKey)
+        error.redeemRequestId === null ||
+        validConfirmation ||
+        !(action?.kind === "pending" && action.recovery)
       )
         invalidateProviderAccountQuota(account);
       throw new CodexResetCreditConsumeError(
@@ -1191,24 +1198,24 @@ export const redeemCodexResetCredit = async (
       if (codexResetAccountIdentity(current) !== accountIdentity) {
         throw new Error("Reset-credit account identity changed; reconnect it");
       }
-      if (!existing) {
-        const latest = cache.get(quotaKey(current));
-        const latestAction =
-          latest?.credential === credentialBinding(current) &&
-          latest.quota.data.provider === "codex"
-            ? currentCodexResetAction(latest.quota.data, Date.now())
-            : null;
-        if (
-          latestAction?.kind !== "offer" ||
-          latestAction.offerKey !== input.offerKey ||
-          latestAction.creditId !== input.creditId
-        ) {
-          throw new CodexResetCreditConsumeError(
-            "Reset-credit offer changed. Review the current limits and early-spend warning before confirming again.",
-            null,
-            409
-          );
-        }
+      const latest = cache.get(quotaKey(current));
+      const latestAction =
+        latest?.credential === credentialBinding(current) &&
+        latest.quota.data.provider === "codex"
+          ? currentCodexResetAction(latest.quota.data, Date.now())
+          : null;
+      const latestConfirmation =
+        latestAction?.kind === "offer" ? latestAction : latestAction?.recovery;
+      if (
+        latestConfirmation?.mode !== "spend" ||
+        latestConfirmation.offerKey !== input.offerKey ||
+        latestConfirmation.creditId !== reserved.reservation.creditId
+      ) {
+        throw new CodexResetCreditConsumeError(
+          "Reset-credit offer changed. Review the current limits and early-spend warning before confirming again.",
+          existing ? redeemRequestId : null,
+          409
+        );
       }
       return consumeCodexResetCredit({
         accessToken: current.accessToken,
@@ -1227,6 +1234,26 @@ export const redeemCodexResetCredit = async (
       );
     }
   } catch (error) {
+    if (
+      error instanceof AccountTrackingHttpError &&
+      [400, 401, 403, 404, 409, 410, 422, 429].includes(error.status)
+    ) {
+      try {
+        await finishCodexResetCredit(database, reserved.reservation, "failed");
+      } catch {
+        throw new CodexResetCreditConsumeError(
+          "The refusal could not be saved. Check only this original request ID.",
+          redeemRequestId
+        );
+      } finally {
+        invalidateProviderAccountQuota(account);
+      }
+      throw new CodexResetCreditConsumeError(
+        `Codex refused this reset credit (HTTP ${error.status}); the attempt is closed. Refresh limits to review the next credit.`,
+        null,
+        409
+      );
+    }
     if (
       error instanceof CodexResetCreditConsumeError &&
       error.status === 409 &&
@@ -1254,6 +1281,7 @@ export const redeemCodexResetCredit = async (
       );
     }
     invalidateProviderAccountQuota(account);
+    if (error instanceof CodexResetCreditConsumeError) throw error;
     throw new CodexResetCreditConsumeError(message, redeemRequestId);
   }
   try {
@@ -1268,6 +1296,7 @@ export const redeemCodexResetCredit = async (
       invalidateProviderAccountQuota(account);
     }
   } catch {
+    invalidateProviderAccountQuota(account);
     throw new CodexResetCreditConsumeError(
       "Reset may have completed, but settlement could not finish. Check the result using only this original request ID.",
       redeemRequestId

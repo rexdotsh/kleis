@@ -50,18 +50,109 @@ const earlyUse = (
   };
 };
 
+export type CodexResetConfirmation = {
+  mode: "spend" | "resolve" | "review";
+  accountIdentity: string;
+  creditId: string | null;
+  offerKey: string;
+  generation: number;
+  observedAt: number;
+  expiresAt: number | null;
+  earlyUse: EarlyUse;
+};
+
+type PendingAction = {
+  kind: "pending";
+  accountIdentity: string;
+  generation: number;
+  observedAt: number;
+  creditId: string | null;
+  redeemRequestId: string;
+  updatedAt: number;
+  knownResult: boolean;
+  inFlight: boolean;
+  identityUnverified: boolean;
+  recovery: CodexResetConfirmation | null;
+};
 export type CodexResetAction =
-  | { kind: "pending"; creditId: string | null; redeemRequestId: string }
-  | {
-      kind: "offer";
-      accountIdentity: string;
-      creditId: string;
-      offerKey: string;
-      generation: number;
-      observedAt: number;
-      expiresAt: number | null;
-      earlyUse: EarlyUse;
-    };
+  | PendingAction
+  | (CodexResetConfirmation & { kind: "offer"; creditId: string });
+
+const isFresh = (observedAt: number, now: number) =>
+  observedAt <= now && observedAt >= now - CODEX_RESET_OFFER_MAX_AGE_MS;
+
+const pendingAction = (
+  pending: PendingAction,
+  credits: Awaited<ReturnType<typeof fetchCodexResetCredits>> | undefined,
+  status: CodexUsageStatus | undefined,
+  now: number
+): PendingAction => {
+  const action = { ...pending, recovery: null } as PendingAction;
+  if (
+    pending.knownResult ||
+    !isFresh(pending.observedAt, now) ||
+    pending.observedAt < pending.updatedAt ||
+    (pending.inFlight && pending.updatedAt > now - 120_000) ||
+    !credits
+  )
+    return action;
+  const credit = credits.credits.find((entry) => entry.id === pending.creditId);
+  const available =
+    credit?.status === "available" &&
+    (!credit.expiresAt || Date.parse(credit.expiresAt) > now);
+  const authoritative =
+    credits.availableCount !== null &&
+    credits.availableCount ===
+      credits.credits.filter(
+        (entry) =>
+          entry.status === "available" &&
+          (!entry.expiresAt || Date.parse(entry.expiresAt) > now)
+      ).length;
+  let mode: CodexResetConfirmation["mode"];
+  if (pending.identityUnverified || pending.creditId === null) mode = "review";
+  else if (available) mode = "spend";
+  else if (
+    authoritative &&
+    (!credit ||
+      ["consumed", "redeemed", "used", "expired", "ineligible"].includes(
+        credit.status ?? ""
+      ))
+  )
+    mode = "resolve";
+  else mode = "review";
+  if (
+    mode !== "spend" &&
+    (pending.observedAt < pending.updatedAt + 120_000 ||
+      (mode === "resolve" && !authoritative))
+  )
+    return action;
+  const warning = mode === "spend" ? earlyUse(status, now) : null;
+  const offerKey = Bun.CryptoHasher.hash(
+    "sha256",
+    JSON.stringify([
+      pending.accountIdentity,
+      pending.generation,
+      pending.redeemRequestId,
+      pending.updatedAt,
+      mode,
+      credit,
+      warning,
+      credits,
+    ]),
+    "hex"
+  );
+  action.recovery = {
+    mode,
+    accountIdentity: pending.accountIdentity,
+    creditId: pending.creditId,
+    offerKey,
+    generation: pending.generation,
+    observedAt: pending.observedAt,
+    earlyUse: warning,
+    expiresAt: credit?.expiresAt ? Date.parse(credit.expiresAt) : null,
+  };
+  return action;
+};
 
 export const describeCodexResetAction = (
   accountIdentity: string,
@@ -72,11 +163,24 @@ export const describeCodexResetAction = (
   now = observedAt
 ): CodexResetAction | null => {
   if (state.pending) {
-    return {
-      kind: "pending",
-      creditId: state.pending.creditId,
-      redeemRequestId: state.pending.redeemRequestId,
-    };
+    return pendingAction(
+      {
+        kind: "pending",
+        accountIdentity,
+        generation: state.generation,
+        observedAt,
+        creditId: state.pending.creditId,
+        redeemRequestId: state.pending.redeemRequestId,
+        updatedAt: state.pending.updatedAt,
+        knownResult: state.pending.resultCode !== null,
+        inFlight: state.pending.executionToken !== null,
+        identityUnverified: state.unverified,
+        recovery: null,
+      },
+      credits,
+      status,
+      now
+    );
   }
   if (observedAt > now || observedAt < now - CODEX_RESET_OFFER_MAX_AGE_MS)
     return null;
@@ -108,6 +212,7 @@ export const describeCodexResetAction = (
   );
   return {
     kind: "offer",
+    mode: "spend",
     accountIdentity,
     creditId: credit.id,
     offerKey,
@@ -130,11 +235,13 @@ export const currentCodexResetAction = (
   return action?.kind === "offer"
     ? describeCodexResetAction(
         action.accountIdentity,
-        { generation: action.generation, pending: null },
+        { generation: action.generation, pending: null, unverified: false },
         data.resetCredits,
         action.observedAt,
         data.status,
         now
       )
-    : (action ?? null);
+    : action?.kind === "pending"
+      ? pendingAction(action, data.resetCredits, data.status, now)
+      : null;
 };

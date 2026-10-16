@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { errorLogFields, logError } from "../utils/log";
+import { CodexResetIdentityUnverified } from "../db/repositories/codex-reset-redemptions";
 
 export const installErrorHandler = (app: Hono): void => {
   app.use("*", async (context, next) => {
@@ -8,7 +9,12 @@ export const installErrorHandler = (app: Hono): void => {
     await next();
   });
   app.onError((error, context) => {
-    const status = error instanceof HTTPException ? error.status : 500;
+    const status =
+      error instanceof HTTPException
+        ? error.status
+        : error instanceof CodexResetIdentityUnverified
+          ? 409
+          : 500;
     const fields = errorLogFields(error);
     if (status >= 500 && !context.req.raw.signal.aborted) {
       logError("http_request_failed", {
@@ -24,7 +30,11 @@ export const installErrorHandler = (app: Hono): void => {
     return context.json(
       {
         error:
-          error instanceof HTTPException ? "request_error" : "internal_error",
+          error instanceof HTTPException
+            ? "request_error"
+            : error instanceof CodexResetIdentityUnverified
+              ? "conflict"
+              : "internal_error",
         message: fields.errorMessage,
       },
       status

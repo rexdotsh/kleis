@@ -13,7 +13,13 @@ import {
   finishCodexResetCredit,
   readCodexResetCreditState,
 } from "../../src/db/repositories/codex-reset-redemptions";
-import { findProviderAccountById } from "../../src/db/repositories/provider-accounts";
+import {
+  deleteProviderAccount,
+  findProviderAccountById,
+  updateProviderAccountProfile,
+  updateProviderAccountTokens,
+  upsertProviderAccount,
+} from "../../src/db/repositories/provider-accounts";
 import { providerAccounts } from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
 import {
@@ -84,7 +90,9 @@ describe("Codex reset-credit redemptions", () => {
     );
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await database.delete(schema.codexResetCreditRedemptions);
+    await database.delete(schema.codexResetCreditFences);
     client.close();
     otherClient.close();
   });
@@ -208,6 +216,345 @@ describe("Codex reset-credit redemptions", () => {
       await first;
       globalThis.fetch = original;
     }
+  });
+
+  test("an original-ID retry that could spend an available credit requires the current early-use confirmation", async () => {
+    const original = globalThis.fetch;
+    let percent = 100;
+    const requests: unknown[] = [];
+    globalThis.fetch = (async (url, init) => {
+      if (init?.body) {
+        requests.push(JSON.parse(String(init.body)));
+        return requests.length === 1
+          ? Response.json({}, { status: 503 })
+          : Response.json({ code: "reset" });
+      }
+      if (String(url).endsWith("/usage"))
+        return Response.json({
+          rate_limit: {
+            primary_window: {
+              used_percent: percent,
+              limit_window_seconds: 18000,
+            },
+          },
+        });
+      return quotaResponse();
+    }) as typeof fetch;
+    try {
+      const confirmed = await offer();
+      await expect(
+        redeemCodexResetCredit(database, "codex-account", {
+          ...confirmed,
+          redeemRequestId: "R1",
+        })
+      ).rejects.toMatchObject({ redeemRequestId: "R1" });
+      percent = 10;
+      const account = await findProviderAccountById(database, "codex-account");
+      if (!account) throw new Error("Expected fixture account");
+      await listProviderAccountQuotas(database, [account]);
+      await expect(
+        redeemCodexResetCredit(otherDatabase, account.id, {
+          redeemRequestId: "R1",
+        })
+      ).rejects.toMatchObject({ status: 409, redeemRequestId: "R1" });
+      expect(requests).toHaveLength(1);
+      const quota = (await listProviderAccountQuotas(database, [account])).get(
+        account.id
+      );
+      const action =
+        quota?.data.provider === "codex" ? quota.data.resetCreditAction : null;
+      expect(action).toMatchObject({
+        kind: "pending",
+        creditId: "credit-1",
+        redeemRequestId: "R1",
+        recovery: { mode: "spend", earlyUse: { percentUsed: 10 } },
+      });
+      if (action?.kind !== "pending" || !action.recovery)
+        throw new Error("Expected current retry confirmation");
+      await redeemCodexResetCredit(otherDatabase, account.id, {
+        redeemRequestId: "R1",
+        creditId: "credit-2",
+        offerKey: action.recovery.offerKey,
+      });
+      expect(requests).toEqual([
+        { redeem_request_id: "R1", credit_id: "credit-1" },
+        { redeem_request_id: "R1", credit_id: "credit-1" },
+      ]);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  test.each(["delete", "change"] as const)(
+    "legacy pending identities survive a local account %s and reconnect",
+    async (operation) => {
+      const now = Date.now();
+      await saveCodexResetCreditRedemption(database, {
+        redeemRequestId: "legacy-R1",
+        providerAccountId: "codex-account",
+        creditId: "credit-1",
+        status: "retryable",
+        createdAt: now,
+        updatedAt: now,
+      });
+      await saveCodexResetCreditRedemption(database, {
+        redeemRequestId: "legacy-duplicate",
+        providerAccountId: "codex-account",
+        creditId: "credit-0",
+        status: "pending",
+        createdAt: now + 1,
+        updatedAt: now,
+      });
+      if (operation === "delete")
+        await deleteProviderAccount(database, "codex-account");
+      else
+        await updateProviderAccountProfile(database, "codex-account", {
+          accountId: "replacement-identity",
+          metadata: {
+            provider: "codex",
+            chatgptAccountId: "replacement-identity",
+            email: null,
+          },
+          label: null,
+          now,
+        });
+      const reconnected = await upsertProviderAccount(database, {
+        provider: "codex",
+        accountId: accountIdentity,
+        accessToken: "fake-access",
+        refreshToken: "fake-refresh",
+        expiresAt: now + 3_600_000,
+        metadata: null,
+        now,
+      });
+      const state = await readCodexResetCreditState(database, accountIdentity);
+      expect(state.pending).toMatchObject({
+        redeemRequestId: "legacy-R1",
+        accountIdentity,
+      });
+      expect(
+        (await findCodexResetCreditRedemption(database, "legacy-duplicate"))
+          ?.accountIdentity
+      ).toBe(accountIdentity);
+      await expect(
+        reserveCodexResetCredit(otherDatabase, {
+          providerAccountId: reconnected.id,
+          accountIdentity,
+          redeemRequestId: "fresh-R2",
+          creditId: "credit-2",
+          offerGeneration: state.generation,
+          now,
+        })
+      ).rejects.toMatchObject({ redeemRequestId: "legacy-R1" });
+    }
+  );
+
+  test.each([400, 403, 404, 409, 410, 422, 429])(
+    "a definitive HTTP %s refusal closes the original attempt and allows the next confirmed credit",
+    async (status) => {
+      const original = globalThis.fetch;
+      const requests: unknown[] = [];
+      globalThis.fetch = (async (_url, init) => {
+        if (!init?.body)
+          return quotaResponse(requests.length ? ["credit-2"] : undefined);
+        requests.push(JSON.parse(String(init.body)));
+        return requests.length === 1
+          ? Response.json({}, { status })
+          : Response.json({ code: "reset" });
+      }) as typeof fetch;
+      try {
+        const confirmed = await offer();
+        await expect(
+          redeemCodexResetCredit(database, "codex-account", {
+            ...confirmed,
+            redeemRequestId: "rejected-R1",
+          })
+        ).rejects.toMatchObject({ status: 409, redeemRequestId: null });
+        expect(
+          (await readCodexResetCreditState(database, accountIdentity)).pending
+        ).toBeNull();
+        const next = await offer();
+        await redeemCodexResetCredit(database, "codex-account", {
+          ...next,
+          redeemRequestId: "confirmed-R2",
+        });
+        expect(requests).toEqual([
+          { redeem_request_id: "rejected-R1", credit_id: "credit-1" },
+          { redeem_request_id: "confirmed-R2", credit_id: "credit-2" },
+        ]);
+      } finally {
+        globalThis.fetch = original;
+      }
+    }
+  );
+
+  test("a stale recovery confirmation never sends until a fresh original-credit warning is approved", async () => {
+    const original = globalThis.fetch;
+    const now = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(now);
+    let posts = 0;
+    globalThis.fetch = (async (_url, init) => {
+      if (!init?.body) return quotaResponse();
+      posts++;
+      return posts === 1
+        ? Response.json({}, { status: 503 })
+        : Response.json({ code: "reset" });
+    }) as typeof fetch;
+    try {
+      const confirmed = await offer();
+      await expect(
+        redeemCodexResetCredit(database, "codex-account", {
+          ...confirmed,
+          redeemRequestId: "R1-stale",
+        })
+      ).rejects.toMatchObject({ redeemRequestId: "R1-stale" });
+      const account = await findProviderAccountById(database, "codex-account");
+      if (!account) throw new Error("Expected fixture account");
+      const quota = (await listProviderAccountQuotas(database, [account])).get(
+        account.id
+      );
+      const action =
+        quota?.data.provider === "codex" ? quota.data.resetCreditAction : null;
+      if (action?.kind !== "pending" || !action.recovery)
+        throw new Error("Expected recovery offer");
+      clock.mockReturnValue(now + 600_001);
+      recordProviderAccountLiveLimits(
+        account,
+        readCodexLiveLimits(
+          new Headers({ "x-codex-primary-used-percent": "10" })
+        )
+      );
+      await expect(
+        redeemCodexResetCredit(database, account.id, {
+          redeemRequestId: "R1-stale",
+          offerKey: action.recovery.offerKey,
+        })
+      ).rejects.toMatchObject({ status: 409, redeemRequestId: "R1-stale" });
+      expect(posts).toBe(1);
+      const refreshed = (
+        await listProviderAccountQuotas(database, [account])
+      ).get(account.id);
+      const next =
+        refreshed?.data.provider === "codex"
+          ? refreshed.data.resetCreditAction
+          : null;
+      if (next?.kind !== "pending" || !next.recovery)
+        throw new Error("Expected fresh recovery");
+      await redeemCodexResetCredit(database, account.id, {
+        redeemRequestId: "R1-stale",
+        offerKey: next.recovery.offerKey,
+      });
+      expect(posts).toBe(2);
+    } finally {
+      clock.mockRestore();
+      globalThis.fetch = original;
+    }
+  });
+
+  test("an unresolvable legacy record blocks deletion and fresh spending until the owner explicitly reviews it without a spend", async () => {
+    const original = globalThis.fetch;
+    const now = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(now);
+    await database
+      .update(providerAccounts)
+      .set({ accountId: null, metadataJson: null })
+      .where(eq(providerAccounts.id, "codex-account"));
+    await saveCodexResetCreditRedemption(database, {
+      redeemRequestId: "unverified-R1",
+      providerAccountId: "codex-account",
+      creditId: null,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
+    let posts = 0;
+    globalThis.fetch = (async (_url, init) => {
+      if (init?.body) {
+        posts++;
+        throw new Error("Legacy review cannot spend");
+      }
+      return quotaResponse();
+    }) as typeof fetch;
+    try {
+      await expect(
+        deleteProviderAccount(database, "codex-account")
+      ).rejects.toThrow("older reset has no verified login identity");
+      expect(
+        await findProviderAccountById(database, "codex-account")
+      ).not.toBeNull();
+      clock.mockReturnValue(now + 120_001);
+      const verified = await findProviderAccountById(database, "other-account");
+      if (!verified) throw new Error("Expected verified alias");
+      const quota = (await listProviderAccountQuotas(database, [verified])).get(
+        verified.id
+      );
+      const action =
+        quota?.data.provider === "codex" ? quota.data.resetCreditAction : null;
+      expect(action).toMatchObject({
+        kind: "pending",
+        identityUnverified: true,
+        recovery: { mode: "review" },
+      });
+      if (action?.kind !== "pending" || !action.recovery)
+        throw new Error("Expected owner review");
+      await expect(
+        redeemCodexResetCredit(database, verified.id, {
+          redeemRequestId: "fresh-R2",
+        })
+      ).rejects.toMatchObject({
+        status: 409,
+        redeemRequestId: "unverified-R1",
+      });
+      await expect(
+        redeemCodexResetCredit(database, verified.id, {
+          redeemRequestId: "unverified-R1",
+        })
+      ).rejects.toMatchObject({ status: 409 });
+      expect(
+        await redeemCodexResetCredit(database, verified.id, {
+          redeemRequestId: "unverified-R1",
+          offerKey: action.recovery.offerKey,
+        })
+      ).toMatchObject({ code: "reconciled" });
+      expect(posts).toBe(0);
+      expect(
+        (await readCodexResetCreditState(database, accountIdentity)).pending
+      ).toBeNull();
+      expect(await deleteProviderAccount(database, "codex-account")).toBe(true);
+    } finally {
+      clock.mockRestore();
+      globalThis.fetch = original;
+    }
+  });
+
+  test("a rejected credential writer cannot attach an unverified legacy claim to its proposed login", async () => {
+    const now = Date.now();
+    await database
+      .update(providerAccounts)
+      .set({ accountId: null, metadataJson: null })
+      .where(eq(providerAccounts.id, "codex-account"));
+    await saveCodexResetCreditRedemption(database, {
+      redeemRequestId: "unbound-CAS",
+      providerAccountId: "codex-account",
+      creditId: null,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
+    expect(
+      await updateProviderAccountTokens(database, "codex-account", {
+        accessToken: "losing-access",
+        refreshToken: "losing-refresh",
+        expectedRefreshToken: "stale-refresh",
+        expiresAt: now + 3_600_000,
+        lastRefreshStatus: "success",
+        accountId: "wrong-login",
+        now,
+      })
+    ).toBeNull();
+    expect(
+      await findCodexResetCreditRedemption(database, "unbound-CAS")
+    ).toMatchObject({ accountIdentity: null, status: "pending" });
   });
 
   test("a fresh ID cannot spend again while a successful reset is still refreshing quotas", async () => {
@@ -334,6 +681,14 @@ describe("Codex reset-credit redemptions", () => {
         await database
           .update(schema.codexResetCreditRedemptions)
           .set({ updatedAt: Date.now() - 120_001 });
+        if (failure === "ledger") {
+          const account = await findProviderAccountById(
+            database,
+            "codex-account"
+          );
+          if (!account) throw new Error("Expected fixture account");
+          await listProviderAccountQuotas(database, [account]);
+        }
         const result = await redeemCodexResetCredit(
           otherDatabase,
           "codex-account",
@@ -342,7 +697,7 @@ describe("Codex reset-credit redemptions", () => {
         expect(result?.code).toBe(
           failure === "ledger" ? "already_redeemed" : "reset"
         );
-        expect(requests).toHaveLength(failure === "ledger" ? 2 : 1);
+        expect(requests).toHaveLength(1);
         expect(
           requests.every(
             (request) =>
@@ -372,6 +727,10 @@ describe("Codex reset-credit redemptions", () => {
     const first = await reserveCodexResetCredit(database, input);
     const recovered = await reserveCodexResetCredit(otherDatabase, {
       ...input,
+      offerGeneration: (
+        await readCodexResetCreditState(database, accountIdentity)
+      ).generation,
+      recovery: "spend",
       now: input.now + 120_001,
     });
     if (!first.reservation || !recovered.reservation) {

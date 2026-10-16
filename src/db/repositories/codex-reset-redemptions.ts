@@ -16,7 +16,7 @@ type Reservation = Redemption & {
   accountIdentity: string;
   executionToken: string;
 };
-const openStatuses = ["pending", "ambiguous", "retryable"];
+const openStatuses = ["pending", "ambiguous", "retryable", "legacy_ambiguous"];
 const orphanAfterMs = 120_000;
 
 export const codexResetAccountIdentity = (account: {
@@ -44,6 +44,58 @@ export class CodexResetReservationConflict extends Error {
     super(message);
   }
 }
+
+export class CodexResetIdentityUnverified extends Error {
+  constructor() {
+    super(
+      "Cannot remove or change this account while an older reset has no verified login identity. Reauthorize this same account, or review its pending reset in Codex settings first."
+    );
+  }
+}
+
+export const preserveCodexResetIdentity = async (
+  database: Pick<Database, "query" | "update">,
+  providerAccountId: string,
+  verifiedIdentity?: string | null,
+  originalAccount?: typeof providerAccounts.$inferSelect
+): Promise<void> => {
+  const account =
+    originalAccount ??
+    (await database.query.providerAccounts.findFirst({
+      where: eq(providerAccounts.id, providerAccountId),
+    }));
+  if (account?.provider !== "codex") return;
+  const rows = await database.query.codexResetCreditRedemptions.findMany({
+    where: and(
+      eq(codexResetCreditRedemptions.providerAccountId, providerAccountId),
+      isNull(codexResetCreditRedemptions.accountIdentity)
+    ),
+  });
+  if (!rows.length) return;
+  const identity =
+    codexResetAccountIdentity({
+      accountId: account.accountId,
+      metadata: parseProviderAccountMetadata(account.metadataJson),
+    }) ?? verifiedIdentity;
+  if (!identity) {
+    if (rows.some((row) => openStatuses.includes(row.status)))
+      throw new CodexResetIdentityUnverified();
+    return;
+  }
+  // Historical duplicates retain their uncertainty outside the active unique index.
+  await database
+    .update(codexResetCreditRedemptions)
+    .set({
+      accountIdentity: identity,
+      status: sql`case when ${codexResetCreditRedemptions.status} in ('pending', 'ambiguous', 'retryable') then 'legacy_ambiguous' else ${codexResetCreditRedemptions.status} end`,
+    })
+    .where(
+      and(
+        eq(codexResetCreditRedemptions.providerAccountId, providerAccountId),
+        isNull(codexResetCreditRedemptions.accountIdentity)
+      )
+    );
+};
 
 export const findCodexResetCreditRedemption = (
   database: Database,
@@ -96,19 +148,19 @@ const openRows = (database: Pick<Database, "select">, identity: string) =>
     )
     .orderBy(asc(codexResetCreditRedemptions.createdAt));
 
+const rowIdentity = (row: Awaited<ReturnType<typeof openRows>>[number]) =>
+  row.redemption.accountIdentity ??
+  codexResetAccountIdentity({
+    accountId: row.accountId,
+    metadata: parseProviderAccountMetadata(row.metadataJson),
+  });
+
 const matchingRows = (
   rows: Awaited<ReturnType<typeof openRows>>,
   identity: string
 ): Redemption[] =>
   rows
-    .filter(
-      (row) =>
-        (row.redemption.accountIdentity ??
-          codexResetAccountIdentity({
-            accountId: row.accountId,
-            metadata: parseProviderAccountMetadata(row.metadataJson),
-          })) === identity
-    )
+    .filter((row) => rowIdentity(row) === identity || rowIdentity(row) === null)
     .map((row) => row.redemption);
 
 export const readCodexResetCreditState = async (
@@ -123,10 +175,20 @@ export const readCodexResetCreditState = async (
     openRows(database, accountIdentity),
   ]);
   const claims = matchingRows(rows, accountIdentity);
+  const pending =
+    claims.find(
+      (row) => row.accountIdentity !== null && row.status !== "legacy_ambiguous"
+    ) ??
+    claims[0] ??
+    null;
   return {
     generation: fences[0]?.generation ?? 0,
-    pending:
-      claims.find((row) => row.accountIdentity !== null) ?? claims[0] ?? null,
+    pending,
+    unverified: rows.some(
+      (row) =>
+        row.redemption.redeemRequestId === pending?.redeemRequestId &&
+        rowIdentity(row) === null
+    ),
   };
 };
 
@@ -151,6 +213,7 @@ export const reserveCodexResetCredit = async (
     redeemRequestId: string;
     creditId: string | null;
     offerGeneration?: number | null;
+    recovery?: "spend" | "resolve" | "review" | null;
     now: number;
   }
 ): Promise<
@@ -178,7 +241,11 @@ export const reserveCodexResetCredit = async (
             metadata: parseProviderAccountMetadata(original.metadataJson),
           })
         : null);
-    if (existing && originalIdentity !== input.accountIdentity) {
+    if (
+      existing &&
+      originalIdentity &&
+      originalIdentity !== input.accountIdentity
+    ) {
       throw new CodexResetReservationConflict(
         "This reset-credit redemption belongs to another account identity. Reconnect the original account before checking its result.",
         null
@@ -215,7 +282,10 @@ export const reserveCodexResetCredit = async (
       return { completed: existing };
     }
     const open =
-      claims.find((row) => row.accountIdentity !== null) ??
+      claims.find(
+        (row) =>
+          row.accountIdentity !== null && row.status !== "legacy_ambiguous"
+      ) ??
       claims.find((row) => row.redeemRequestId === input.redeemRequestId) ??
       claims[0];
     if (open && open.redeemRequestId !== input.redeemRequestId) {
@@ -230,7 +300,7 @@ export const reserveCodexResetCredit = async (
         open.redeemRequestId
       );
     }
-    if (!open) {
+    {
       const fence = await tx.query.codexResetCreditFences.findFirst({
         where: eq(
           codexResetCreditFences.accountIdentity,
@@ -238,18 +308,49 @@ export const reserveCodexResetCredit = async (
         ),
       });
       if (
-        existing ||
-        !input.creditId ||
+        (!open && (existing || !input.creditId)) ||
+        (open && !input.recovery) ||
         input.offerGeneration == null ||
         input.offerGeneration !== (fence?.generation ?? 0)
       ) {
         throw new CodexResetReservationConflict(
-          "Reset-credit offer changed or is missing. Refresh limits and confirm the displayed credit again.",
-          null
+          open
+            ? "Check fresh credit availability and confirm the current warning before retrying this original request."
+            : "Reset-credit offer changed or is missing. Refresh limits and confirm the displayed credit again.",
+          open?.redeemRequestId ?? null
         );
       }
     }
-    if (!open?.accountIdentity) await advanceFence(tx, input.accountIdentity);
+    if (input.recovery === "resolve" || input.recovery === "review") {
+      if (!open || open.updatedAt > input.now - orphanAfterMs)
+        throw new CodexResetReservationConflict(
+          "Wait for a later credit sync before reviewing this uncertain result.",
+          input.redeemRequestId
+        );
+      const [closed] = await tx
+        .update(codexResetCreditRedemptions)
+        .set({
+          status: "completed",
+          accountIdentity: originalIdentity ?? input.accountIdentity,
+          resultCode:
+            input.recovery === "resolve" ? "already_redeemed" : "reconciled",
+          executionToken: null,
+          updatedAt: input.now,
+        })
+        .where(
+          eq(codexResetCreditRedemptions.redeemRequestId, input.redeemRequestId)
+        )
+        .returning();
+      if (!closed) throw new Error("Reset reconciliation failed");
+      await advanceFence(tx, input.accountIdentity);
+      return { completed: closed };
+    }
+    if (open && (!originalIdentity || !open.creditId))
+      throw new CodexResetReservationConflict(
+        "Review this legacy reset in Codex settings; its identity or original credit cannot be verified for spending.",
+        input.redeemRequestId
+      );
+    await advanceFence(tx, input.accountIdentity);
     const reservation: Reservation = {
       redeemRequestId: input.redeemRequestId,
       providerAccountId: existing?.providerAccountId ?? input.providerAccountId,
@@ -304,17 +405,21 @@ export const settleCodexResetCredit = async (
   >,
   now: number
 ): Promise<void> => {
-  await database
-    .update(codexResetCreditRedemptions)
-    .set({
-      ...outcome,
-      // Keep the ledger lock through the quota refresh, even with a known result.
-      status: outcome.status === "completed" ? "pending" : "ambiguous",
-      executionToken:
-        outcome.status === "completed" ? reservation.executionToken : null,
-      updatedAt: now,
-    })
-    .where(ownedExecution(reservation));
+  await database.transaction(async (tx) => {
+    const result = await tx
+      .update(codexResetCreditRedemptions)
+      .set({
+        ...outcome,
+        // Keep the ledger lock through the quota refresh, even with a known result.
+        status: outcome.status === "completed" ? "pending" : "ambiguous",
+        executionToken:
+          outcome.status === "completed" ? reservation.executionToken : null,
+        updatedAt: now,
+      })
+      .where(ownedExecution(reservation));
+    if (result.rowsAffected && outcome.status !== "completed")
+      await advanceFence(tx, reservation.accountIdentity);
+  });
 };
 
 export const finishCodexResetCredit = async (

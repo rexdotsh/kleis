@@ -111,6 +111,10 @@ test("the generated upgrade preserves populated ledgers and safely reconciles du
     for (const id of ["pending-1", "pending-2"]) {
       const reserved = await reserveCodexResetCredit(database, {
         ...input,
+        offerGeneration: (
+          await readCodexResetCreditState(database, input.accountIdentity)
+        ).generation,
+        recovery: "spend",
         redeemRequestId: id,
       });
       if (!reserved.reservation)

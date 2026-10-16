@@ -1,5 +1,5 @@
 import { createClient } from "@libsql/client";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
 
@@ -18,6 +18,7 @@ test("a Codex redemption whose response was lost can be retried and replayed wit
   const database = drizzle(client, { schema });
   const originalFetch = globalThis.fetch;
   const spent = new Set<string>();
+  const clock = spyOn(Date, "now").mockReturnValue(Date.now());
   try {
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
     setAccountSnapshotStore(null);
@@ -96,6 +97,8 @@ test("a Codex redemption whose response was lost can be retried and replayed wit
       status: 409,
       redeemRequestId: retry.redeemRequestId,
     });
+    clock.mockReturnValue(now + 120_001);
+    await listProviderAccountQuotas(database, [alias]);
     const recovered = await redeemCodexResetCredit(database, alias.id, {
       ...retry,
       creditId: "C2",
@@ -110,9 +113,9 @@ test("a Codex redemption whose response was lost can be retried and replayed wit
     expect(spent.size).toBe(1);
     expect(requests).toEqual([
       { redeem_request_id: retry.redeemRequestId, credit_id: "C1" },
-      { redeem_request_id: retry.redeemRequestId, credit_id: "C1" },
     ]);
   } finally {
+    clock.mockRestore();
     globalThis.fetch = originalFetch;
     client.close();
     anchor.close();
