@@ -533,48 +533,78 @@ function windowEntry(label, window, named = false, fetchedAt = null) {
   };
 }
 
+const CLAUDE_LIMIT_NAMES = {
+  five_hour: "5h",
+  seven_day: "7d",
+  seven_day_overage_included: "7d",
+  seven_day_opus: "Opus 7d",
+  seven_day_sonnet: "Sonnet 7d",
+  seven_day_cowork: "Cowork 7d",
+  seven_day_omelette: "Omelette 7d",
+  seven_day_oauth_apps: "OAuth apps 7d",
+};
+
+function claudeNamedWindows(subscription) {
+  const windows = new Map();
+  const add = (label, window) => {
+    if (!Number.isFinite(window?.utilization)) return;
+    const key = label.toLowerCase();
+    const previous = windows.get(key)?.[1];
+    if (previous?.utilization > window.utilization) return;
+    windows.set(key, [
+      label,
+      {
+        ...window,
+        resetsAt: window.resetsAt ?? previous?.resetsAt,
+      },
+    ]);
+  };
+  for (const limit of subscription?.limits || []) {
+    if (limit.kind === "weekly_scoped")
+      add(`${limit.modelDisplayName || limit.modelId || "Scoped"} 7d`, {
+        utilization: limit.percent,
+        resetsAt: limit.resetsAt,
+      });
+  }
+  for (const [key, window] of Object.entries(
+    subscription?.modelWindows || {}
+  )) {
+    const label =
+      key === "seven_day_overage_included"
+        ? "7d incl. extra"
+        : CLAUDE_LIMIT_NAMES[key] ||
+          `${key.replace(/^seven_day_/, "").replaceAll("_", " ")} 7d`;
+    add(label, window);
+  }
+  return [...windows.values()];
+}
+
 function accountWindows(account) {
   const data = account.quota?.data;
   if (!data) return [];
-  if (data.provider === "codex") {
-    const status = data.status;
-    return [
-      windowEntry(
-        spanLabel(status?.primaryWindow?.windowSeconds, "5h"),
-        status?.primaryWindow,
-        false,
-        account.quota.fetchedAt
-      ),
-      windowEntry(
-        spanLabel(status?.secondaryWindow?.windowSeconds, "7d"),
-        status?.secondaryWindow,
-        false,
-        account.quota.fetchedAt
-      ),
-      ...(status?.additionalRateLimits || []).map((limit) =>
-        windowEntry(
-          limit.limitName || limit.meteredFeature || "Extra",
-          limit.primaryWindow,
-          true,
-          account.quota.fetchedAt
-        )
-      ),
-    ].filter(Boolean);
-  }
-  const subscription = data.subscription;
+  const primary = data.status?.primaryWindow || data.subscription?.fiveHour;
+  const secondary = data.status?.secondaryWindow || data.subscription?.sevenDay;
+  const named =
+    data.provider === "codex"
+      ? (data.status?.additionalRateLimits || []).flatMap((limit) => {
+          const label = limit.limitName || limit.meteredFeature || "Extra";
+          return [limit.primaryWindow, limit.secondaryWindow].map((window) => [
+            limit.secondaryWindow
+              ? `${label} ${spanLabel(window?.windowSeconds, window === limit.primaryWindow ? "5h" : "7d")}`
+              : label,
+            window,
+          ]);
+        })
+      : claudeNamedWindows(data.subscription);
   return [
-    windowEntry("5h", subscription?.fiveHour),
-    windowEntry("7d", subscription?.sevenDay),
-    ...(subscription?.limits || [])
-      .filter((limit) => limit.kind === "weekly_scoped")
-      .map((limit) =>
-        windowEntry(
-          `${limit.modelDisplayName || "Scoped"} 7d`,
-          { utilization: limit.percent, resetsAt: limit.resetsAt },
-          true
-        )
-      ),
-  ].filter(Boolean);
+    [spanLabel(primary?.windowSeconds, "5h"), primary, false],
+    [spanLabel(secondary?.windowSeconds, "7d"), secondary, false],
+    ...named.map(([label, window]) => [label, window, true]),
+  ]
+    .map(([label, window, named]) =>
+      windowEntry(label, window, named, account.quota.fetchedAt)
+    )
+    .filter(Boolean);
 }
 
 function tightestWindow(account) {
@@ -704,6 +734,7 @@ function isAccountServing(account, statuses = providerStatusMap()) {
 }
 
 export {
+  CLAUDE_LIMIT_NAMES,
   relativeTime,
   tokenStatus,
   maskKey,

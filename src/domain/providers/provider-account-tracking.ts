@@ -36,7 +36,6 @@ import {
 } from "../../providers/account-tracking/claude-resets";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
 import {
-  type ClaudeLiveLimits,
   type LiveLimits,
   mergeClaudeLiveLimits,
   mergeCodexLiveLimits,
@@ -111,9 +110,15 @@ const credentialBinding = (account: ProviderAccountRecord): string =>
 
 // Live readings that arrive while a usage attempt runs are newer than its
 // result. Each attempt collects them for its own credential and generation.
-const claudeLiveDuringPoll = new Map<
+type LiveReading = { limits: LiveLimits; observedAt: number };
+const liveDuringPoll = new Map<
   string,
-  { credential: string; generation: number; readings: ClaudeLiveLimits[] }
+  {
+    credential: string;
+    generation: number;
+    startedAt: number;
+    readings: LiveReading[];
+  }
 >();
 
 let snapshots: AccountSnapshotStore | null = null;
@@ -447,11 +452,11 @@ const fetchAccountData = async (
   database: Database,
   account: TrackingAccount,
   now: number,
-  observeClaudeUsage: (current: TrackingAccount) => ClaudeLiveLimits[]
+  observeUsage: (current: TrackingAccount) => LiveReading[]
 ): Promise<{
   data: TrackingData;
   errors: unknown[];
-  live?: ClaudeLiveLimits[];
+  live?: LiveReading[];
 }> => {
   if (account.provider === "claude") {
     const plan = getClaudeProfile(account).then(
@@ -462,7 +467,7 @@ const fetchAccountData = async (
         database,
         account,
         async (current) => {
-          const live = observeClaudeUsage(current);
+          const live = observeUsage(current);
           return {
             ...(await fetchClaudeSubscriptionUsage(current.accessToken)),
             credential: credentialBinding(current),
@@ -491,16 +496,18 @@ const fetchAccountData = async (
   }
 
   let current = account;
+  let live = observeUsage(account);
   let result = await fetchCodexData(account);
   if (result.errors.some((error) => errorStatus(error) === 401)) {
     const refreshed = await replaceRejectedAccount(database, account);
     if (refreshed) {
       current = refreshed;
+      live = observeUsage(refreshed);
       result = await fetchCodexData(refreshed);
     }
   }
   await updateCodexProfile(current, result.data);
-  return result;
+  return { ...result, live };
 };
 
 // A failed check keeps whatever the last successful one returned, with its
@@ -590,20 +597,19 @@ const fetchProviderAccountQuota = async (
     credential = credentialBinding(account);
     const result = await fetchAccountData(database, account, now, (current) => {
       credential = credentialBinding(current);
-      const readings: ClaudeLiveLimits[] = [];
+      const readings: LiveReading[] = [];
       if (generations.get(key) === generation) {
-        claudeLiveDuringPoll.set(key, { credential, generation, readings });
+        liveDuringPoll.set(key, {
+          credential,
+          generation,
+          startedAt: now,
+          readings,
+        });
       }
       return readings;
     });
     const previous = latest()?.data;
     if (result.data.provider === "claude") {
-      if (result.data.subscription && result.live) {
-        result.data.subscription = result.live.reduce(
-          mergeClaudeLiveLimits,
-          result.data.subscription
-        );
-      }
       // A read without the resets block was not evaluated for resets, so the
       // last known ones stay, with their own read time.
       if (
@@ -618,10 +624,16 @@ const fetchProviderAccountQuota = async (
       noteClaudeUsageResult(result.errors);
       if (claudeRateLimit.until > now) expiresAt = claudeRateLimit.until;
     }
-    return publish(
-      toQuota(result.data, result.errors, now, latest()),
-      expiresAt
-    );
+    let quota = toQuota(result.data, result.errors, now, latest());
+    for (const { limits, observedAt } of result.live ?? []) {
+      quota = {
+        ...quota,
+        data: mergeLiveLimits(quota.data, limits, observedAt),
+        fetchedAt: observedAt,
+        source: "traffic",
+      };
+    }
+    return publish(quota, expiresAt);
   } catch (error) {
     return publish(
       toQuota({ provider: stored.provider }, [error], now, latest()),
@@ -648,7 +660,7 @@ const loadProviderAccountQuota = (
   ).finally(() => {
     if (inFlight.get(key) === request) {
       inFlight.delete(key);
-      claudeLiveDuringPoll.delete(key);
+      liveDuringPoll.delete(key);
     }
   });
   inFlight.set(key, request);
@@ -935,13 +947,12 @@ export const recordProviderAccountLiveLimits = (
     const cached = cache.get(key);
     const credential = credentialBinding(account);
     const entry = cached?.credential === credential ? cached : undefined;
-    const poll = claudeLiveDuringPoll.get(key);
+    const poll = liveDuringPoll.get(key);
     if (
-      limits.provider === "claude" &&
       poll?.credential === credential &&
       poll.generation === generations.get(key)
     ) {
-      poll.readings.push(limits);
+      poll.readings.push({ limits, observedAt: now });
     }
     const quota: AccountQuota = {
       fetchedAt: now,
@@ -1175,25 +1186,24 @@ export const claudeResetLimitUsage = (
   return used;
 };
 
-// Waits for a usage read through the usual path: it joins one already
-// running, and during the shared Claude rate-limit pause sends nothing.
-export const refreshClaudeResetCredits = async (
-  database: Database,
-  account: TrackingAccount
-): Promise<ClaudeResetCredits | null> => {
-  const previous = peekClaudeResetCredits(account);
-  const quota = await loadProviderAccountQuota(database, account, false);
-  const current = peekClaudeResetCredits(account);
-  return quota?.error || current === previous ? null : current;
-};
-
-// After a claim the cached resets may still show the reset it used. A new read
-// replaces them, and supersedes any read started before; the rate-limit pause
-// still applies.
-export const reloadClaudeResetCredits = (
-  database: Database,
+// A settled claim invalidates saved resets and earlier reads without moving
+// the next scheduled poll or the shared rate-limit pause.
+export const invalidateClaudeResetCredits = (
   account: TrackingAccount
 ): void => {
-  dropCachedResetCredits(quotaKey(account));
-  loadProviderAccountQuota(database, account, true).catch(() => undefined);
+  const key = quotaKey(account);
+  dropCachedResetCredits(key);
+  const entry = cache.get(key);
+  const poll = liveDuringPoll.get(key);
+  if (entry && poll) {
+    entry.expiresAt = Math.max(
+      entry.expiresAt,
+      poll.startedAt + CLAUDE_CACHE_MS
+    );
+  }
+  inFlight.delete(key);
+  liveDuringPoll.delete(key);
+  nextGeneration(key);
+  const quota = cache.get(key)?.quota;
+  if (quota) snapshots?.recordQuota(account, quota, quotaSignature(quota.data));
 };

@@ -27,9 +27,14 @@ import {
   listProviderAccountQuotas,
   peekProviderAccountProfiles,
   peekProviderAccountQuotas,
+  recordProviderAccountLiveLimits,
   restoreProviderAccountSnapshots,
   setAccountSnapshotStore,
 } from "../../src/domain/providers/provider-account-tracking";
+import {
+  readClaudeLiveLimits,
+  readCodexLiveLimits,
+} from "../../src/providers/account-tracking/live-limits";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -166,6 +171,86 @@ describe("account snapshots", () => {
       { status: { usedPercent: 5 } }
     );
   });
+
+  test.each(["codex", "claude"] as const)(
+    "%s publishes and persists traffic newer than an in-flight poll",
+    async (provider) => {
+      const id = await insertAccount(provider);
+      const accounts = await accountsById(id);
+      const account = accounts[0];
+      if (!account) throw new Error("account missing");
+      const store = createAccountSnapshotStore(database);
+      setAccountSnapshotStore(store);
+      const startedAt = Date.now();
+      setSystemTime(startedAt);
+      let finish: (response: Response) => void = () => undefined;
+      globalThis.fetch = ((input: string | URL | Request) => {
+        const path = new URL(String(input)).pathname;
+        if (path.endsWith("/usage")) {
+          return new Promise<Response>((resolve) => {
+            finish = resolve;
+          });
+        }
+        return Promise.resolve(Response.json({}));
+      }) as typeof fetch;
+      const polling = listProviderAccountQuotas(database, accounts);
+      await Bun.sleep(0);
+      setSystemTime(startedAt + 1000);
+      recordProviderAccountLiveLimits(
+        account,
+        provider === "codex"
+          ? readCodexLiveLimits(
+              new Headers({ "x-codex-primary-used-percent": "70" })
+            )
+          : readClaudeLiveLimits(
+              new Headers({
+                "anthropic-ratelimit-unified-5h-utilization": "0.7",
+              })
+            )
+      );
+      finish(
+        Response.json(
+          provider === "codex"
+            ? {
+                rate_limit: {
+                  primary_window: { used_percent: 10 },
+                  secondary_window: { used_percent: 20 },
+                },
+              }
+            : {
+                five_hour: { utilization: 10 },
+                seven_day: { utilization: 20 },
+              }
+        )
+      );
+      const expected =
+        provider === "codex"
+          ? {
+              status: {
+                primaryWindow: { usedPercent: 70 },
+                secondaryWindow: { usedPercent: 20 },
+              },
+            }
+          : {
+              subscription: {
+                fiveHour: { utilization: 70 },
+                sevenDay: { utilization: 20 },
+              },
+            };
+      expect((await polling).get(id)).toMatchObject({
+        source: "traffic",
+        fetchedAt: startedAt + 1000,
+        data: expected,
+      });
+      expect(
+        (await listProviderAccountQuotas(database, accounts)).get(id)?.data
+      ).toMatchObject(expected);
+      await store.flush();
+      expect(
+        JSON.parse((await readSnapshot(id))?.quotaJson ?? "")
+      ).toMatchObject(expected);
+    }
+  );
 
   test("profile and quota writes keep each other, and a removed account does not block the rest", async () => {
     const store = createAccountSnapshotStore(database);
