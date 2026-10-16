@@ -4,16 +4,13 @@ import { toNonNegativeInteger } from "../../utils/number";
 import type { Database } from "../index";
 import { requestUsageBuckets } from "../schema";
 import {
-  applyTotalsRow,
-  emptyUsageTotals,
+  averageUsageRow,
   mapEndpointUsageRows,
   mapModelUsageRows,
   mapUsageBucketRows,
   selectUsageCounterSums,
-  selectUsageLastRequestAtMax,
-  selectUsageLatencySums,
   selectUsageTokenSums,
-  toAveragedTotals,
+  selectUsageTotals,
   toUsageBucketStart,
 } from "./usage-shared";
 
@@ -48,12 +45,7 @@ export const getDashboardUsage = async (
     lt(requestUsageBuckets.bucketStart, sinceBucket)
   );
 
-  const fullSelect = {
-    ...selectUsageCounterSums(requestUsageBuckets),
-    ...selectUsageLatencySums(requestUsageBuckets),
-    ...selectUsageTokenSums(requestUsageBuckets),
-    ...selectUsageLastRequestAtMax(requestUsageBuckets),
-  };
+  const fullSelect = selectUsageTotals(requestUsageBuckets);
 
   const [
     totalsRows,
@@ -150,25 +142,12 @@ export const getDashboardUsage = async (
       .limit(DASHBOARD_BUCKET_LIMIT),
   ]);
 
-  const totals = emptyUsageTotals();
-  if (totalsRows[0]) applyTotalsRow(totals, totalsRows[0]);
-
-  const previousTotals = emptyUsageTotals();
-  if (previousTotalsRows[0])
-    applyTotalsRow(previousTotals, previousTotalsRows[0]);
-
-  const rowToAveraged = (row: Parameters<typeof applyTotalsRow>[1]) => {
-    const t = emptyUsageTotals();
-    applyTotalsRow(t, row);
-    return toAveragedTotals(t);
-  };
-
   const byProvider = providerRows
-    .map((row) => ({ provider: row.provider, ...rowToAveraged(row) }))
+    .map((row) => ({ provider: row.provider, ...averageUsageRow(row) }))
     .sort((a, b) => b.requestCount - a.requestCount);
 
   const byKey = keyRows
-    .map((row) => ({ apiKeyId: row.apiKeyId, ...rowToAveraged(row) }))
+    .map((row) => ({ apiKeyId: row.apiKeyId, ...averageUsageRow(row) }))
     .sort(
       (a, b) =>
         b.requestCount - a.requestCount ||
@@ -176,8 +155,8 @@ export const getDashboardUsage = async (
     );
 
   return {
-    totals: toAveragedTotals(totals),
-    previousTotals: toAveragedTotals(previousTotals),
+    totals: averageUsageRow(totalsRows[0]),
+    previousTotals: averageUsageRow(previousTotalsRows[0]),
     byProvider,
     byEndpoint: mapEndpointUsageRows(endpointRows),
     byModel: mapModelUsageRows(modelRows),

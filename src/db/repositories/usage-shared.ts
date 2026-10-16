@@ -1,8 +1,9 @@
-import { sql } from "drizzle-orm";
+import { desc, sql, type SQL } from "drizzle-orm";
 
 import { calculateSuccessRate } from "../../usage/request-outcome";
 import { toNonNegativeInteger } from "../../utils/number";
-import { providers, type requestUsageBuckets, type Provider } from "../schema";
+import type { Database } from "../index";
+import { providers, requestUsageBuckets, type Provider } from "../schema";
 
 const USAGE_BUCKET_MS = 60_000;
 export const DETAIL_BUCKET_LIMIT = 60;
@@ -24,13 +25,7 @@ const maxTimestamp = (left: number | null, right: unknown): number | null => {
 };
 
 const parseProvider = (value: string): Provider | null => {
-  for (const provider of providers) {
-    if (provider === value) {
-      return provider;
-    }
-  }
-
-  return null;
+  return providers.find((provider) => provider === value) ?? null;
 };
 
 type UsageBucketsTable = typeof requestUsageBuckets;
@@ -65,6 +60,54 @@ export const selectUsageLastRequestAtMax = (table: UsageBucketsTable) => ({
   lastRequestAt: sql<number>`max(${table.lastRequestAt})`,
 });
 
+export const selectUsageTotals = (table: UsageBucketsTable) => ({
+  ...selectUsageCounterSums(table),
+  ...selectUsageLatencySums(table),
+  ...selectUsageTokenSums(table),
+  ...selectUsageLastRequestAtMax(table),
+});
+
+export const usageDetailQueries = (
+  database: Database,
+  filter: SQL | undefined
+) =>
+  [
+    database
+      .select({
+        provider: requestUsageBuckets.provider,
+        endpoint: requestUsageBuckets.endpoint,
+        ...selectUsageTotals(requestUsageBuckets),
+      })
+      .from(requestUsageBuckets)
+      .where(filter)
+      .groupBy(requestUsageBuckets.provider, requestUsageBuckets.endpoint),
+    database
+      .select({
+        provider: requestUsageBuckets.provider,
+        endpoint: requestUsageBuckets.endpoint,
+        model: requestUsageBuckets.model,
+        ...selectUsageTotals(requestUsageBuckets),
+      })
+      .from(requestUsageBuckets)
+      .where(filter)
+      .groupBy(
+        requestUsageBuckets.provider,
+        requestUsageBuckets.endpoint,
+        requestUsageBuckets.model
+      ),
+    database
+      .select({
+        bucketStart: requestUsageBuckets.bucketStart,
+        ...selectUsageCounterSums(requestUsageBuckets),
+        ...selectUsageTokenSums(requestUsageBuckets),
+      })
+      .from(requestUsageBuckets)
+      .where(filter)
+      .groupBy(requestUsageBuckets.bucketStart)
+      .orderBy(desc(requestUsageBuckets.bucketStart))
+      .limit(DETAIL_BUCKET_LIMIT),
+  ] as const;
+
 export type UsageTotals = {
   requestCount: number;
   successCount: number;
@@ -86,26 +129,9 @@ export type UsageTotals = {
   lastRequestAt: number | null;
 };
 
-export type AveragedUsageTotals = {
-  requestCount: number;
-  successCount: number;
+export type AveragedUsageTotals = Omit<UsageTotals, "totalLatencyMs"> & {
   successRate: number | null;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-  proxyErrorCount: number;
-  upstreamErrorCount: number;
   avgLatencyMs: number;
-  maxLatencyMs: number;
-  inputTokens: number;
-  inputTotalTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  totalTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  lastRequestAt: number | null;
 };
 
 export const emptyUsageTotals = (): UsageTotals => ({
@@ -202,42 +228,24 @@ export const toAveragedTotals = (totals: UsageTotals): AveragedUsageTotals => ({
   lastRequestAt: totals.lastRequestAt,
 });
 
-export type UsageProviderSummary = {
-  provider: Provider;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-  proxyErrorCount: number;
-  upstreamErrorCount: number;
-  inputTokens: number;
-  inputTotalTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  totalTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
+export const averageUsageRow = (row?: UsageTotalsRow): AveragedUsageTotals => {
+  const totals = emptyUsageTotals();
+  if (row) applyTotalsRow(totals, row);
+  return toAveragedTotals(totals);
 };
 
-type UsageProviderSummaryRow = {
+export type UsageProviderSummary = Omit<
+  UsageTotals,
+  "totalLatencyMs" | "maxLatencyMs" | "lastRequestAt"
+> & {
+  provider: Provider;
+};
+
+type UsageProviderSummaryRow = Omit<
+  UsageTotalsRow,
+  "totalLatencyMs" | "maxLatencyMs" | "lastRequestAt"
+> & {
   provider: string;
-  requestCount: unknown;
-  successCount: unknown;
-  clientErrorCount: unknown;
-  serverErrorCount: unknown;
-  authErrorCount?: unknown;
-  rateLimitCount?: unknown;
-  proxyErrorCount?: unknown;
-  upstreamErrorCount?: unknown;
-  inputTokens?: unknown;
-  inputTotalTokens?: unknown;
-  outputTokens?: unknown;
-  reasoningTokens?: unknown;
-  totalTokens?: unknown;
-  cacheReadTokens?: unknown;
-  cacheWriteTokens?: unknown;
 };
 
 const ensureProviderSummary = (
@@ -364,41 +372,28 @@ export const summarizeGroupedUsageRows = (input: {
   return summaries;
 };
 
-export type UsageEndpointBreakdown = {
+export type UsageEndpointBreakdown = Omit<
+  AveragedUsageTotals,
+  "successRate"
+> & {
   provider: Provider;
   endpoint: string;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-  proxyErrorCount: number;
-  upstreamErrorCount: number;
-  avgLatencyMs: number;
-  maxLatencyMs: number;
-  inputTokens: number;
-  inputTotalTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  totalTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  lastRequestAt: number | null;
 };
 
-type UsageEndpointRow = UsageProviderSummaryRow & {
+type UsageEndpointRow = UsageTotalsRow & {
+  provider: string;
   endpoint: string;
-  totalLatencyMs: unknown;
-  maxLatencyMs: unknown;
-  inputTokens?: unknown;
-  inputTotalTokens?: unknown;
-  outputTokens?: unknown;
-  reasoningTokens?: unknown;
-  totalTokens?: unknown;
-  cacheReadTokens?: unknown;
-  cacheWriteTokens?: unknown;
-  lastRequestAt: unknown;
+};
+
+const mapBreakdownTotals = (row: UsageTotalsRow) => {
+  const { successRate: _, ...totals } = averageUsageRow(row);
+  return {
+    ...totals,
+    lastRequestAt:
+      row.lastRequestAt === null
+        ? null
+        : toNonNegativeInteger(row.lastRequestAt),
+  };
 };
 
 export const mapEndpointUsageRows = (
@@ -412,34 +407,10 @@ export const mapEndpointUsageRows = (
       continue;
     }
 
-    const requestCount = toNonNegativeInteger(row.requestCount);
-    const totalLatencyMs = toNonNegativeInteger(row.totalLatencyMs);
     endpoints.push({
       provider,
       endpoint: row.endpoint,
-      requestCount,
-      successCount: toNonNegativeInteger(row.successCount),
-      clientErrorCount: toNonNegativeInteger(row.clientErrorCount),
-      serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
-      authErrorCount: toNonNegativeInteger(row.authErrorCount),
-      rateLimitCount: toNonNegativeInteger(row.rateLimitCount),
-      proxyErrorCount: toNonNegativeInteger(row.proxyErrorCount),
-      upstreamErrorCount: toNonNegativeInteger(row.upstreamErrorCount),
-      avgLatencyMs: requestCount
-        ? Math.round(totalLatencyMs / requestCount)
-        : 0,
-      maxLatencyMs: toNonNegativeInteger(row.maxLatencyMs),
-      inputTokens: toNonNegativeInteger(row.inputTokens),
-      inputTotalTokens: toNonNegativeInteger(row.inputTotalTokens),
-      outputTokens: toNonNegativeInteger(row.outputTokens),
-      reasoningTokens: toNonNegativeInteger(row.reasoningTokens),
-      totalTokens: toNonNegativeInteger(row.totalTokens),
-      cacheReadTokens: toNonNegativeInteger(row.cacheReadTokens),
-      cacheWriteTokens: toNonNegativeInteger(row.cacheWriteTokens),
-      lastRequestAt:
-        row.lastRequestAt === null
-          ? null
-          : toNonNegativeInteger(row.lastRequestAt),
+      ...mapBreakdownTotals(row),
     });
   }
 
@@ -447,42 +418,12 @@ export const mapEndpointUsageRows = (
   return endpoints;
 };
 
-export type UsageBucketRow = {
+export type UsageBucketRow = Omit<UsageProviderSummary, "provider"> & {
   bucketStart: number;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-  proxyErrorCount: number;
-  upstreamErrorCount: number;
-  inputTokens: number;
-  inputTotalTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  totalTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
 };
 
-type UsageBucketSummaryRow = {
+type UsageBucketSummaryRow = Omit<UsageProviderSummaryRow, "provider"> & {
   bucketStart: unknown;
-  requestCount: unknown;
-  successCount: unknown;
-  clientErrorCount: unknown;
-  serverErrorCount: unknown;
-  authErrorCount?: unknown;
-  rateLimitCount?: unknown;
-  proxyErrorCount?: unknown;
-  upstreamErrorCount?: unknown;
-  inputTokens?: unknown;
-  inputTotalTokens?: unknown;
-  outputTokens?: unknown;
-  reasoningTokens?: unknown;
-  totalTokens?: unknown;
-  cacheReadTokens?: unknown;
-  cacheWriteTokens?: unknown;
 };
 
 export const mapUsageBucketRows = (
@@ -509,28 +450,8 @@ export const mapUsageBucketRows = (
     }))
     .reverse();
 
-export type UsageModelBreakdown = {
-  provider: Provider;
-  endpoint: string;
+export type UsageModelBreakdown = UsageEndpointBreakdown & {
   model: string;
-  requestCount: number;
-  successCount: number;
-  clientErrorCount: number;
-  serverErrorCount: number;
-  authErrorCount: number;
-  rateLimitCount: number;
-  proxyErrorCount: number;
-  upstreamErrorCount: number;
-  avgLatencyMs: number;
-  maxLatencyMs: number;
-  inputTokens: number;
-  inputTotalTokens: number;
-  outputTokens: number;
-  reasoningTokens: number;
-  totalTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  lastRequestAt: number | null;
 };
 
 type UsageModelRow = UsageEndpointRow & {
@@ -548,35 +469,11 @@ export const mapModelUsageRows = (
       continue;
     }
 
-    const requestCount = toNonNegativeInteger(row.requestCount);
-    const totalLatencyMs = toNonNegativeInteger(row.totalLatencyMs);
     models.push({
       provider,
       endpoint: row.endpoint,
       model: row.model,
-      requestCount,
-      successCount: toNonNegativeInteger(row.successCount),
-      clientErrorCount: toNonNegativeInteger(row.clientErrorCount),
-      serverErrorCount: toNonNegativeInteger(row.serverErrorCount),
-      authErrorCount: toNonNegativeInteger(row.authErrorCount),
-      rateLimitCount: toNonNegativeInteger(row.rateLimitCount),
-      proxyErrorCount: toNonNegativeInteger(row.proxyErrorCount),
-      upstreamErrorCount: toNonNegativeInteger(row.upstreamErrorCount),
-      avgLatencyMs: requestCount
-        ? Math.round(totalLatencyMs / requestCount)
-        : 0,
-      maxLatencyMs: toNonNegativeInteger(row.maxLatencyMs),
-      inputTokens: toNonNegativeInteger(row.inputTokens),
-      inputTotalTokens: toNonNegativeInteger(row.inputTotalTokens),
-      outputTokens: toNonNegativeInteger(row.outputTokens),
-      reasoningTokens: toNonNegativeInteger(row.reasoningTokens),
-      totalTokens: toNonNegativeInteger(row.totalTokens),
-      cacheReadTokens: toNonNegativeInteger(row.cacheReadTokens),
-      cacheWriteTokens: toNonNegativeInteger(row.cacheWriteTokens),
-      lastRequestAt:
-        row.lastRequestAt === null
-          ? null
-          : toNonNegativeInteger(row.lastRequestAt),
+      ...mapBreakdownTotals(row),
     });
   }
 
@@ -586,27 +483,13 @@ export const mapModelUsageRows = (
     const rightQuality =
       (right.model.trim().length > 0 ? 2 : 0) +
       (right.successCount > 0 ? 1 : 0);
-    const qualityDifference = rightQuality - leftQuality;
-    if (qualityDifference !== 0) {
-      return qualityDifference;
-    }
-
-    const requestDifference = right.requestCount - left.requestCount;
-    if (requestDifference !== 0) {
-      return requestDifference;
-    }
-
-    const outputDifference = right.outputTokens - left.outputTokens;
-    if (outputDifference !== 0) {
-      return outputDifference;
-    }
-
-    const inputDifference = right.inputTokens - left.inputTokens;
-    if (inputDifference !== 0) {
-      return inputDifference;
-    }
-
-    return (right.lastRequestAt ?? 0) - (left.lastRequestAt ?? 0);
+    return (
+      rightQuality - leftQuality ||
+      right.requestCount - left.requestCount ||
+      right.outputTokens - left.outputTokens ||
+      right.inputTokens - left.inputTokens ||
+      (right.lastRequestAt ?? 0) - (left.lastRequestAt ?? 0)
+    );
   });
 
   return models;
