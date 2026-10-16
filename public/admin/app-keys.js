@@ -234,45 +234,21 @@ async function rotateKeyAction(request, id) {
   );
   if (!confirmed) return;
 
-  const payload = {
-    label: existing.label || undefined,
-    providerScopes: existing.providerScopes?.length
-      ? existing.providerScopes
-      : undefined,
-    accountScopes: existing.accountScopes?.length
-      ? existing.accountScopes
-      : undefined,
-    modelScopes: existing.modelScopes?.length
-      ? existing.modelScopes
-      : undefined,
-  };
-  if (existing.expiresAt != null && existing.expiresAt > Date.now()) {
-    payload.expiresAt = existing.expiresAt;
-  }
-
   const revokeOld = $("#rotate-revoke-old")?.checked ?? false;
-  let keyCreated = false;
   try {
-    const data = await request("/admin/keys", {
+    const data = await request(`/admin/keys/${id}/rotate`, {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ revokeOld }),
     });
-    keyCreated = true;
     state.expandedKeyId = data.key.id;
     state.revealedKeyIds.add(data.key.id);
-    if (revokeOld) await request.wait(revokeKeyRequest(id));
     toast(
       revokeOld ? "API key rotated and previous key revoked" : "API key rotated"
     );
     await loadKeys();
   } catch (e) {
     if (!request.isCurrent()) return;
-    toast(
-      keyCreated && revokeOld
-        ? `New key created, but old key revoke failed: ${e.message}`
-        : e.message,
-      "error"
-    );
+    toast(e.message, "error");
   }
 }
 

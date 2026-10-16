@@ -13,6 +13,7 @@ import {
   findApiKeyById,
   listApiKeys,
   revokeApiKey,
+  rotateApiKey,
   updateApiKey,
 } from "../../db/repositories/api-keys";
 import { findProviderAccountsByIds } from "../../db/repositories/provider-accounts";
@@ -49,6 +50,10 @@ const updateApiKeyBodySchema = z.strictObject({
 
 const keyIdParamsSchema = z.strictObject({
   id: z.uuid(),
+});
+
+const rotateApiKeyBodySchema = z.strictObject({
+  revokeOld: z.boolean(),
 });
 
 const apiKeyNotFoundBody = {
@@ -250,6 +255,30 @@ export const adminKeysRoutes = new Hono()
         key: toApiKeyView(resolveExternalRequestUrl(context.req.raw), updated),
         updated: true,
       });
+    }
+  )
+  .post(
+    "/:id/rotate",
+    zValidator("param", keyIdParamsSchema),
+    zValidator("json", rotateApiKeyBodySchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const { revokeOld } = context.req.valid("json");
+      const key = await rotateApiKey(db, id, Date.now(), revokeOld);
+      if (!key) {
+        return context.json(
+          {
+            error: "conflict",
+            message:
+              "API key was not found, is expired, revoked, or already rotated. Refresh the key list before trying again.",
+          },
+          409
+        );
+      }
+      return context.json(
+        { key: toApiKeyView(resolveExternalRequestUrl(context.req.raw), key) },
+        201
+      );
     }
   )
   .post(

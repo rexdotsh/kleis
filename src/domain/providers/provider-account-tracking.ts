@@ -1,8 +1,13 @@
 import type { Database } from "../../db";
 import type { ClaudeResetClaimIdentity } from "../../db/repositories/claude-reset-claims";
 import {
+  codexResetAccountIdentity,
+  readCodexResetCreditState,
+  finishCodexResetCredit,
   findCodexResetCreditRedemption,
-  saveCodexResetCreditRedemption,
+  reserveCodexResetCredit,
+  settleCodexResetCredit,
+  CodexResetReservationConflict,
 } from "../../db/repositories/codex-reset-redemptions";
 import {
   listProviderAccountsWithSnapshots,
@@ -36,7 +41,6 @@ import {
 } from "../../providers/account-tracking/claude-resets";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
 import {
-  type ClaudeLiveLimits,
   type LiveLimits,
   mergeClaudeLiveLimits,
   mergeCodexLiveLimits,
@@ -50,6 +54,12 @@ import {
   refreshProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "./provider-service";
+import {
+  describeCodexResetAction,
+  currentCodexResetAction,
+  CODEX_RESET_OFFER_MAX_AGE_MS,
+  type CodexResetAction,
+} from "./codex-reset-offers";
 
 const CACHE_MS = 60_000;
 const CLAUDE_CACHE_MS = 3 * 60_000;
@@ -67,6 +77,7 @@ export type TrackingAccount = ProviderAccountRecord & {
 
 type CodexTrackingData = {
   provider: "codex";
+  resetCreditAction?: CodexResetAction | null;
   status?: Awaited<ReturnType<typeof fetchCodexUsageStatus>>;
   resetCredits?: Awaited<ReturnType<typeof fetchCodexResetCredits>>;
   profile?: Awaited<ReturnType<typeof fetchCodexUsageProfile>>;
@@ -111,9 +122,9 @@ const credentialBinding = (account: ProviderAccountRecord): string =>
 
 // Live readings that arrive while a usage attempt runs are newer than its
 // result. Each attempt collects them for its own credential and generation.
-const claudeLiveDuringPoll = new Map<
+const liveDuringPoll = new Map<
   string,
-  { credential: string; generation: number; readings: ClaudeLiveLimits[] }
+  { credential: string; generation: number; readings: LiveLimits[] }
 >();
 
 let snapshots: AccountSnapshotStore | null = null;
@@ -447,11 +458,11 @@ const fetchAccountData = async (
   database: Database,
   account: TrackingAccount,
   now: number,
-  observeClaudeUsage: (current: TrackingAccount) => ClaudeLiveLimits[]
+  observeUsage: (current: TrackingAccount) => LiveLimits[]
 ): Promise<{
   data: TrackingData;
   errors: unknown[];
-  live?: ClaudeLiveLimits[];
+  live?: LiveLimits[];
 }> => {
   if (account.provider === "claude") {
     const plan = getClaudeProfile(account).then(
@@ -462,7 +473,7 @@ const fetchAccountData = async (
         database,
         account,
         async (current) => {
-          const live = observeClaudeUsage(current);
+          const live = observeUsage(current);
           return {
             ...(await fetchClaudeSubscriptionUsage(current.accessToken)),
             credential: credentialBinding(current),
@@ -491,16 +502,18 @@ const fetchAccountData = async (
   }
 
   let current = account;
+  let live = observeUsage(account);
   let result = await fetchCodexData(account);
   if (result.errors.some((error) => errorStatus(error) === 401)) {
     const refreshed = await replaceRejectedAccount(database, account);
     if (refreshed) {
       current = refreshed;
+      live = observeUsage(refreshed);
       result = await fetchCodexData(refreshed);
     }
   }
   await updateCodexProfile(current, result.data);
-  return result;
+  return { ...result, live };
 };
 
 // A failed check keeps whatever the last successful one returned, with its
@@ -587,22 +600,30 @@ const fetchProviderAccountQuota = async (
     if (!account) {
       return null;
     }
+    const resetIdentity =
+      account.provider === "codex" ? codexResetAccountIdentity(account) : null;
+    const resetState = resetIdentity
+      ? await readCodexResetCreditState(database, resetIdentity)
+      : null;
     credential = credentialBinding(account);
     const result = await fetchAccountData(database, account, now, (current) => {
       credential = credentialBinding(current);
-      const readings: ClaudeLiveLimits[] = [];
+      const readings: LiveLimits[] = [];
       if (generations.get(key) === generation) {
-        claudeLiveDuringPoll.set(key, { credential, generation, readings });
+        liveDuringPoll.set(key, { credential, generation, readings });
       }
       return readings;
     });
     const previous = latest()?.data;
     if (result.data.provider === "claude") {
       if (result.data.subscription && result.live) {
-        result.data.subscription = result.live.reduce(
-          mergeClaudeLiveLimits,
-          result.data.subscription
-        );
+        for (const reading of result.live) {
+          if (reading.provider === "claude")
+            result.data.subscription = mergeClaudeLiveLimits(
+              result.data.subscription,
+              reading
+            );
+        }
       }
       // A read without the resets block was not evaluated for resets, so the
       // last known ones stay, with their own read time.
@@ -613,15 +634,37 @@ const fetchProviderAccountQuota = async (
         result.data.resetCredits ??= previous.resetCredits;
       }
     }
+    if (result.data.provider === "codex") {
+      for (const reading of result.live ?? []) {
+        if (reading.provider === "codex")
+          result.data.status = mergeCodexLiveLimits(
+            result.data.status,
+            reading,
+            Date.now()
+          );
+      }
+    }
     let expiresAt = now + Math.max(baseMs, cacheDuration(result.errors));
     if (account.provider === "claude") {
       noteClaudeUsageResult(result.errors);
       if (claudeRateLimit.until > now) expiresAt = claudeRateLimit.until;
     }
-    return publish(
-      toQuota(result.data, result.errors, now, latest()),
-      expiresAt
-    );
+    const quota = toQuota(result.data, result.errors, now, latest());
+    if (quota.data.provider === "codex") {
+      quota.data.resetCreditAction =
+        resetIdentity && resetState
+          ? describeCodexResetAction(
+              resetIdentity,
+              resetState,
+              result.data.provider === "codex"
+                ? result.data.resetCredits
+                : undefined,
+              now,
+              quota.data.status
+            )
+          : null;
+    }
+    return publish(quota, expiresAt);
   } catch (error) {
     return publish(
       toQuota({ provider: stored.provider }, [error], now, latest()),
@@ -648,7 +691,7 @@ const loadProviderAccountQuota = (
   ).finally(() => {
     if (inFlight.get(key) === request) {
       inFlight.delete(key);
-      claudeLiveDuringPoll.delete(key);
+      liveDuringPoll.delete(key);
     }
   });
   inFlight.set(key, request);
@@ -669,8 +712,19 @@ const getProviderAccountQuota = (
   if (quotaRefreshDue(stored, cached)) {
     loadProviderAccountQuota(database, stored, false).catch(() => undefined);
   }
-  return Promise.resolve(cached.quota);
+  return Promise.resolve(currentQuotaView(cached.quota));
 };
+
+const currentQuotaView = (quota: AccountQuota): AccountQuota =>
+  quota.data.provider === "codex"
+    ? {
+        ...quota,
+        data: {
+          ...quota.data,
+          resetCreditAction: currentCodexResetAction(quota.data, Date.now()),
+        },
+      }
+    : quota;
 
 const quotaRefreshDue = (
   account: TrackingAccount,
@@ -890,7 +944,7 @@ export const peekProviderAccountQuotas = (
     if (!cached || quotaRefreshDue(account, cached)) {
       loadProviderAccountQuota(database, account, false).catch(() => undefined);
     }
-    quotas.set(account.id, cached?.quota ?? null);
+    quotas.set(account.id, cached ? currentQuotaView(cached.quota) : null);
   }
   return quotas;
 };
@@ -935,9 +989,8 @@ export const recordProviderAccountLiveLimits = (
     const cached = cache.get(key);
     const credential = credentialBinding(account);
     const entry = cached?.credential === credential ? cached : undefined;
-    const poll = claudeLiveDuringPoll.get(key);
+    const poll = liveDuringPoll.get(key);
     if (
-      limits.provider === "claude" &&
       poll?.credential === credential &&
       poll.generation === generations.get(key)
     ) {
@@ -950,6 +1003,8 @@ export const recordProviderAccountLiveLimits = (
       source: "traffic",
       data: mergeLiveLimits(entry?.quota.data, limits, now),
     };
+    if (quota.data.provider === "codex")
+      quota.data.resetCreditAction = currentCodexResetAction(quota.data, now);
     cache.set(key, {
       quota,
       credential,
@@ -1014,9 +1069,13 @@ export const queryCodexThreadUsage = async (
 };
 
 export class CodexResetCreditConsumeError extends Error {
-  readonly redeemRequestId: string;
+  readonly redeemRequestId: string | null;
 
-  constructor(message: string, redeemRequestId: string) {
+  constructor(
+    message: string,
+    redeemRequestId: string | null,
+    readonly status: 409 | 502 = 502
+  ) {
     super(message);
     this.name = "CodexResetCreditConsumeError";
     this.redeemRequestId = redeemRequestId;
@@ -1029,6 +1088,7 @@ export const redeemCodexResetCredit = async (
   input: {
     creditId?: string | null | undefined;
     redeemRequestId?: string | null | undefined;
+    offerKey?: string | null | undefined;
   }
 ) => {
   const stored = await findProviderAccountById(database, providerAccountId);
@@ -1044,10 +1104,12 @@ export const redeemCodexResetCredit = async (
     database,
     redeemRequestId
   );
-  if (existing && existing.providerAccountId !== providerAccountId) {
-    throw new Error("Reset-credit redemption belongs to another account");
-  }
-  if (existing?.status === "completed" && existing.resultCode) {
+  if (
+    !codexResetAccountIdentity(account) &&
+    existing?.providerAccountId === providerAccountId &&
+    existing?.status === "completed" &&
+    existing.resultCode
+  ) {
     return {
       redeemRequestId,
       code: existing.resultCode,
@@ -1055,47 +1117,163 @@ export const redeemCodexResetCredit = async (
     };
   }
 
+  const accountIdentity = codexResetAccountIdentity(account);
+  if (!accountIdentity) {
+    throw new CodexResetCreditConsumeError(
+      "Reset-credit account identity is unknown. Reconnect this account before redeeming.",
+      null,
+      409
+    );
+  }
+  let reserved: Awaited<ReturnType<typeof reserveCodexResetCredit>>;
+  const cached = cache.get(quotaKey(account))?.quota.data;
   const now = Date.now();
-  const creditId = input.creditId ?? existing?.creditId ?? null;
+  const action =
+    cached?.provider === "codex" ? currentCodexResetAction(cached, now) : null;
+  const offerGeneration =
+    action?.kind === "offer" &&
+    action.accountIdentity === accountIdentity &&
+    action.creditId === input.creditId &&
+    action.offerKey === input.offerKey &&
+    action.observedAt <= now &&
+    action.observedAt >= now - CODEX_RESET_OFFER_MAX_AGE_MS &&
+    (action.expiresAt === null || action.expiresAt > now)
+      ? action.generation
+      : null;
+  try {
+    reserved = await reserveCodexResetCredit(database, {
+      accountIdentity,
+      providerAccountId,
+      redeemRequestId,
+      creditId: input.creditId ?? null,
+      offerGeneration,
+      now: Date.now(),
+    });
+  } catch (error) {
+    if (error instanceof CodexResetReservationConflict) {
+      if (
+        error.redeemRequestId === null &&
+        !(action?.kind === "offer" && action.offerKey !== input.offerKey)
+      )
+        invalidateProviderAccountQuota(account);
+      throw new CodexResetCreditConsumeError(
+        error.message,
+        error.redeemRequestId,
+        409
+      );
+    }
+    throw error;
+  }
+  if (reserved.completed) {
+    invalidateProviderAccountQuota(account);
+    return {
+      redeemRequestId,
+      code: reserved.completed.resultCode,
+      windowsReset: reserved.completed.windowsReset,
+    };
+  }
   const save = (
     status: string,
     resultCode: string | null,
     windowsReset: number | null,
     lastError: string | null
   ) =>
-    saveCodexResetCreditRedemption(database, {
-      redeemRequestId,
-      providerAccountId,
-      creditId,
-      status,
-      resultCode,
-      windowsReset,
-      lastError,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: Date.now(),
-    });
-  await save("pending", null, null, null);
+    settleCodexResetCredit(
+      database,
+      reserved.reservation,
+      { status, resultCode, windowsReset, lastError },
+      Date.now()
+    );
 
+  let result: Awaited<ReturnType<typeof consumeCodexResetCredit>>;
   try {
-    const result = await retryAfter401(database, account, (current) =>
-      consumeCodexResetCredit({
+    result = await retryAfter401(database, account, (current) => {
+      if (codexResetAccountIdentity(current) !== accountIdentity) {
+        throw new Error("Reset-credit account identity changed; reconnect it");
+      }
+      if (!existing) {
+        const latest = cache.get(quotaKey(current));
+        const latestAction =
+          latest?.credential === credentialBinding(current) &&
+          latest.quota.data.provider === "codex"
+            ? currentCodexResetAction(latest.quota.data, Date.now())
+            : null;
+        if (
+          latestAction?.kind !== "offer" ||
+          latestAction.offerKey !== input.offerKey ||
+          latestAction.creditId !== input.creditId
+        ) {
+          throw new CodexResetCreditConsumeError(
+            "Reset-credit offer changed. Review the current limits and early-spend warning before confirming again.",
+            null,
+            409
+          );
+        }
+      }
+      return consumeCodexResetCredit({
         accessToken: current.accessToken,
         accountId: current.accountId,
         redeemRequestId,
-        creditId,
-      })
-    );
-    await save("completed", result.code, result.windowsReset, null);
-    invalidateProviderAccountQuota(account);
-    if (result.code === "reset" || result.code === "already_redeemed") {
-      await getProviderAccountQuota(database, account, true);
+        creditId: reserved.reservation.creditId,
+      });
+    });
+    if (
+      !["reset", "already_redeemed", "nothing_to_reset", "no_credit"].includes(
+        result.code
+      )
+    ) {
+      throw new Error(
+        "Reset status is unknown. Check the result using only this original request ID."
+      );
     }
-    return { redeemRequestId, ...result };
   } catch (error) {
+    if (
+      error instanceof CodexResetCreditConsumeError &&
+      error.status === 409 &&
+      !existing
+    ) {
+      try {
+        await finishCodexResetCredit(database, reserved.reservation, "failed");
+      } catch {
+        throw new CodexResetCreditConsumeError(
+          "Reset cancellation could not be saved. Check only this original request ID.",
+          redeemRequestId
+        );
+      } finally {
+        invalidateProviderAccountQuota(account);
+      }
+      throw error;
+    }
     const message = errorMessage(error);
-    await save("retryable", null, null, message);
+    try {
+      await save("retryable", null, null, message);
+    } catch {
+      throw new CodexResetCreditConsumeError(
+        "Reset status could not be saved. Check the result using only this original request ID.",
+        redeemRequestId
+      );
+    }
+    invalidateProviderAccountQuota(account);
     throw new CodexResetCreditConsumeError(message, redeemRequestId);
   }
+  try {
+    await save("completed", result.code, result.windowsReset, null);
+    invalidateProviderAccountQuota(account);
+    try {
+      if (result.code === "reset" || result.code === "already_redeemed") {
+        await getProviderAccountQuota(database, account, true);
+      }
+    } finally {
+      await finishCodexResetCredit(database, reserved.reservation);
+      invalidateProviderAccountQuota(account);
+    }
+  } catch {
+    throw new CodexResetCreditConsumeError(
+      "Reset may have completed, but settlement could not finish. Check the result using only this original request ID.",
+      redeemRequestId
+    );
+  }
+  return { redeemRequestId, ...result };
 };
 
 const agreedUuid = (

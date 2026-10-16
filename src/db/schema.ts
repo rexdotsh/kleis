@@ -60,6 +60,7 @@ export const apiKeys = sqliteTable(
     accountScopeJson: text("account_scope_json"),
     expiresAt: integer("expires_at", { mode: "number" }),
     revokedAt: integer("revoked_at", { mode: "number" }),
+    rotatedToId: text("rotated_to_id"),
     createdAt: integer("created_at", { mode: "number" }).notNull(),
   },
   (table) => [
@@ -161,10 +162,10 @@ export const codexResetCreditRedemptions = sqliteTable(
   "codex_reset_credit_redemptions",
   {
     redeemRequestId: text("redeem_request_id").primaryKey(),
-    providerAccountId: text("provider_account_id")
-      .notNull()
-      .references(() => providerAccounts.id, { onDelete: "cascade" }),
+    providerAccountId: text("provider_account_id").notNull(),
     creditId: text("credit_id"),
+    accountIdentity: text("account_identity"),
+    executionToken: text("execution_token"),
     status: text("status").notNull(),
     resultCode: text("result_code"),
     windowsReset: integer("windows_reset", { mode: "number" }),
@@ -174,6 +175,11 @@ export const codexResetCreditRedemptions = sqliteTable(
   },
   (table) => [
     index("codex_reset_redemptions_account_idx").on(table.providerAccountId),
+    uniqueIndex("codex_reset_redemptions_open_identity_unique")
+      .on(table.accountIdentity)
+      .where(
+        sql`${table.accountIdentity} is not null and ${table.status} in ('pending', 'ambiguous', 'retryable')`
+      ),
   ]
 );
 
@@ -225,6 +231,10 @@ export const claudeResetClaims = sqliteTable(
       .where(sql`${table.status} in ('pending', 'ambiguous')`),
   ]
 );
+export const codexResetCreditFences = sqliteTable("codex_reset_credit_fences", {
+  accountIdentity: text("account_identity").primaryKey(),
+  generation: integer("generation", { mode: "number" }).notNull(),
+});
 
 // The last known profile and limits per account, kept out of
 // provider_accounts so these frequent writes never clear the proxy's routing

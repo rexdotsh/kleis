@@ -22,7 +22,15 @@ function createResetRequestId() {
 function codexResetOffer(account) {
   if (account?.provider !== "codex") return null;
   const data = account.quota?.data;
-  const retry = state.pendingResetRedemptions.has(account.id);
+  const action = data?.resetCreditAction;
+  const retry =
+    action?.kind === "pending" || state.pendingResetRedemptions.has(account.id);
+  const fresh =
+    action?.kind === "offer" &&
+    action.observedAt <= Date.now() &&
+    action.observedAt >= Date.now() - 10 * 60_000 &&
+    (action.expiresAt === null || action.expiresAt > Date.now());
+  if (!fresh && !retry) return null;
   if (
     !data?.resetCredits &&
     typeof data?.status?.resetCreditsAvailable !== "number" &&
@@ -50,18 +58,18 @@ function codexResetOffer(account) {
     : typeof available === "number"
       ? Math.max(0, available)
       : null;
-  const next = credits[0] || null;
+  const next = credits.find((credit) => credit.id === action?.creditId) || null;
   const expiry = quotaTimestamp(next?.expiresAt);
   const windows = accountWindows(account).filter((window) => !window.named);
-  const tightest = [...windows].sort((a, b) => b.percent - a.percent)[0];
   return {
+    key: fresh ? action.offerKey : null,
     count,
     next,
     unit: "credit",
     noun: "reset credit",
     heading: "Reset credit",
     action: "Use credit",
-    canUse: Boolean(count || retry),
+    canUse: Boolean((fresh && next && count) || retry),
     retry,
     scope:
       next?.resetType === "codex_rate_limits"
@@ -74,13 +82,7 @@ function codexResetOffer(account) {
       : "expiry not reported",
     title: next?.title,
     description: next?.description,
-    earlyUse:
-      tightest && tightest.percent < 100
-        ? {
-            scope: `${tightest.label} window`,
-            percentUsed: Math.round(tightest.percent),
-          }
-        : null,
+    earlyUse: fresh ? action.earlyUse : null,
     notes: [],
     useful:
       count > 0 &&
@@ -129,13 +131,19 @@ function codexResultToast(result) {
 const codexResets = {
   offerFor: codexResetOffer,
   attemptFor(account, offer) {
-    const pending = state.pendingResetRedemptions.get(account.id);
-    const creditId = pending ? pending.creditId : offer.next?.id;
+    const action = account.quota?.data?.resetCreditAction;
+    const pending =
+      action?.kind === "pending"
+        ? action
+        : state.pendingResetRedemptions.get(account.id);
     return {
-      body: {
-        redeemRequestId: pending?.redeemRequestId || createResetRequestId(),
-        ...(creditId ? { creditId } : {}),
-      },
+      body: pending
+        ? { redeemRequestId: pending.redeemRequestId }
+        : {
+            redeemRequestId: createResetRequestId(),
+            creditId: offer.next.id,
+            offerKey: offer.key,
+          },
       retry: Boolean(pending),
     };
   },
@@ -143,6 +151,10 @@ const codexResets = {
     if (!error) {
       state.pendingResetRedemptions.delete(account.id);
       return { ...codexResultToast(response.result), refresh: true };
+    }
+    if (error.body?.retryable === false) {
+      state.pendingResetRedemptions.delete(account.id);
+      return { message: error.message, type: "error", refresh: true };
     }
     if (
       !(
