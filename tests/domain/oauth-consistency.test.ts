@@ -231,6 +231,48 @@ test("permanent Codex OAuth failures retain sanitized diagnostics and block subs
   }
 });
 
+test("transient HTTP refresh failures with permanent-looking codes can recover on retry", async () => {
+  for (const status of [429, 503, 408]) {
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    await database.insert(schema.providerAccounts).values({
+      id,
+      provider: "codex",
+      accessToken: "old-access",
+      refreshToken: "old-refresh",
+      expiresAt: now - 1,
+      createdAt: now,
+      updatedAt: now,
+    });
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      if (attempts++ === 0) {
+        return Response.json({ error: { code: "invalid_grant" } }, { status });
+      }
+      return Response.json({
+        access_token: "recovered-access",
+        refresh_token: "recovered-refresh",
+        expires_in: 3600,
+      });
+    }) as typeof fetch;
+
+    await expect(
+      refreshProviderAccount(database, id, Date.now())
+    ).rejects.toThrow(`HTTP ${status}`);
+    expect(
+      await refreshProviderAccount(database, id, Date.now(), { force: true })
+    ).toMatchObject({
+      accessToken: "recovered-access",
+      refreshToken: "recovered-refresh",
+      lastRefreshStatus: "success",
+    });
+    expect(await findProviderAccountById(database, id)).toMatchObject({
+      refreshToken: "recovered-refresh",
+      refreshLockToken: null,
+    });
+  }
+});
+
 test("a mismatched callback leaves either provider's OAuth flow usable exactly once", async () => {
   for (const provider of ["claude", "codex"] as const) {
     const started = await startProviderOAuth(

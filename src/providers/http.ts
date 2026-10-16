@@ -78,19 +78,26 @@ export const classifyOAuthRefreshError = (
   if (!(error instanceof OAuthError)) {
     return unknownFailureStatus;
   }
+  if (error.status === 429) {
+    return "rate_limited";
+  }
+  if (error.status >= 500 && error.status < 600) {
+    return "transient";
+  }
   if (
-    error.code === "invalid_grant" ||
-    error.code === "expired_token" ||
-    error.code === "refresh_token_expired" ||
-    error.code === "refresh_token_reused" ||
-    error.code === "refresh_token_invalidated"
+    (error.status === 400 || error.status === 401 || error.status === 403) &&
+    (error.code === "invalid_grant" ||
+      error.code === "expired_token" ||
+      error.code === "refresh_token_expired" ||
+      error.code === "refresh_token_reused" ||
+      error.code === "refresh_token_invalidated")
   ) {
     return "reauthorize";
   }
   if (error.code === CLAUDE_ACCOUNT_ON_HOLD) {
     return CLAUDE_ACCOUNT_ON_HOLD;
   }
-  return error.status === 429 ? "rate_limited" : "transient";
+  return "transient";
 };
 
 export const requireOkResponse = async (
