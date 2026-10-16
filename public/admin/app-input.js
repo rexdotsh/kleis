@@ -14,6 +14,7 @@ import {
   $,
   $$,
   FREE_TIER_CURSOR_ID,
+  REVOKED_KEYS_CURSOR_ID,
   accountById,
   accountUsageForId,
   copyToClipboard,
@@ -23,6 +24,7 @@ import {
   runAction,
   setConfirmAnchor,
   setShowFreeTier,
+  setShowRevokedKeys,
   state,
   syncAccountWindowButtons,
   syncDashboardWindowButtons,
@@ -104,6 +106,7 @@ const keyActions = {
   "delete-key": (id) => deleteKey(id),
   "toggle-free-tier": (_id, button) => toggleFreeTier(button),
   "clear-filter": () => clearFilter("#keys-filter", "keyFilter", renderKeys),
+  "toggle-revoked": (_id, button) => toggleRevokedKeys(button),
 };
 
 const activeTab = () => $(".tab.active")?.dataset.tab;
@@ -127,6 +130,21 @@ function toggleFreeTier(button) {
     state.cursorAccountId = null;
   }
   $(`${list} [data-action="toggle-free-tier"]`)?.focus({ preventScroll: true });
+}
+
+function toggleRevokedKeys(button) {
+  const open = button.getAttribute("aria-expanded") === "true";
+  setShowRevokedKeys(!open);
+  if (open && keyById(state.expandedKeyId)?.revokedAt) {
+    state.expandedKeyId = null;
+    state.editingKeyId = null;
+  }
+  if (open && keyById(state.pendingExpandedKeyId)?.revokedAt) {
+    state.pendingExpandedKeyId = null;
+  }
+  state.cursorKeyId = REVOKED_KEYS_CURSOR_ID;
+  renderKeys();
+  $(".revoked-heading")?.focus({ preventScroll: true });
 }
 
 // Brings a newly opened row's details into view without jumping the page.
@@ -212,8 +230,8 @@ const LISTS = {
   },
   keys: {
     container: "#keys-list",
-    selector: "#keys-list .row[data-key-id]",
-    idOf: (row) => row.dataset.keyId,
+    selector: "#keys-list :is(.row[data-key-id], [data-cursor-id])",
+    idOf: (row) => row.dataset.keyId ?? row.dataset.cursorId,
     cursorField: "cursorKeyId",
   },
 };
@@ -299,6 +317,10 @@ async function toggleAccount(id) {
 }
 
 async function toggleKey(id) {
+  if (id === REVOKED_KEYS_CURSOR_ID) {
+    $(".revoked-heading")?.click();
+    return;
+  }
   const applied = await setExpandedKey(
     (state.pendingExpandedKeyId || state.expandedKeyId) === id ? null : id
   );

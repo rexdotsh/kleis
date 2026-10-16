@@ -681,16 +681,6 @@ code,
   gap: 12px;
   margin-left: auto;
 }
-.sh:has(#keys-count) {
-  flex-wrap: nowrap;
-}
-#keys-count {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
 .sh ~ .list {
   margin-top: 8px;
 }
@@ -726,7 +716,7 @@ button.row {
 .row.cursor {
   background: var(--cursor);
 }
-.free-tier-heading.cursor .free-tier-chevron {
+.disclosure-heading.cursor .disclosure-chevron {
   color: var(--text);
 }
 @media (hover: hover) {
@@ -734,7 +724,7 @@ button.row {
     background: none;
   }
 }
-:is(.row, .free-tier-heading).cursor:focus-visible {
+:is(.row, .disclosure-heading).cursor:focus-visible {
   outline: none;
   box-shadow: inset 2px 0 0 var(--muted);
 }
@@ -808,21 +798,6 @@ button.row {
 .list-note {
   padding: 8px 12px;
 }
-.list-foot {
-  display: flex;
-  align-items: center;
-  min-height: 40px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-#keys-foot {
-  margin-bottom: 8px;
-}
-.list-foot .link {
-  font-size: 12px;
-}
-
 .empty-state {
   display: flex;
   flex-wrap: wrap;
@@ -974,10 +949,11 @@ button.row {
   font-size: 12px;
   color: var(--muted);
 }
-.free-tier-group {
+.free-tier-group,
+.revoked-group {
   margin-top: 16px;
 }
-.free-tier-heading {
+.disclosure-heading {
   display: flex;
   align-items: center;
   width: 100%;
@@ -988,19 +964,19 @@ button.row {
   color: inherit;
   text-align: left;
 }
-.free-tier-chevron {
+.disclosure-chevron {
   display: flex;
   margin-left: 4px;
   color: var(--muted);
   transition: transform 160ms ease;
 }
-.free-tier-heading:hover .free-tier-chevron {
+.disclosure-heading:hover .disclosure-chevron {
   color: var(--text);
 }
-.free-tier-heading[aria-expanded="true"] .free-tier-chevron {
+.disclosure-heading[aria-expanded="true"] .disclosure-chevron {
   transform: rotate(90deg);
 }
-.free-tier-note {
+.disclosure-note {
   margin-left: auto;
   font-size: 12px;
   color: var(--muted);
@@ -1013,6 +989,14 @@ button.row {
 .free-tier-toggle {
   align-self: flex-start;
   min-height: 32px;
+}
+.row.revoked .key-mask {
+  text-decoration: line-through;
+}
+.row.revoked .tag {
+  padding: 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 99px;
 }
 .switch {
   position: relative;
@@ -2286,7 +2270,7 @@ input[type="checkbox"].toggle:checked::after {
   }
   .row,
   .group,
-  .free-tier-heading {
+  .disclosure-heading {
     padding: 0 16px;
   }
   .free-tier-hint {

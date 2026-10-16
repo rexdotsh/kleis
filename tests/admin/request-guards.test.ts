@@ -77,7 +77,9 @@ const {
   runAction,
   state,
   FREE_TIER_CURSOR_ID,
+  REVOKED_KEYS_CURSOR_ID,
   setShowFreeTier,
+  setShowRevokedKeys,
 } = await import("../../public/admin/app-core.js");
 const {
   createKey,
@@ -185,6 +187,7 @@ describe("admin mutation and session guards", () => {
     installGlobals();
     logout();
     setShowFreeTier(false);
+    setShowRevokedKeys(false);
     $("#menu").hidden = true;
     $("#toast-container").replaceChildren();
     state.token = "same-admin-token";
@@ -652,6 +655,57 @@ describe("admin mutation and session guards", () => {
     current.release(failure());
     await pending;
     expect($("#btn-oauth-start").disabled).toBe(false);
+  });
+
+  test.each([
+    ["j", "k"],
+    ["ArrowDown", "ArrowUp"],
+  ])(
+    "%s / %s navigate the revoked group, Enter and Space toggle it, and shortcuts ignore its heading",
+    async (next, previous) => {
+      state.expandedKeyId = null;
+      const revoked = { ...key, id: "revoked-preview", revokedAt: 1 };
+      state.keys.push(revoked);
+      state.keysById.set(revoked.id, revoked);
+      switchToTab("keys");
+      renderKeys();
+      $("#keys-list .row[data-key-id]").focus();
+      keyboard(next);
+      expect(state.cursorKeyId).toBe(REVOKED_KEYS_CURSOR_ID);
+      expect(window.document.activeElement).toBe($(".revoked-heading"));
+      keyboard("r");
+      keyboard("Enter", ".revoked-heading");
+      expect(state.showRevokedKeys).toBe(true);
+      keyboard(next);
+      expect(state.cursorKeyId).toBe(revoked.id);
+      keyboard("Enter", `#revoked-rows .row[data-key-id]`);
+      await tick();
+      expect(state.expandedKeyId).toBe(revoked.id);
+      expect($('#revoked-rows [data-action="delete-key"]')).not.toBeNull();
+      keyboard(previous);
+      expect(state.cursorKeyId).toBe(REVOKED_KEYS_CURSOR_ID);
+      keyboard(" ", ".revoked-heading");
+      expect(state.showRevokedKeys).toBe(false);
+      keyboard(previous);
+      expect(state.cursorKeyId).toBe(key.id);
+      keyboard(next);
+      keyboard("o");
+      expect(state.showRevokedKeys).toBe(true);
+    }
+  );
+
+  test("collapsing revoked keys cancels pending details and closes the expanded row", () => {
+    const revoked = { ...key, id: "revoked-preview", revokedAt: 1 };
+    state.keys = [revoked];
+    state.keysById = new Map([[revoked.id, revoked]]);
+    state.expandedKeyId = revoked.id;
+    state.pendingExpandedKeyId = revoked.id;
+    renderKeys();
+    $(".revoked-heading").click();
+    expect(state.expandedKeyId).toBeNull();
+    expect(state.pendingExpandedKeyId).toBeNull();
+    expect($("#revoked-rows").hidden).toBe(true);
+    expect(window.document.activeElement).toBe($(".revoked-heading"));
   });
 
   describe("free-tier visibility", () => {
