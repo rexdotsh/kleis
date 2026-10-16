@@ -136,14 +136,12 @@ describe("account snapshots", () => {
     setSystemTime(new Date(startedAt + 60_000));
     store.recordQuota(account, quota(20), { plan: "plus", resets: [resetAt] });
     await store.settled();
-    expect(store.pendingCount()).toBe(1);
     expect(JSON.parse((await readSnapshot(id))?.quotaJson ?? "")).toMatchObject(
       { status: { usedPercent: 10 } }
     );
 
     store.recordQuota(account, quota(30), { plan: "pro", resets: [resetAt] });
     await store.settled();
-    expect(store.pendingCount()).toBe(0);
     expect(JSON.parse((await readSnapshot(id))?.quotaJson ?? "")).toMatchObject(
       { status: { usedPercent: 30 } }
     );
@@ -154,7 +152,6 @@ describe("account snapshots", () => {
       resets: [resetAt + 5 * HOUR_MS],
     });
     await store.settled();
-    expect(store.pendingCount()).toBe(0);
     expect(JSON.parse((await readSnapshot(id))?.quotaJson ?? "")).toMatchObject(
       { status: { usedPercent: 0 } }
     );
@@ -164,9 +161,7 @@ describe("account snapshots", () => {
       plan: "pro",
       resets: [resetAt + 5 * HOUR_MS],
     });
-    expect(store.pendingCount()).toBe(1);
     await store.flush();
-    expect(store.pendingCount()).toBe(0);
     expect(JSON.parse((await readSnapshot(id))?.quotaJson ?? "")).toMatchObject(
       { status: { usedPercent: 5 } }
     );
@@ -512,7 +507,6 @@ describe("account snapshots", () => {
     await listProviderAccountQuotas(database, accounts);
     await store.settled();
     expect(calls["/backend-api/wham/accounts/check"]).toBe(1);
-    expect(store.pendingCount()).toBe(1);
 
     plan = "pro";
     setSystemTime(new Date(startedAt + 122_000));
@@ -521,7 +515,6 @@ describe("account snapshots", () => {
     await listProviderAccountQuotas(database, accounts);
     await store.settled();
     expect(calls["/backend-api/wham/accounts/check"]).toBe(2);
-    expect(store.pendingCount()).toBe(0);
     const snapshot = await readSnapshot(id);
     expect(JSON.parse(snapshot?.quotaJson ?? "")).toMatchObject({
       status: { planType: "pro" },

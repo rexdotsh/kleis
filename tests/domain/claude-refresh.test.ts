@@ -7,6 +7,8 @@ import type { Database } from "../../src/db";
 import {
   findProviderAccountById,
   replaceProviderAccountCredentials,
+  tryAcquireProviderAccountRefreshLock,
+  updateProviderAccountTokens,
 } from "../../src/db/repositories/provider-accounts";
 import { providerAccounts } from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
@@ -44,6 +46,37 @@ describe("Claude refresh lifecycle", () => {
     globalThis.fetch = originalFetch;
     client.close();
   });
+
+  test.each([
+    ["another lock owner", "other-lock", "old-refresh", 60_000],
+    ["a changed refresh token", "held-lock", "stale-refresh", 60_000],
+    ["an expired lease", "held-lock", "old-refresh", -1],
+  ] as const)(
+    "rejects credential writes with %s",
+    async (_name, token, expected, leaseMs) => {
+      const now = Date.now();
+      await tryAcquireProviderAccountRefreshLock(database, id, {
+        token: "held-lock",
+        now,
+        expiresAt: now + leaseMs,
+      });
+      expect(
+        await updateProviderAccountTokens(database, id, {
+          accessToken: "stale-access",
+          refreshToken: "stale-refresh",
+          expiresAt: now + 3_600_000,
+          refreshLockToken: token,
+          expectedRefreshToken: expected,
+          lastRefreshStatus: "success",
+          now,
+        })
+      ).toBeNull();
+      expect(await findProviderAccountById(database, id)).toMatchObject({
+        accessToken: "old-access",
+        refreshToken: "old-refresh",
+      });
+    }
+  );
 
   test("refreshes via Platform and atomically persists the rotated token", async () => {
     await database.update(providerAccounts).set({

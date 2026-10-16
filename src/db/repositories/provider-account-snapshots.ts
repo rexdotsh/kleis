@@ -30,7 +30,10 @@ const keepForSameIdentity = (column: string) =>
     `case when account_identity = excluded.account_identity then ${column} else null end`
   );
 
-const toInsert = (write: ProviderAccountSnapshotWrite) => {
+const upsertStatement = (
+  database: Database,
+  write: ProviderAccountSnapshotWrite
+) => {
   const values = {
     providerAccountId: write.providerAccountId,
     accountIdentity: write.accountIdentity,
@@ -64,21 +67,14 @@ const toInsert = (write: ProviderAccountSnapshotWrite) => {
         lastError: keepForSameIdentity("last_error"),
         lastErrorStatus: keepForSameIdentity("last_error_status"),
       };
-  return { values, set: { ...profile, ...quota } };
-};
-
-const upsertStatement = (
-  database: Database,
-  write: ProviderAccountSnapshotWrite
-) => {
-  const { values, set } = toInsert(write);
   return database
     .insert(providerAccountSnapshots)
     .values(values)
     .onConflictDoUpdate({
       target: providerAccountSnapshots.providerAccountId,
       set: {
-        ...set,
+        ...profile,
+        ...quota,
         accountIdentity: sql`excluded.account_identity`,
         updatedAt: sql`excluded.updated_at`,
       },

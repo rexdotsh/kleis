@@ -2,13 +2,9 @@ import { z } from "zod";
 
 import type { Provider } from "../db/schema";
 
-// Strip legacy, unused fields when reading/importing metadata. OAuth refresh
-// will persist the normalized shape without requiring a database migration.
 const optionalText = z.string().nullable().optional();
 const optionalTimestamp = z.number().nullable().optional();
 
-// Identity fields come from token responses and claims, so rows written before
-// they existed parse unchanged and gain them on the next refresh.
 const codexMetadataSchema = z.object({
   provider: z.literal("codex"),
   scope: z.string().nullable().default(null),
@@ -52,47 +48,34 @@ export type ProviderAccountMetadata = z.infer<
   typeof providerAccountMetadataSchema
 >;
 
-const buildDefaultProviderAccountMetadata = (
-  provider: Provider,
-  accountId: string | null
-): ProviderAccountMetadata => {
-  if (provider === "codex") {
-    return {
-      provider,
-      scope: null,
-      chatgptAccountId: accountId,
-      email: null,
-    };
-  }
-
-  return {
-    provider,
-    scope: null,
-    oauthMode: "max",
-    oauthHost: "claude.ai",
-  };
-};
-
 export const parseImportedProviderAccountMetadata = (input: {
   provider: Provider;
   accountId: string | null;
   metadata: Record<string, unknown> | null | undefined;
 }): ProviderAccountMetadata => {
-  const defaults = buildDefaultProviderAccountMetadata(
-    input.provider,
-    input.accountId
-  );
+  const defaults: ProviderAccountMetadata =
+    input.provider === "codex"
+      ? {
+          provider: "codex",
+          scope: null,
+          chatgptAccountId: input.accountId,
+          email: null,
+        }
+      : {
+          provider: "claude",
+          scope: null,
+          oauthMode: "max",
+          oauthHost: "claude.ai",
+        };
   if (!input.metadata) {
     return defaults;
   }
 
-  const mergedMetadata: Record<string, unknown> = {
+  const parsed = providerAccountMetadataSchema.safeParse({
     ...defaults,
     ...input.metadata,
     provider: input.provider,
-  };
-
-  const parsed = providerAccountMetadataSchema.safeParse(mergedMetadata);
+  });
   if (!parsed.success) {
     throw new Error("Invalid provider metadata payload");
   }
@@ -103,17 +86,9 @@ export const parseImportedProviderAccountMetadata = (input: {
 export const resolveImportedProviderAccountId = (
   explicitAccountId: string | null,
   metadata: ProviderAccountMetadata
-): string | null => {
-  if (explicitAccountId) {
-    return explicitAccountId;
-  }
-
-  if (metadata.provider === "codex") {
-    return metadata.chatgptAccountId;
-  }
-
-  return null;
-};
+): string | null =>
+  explicitAccountId ||
+  (metadata.provider === "codex" ? metadata.chatgptAccountId : null);
 
 export const parseProviderAccountMetadata = (
   metadataJson: string | null
@@ -130,11 +105,7 @@ export const parseProviderAccountMetadata = (
   }
 
   const result = providerAccountMetadataSchema.safeParse(parsed);
-  if (!result.success) {
-    return null;
-  }
-
-  return result.data;
+  return result.success ? result.data : null;
 };
 
 export const serializeProviderAccountMetadata = (

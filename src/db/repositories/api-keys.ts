@@ -60,14 +60,7 @@ const parseJsonStringList = (value: string | null): string[] => {
     return [];
   }
 
-  const scopes: string[] = [];
-  for (const item of parsed) {
-    if (typeof item === "string") {
-      scopes.push(item);
-    }
-  }
-
-  return scopes;
+  return parsed.filter((item): item is string => typeof item === "string");
 };
 
 const parseScopeList = (value: string | null): ScopeList => {
@@ -129,28 +122,18 @@ export const findApiKeyById = async (
     where: eq(apiKeys.id, id),
   });
 
-  if (!row) {
-    return null;
-  }
-
-  return toRecord(row);
+  return row ? toRecord(row) : null;
 };
-
-const generateApiKeyValue = (): string =>
-  `kleis_${crypto.randomUUID().replaceAll("-", "")}`;
-
-const generateModelsDiscoveryToken = (): string =>
-  `kmd_${crypto.randomUUID().replaceAll("-", "")}`;
 
 export const createApiKey = async (
   database: Database,
   input: CreateApiKeyInput,
   now: number
 ): Promise<ApiKeyRecord> => {
-  const row: typeof apiKeys.$inferInsert = {
+  const row: typeof apiKeys.$inferSelect = {
     id: crypto.randomUUID(),
-    key: generateApiKeyValue(),
-    modelsDiscoveryToken: generateModelsDiscoveryToken(),
+    key: `kleis_${crypto.randomUUID().replaceAll("-", "")}`,
+    modelsDiscoveryToken: `kmd_${crypto.randomUUID().replaceAll("-", "")}`,
     label: input.label?.trim() || null,
     providerScopeJson: serializeScopeList(input.providerScopes),
     modelScopeJson: serializeScopeList(input.modelScopes),
@@ -162,16 +145,7 @@ export const createApiKey = async (
 
   await database.insert(apiKeys).values(row);
   invalidateLookupCaches();
-  return toRecord({
-    ...row,
-    modelsDiscoveryToken: row.modelsDiscoveryToken ?? null,
-    label: row.label ?? null,
-    providerScopeJson: row.providerScopeJson ?? null,
-    modelScopeJson: row.modelScopeJson ?? null,
-    accountScopeJson: row.accountScopeJson ?? null,
-    expiresAt: row.expiresAt ?? null,
-    revokedAt: row.revokedAt ?? null,
-  });
+  return toRecord(row);
 };
 
 export const revokeApiKey = async (
@@ -279,21 +253,16 @@ const findActiveApiKey = async (
     ),
   });
 
-  if (!row) {
-    return null;
-  }
-
-  return toRecord(row);
+  return row ? toRecord(row) : null;
 };
 
 export const findActiveApiKeyByModelsDiscoveryToken = (
   database: Database,
   modelsDiscoveryToken: string,
   now: number
-): Promise<ApiKeyRecord | null> => {
-  return findActiveApiKey(
+): Promise<ApiKeyRecord | null> =>
+  findActiveApiKey(
     database,
     eq(apiKeys.modelsDiscoveryToken, modelsDiscoveryToken),
     now
   );
-};

@@ -38,7 +38,7 @@ const claudeStateMetadataSchema = z.strictObject({
 });
 
 type ClaudeTokenResponse = {
-  access_token?: string;
+  access_token: string;
   refresh_token?: string;
   expires_in?: number;
   refresh_token_expires_in?: number;
@@ -156,18 +156,19 @@ const refreshClaudeTokens = (
 const readText = (value: unknown): string | null =>
   typeof value === "string" && value.trim() ? value : null;
 
-// Refresh responses normally repeat the identity, but a missing field never
-// erases a known value.
-const buildClaudeMetadata = (input: {
+const buildTokenResult = (input: {
   tokens: ClaudeTokenResponse;
   mode: "max" | "console";
   host: "claude.ai" | "console.anthropic.com" | "platform.claude.com";
   existing: ClaudeAccountMetadata | null;
-  now: number;
-}): ClaudeAccountMetadata => {
+  fallbackRefreshToken: string | null;
+  fallbackAccountId?: string | null;
+}): ProviderTokenResult => {
   const { tokens, existing } = input;
+  const now = Date.now();
   const refreshLifetime = tokens.refresh_token_expires_in;
-  return {
+  // Refresh responses may omit identity fields without erasing known values.
+  const metadata: ClaudeAccountMetadata = {
     provider: "claude",
     scope: tokens.scope ?? existing?.scope ?? null,
     oauthMode: input.mode,
@@ -184,32 +185,9 @@ const buildClaudeMetadata = (input: {
       typeof refreshLifetime === "number" &&
       Number.isFinite(refreshLifetime) &&
       refreshLifetime > 0
-        ? input.now + refreshLifetime * 1000
+        ? now + refreshLifetime * 1000
         : existing?.refreshTokenExpiresAt,
   };
-};
-
-const buildTokenResult = (input: {
-  tokens: ClaudeTokenResponse;
-  mode: "max" | "console";
-  host: "claude.ai" | "console.anthropic.com" | "platform.claude.com";
-  existing: ClaudeAccountMetadata | null;
-  fallbackRefreshToken: string | null;
-  fallbackAccountId?: string | null;
-}): ProviderTokenResult => {
-  const accessToken = input.tokens.access_token;
-  if (!accessToken) {
-    throw new Error("Claude OAuth response is missing access_token");
-  }
-
-  const now = Date.now();
-  const metadata = buildClaudeMetadata({
-    tokens: input.tokens,
-    mode: input.mode,
-    host: input.host,
-    existing: input.existing,
-    now,
-  });
   // Claude Code 2.1.299 keeps the current refresh token when a refresh
   // response omits it, and derives expiry from expires_in without validating it.
   // An unusable expiry gets a short lifetime so a rotated token is still kept.
@@ -225,7 +203,7 @@ const buildTokenResult = (input: {
       : 0;
 
   return {
-    accessToken,
+    accessToken: tokens.access_token,
     refreshToken,
     expiresAt:
       now +
