@@ -21,6 +21,7 @@ import {
   LISTS,
   TABS,
   WINDOW_CONTROLS,
+  WINDOWS,
   accountActions,
   activeTab,
   handleEscape,
@@ -50,7 +51,10 @@ import {
   restoreSession,
   startOAuth,
 } from "./app-oauth.js";
-import { actionMutationAttributes } from "./app-render-shared.js";
+import {
+  actionMutationAttributes,
+  usageWindowLabel,
+} from "./app-render-shared.js";
 import {
   hideDailyTokensTip,
   loadDashboard,
@@ -416,6 +420,10 @@ $("#btn-import-account").addEventListener("click", () =>
 );
 
 for (const control of Object.values(WINDOW_CONTROLS)) {
+  $(control.selector).innerHTML = WINDOWS.map(
+    (windowMs) =>
+      `<button class="dash-window-btn${windowMs === state[control.field] ? " active" : ""}" data-window="${windowMs}" type="button">${usageWindowLabel(windowMs)}</button>`
+  ).join("");
   $(control.selector).addEventListener("click", (event) => {
     const button = event.target.closest(".dash-window-btn");
     const windowMs = Number(button?.dataset.window);
@@ -581,4 +589,4 @@ function handleShortcut(event) {
   return runRowShortcut(tab, key);
 }
 
-export { menuAnchor, closeMenu, openMenu, menuHtml, handleShortcut };
+export { closeMenu };

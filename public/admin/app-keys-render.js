@@ -5,7 +5,6 @@ import {
 import {
   $,
   $$,
-  PROVIDER_ORDER,
   accountById,
   checkedValues,
   escapeHtml,
@@ -104,7 +103,7 @@ function keyAccessHtml(mode, key = null) {
       ? Array.from(selectedIds).filter((id) => !knownIds.has(id))
       : [];
 
-  const rows = PROVIDER_ORDER.map((provider) => {
+  const rows = PROVIDERS.map((provider) => {
     const on = !allowed || allowed.has(provider);
     const connected = state.accounts.filter(
       (account) => account.provider === provider
@@ -371,35 +370,27 @@ function keyFacts(key) {
 
 function keyDetailHtml(key) {
   if (state.editingKeyId === key.id) return keyFormHtml("edit", key);
-  const revoked = Boolean(key.revokedAt);
   const revealed = state.revealedKeyIds.has(key.id);
   const button = (label, action, shortcut = "", cls = "btn btn-ghost btn-sm") =>
     `<button class="${cls}" data-action="${action}" data-key-id="${key.id}" ${actionMutationAttributes(action, key.id)} type="button">${label}${shortcut ? kbd(shortcut) : ""}</button>`;
   const keyLine = revealed
     ? `<div class="key-line"><code>${escapeHtml(key.key)}</code>${button("Copy", "copy-key")}${button("Hide", "toggle-key")}</div>`
     : "";
-  const actions = revoked
-    ? [
-        button("Edit", "edit-key", "E"),
-        button(
-          "Delete",
-          "delete-key",
-          "Del",
-          "btn btn-ghost btn-sm btn-remove"
-        ),
-      ]
-    : [
-        button("Copy key", "copy-key", "C"),
-        button(revealed ? "Hide key" : "Show key", "toggle-key", "S"),
-        button("Edit", "edit-key", "E"),
-        button("Rotate", "rotate-key", "R"),
-        button(
-          "Revoke",
-          "revoke-key",
-          "Del",
-          "btn btn-ghost btn-sm btn-remove"
-        ),
-      ];
+  const actions = keyMenuItems(key)
+    .filter(
+      (item) =>
+        item &&
+        item !== "separator" &&
+        !["copy-models-url", "open-setup"].includes(item.action)
+    )
+    .map((item) =>
+      button(
+        item.label,
+        item.action,
+        item.shortcut,
+        `btn btn-ghost btn-sm${item.danger ? " btn-remove" : ""}`
+      )
+    );
   const entering = state.enteringDetail === `key:${key.id}` ? " entering" : "";
   return `<div class="detail${entering}" data-detail-for="${key.id}" data-flip="detail:${key.id}">
     ${keyLine}
@@ -441,22 +432,17 @@ function keyRowHtml(key) {
   </div>${open ? keyDetailHtml(key) : ""}`;
 }
 
-function keyActivity(key) {
-  const metrics = normalizeUsage(usageForKey(key.id));
-  return [metrics.requestCount, metrics.lastRequestAt ?? 0];
-}
-
 function compareKeys(a, b) {
   const rank = (key) => {
     if (key.revokedAt) return 2;
     return isKeyActive(key) ? 0 : 1;
   };
-  const [aCount, aLast] = keyActivity(a);
-  const [bCount, bLast] = keyActivity(b);
+  const aUsage = normalizeUsage(usageForKey(a.id));
+  const bUsage = normalizeUsage(usageForKey(b.id));
   return (
     rank(a) - rank(b) ||
-    bCount - aCount ||
-    bLast - aLast ||
+    bUsage.requestCount - aUsage.requestCount ||
+    (bUsage.lastRequestAt ?? 0) - (aUsage.lastRequestAt ?? 0) ||
     (b.createdAt ?? 0) - (a.createdAt ?? 0)
   );
 }

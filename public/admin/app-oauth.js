@@ -283,10 +283,8 @@ function renderOAuthFlow(data, provider) {
 export {
   restoreSession,
   handleLogin,
-  enterApp,
   reauthorizeAccount,
   startOAuth,
   completeOAuth,
-  renderOAuthLoading,
   renderOAuthFlow,
 };
