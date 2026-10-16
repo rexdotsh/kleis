@@ -116,7 +116,6 @@ function claudeResetOffer(account) {
     scope: limitsText(offer.clears),
     expiryText: expiryText(offer.endsAt),
     title: offer.label,
-    description: "",
     earlyUse: offer.earlyUse
       ? {
           scope: offer.earlyUse.limit
