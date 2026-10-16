@@ -1,12 +1,12 @@
 import type { Database } from "../../db";
 import {
-  type ClaudeResetClaimRow,
   type ClaudeResetClaimFenceRow,
   type ClaudeResetClaimIdentity,
+  type ClaudeResetClaimRow,
   ClaudeResetReservationConflict,
-  insertClaudeResetClaim,
+  listProviderAccountsWithClaudeResetClaims,
   readClaudeResetClaimLedger,
-  reopenClaudeResetClaim,
+  reserveClaudeResetClaim,
   settleClaudeResetClaim,
 } from "../../db/repositories/claude-reset-claims";
 import {
@@ -15,28 +15,25 @@ import {
 } from "../../db/repositories/provider-accounts";
 import { claimClaudeResetCredit } from "../../providers/account-tracking/claude";
 import {
-  CLAUDE_RESET_PROGRAM,
-  type ClaudeResetClaimReason,
   type ClaudeResetClaimResult,
   type ClaudeResetClaimResultCode,
   type ClaudeResetLimitType,
-  type ClaudeResetOffer,
-  type ClaudeResetUnavailableReason,
+  type ClaudeResetSummary,
   summarizeClaudeResets,
 } from "../../providers/account-tracking/claude-resets";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
 import { logInfo, logWarn } from "../../utils/log";
 import {
   type ClaudeResetCredits,
-  claudeOrganization,
-  currentClaudeResetStatus,
-  holdClaudeResetCredits,
-  claudeResetIdentityBinding,
+  claudeResetIdentity,
+  claudeResetLimitUsage,
+  isTrackingAccount,
   peekClaudeResetCredits,
   refreshClaudeResetCredits,
-  releaseClaudeResetCredits,
-  replaceRejectedTrackingAccount,
-  resolveTrackingAccount,
+  reloadClaudeResetCredits,
+  resolveAccount,
+  retryAfter401,
+  type TrackingAccount,
 } from "./provider-account-tracking";
 
 // A confirmation is only acted on against resets read this recently.
@@ -48,31 +45,27 @@ const RECONCILE_AFTER_MS = 2 * 60_000;
 const PENDING_ORPHANED_MS = 2 * 60_000;
 // Anthropic answers these before acting on a claim, so nothing was used.
 const REJECTED_STATUSES = new Set([400, 401, 403, 404, 422, 429]);
-const UNCONFIRMED_REASONS = new Set<ClaudeResetClaimReason>([
+const UNCONFIRMED_REASONS = new Set([
   "stamp_indeterminate",
   "reset_unconfirmed",
 ]);
 
-export const CLAUDE_RESET_CLAIM_LOOKBACK_MS = OFFER_MAX_AGE_MS;
-
-export type ClaudeResetClaimConflictReason =
-  | "organization_unknown"
-  | "identity_unknown"
-  | "identity_unverified"
-  | "identity_changed"
-  | "claim_in_progress"
-  | "claim_unconfirmed"
-  | "stale"
-  | "not_claimable"
-  | "offer_changed";
+const conflictMessages = {
+  identity_unverified:
+    "This credential's Claude identity isn't verified; reconnect the account or wait for profile sync",
+  identity_changed: "This account's OAuth identity changed; review it again",
+  claim_in_progress: "A reset is already being claimed for this account",
+  claim_unconfirmed:
+    "An earlier reset claim couldn't be confirmed; check Claude settings",
+  stale: "Couldn't check this account's resets right now; nothing was used",
+  not_claimable: "This account has no reset that can be used now",
+  offer_changed: "The reset on offer changed; review it again",
+} as const;
 
 export class ClaudeResetClaimConflict extends Error {
-  readonly reason: ClaudeResetClaimConflictReason;
-
-  constructor(reason: ClaudeResetClaimConflictReason, message: string) {
-    super(message);
+  constructor(readonly reason: keyof typeof conflictMessages) {
+    super(conflictMessages[reason]);
     this.name = "ClaudeResetClaimConflict";
-    this.reason = reason;
   }
 }
 
@@ -82,64 +75,13 @@ export type ClaudeResetClaimOutcome = {
   // request, so nothing was used. ambiguous: the reset may have been used.
   status: "completed" | "failed" | "ambiguous";
   result: ClaudeResetClaimResultCode | null;
-  reason: ClaudeResetClaimReason | null;
+  reason: string | null;
   resetsLeft: number | null;
   cleared: ClaudeResetLimitType[];
-  weeklyResetsAt: string | null;
   httpStatus: number | null;
 };
 
 type OpenClaim = { row: ClaudeResetClaimRow; state: "pending" | "ambiguous" };
-
-const bindOffer = (
-  offer: ClaudeResetOffer,
-  version: number,
-  identity: ClaudeResetClaimIdentity
-): ClaudeResetOffer => ({
-  ...offer,
-  key: Bun.CryptoHasher.hash(
-    "sha256",
-    JSON.stringify([
-      offer.key,
-      version,
-      identity.accountIdentity,
-      identity.organizationUuid,
-    ]),
-    "hex"
-  ).slice(0, 32),
-});
-
-type ResetConfirmation = { grantId: string; offerKey: string };
-
-const confirmedOffer = (
-  account: ProviderAccountRecord,
-  credits: ClaudeResetCredits,
-  version: number,
-  identity: ClaudeResetClaimIdentity,
-  confirmation: ResetConfirmation
-): ClaudeResetOffer => {
-  const now = Date.now();
-  const { offer } = summarizeClaudeResets(
-    currentClaudeResetStatus(account, credits, now),
-    now
-  );
-  if (!offer)
-    throw new ClaudeResetClaimConflict(
-      "not_claimable",
-      "This account has no reset that can be used now"
-    );
-  const bound = bindOffer(offer, version, identity);
-  if (
-    bound.grantId !== confirmation.grantId ||
-    bound.key !== confirmation.offerKey
-  ) {
-    throw new ClaudeResetClaimConflict(
-      "offer_changed",
-      "The reset on offer changed; review it again"
-    );
-  }
-  return bound;
-};
 
 const findOpenClaim = (
   claims: readonly ClaudeResetClaimRow[],
@@ -167,63 +109,48 @@ const isReconciled = (
   credits !== null &&
   credits.observedAt >= claim.row.updatedAt + RECONCILE_AFTER_MS;
 
-// Resets read for another OAuth identity, or before its latest
-// claim settled (here or in another process), may show a used reset.
+// Resets read before the identity's latest claim settled, here or in another
+// process, may still show the reset it used. `claims` are newest first.
 const isCurrent = (
   credits: ClaudeResetCredits,
-  account: ProviderAccountRecord,
   claims: readonly ClaudeResetClaimRow[]
-): boolean => {
-  const organization = claudeOrganization(account);
-  const latest = claims[0];
-  return (
-    "organizationUuid" in organization &&
-    organization.accountUuid !== null &&
-    credits.identity ===
-      claudeResetIdentityBinding(
-        organization.accountUuid,
-        organization.organizationUuid
-      ) &&
-    (!latest || credits.observedAt >= latest.updatedAt)
+): boolean => !claims[0] || credits.observedAt >= claims[0].updatedAt;
+
+const isSameIdentity = (
+  a: ClaudeResetClaimIdentity | null,
+  b: ClaudeResetClaimIdentity
+): boolean =>
+  a?.accountIdentity === b.accountIdentity &&
+  a.organizationUuid === b.organizationUuid;
+
+// The identity's fence version is part of the offer key, so any reservation
+// for that OAuth identity invalidates earlier confirmations.
+const summarize = (
+  account: TrackingAccount,
+  credits: ClaudeResetCredits,
+  version: number,
+  identity: ClaudeResetClaimIdentity,
+  now: number
+): ClaudeResetSummary =>
+  summarizeClaudeResets(
+    credits.status,
+    claudeResetLimitUsage(account, credits, now),
+    [version, identity.accountIdentity, identity.organizationUuid],
+    now
   );
-};
 
-const claimsForIdentity = (
-  claims: readonly ClaudeResetClaimRow[],
-  account: ProviderAccountRecord
-): ClaudeResetClaimRow[] => {
-  const identity = claudeOrganization(account);
-  if (!("organizationUuid" in identity) || !identity.accountUuid) return [];
-  return claims
-    .filter(
-      (claim) =>
-        claim.organizationUuid === identity.organizationUuid &&
-        claim.accountIdentity === identity.accountUuid
-    )
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-};
-
-export type ClaudeResetsView = {
-  observedAt: number | null;
-  saved: number;
-  nextEndsAt: string | null;
-  clears: ClaudeResetLimitType[];
-  ineligibleReason: string | null;
-  offer: ClaudeResetOffer | null;
+export type ClaudeResetsView = Omit<ClaudeResetSummary, "unavailable"> & {
   unavailable:
-    | ClaudeResetUnavailableReason
+    | ClaudeResetSummary["unavailable"]
     | "checking"
-    | "identity_unverified"
-    | null;
-  claim: { status: "pending" | "ambiguous"; startedAt: number } | null;
+    | "identity_unverified";
+  claim: { status: OpenClaim["state"]; startedAt: number } | null;
 };
 
 const emptyView = (
-  observedAt: number | null,
   unavailable: ClaudeResetsView["unavailable"],
-  claim: ClaudeResetsView["claim"]
+  claim: ClaudeResetsView["claim"] = null
 ): ClaudeResetsView => ({
-  observedAt,
   saved: 0,
   nextEndsAt: null,
   clears: [],
@@ -234,28 +161,25 @@ const emptyView = (
 });
 
 // What the admin shows for an account's saved resets; null when there is
-// nothing to show. `claims` are the account's recent and open claims.
-export const describeClaudeResets = (
+// nothing to show. `claims` are the recent and open claims, newest first.
+const describeClaudeResets = (
   account: ProviderAccountRecord,
-  allClaims: readonly ClaudeResetClaimRow[],
+  claims: readonly ClaudeResetClaimRow[],
   fences: readonly ClaudeResetClaimFenceRow[],
   now = Date.now()
 ): ClaudeResetsView | null => {
-  if (account.provider !== "claude") {
+  if (!isTrackingAccount(account) || account.provider !== "claude") {
     return null;
   }
   const credits = peekClaudeResetCredits(account);
-  const identity = claudeOrganization(account);
-  if (
-    ("problem" in identity && identity.problem === "unverified") ||
-    ("accountUuid" in identity && !identity.accountUuid)
-  ) {
-    return emptyView(credits?.observedAt ?? null, "identity_unverified", null);
+  const identity = claudeResetIdentity(account);
+  if (!identity) {
+    return credits && emptyView("identity_unverified");
   }
-  const claims = claimsForIdentity(allClaims, account);
-  const open = findOpenClaim(claims, now);
+  const own = claims.filter((claim) => isSameIdentity(claim, identity));
+  const open = findOpenClaim(own, now);
   if (open && !isReconciled(open, credits)) {
-    return emptyView(credits?.observedAt ?? null, null, {
+    return emptyView(null, {
       status: open.state,
       startedAt: open.row.createdAt,
     });
@@ -263,67 +187,52 @@ export const describeClaudeResets = (
   if (!credits) {
     return null;
   }
-  if (!isCurrent(credits, account, claims)) {
-    return emptyView(credits.observedAt, "checking", null);
+  if (!isCurrent(credits, own)) {
+    return emptyView("checking");
   }
-  const summary = summarizeClaudeResets(
-    currentClaudeResetStatus(account, credits, now),
-    now
-  );
-  if (!("organizationUuid" in identity) || !identity.accountUuid)
-    return emptyView(credits.observedAt, "checking", null);
-  const canonical = {
-    accountIdentity: identity.accountUuid,
-    organizationUuid: identity.organizationUuid,
-  };
   const version =
-    fences.find(
-      (fence) =>
-        fence.accountIdentity === identity.accountUuid &&
-        fence.organizationUuid === identity.organizationUuid
-    )?.version ?? 0;
+    fences.find((fence) => isSameIdentity(fence, identity))?.version ?? 0;
   return {
-    observedAt: credits.observedAt,
-    ...summary,
-    offer: summary.offer ? bindOffer(summary.offer, version, canonical) : null,
+    ...summarize(account, credits, version, identity, now),
     claim: null,
   };
 };
 
-const failureDescription = (error: unknown): string => {
-  if (error instanceof AccountTrackingHttpError) {
-    return `HTTP ${error.status}`;
-  }
-  if (error instanceof DOMException && error.name === "TimeoutError") {
-    return "Timed out";
-  }
-  return error instanceof Error && error.message.includes("malformed")
-    ? "Unreadable response"
-    : "Request failed";
+// Lists accounts with a describer for their saved resets. Describe after
+// reading quotas, so the view reflects them.
+export const listAccountsWithClaudeResets = async (database: Database) => {
+  const { accounts, claims, fences } =
+    await listProviderAccountsWithClaudeResetClaims(
+      database,
+      Date.now() - OFFER_MAX_AGE_MS
+    );
+  return {
+    accounts,
+    describe: (account: ProviderAccountRecord) =>
+      describeClaudeResets(account, claims, fences),
+  };
 };
 
 const fromResult = (
   requestId: string,
-  result: ClaudeResetClaimResult
+  { result, reason, resetsLeft, cleared }: ClaudeResetClaimResult
 ): ClaudeResetClaimOutcome => ({
   requestId,
   status:
-    result.result === "unavailable" ||
-    (result.reason !== null && UNCONFIRMED_REASONS.has(result.reason))
+    result === "unavailable" || UNCONFIRMED_REASONS.has(reason ?? "")
       ? "ambiguous"
       : "completed",
-  result: result.result,
-  reason: result.reason,
-  resetsLeft: result.resetsLeft,
-  cleared: result.cleared,
-  weeklyResetsAt: result.weeklyResetsAt,
+  result,
+  reason: reason ?? null,
+  resetsLeft,
+  cleared,
   httpStatus: null,
 });
 
 const fromError = (
   requestId: string,
   error: unknown
-): ClaudeResetClaimOutcome & { lastError: string } => {
+): ClaudeResetClaimOutcome => {
   const httpStatus =
     error instanceof AccountTrackingHttpError ? error.status : null;
   return {
@@ -336,169 +245,19 @@ const fromError = (
     reason: null,
     resetsLeft: null,
     cleared: [],
-    weeklyResetsAt: null,
     httpStatus,
-    lastError: failureDescription(error),
   };
-};
-
-// Sends the claim once. A rejected token is refreshed and the same claim,
-// with the same request ID, sent once more for the same organization.
-const sendClaim = async (
-  database: Database,
-  account: ProviderAccountRecord,
-  claim: ClaudeResetClaimIdentity & { grantId: string; requestId: string },
-  beforeSend: (current: ProviderAccountRecord) => void
-): Promise<ClaudeResetClaimOutcome & { lastError: string | null }> => {
-  const send = async (current: ProviderAccountRecord) => {
-    beforeSend(current);
-    return {
-      ...fromResult(
-        claim.requestId,
-        await claimClaudeResetCredit({
-          accessToken: current.accessToken,
-          organizationUuid: claim.organizationUuid,
-          grantId: claim.grantId,
-          requestId: claim.requestId,
-        })
-      ),
-      lastError: null,
-    };
-  };
-  try {
-    return await send(account);
-  } catch (error) {
-    if (error instanceof ClaudeResetClaimConflict) throw error;
-    if (!(error instanceof AccountTrackingHttpError && error.status === 401)) {
-      return fromError(claim.requestId, error);
-    }
-    const refreshed = await replaceRejectedTrackingAccount(
-      database,
-      account
-    ).catch(() => null);
-    const organization = refreshed && claudeOrganization(refreshed);
-    if (
-      !(
-        refreshed &&
-        organization &&
-        "organizationUuid" in organization &&
-        organization.organizationUuid === claim.organizationUuid &&
-        organization.accountUuid === claim.accountIdentity
-      )
-    ) {
-      return fromError(claim.requestId, error);
-    }
-    try {
-      return await send(refreshed);
-    } catch (retryError) {
-      if (retryError instanceof ClaudeResetClaimConflict) throw retryError;
-      return fromError(claim.requestId, retryError);
-    }
-  }
-};
-
-const isUniqueViolation = (error: unknown): boolean => {
-  for (
-    let current: unknown = error;
-    current instanceof Error;
-    current = current.cause
-  ) {
-    if (current.message.includes("UNIQUE constraint failed")) {
-      return true;
-    }
-  }
-  return false;
-};
-
-// Records the claim, then reuses its request ID if an unconfirmed claim of
-// the same reset is retried, so a claim that did go through can't spend a
-// second reset.
-const reserveClaim = async (
-  database: Database,
-  account: ProviderAccountRecord,
-  input: {
-    open: OpenClaim | null;
-    identity: ClaudeResetClaimIdentity;
-    version: number;
-    offer: ClaudeResetOffer;
-    now: number;
-  }
-): Promise<{ requestId: string; reused: boolean }> => {
-  const { open, offer, now } = input;
-  const reuse =
-    open?.row.grantId === offer.grantId &&
-    open.row.organizationUuid === input.identity.organizationUuid &&
-    open.row.accountIdentity === input.identity.accountIdentity
-      ? open.row
-      : null;
-  try {
-    if (reuse) {
-      await reopenClaudeResetClaim(
-        database,
-        {
-          ...input.identity,
-          requestId: reuse.requestId,
-          updatedAt: reuse.updatedAt,
-          offerKey: offer.key,
-        },
-        now,
-        input.version
-      );
-      return { requestId: reuse.requestId, reused: true };
-    }
-    const requestId = crypto.randomUUID();
-    await insertClaudeResetClaim(
-      database,
-      {
-        requestId,
-        providerAccountId: account.id,
-        ...input.identity,
-        program: CLAUDE_RESET_PROGRAM,
-        grantId: offer.grantId,
-        offerKey: offer.key,
-        status: "pending",
-        createdAt: now,
-        updatedAt: now,
-      },
-      open
-        ? { requestId: open.row.requestId, updatedAt: open.row.updatedAt }
-        : null,
-      input.version
-    );
-    return { requestId, reused: false };
-  } catch (error) {
-    if (error instanceof ClaudeResetReservationConflict) {
-      throw new ClaudeResetClaimConflict(
-        "offer_changed",
-        "Another reset claim changed this offer; review it again"
-      );
-    }
-    if (isUniqueViolation(error)) {
-      throw new ClaudeResetClaimConflict(
-        "claim_in_progress",
-        "A reset is already being claimed for this account"
-      );
-    }
-    throw error;
-  }
 };
 
 const settle = async (
   database: Database,
-  account: ProviderAccountRecord,
-  outcome: ClaudeResetClaimOutcome & { lastError: string | null }
+  account: TrackingAccount,
+  requestId: string,
+  outcome: Pick<ClaudeResetClaimOutcome, "status"> &
+    Partial<Pick<ClaudeResetClaimOutcome, "result" | "reason" | "httpStatus">>
 ): Promise<void> => {
   try {
-    await settleClaudeResetClaim(database, outcome.requestId, {
-      status: outcome.status,
-      result: outcome.result,
-      reason: outcome.reason,
-      resetsLeft: outcome.resetsLeft,
-      clearedJson: JSON.stringify(outcome.cleared),
-      weeklyResetsAt: outcome.weeklyResetsAt,
-      lastError: outcome.lastError,
-      updatedAt: Date.now(),
-    });
+    await settleClaudeResetClaim(database, requestId, outcome);
   } catch (error) {
     // The claim stays pending and is treated as unconfirmed once orphaned.
     logWarn("claude_reset_claim_record_failed", {
@@ -514,192 +273,134 @@ const settle = async (
 export const claimClaudeReset = async (
   database: Database,
   providerAccountId: string,
-  input: ResetConfirmation
+  confirmation: { grantId: string; offerKey: string }
 ): Promise<ClaudeResetClaimOutcome | null> => {
   const stored = await findProviderAccountById(database, providerAccountId);
-  if (stored?.provider !== "claude") {
+  if (!stored || !isTrackingAccount(stored) || stored.provider !== "claude") {
     return null;
   }
-  const organization = claudeOrganization(stored);
-  if (!("organizationUuid" in organization)) {
-    if (organization.problem === "unverified")
-      throw new ClaudeResetClaimConflict(
-        "identity_unverified",
-        "This credential's Claude identity isn't verified; reconnect the account or wait for profile sync"
-      );
-    throw organization.problem === "mismatch"
-      ? new ClaudeResetClaimConflict(
-          "identity_changed",
-          "This account's OAuth identity changed; reauthorize it first"
-        )
-      : new ClaudeResetClaimConflict(
-          "organization_unknown",
-          "This account's organization is unknown; reauthorize it first"
-        );
+  const identity = claudeResetIdentity(stored);
+  if (!identity) {
+    throw new ClaudeResetClaimConflict("identity_unverified");
   }
-  if (!organization.accountUuid)
-    throw new ClaudeResetClaimConflict(
-      "identity_unknown",
-      "This account's OAuth user identity is unknown; reauthorize it first"
-    );
-  const identity = {
-    accountIdentity: organization.accountUuid,
-    organizationUuid: organization.organizationUuid,
-  };
-  const now = Date.now();
-  const ledger = await readClaudeResetClaimLedger(
+  const { version, claims } = await readClaudeResetClaimLedger(
     database,
     identity,
-    now - CLAUDE_RESET_CLAIM_LOOKBACK_MS
+    Date.now() - OFFER_MAX_AGE_MS
   );
-  const claims = ledger.claims;
-  const open = findOpenClaim(claims, now);
+  const open = findOpenClaim(claims, Date.now());
   if (open?.state === "pending") {
-    throw new ClaudeResetClaimConflict(
-      "claim_in_progress",
-      "A reset is already being claimed for this account"
-    );
+    throw new ClaudeResetClaimConflict("claim_in_progress");
   }
-  const isFresh = (value: ClaudeResetCredits | null) =>
-    value !== null &&
-    value.observedAt >= Date.now() - OFFER_MAX_AGE_MS &&
-    value.observedAt <= Date.now() &&
-    isCurrent(value, stored, claims);
-  let credits = peekClaudeResetCredits(stored);
   // Only a read the admin could already see settles an unconfirmed claim.
-  if (open && !isReconciled(open, credits)) {
-    throw new ClaudeResetClaimConflict(
-      "claim_unconfirmed",
-      "An earlier reset claim couldn't be confirmed; check Claude settings"
-    );
+  if (open && !isReconciled(open, peekClaudeResetCredits(stored))) {
+    throw new ClaudeResetClaimConflict("claim_unconfirmed");
   }
-  if (!isFresh(credits)) {
-    credits = await refreshClaudeResetCredits(database, stored);
+  const account = await resolveAccount(database, stored);
+  const isFresh = (
+    credits: ClaudeResetCredits | null
+  ): credits is ClaudeResetCredits =>
+    credits !== null &&
+    credits.observedAt >= Date.now() - OFFER_MAX_AGE_MS &&
+    credits.observedAt <= Date.now() &&
+    isCurrent(credits, claims);
+  let credits = account && peekClaudeResetCredits(account);
+  if (account && !isFresh(credits)) {
+    credits = await refreshClaudeResetCredits(database, account);
   }
-  if (!(credits && isFresh(credits))) {
-    throw new ClaudeResetClaimConflict(
-      "stale",
-      "Couldn't check this account's resets right now; try again shortly"
-    );
+  if (!(account && isFresh(credits))) {
+    throw new ClaudeResetClaimConflict("stale");
   }
-  confirmedOffer(stored, credits, ledger.version, identity, input);
+  // Runs before reserving and again right before each send, including after
+  // a token refresh: the identity, offer and current limits must still match.
+  const check = (
+    current: TrackingAccount,
+    latest: ClaudeResetCredits | null
+  ) => {
+    if (
+      current.accountId !== stored.accountId ||
+      !isSameIdentity(claudeResetIdentity(current), identity)
+    ) {
+      throw new ClaudeResetClaimConflict("identity_changed");
+    }
+    if (!isFresh(latest)) {
+      throw new ClaudeResetClaimConflict("stale");
+    }
+    const { offer } = summarize(current, latest, version, identity, Date.now());
+    if (!offer) {
+      throw new ClaudeResetClaimConflict("not_claimable");
+    }
+    if (
+      offer.grantId !== confirmation.grantId ||
+      offer.key !== confirmation.offerKey
+    ) {
+      throw new ClaudeResetClaimConflict("offer_changed");
+    }
+  };
+  check(account, credits);
 
-  const account = await resolveTrackingAccount(database, stored);
-  if (!account) {
-    throw new ClaudeResetClaimConflict(
-      "stale",
-      "Couldn't refresh this account's credentials; nothing was used"
-    );
-  }
-  const resolvedIdentity = claudeOrganization(account);
-  if (
-    !("organizationUuid" in resolvedIdentity) ||
-    resolvedIdentity.organizationUuid !== identity.organizationUuid ||
-    resolvedIdentity.accountUuid !== identity.accountIdentity ||
-    account.accountId !== stored.accountId
-  ) {
-    throw new ClaudeResetClaimConflict(
-      "identity_changed",
-      "This account's OAuth identity changed while refreshing; review it again"
-    );
-  }
-  const currentCredits =
-    account.accessToken !== stored.accessToken
-      ? await refreshClaudeResetCredits(database, account)
-      : peekClaudeResetCredits(account);
-  if (!currentCredits || !isFresh(currentCredits))
-    throw new ClaudeResetClaimConflict(
-      "stale",
-      "Couldn't recheck this account's resets; nothing was used"
-    );
-  const currentOffer = confirmedOffer(
-    account,
-    currentCredits,
-    ledger.version,
-    identity,
-    input
-  );
-  const { requestId, reused } = await reserveClaim(database, account, {
-    open,
-    identity,
-    version: ledger.version,
-    offer: currentOffer,
-    now: Date.now(),
-  });
-  const startedAt = Date.now();
+  // Retrying an unconfirmed claim of the same reset reuses its request ID, so
+  // a claim that did go through can't spend a second reset.
+  const reused = open?.row.grantId === confirmation.grantId;
+  const requestId = open && reused ? open.row.requestId : crypto.randomUUID();
+  const now = Date.now();
   try {
-    const dispatchCredits = peekClaudeResetCredits(account);
-    if (!dispatchCredits || !isFresh(dispatchCredits))
-      throw new ClaudeResetClaimConflict(
-        "stale",
-        "Couldn't recheck this account's resets; nothing was used"
-      );
-    confirmedOffer(account, dispatchCredits, ledger.version, identity, input);
-    holdClaudeResetCredits(account);
-    const outcome = await sendClaim(
+    await reserveClaudeResetClaim(
       database,
-      account,
       {
+        requestId,
         ...identity,
-        grantId: currentOffer.grantId,
-        requestId,
+        grantId: confirmation.grantId,
+        createdAt: now,
+        updatedAt: now,
       },
-      (current) => {
-        if (!isFresh(dispatchCredits))
-          throw new ClaudeResetClaimConflict(
-            "stale",
-            "The reset confirmation expired; review it again"
-          );
-        const canonical = claudeOrganization(current);
-        if (
-          !("organizationUuid" in canonical) ||
-          canonical.organizationUuid !== identity.organizationUuid ||
-          canonical.accountUuid !== identity.accountIdentity
-        )
-          throw new ClaudeResetClaimConflict(
-            "identity_changed",
-            "This account's OAuth identity changed; review it again"
-          );
-        confirmedOffer(
-          current,
-          dispatchCredits,
-          ledger.version,
-          identity,
-          input
-        );
-      }
+      version,
+      open?.row ?? null
     );
-    await settle(database, account, outcome);
-    (outcome.status === "completed" ? logInfo : logWarn)(
-      "claude_reset_claim_settled",
-      {
-        providerAccountId: account.id,
-        status: outcome.status,
-        result: outcome.result,
-        reason: outcome.reason,
-        httpStatus: outcome.httpStatus,
-        reusedRequestId: reused,
-        durationMs: Date.now() - startedAt,
-      }
-    );
-    const { lastError: _lastError, ...result } = outcome;
-    return result;
   } catch (error) {
-    if (error instanceof ClaudeResetClaimConflict) {
-      await settle(database, account, {
-        requestId,
-        status: reused ? "ambiguous" : "failed",
-        result: null,
-        reason: null,
-        resetsLeft: null,
-        cleared: [],
-        weeklyResetsAt: null,
-        httpStatus: null,
-        lastError: "Confirmation changed before dispatch",
-      });
+    if (error instanceof ClaudeResetReservationConflict) {
+      throw new ClaudeResetClaimConflict("offer_changed");
     }
     throw error;
-  } finally {
-    releaseClaudeResetCredits(database, account);
   }
+
+  const latest = peekClaudeResetCredits(account);
+  let outcome: ClaudeResetClaimOutcome;
+  try {
+    outcome = fromResult(
+      requestId,
+      await retryAfter401(database, account, async (current) => {
+        check(current, latest);
+        return claimClaudeResetCredit({
+          accessToken: current.accessToken,
+          organizationUuid: identity.organizationUuid,
+          grantId: confirmation.grantId,
+          requestId,
+        });
+      })
+    );
+  } catch (error) {
+    if (error instanceof ClaudeResetClaimConflict) {
+      await settle(database, account, requestId, {
+        status: reused ? "ambiguous" : "failed",
+      });
+      reloadClaudeResetCredits(database, account);
+      throw error;
+    }
+    outcome = fromError(requestId, error);
+  }
+  await settle(database, account, requestId, outcome);
+  reloadClaudeResetCredits(database, account);
+  (outcome.status === "completed" ? logInfo : logWarn)(
+    "claude_reset_claim_settled",
+    {
+      providerAccountId: account.id,
+      status: outcome.status,
+      result: outcome.result,
+      httpStatus: outcome.httpStatus,
+      reusedRequestId: reused,
+      durationMs: Date.now() - now,
+    }
+  );
+  return outcome;
 };

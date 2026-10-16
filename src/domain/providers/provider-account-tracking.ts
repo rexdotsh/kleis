@@ -1,4 +1,5 @@
 import type { Database } from "../../db";
+import type { ClaudeResetClaimIdentity } from "../../db/repositories/claude-reset-claims";
 import {
   findCodexResetCreditRedemption,
   saveCodexResetCreditRedemption,
@@ -24,10 +25,12 @@ import {
 import {
   type ClaudeAccountProfile,
   type ClaudeSubscriptionPlan,
+  type ClaudeSubscriptionUsage,
   fetchClaudeAccountProfile,
   fetchClaudeSubscriptionUsage,
 } from "../../providers/account-tracking/claude";
 import {
+  type ClaudeResetLimitUsage,
   type ClaudeResetStatus,
   claudeResetLimitTypes,
 } from "../../providers/account-tracking/claude-resets";
@@ -58,7 +61,7 @@ const PROFILE_CACHE_JITTER_MS = 60 * 60 * 1000;
 const PROFILE_RETRY_MS = 5 * 60 * 1000;
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
 
-type TrackingAccount = ProviderAccountRecord & {
+export type TrackingAccount = ProviderAccountRecord & {
   provider: "codex" | "claude";
 };
 
@@ -74,17 +77,13 @@ type CodexTrackingData = {
 export type ClaudeResetCredits = {
   observedAt: number;
   credential: string;
-  // Binds this read to the canonical OAuth user and organization, not a local row.
-  identity: string | null;
   status: ClaudeResetStatus;
 };
 
 type ClaudeTrackingData = {
   provider: "claude";
   plan?: ClaudeSubscriptionPlan | null;
-  subscription?: Awaited<
-    ReturnType<typeof fetchClaudeSubscriptionUsage>
-  >["usage"];
+  subscription?: ClaudeSubscriptionUsage;
   resetCredits?: ClaudeResetCredits;
 };
 
@@ -102,8 +101,6 @@ export type AccountQuota = {
 
 type QuotaEntry = {
   expiresAt: number;
-  // Live traffic cannot postpone reset discovery.
-  resetPollAt: number;
   credential: string;
   quota: AccountQuota;
 };
@@ -112,11 +109,11 @@ const cache = new Map<string, QuotaEntry>();
 const credentialBinding = (account: ProviderAccountRecord): string =>
   Bun.CryptoHasher.hash("sha256", account.accessToken, "hex");
 
-// Each usage attempt collects readings for its credential. Cache generations
-// prevent superseded lookups from replacing the active collector.
+// Live readings that arrive while a usage attempt runs are newer than its
+// result. Each attempt collects them for its own credential and generation.
 const claudeLiveDuringPoll = new Map<
   string,
-  { credential: string; generation: number; limits: ClaudeLiveLimits }
+  { credential: string; generation: number; readings: ClaudeLiveLimits[] }
 >();
 
 let snapshots: AccountSnapshotStore | null = null;
@@ -147,7 +144,7 @@ const noteClaudeUsageResult = (errors: unknown[]): void => {
 const inFlight = new Map<string, Promise<AccountQuota | null>>();
 const generations = new Map<string, number>();
 
-const isTrackingAccount = (
+export const isTrackingAccount = (
   account: ProviderAccountRecord
 ): account is TrackingAccount =>
   account.provider === "codex" || account.provider === "claude";
@@ -170,7 +167,7 @@ const cacheDuration = (errors: unknown[]): number =>
     )
   );
 
-const resolveAccount = async (
+export const resolveAccount = async (
   database: Database,
   account: TrackingAccount
 ): Promise<TrackingAccount | null> => {
@@ -202,7 +199,7 @@ const replaceRejectedAccount = async (
     : null;
 };
 
-const retryAfter401 = async <T>(
+export const retryAfter401 = async <T>(
   database: Database,
   account: TrackingAccount,
   operation: (current: TrackingAccount) => Promise<T>
@@ -450,49 +447,36 @@ const fetchAccountData = async (
   database: Database,
   account: TrackingAccount,
   now: number,
-  observeClaudeUsage: (current: TrackingAccount) => ClaudeLiveLimits
+  observeClaudeUsage: (current: TrackingAccount) => ClaudeLiveLimits[]
 ): Promise<{
   data: TrackingData;
   errors: unknown[];
-  live?: ClaudeLiveLimits;
+  live?: ClaudeLiveLimits[];
 }> => {
   if (account.provider === "claude") {
     const plan = getClaudeProfile(account).then(
       (profile) => profile?.plan ?? null
     );
     try {
-      const { usage, resets, current, live } = await retryAfter401(
+      const { usage, resets, credential, live } = await retryAfter401(
         database,
         account,
         async (current) => {
           const live = observeClaudeUsage(current);
           return {
             ...(await fetchClaudeSubscriptionUsage(current.accessToken)),
-            current,
+            credential: credentialBinding(current),
             live,
           };
         }
       );
-      const resolvedPlan = await plan;
-      const organization = claudeOrganization(current);
       return {
         data: {
           provider: "claude",
-          plan: resolvedPlan,
+          plan: await plan,
           subscription: usage,
           ...(resets && {
-            resetCredits: {
-              observedAt: now,
-              credential: credentialBinding(current),
-              identity:
-                "organizationUuid" in organization && organization.accountUuid
-                  ? claudeResetIdentityBinding(
-                      organization.accountUuid,
-                      organization.organizationUuid
-                    )
-                  : null,
-              status: resets,
-            },
+            resetCredits: { observedAt: now, credential, status: resets },
           }),
         },
         errors: [],
@@ -556,36 +540,6 @@ const invalidateProviderAccountQuota = (account: TrackingAccount): void => {
   nextGeneration(key);
 };
 
-// While a reset is being claimed, and for reads started before the claim
-// settled, saved resets from the usage endpoint are not trusted: they could
-// show a reset that was just used.
-const resetCreditFences = new Map<string, number>();
-
-// A read without the resets block was not evaluated for resets, so the last
-// known ones stay, with their own read time.
-const keepClaudeResetCredits = (
-  key: string,
-  data: TrackingData,
-  previous: TrackingData | undefined,
-  startedAt: number,
-  credential: string
-): void => {
-  if (data.provider !== "claude") {
-    return;
-  }
-  if (startedAt < (resetCreditFences.get(key) ?? Number.NEGATIVE_INFINITY)) {
-    delete data.resetCredits;
-    return;
-  }
-  if (
-    !data.resetCredits &&
-    previous?.provider === "claude" &&
-    previous.resetCredits?.credential === credential
-  ) {
-    data.resetCredits = previous.resetCredits;
-  }
-};
-
 const dropCachedResetCredits = (key: string): void => {
   const entry = cache.get(key);
   if (
@@ -611,7 +565,7 @@ const fetchProviderAccountQuota = async (
   const publish = (quota: AccountQuota, expiresAt: number): AccountQuota => {
     // A lookup started later, or an invalidation, owns the cache entry.
     if (generations.get(key) === generation) {
-      cache.set(key, { expiresAt, resetPollAt: expiresAt, credential, quota });
+      cache.set(key, { expiresAt, credential, quota });
       snapshots?.recordQuota(stored, quota, quotaSignature(quota.data));
     }
     return quota;
@@ -636,23 +590,29 @@ const fetchProviderAccountQuota = async (
     credential = credentialBinding(account);
     const result = await fetchAccountData(database, account, now, (current) => {
       credential = credentialBinding(current);
-      const limits: ClaudeLiveLimits = { provider: "claude", windows: {} };
+      const readings: ClaudeLiveLimits[] = [];
       if (generations.get(key) === generation) {
-        claudeLiveDuringPoll.set(key, { credential, generation, limits });
+        claudeLiveDuringPoll.set(key, { credential, generation, readings });
       }
-      return limits;
+      return readings;
     });
-    if (
-      result.data.provider === "claude" &&
-      result.data.subscription &&
-      result.live
-    ) {
-      result.data.subscription = mergeClaudeLiveLimits(
-        result.data.subscription,
-        result.live
-      );
+    const previous = latest()?.data;
+    if (result.data.provider === "claude") {
+      if (result.data.subscription && result.live) {
+        result.data.subscription = result.live.reduce(
+          mergeClaudeLiveLimits,
+          result.data.subscription
+        );
+      }
+      // A read without the resets block was not evaluated for resets, so the
+      // last known ones stay, with their own read time.
+      if (
+        previous?.provider === "claude" &&
+        previous.resetCredits?.credential === credential
+      ) {
+        result.data.resetCredits ??= previous.resetCredits;
+      }
     }
-    keepClaudeResetCredits(key, result.data, latest()?.data, now, credential);
     let expiresAt = now + Math.max(baseMs, cacheDuration(result.errors));
     if (account.provider === "claude") {
       noteClaudeUsageResult(result.errors);
@@ -718,8 +678,7 @@ const quotaRefreshDue = (
 ): boolean =>
   entry.expiresAt <= Date.now() ||
   (account.provider === "claude" &&
-    (entry.credential !== credentialBinding(account) ||
-      entry.resetPollAt <= Date.now()));
+    entry.credential !== credentialBinding(account));
 
 const toResetTimestamp = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -807,15 +766,15 @@ const restoreSnapshot = (
   if (!cache.has(key)) {
     cache.set(key, {
       // Restored limits count as fresh only for what is left of the usual
-      // interval since they were fetched, so normal refreshes continue.
-      expiresAt: (row.quotaFetchedAt ?? 0) + baseMs,
-      resetPollAt:
-        (data.provider === "claude"
-          ? (data.resetCredits?.observedAt ?? row.quotaFetchedAt ?? 0)
-          : 0) + baseMs,
+      // interval since they (or Claude's resets) were fetched, so normal
+      // refreshes continue.
+      expiresAt:
+        ((data.provider === "claude" ? data.resetCredits?.observedAt : null) ??
+          row.quotaFetchedAt ??
+          0) + baseMs,
       credential:
         data.provider === "claude" && data.resetCredits
-          ? (data.resetCredits.credential ?? "")
+          ? data.resetCredits.credential
           : credentialBinding(account),
       quota: {
         fetchedAt: row.quotaFetchedAt,
@@ -886,7 +845,6 @@ export const expireProviderAccountTracking = (
   for (const [key, entry] of cache) {
     if (key.startsWith(prefix)) {
       entry.expiresAt = 0;
-      entry.resetPollAt = 0;
       dropCachedResetCredits(key);
       inFlight.delete(key);
       nextGeneration(key);
@@ -958,8 +916,9 @@ const mergeLiveLimits = (
   };
 };
 
-// Traffic refreshes ordinary limits, but Claude reset discovery keeps its
-// own due time. This hot path only updates memory and buffered snapshots.
+// Limits read from a proxied response refresh the shown limits. For Codex
+// they count as a fresh sync; Claude polls stay due, since they also discover
+// saved resets. This hot path only updates memory and buffered snapshots.
 export const recordProviderAccountLiveLimits = (
   account: ProviderAccountRecord,
   limits: LiveLimits | null
@@ -982,16 +941,7 @@ export const recordProviderAccountLiveLimits = (
       poll?.credential === credential &&
       poll.generation === generations.get(key)
     ) {
-      for (const [type, reading] of Object.entries(limits.windows)) {
-        const previous = poll.limits.windows[type];
-        poll.limits.windows[type] = {
-          ...previous,
-          ...(reading.resetsAt && reading.resetsAt !== previous?.resetsAt
-            ? { utilization: null }
-            : {}),
-          ...reading,
-        };
-      }
+      poll.readings.push(limits);
     }
     const quota: AccountQuota = {
       fetchedAt: now,
@@ -1000,14 +950,15 @@ export const recordProviderAccountLiveLimits = (
       source: "traffic",
       data: mergeLiveLimits(entry?.quota.data, limits, now),
     };
-    const baseMs = account.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS;
     cache.set(key, {
       quota,
       credential,
-      resetPollAt: entry?.resetPollAt ?? now,
       // Without an earlier poll the plan and the limits only the usage
       // endpoints report are missing, so the next read still polls.
-      expiresAt: entry ? Math.max(entry.expiresAt, now + baseMs) : now,
+      expiresAt:
+        entry && account.provider === "codex"
+          ? Math.max(entry.expiresAt, now + CACHE_MS)
+          : (entry?.expiresAt ?? now),
     });
     snapshots?.recordQuota(account, quota, quotaSignature(quota.data));
   } catch (error) {
@@ -1147,197 +1098,102 @@ export const redeemCodexResetCredit = async (
   }
 };
 
-export type ClaudeOrganization =
-  | { organizationUuid: string; accountUuid: string | null }
-  | { problem: "unknown" | "mismatch" | "unverified" };
-
-// Reset claims use the OAuth user and organization, which must agree with
-// the profile Anthropic last returned.
-export const claudeOrganization = (
-  account: ProviderAccountRecord
-): ClaudeOrganization => {
-  const stored =
-    account.metadata?.provider === "claude"
-      ? (account.metadata.organizationUuid ?? null)
-      : null;
-  const entry = isTrackingAccount(account)
-    ? profiles.get(quotaKey(account))
-    : null;
-  const profile =
-    entry?.identityCredential === credentialBinding(account)
-      ? entry.profile
-      : null;
-  const lookedUp =
-    profile?.provider === "claude" ? profile.organizationUuid : null;
-  const storedAccount =
-    account.metadata?.provider === "claude"
-      ? account.metadata.accountUuid
-      : null;
-  const profileAccount =
-    profile?.provider === "claude" ? profile.accountUuid : null;
-  const normalize = (value: string | null | undefined) =>
-    value?.trim().toLowerCase() || null;
-  if (
-    (stored && lookedUp && normalize(stored) !== normalize(lookedUp)) ||
-    (storedAccount &&
-      profileAccount &&
-      normalize(storedAccount) !== normalize(profileAccount))
-  ) {
-    return { problem: "mismatch" };
-  }
-  const organizationUuid = normalize(lookedUp ?? stored);
-  return organizationUuid
-    ? {
-        organizationUuid,
-        accountUuid: normalize(profileAccount ?? storedAccount),
-      }
-    : {
-        problem:
-          entry?.profile &&
-          entry.identityCredential !== credentialBinding(account)
-            ? "unverified"
-            : "unknown",
-      };
+const agreedUuid = (
+  stored: string | null | undefined,
+  lookedUp: string | null | undefined
+): string | null => {
+  const [a, b] = [stored, lookedUp].map(
+    (value) => value?.trim().toLowerCase() || null
+  );
+  return a && b && a !== b ? null : (b ?? a ?? null);
 };
 
-// Stored limits retain an identity binding without exposing the OAuth IDs.
-export const claudeResetIdentityBinding = (
-  accountUuid: string,
-  organizationUuid: string
-): string =>
-  Bun.CryptoHasher.hash(
-    "sha256",
-    JSON.stringify([accountUuid, organizationUuid]),
-    "hex"
+// Reset claims use the OAuth user and organization of the current credential,
+// from its token response or a profile looked up with it; both must agree.
+export const claudeResetIdentity = (
+  account: TrackingAccount
+): ClaudeResetClaimIdentity | null => {
+  const metadata =
+    account.metadata?.provider === "claude" ? account.metadata : null;
+  const entry = profiles.get(quotaKey(account));
+  const profile =
+    entry?.identityCredential === credentialBinding(account) &&
+    entry.profile?.provider === "claude"
+      ? entry.profile
+      : null;
+  const organizationUuid = agreedUuid(
+    metadata?.organizationUuid,
+    profile?.organizationUuid
   );
+  const accountIdentity = agreedUuid(
+    metadata?.accountUuid,
+    profile?.accountUuid
+  );
+  return organizationUuid && accountIdentity
+    ? { accountIdentity, organizationUuid }
+    : null;
+};
 
 export const peekClaudeResetCredits = (
-  account: ProviderAccountRecord
+  account: TrackingAccount
 ): ClaudeResetCredits | null => {
-  if (account.provider !== "claude" || !isTrackingAccount(account)) {
-    return null;
-  }
   const data = cache.get(quotaKey(account))?.quota.data;
   const credits = data?.provider === "claude" ? data.resetCredits : null;
   return credits?.credential === credentialBinding(account) ? credits : null;
 };
 
-export const currentClaudeResetStatus = (
-  account: ProviderAccountRecord,
+// Current use of each limit a reset could refill, from the latest polled and
+// live limits. A window whose reset time has passed counts as unused.
+export const claudeResetLimitUsage = (
+  account: TrackingAccount,
   credits: ClaudeResetCredits,
   now: number
-): ClaudeResetStatus => {
+): ClaudeResetLimitUsage => {
   const entry = cache.get(quotaKey(account));
   const data =
     entry &&
-    (entry.credential === credentialBinding(account) ||
-      entry.credential === credits.credential)
+    [credentialBinding(account), credits.credential].includes(entry.credential)
       ? entry.quota.data
       : null;
   const usage = data?.provider === "claude" ? data.subscription : null;
-  const windows: ClaudeLiveLimits["windows"] = {
-    ...(usage?.fiveHour && { five_hour: usage.fiveHour }),
-    ...(usage?.sevenDay && { seven_day: usage.sevenDay }),
-    ...Object.fromEntries(
-      Object.entries(usage?.modelWindows ?? {}).filter(
-        ([, window]) => window !== null
-      )
-    ),
+  const windows: Record<
+    string,
+    ClaudeSubscriptionUsage["fiveHour"] | undefined
+  > = {
+    ...usage?.modelWindows,
+    five_hour: usage?.fiveHour,
+    seven_day: usage?.sevenDay,
   };
-  // A cached grant cannot prove that a current window is still exhausted.
-  const exhausted = new Set<(typeof claudeResetLimitTypes)[number]>();
-  const percents = new Map<
-    (typeof claudeResetLimitTypes)[number],
-    number | null
-  >();
+  const used: ClaudeResetLimitUsage = {};
   for (const type of claudeResetLimitTypes) {
     const window = windows[type];
     const reset = toResetTimestamp(window?.resetsAt);
     const percent = reset !== null && reset <= now ? 0 : window?.utilization;
-    if (!window) {
-      percents.set(type, null);
-      continue;
-    }
-    if (
-      typeof percent !== "number" ||
-      !Number.isFinite(percent) ||
-      percent < 0
-    ) {
-      exhausted.delete(type);
-      percents.set(type, null);
-      continue;
-    }
-    percents.set(type, Math.min(100, percent));
-    if (percent < 100) exhausted.delete(type);
-    else exhausted.add(type);
+    if (typeof percent === "number" && Number.isFinite(percent) && percent >= 0)
+      used[type] = Math.min(100, percent);
   }
-  return {
-    ...credits.status,
-    exhausted: [...exhausted],
-    grants: credits.status.grants.map((grant) => {
-      const percentUsed = usage ? { ...grant.percentUsed } : {};
-      for (const [type, percent] of percents) {
-        if (percent === null) delete percentUsed[type];
-        else percentUsed[type] = percent;
-      }
-      return { ...grant, percentUsed };
-    }),
-  };
+  return used;
 };
 
 // Waits for a usage read through the usual path: it joins one already
 // running, and during the shared Claude rate-limit pause sends nothing.
 export const refreshClaudeResetCredits = async (
   database: Database,
-  account: ProviderAccountRecord
+  account: TrackingAccount
 ): Promise<ClaudeResetCredits | null> => {
-  if (!isTrackingAccount(account)) {
-    return null;
-  }
   const previous = peekClaudeResetCredits(account);
   const quota = await loadProviderAccountQuota(database, account, false);
   const current = peekClaudeResetCredits(account);
   return quota?.error || current === previous ? null : current;
 };
 
-export const holdClaudeResetCredits = (
-  account: ProviderAccountRecord
-): void => {
-  if (!isTrackingAccount(account)) {
-    return;
-  }
-  const key = quotaKey(account);
-  resetCreditFences.set(key, Number.POSITIVE_INFINITY);
-  dropCachedResetCredits(key);
-};
-
-// Reads started from here on show resets again. One starts now, replacing any
-// still running from before the claim; the rate-limit pause still applies.
-export const releaseClaudeResetCredits = (
+// After a claim the cached resets may still show the reset it used. A new read
+// replaces them, and supersedes any read started before; the rate-limit pause
+// still applies.
+export const reloadClaudeResetCredits = (
   database: Database,
-  account: ProviderAccountRecord
+  account: TrackingAccount
 ): void => {
-  if (!isTrackingAccount(account)) {
-    return;
-  }
-  const key = quotaKey(account);
-  resetCreditFences.set(key, Date.now());
-  dropCachedResetCredits(key);
+  dropCachedResetCredits(quotaKey(account));
   loadProviderAccountQuota(database, account, true).catch(() => undefined);
 };
-
-export const resolveTrackingAccount = (
-  database: Database,
-  account: ProviderAccountRecord
-): Promise<ProviderAccountRecord | null> =>
-  isTrackingAccount(account)
-    ? resolveAccount(database, account)
-    : Promise.resolve(null);
-
-export const replaceRejectedTrackingAccount = (
-  database: Database,
-  account: ProviderAccountRecord
-): Promise<ProviderAccountRecord | null> =>
-  isTrackingAccount(account)
-    ? replaceRejectedAccount(database, account)
-    : Promise.resolve(null);

@@ -18,35 +18,10 @@ export const claudeResetLimitTypes = [
 
 export type ClaudeResetLimitType = (typeof claudeResetLimitTypes)[number];
 
-const ineligibleReasons = [
-  "config_off",
-  "tier",
-  "seat",
-  "mobile",
-  "surface",
-  "cli_version",
-  "no_grant",
-  "tenure",
-  "other_experiment",
-  "unavailable",
-  "unknown",
-] as const;
-
-const claimReasons = [
-  ...ineligibleReasons,
-  "paused",
-  "expired",
-  "unknown_grant",
-  "not_next_grant",
-  "grant_id_required",
-  "not_limited",
-  "already_used",
-  "cooldown",
-  "stamp_indeterminate",
-  "reset_unconfirmed",
-] as const;
-
-export type ClaudeResetClaimReason = (typeof claimReasons)[number];
+// Current utilization (0-100) of each limit whose usage is known.
+export type ClaudeResetLimitUsage = Partial<
+  Record<ClaudeResetLimitType, number>
+>;
 
 const claimResults = [
   "reset",
@@ -59,18 +34,11 @@ const claimResults = [
 
 export type ClaudeResetClaimResultCode = (typeof claimResults)[number];
 
-const GRANT_ID_PATTERN = /^[a-z0-9_-]{1,40}$/;
-
 export const isClaudeResetGrantId = (value: string): boolean =>
-  GRANT_ID_PATTERN.test(value);
+  /^[a-z0-9_-]{1,40}$/.test(value);
 
-const readEnum = <T extends string>(
-  values: readonly T[],
-  value: unknown
-): T | null =>
-  typeof value === "string" && (values as readonly string[]).includes(value)
-    ? (value as T)
-    : null;
+const isLimitType = (value: unknown): value is ClaudeResetLimitType =>
+  claudeResetLimitTypes.includes(value as ClaudeResetLimitType);
 
 const readCount = (value: unknown): number | null =>
   typeof value === "number" && Number.isInteger(value) && value >= 0
@@ -78,34 +46,7 @@ const readCount = (value: unknown): number | null =>
     : null;
 
 const readLimitTypes = (value: unknown): ClaudeResetLimitType[] =>
-  Array.isArray(value)
-    ? value
-        .map((entry) => readEnum(claudeResetLimitTypes, entry))
-        .filter((entry) => entry !== null)
-    : [];
-
-const hasUnknownLimitTypes = (value: unknown): boolean =>
-  !Array.isArray(value) ||
-  value.some((entry) => readEnum(claudeResetLimitTypes, entry) === null);
-
-const readPercentUsed = (
-  value: unknown
-): Partial<Record<ClaudeResetLimitType, number>> => {
-  const input = readObject(value) ?? {};
-  const percents: Partial<Record<ClaudeResetLimitType, number>> = {};
-  for (const type of claudeResetLimitTypes) {
-    const percent = input[type];
-    if (
-      typeof percent === "number" &&
-      Number.isInteger(percent) &&
-      percent >= 0 &&
-      percent <= 100
-    ) {
-      percents[type] = percent;
-    }
-  }
-  return percents;
-};
+  Array.isArray(value) ? value.filter(isLimitType) : [];
 
 const decodeGrant = (value: unknown) => {
   const input = readObject(value);
@@ -117,7 +58,6 @@ const decodeGrant = (value: unknown) => {
   return {
     id,
     label: readString(input.label) ?? "",
-    resetsTotal: readCount(input.resets_total) ?? 0,
     resetsLeft,
     startsAt: readString(input.starts_at),
     endsAt: readString(input.ends_at),
@@ -125,15 +65,14 @@ const decodeGrant = (value: unknown) => {
     paused: readBoolean(input.paused) ?? false,
     usableNow: readBoolean(input.usable_now) ?? false,
     useRequiresLimit: readBoolean(input.use_requires_limit) ?? true,
-    percentUsed: readPercentUsed(input.percent_used),
     blocking: readLimitTypes(input.blocking),
-    hasUnknownLimits:
-      hasUnknownLimitTypes(input.clears) ||
-      hasUnknownLimitTypes(input.blocking),
+    hasUnknownLimits: [input.clears, input.blocking].some(
+      (types) => !(Array.isArray(types) && types.every(isLimitType))
+    ),
   };
 };
 
-export type ClaudeResetGrant = NonNullable<ReturnType<typeof decodeGrant>>;
+type ClaudeResetGrant = NonNullable<ReturnType<typeof decodeGrant>>;
 
 // A missing or unreadable block means the server did not evaluate resets for
 // this read, which is not the same as having none.
@@ -149,12 +88,7 @@ export const decodeClaudeResetStatus = (value: unknown) => {
   const nextGrantId = readString(input.next_grant_id);
   return {
     eligible,
-    ineligibleReason:
-      input.ineligible_reason === null || input.ineligible_reason === undefined
-        ? null
-        : (readEnum(ineligibleReasons, input.ineligible_reason) ?? "unknown"),
-    atLimit: readBoolean(input.at_limit) ?? false,
-    exhausted: readLimitTypes(input.exhausted),
+    ineligibleReason: readString(input.ineligible_reason),
     grants,
     nextGrantId: grants.some((grant) => grant.id === nextGrantId)
       ? nextGrantId
@@ -173,20 +107,15 @@ export const decodeClaudeResetClaimResult = (value: unknown) => {
     value,
     "Claude reset claim response is malformed"
   );
-  const result = readEnum(claimResults, input.result);
+  const result = claimResults.find((code) => code === input.result);
   if (!result) {
     throw new Error("Claude reset claim response is malformed");
   }
   return {
     result,
-    reason:
-      input.reason === null || input.reason === undefined
-        ? null
-        : (readEnum(claimReasons, input.reason) ?? "unknown"),
+    reason: readString(input.reason),
     resetsLeft: readCount(input.resets_left),
     cleared: readLimitTypes(input.cleared),
-    weeklyResetsAt: readString(input.weekly_resets_at),
-    cooldownUntil: readString(input.cooldown_until),
   };
 };
 
@@ -231,8 +160,8 @@ export type ClaudeResetOffer = {
   clears: ClaudeResetLimitType[];
   endsAt: string | null;
   weeklyResetsAt: string | null;
-  // Not at any limit this reset refills; the highest use among them, when
-  // the server reports one.
+  // Not at any limit this reset refills; the highest current use among them,
+  // when known.
   earlyUse: {
     limit: ClaudeResetLimitType | null;
     percentUsed: number | null;
@@ -248,32 +177,11 @@ export type ClaudeResetSummary = {
   unavailable: ClaudeResetUnavailableReason | null;
 };
 
-const offerKey = (
-  grant: ClaudeResetGrant,
-  status: ClaudeResetStatus,
-  saved: number
-): string =>
-  Bun.CryptoHasher.hash(
-    "sha256",
-    JSON.stringify([
-      grant.id,
-      grant.resetsLeft,
-      grant.clears,
-      grant.endsAt,
-      grant.useRequiresLimit,
-      grant.label,
-      saved,
-      status.weeklyResetsAt,
-      earlyUse(grant, status),
-    ]),
-    "hex"
-  ).slice(0, 32);
-
 const earlyUse = (
   grant: ClaudeResetGrant,
-  status: ClaudeResetStatus
+  usage: ClaudeResetLimitUsage
 ): ClaudeResetOffer["earlyUse"] => {
-  if (grant.clears.some((type) => status.exhausted.includes(type))) {
+  if (grant.clears.some((type) => (usage[type] ?? 0) >= 100)) {
     return null;
   }
   let highest: ClaudeResetOffer["earlyUse"] = {
@@ -281,7 +189,7 @@ const earlyUse = (
     percentUsed: null,
   };
   for (const type of grant.clears) {
-    const percent = grant.percentUsed[type];
+    const percent = usage[type];
     if (
       percent !== undefined &&
       (highest.percentUsed === null || percent > highest.percentUsed)
@@ -298,6 +206,8 @@ const earlyUse = (
 const selectOffer = (
   status: ClaudeResetStatus,
   live: ClaudeResetGrant[],
+  usage: ClaudeResetLimitUsage,
+  binding: readonly unknown[],
   now: number
 ): ClaudeResetOffer | ClaudeResetUnavailableReason => {
   if (!status.eligible) {
@@ -317,21 +227,18 @@ const selectOffer = (
   if (grant.paused) {
     return "paused";
   }
-  // Cached grants need an explicit successful scope check to authorize a claim.
-  if (grant.hasUnknownLimits !== false) return "unsupported_limits";
+  // Snapshots without the scope check never authorize a claim.
+  if (grant.hasUnknownLimits !== false) {
+    return "unsupported_limits";
+  }
   if (!(grant.usableNow && grant.clears.length) || grant.blocking.length) {
     return "not_usable";
   }
-  const early = earlyUse(grant, status);
+  const early = earlyUse(grant, usage);
   if (grant.useRequiresLimit && early) {
     return "requires_limit";
   }
-  return {
-    key: offerKey(
-      grant,
-      status,
-      live.reduce((total, entry) => total + entry.resetsLeft, 0)
-    ),
+  const offer = {
     grantId: grant.id,
     label: grant.label,
     clears: grant.clears,
@@ -339,10 +246,24 @@ const selectOffer = (
     weeklyResetsAt: status.weeklyResetsAt,
     earlyUse: early,
   };
+  const saved = live.reduce((total, entry) => total + entry.resetsLeft, 0);
+  const material = [offer, grant.resetsLeft, grant.useRequiresLimit, saved];
+  return {
+    key: Bun.CryptoHasher.hash(
+      "sha256",
+      JSON.stringify([...material, ...binding]),
+      "hex"
+    ).slice(0, 32),
+    ...offer,
+  };
 };
 
+// `binding` is folded into the offer key, so a confirmation only matches
+// while it is unchanged.
 export const summarizeClaudeResets = (
   status: ClaudeResetStatus,
+  usage: ClaudeResetLimitUsage,
+  binding: readonly unknown[],
   now: number
 ): ClaudeResetSummary => {
   const live = status.eligible
@@ -355,7 +276,7 @@ export const summarizeClaudeResets = (
   const next =
     live.find((grant) => grant.id === status.nextGrantId) ??
     [...live].sort((a, b) => expiry(a) - expiry(b))[0];
-  const offer = selectOffer(status, live, now);
+  const offer = selectOffer(status, live, usage, binding, now);
   return {
     saved: live.reduce((total, grant) => total + grant.resetsLeft, 0),
     nextEndsAt: next?.endsAt ?? null,

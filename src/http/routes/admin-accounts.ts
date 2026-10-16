@@ -21,12 +21,10 @@ import {
   redeemCodexResetCredit,
 } from "../../domain/providers/provider-account-tracking";
 import {
-  CLAUDE_RESET_CLAIM_LOOKBACK_MS,
   ClaudeResetClaimConflict,
   claimClaudeReset,
-  describeClaudeResets,
+  listAccountsWithClaudeResets,
 } from "../../domain/providers/claude-reset-claims";
-import { listProviderAccountsWithClaudeResetClaims } from "../../db/repositories/claude-reset-claims";
 import { listProviderAccountDailyTokens } from "../../db/repositories/account-daily-tokens";
 import {
   getProviderAccountUsageDetail,
@@ -199,11 +197,8 @@ const toAdminAccountView = (account: ProviderAccountRecord) => ({
 
 export const adminAccountsRoutes = new Hono()
   .get("/", async (context) => {
-    const [{ accounts, claims, fences }] = await Promise.all([
-      listProviderAccountsWithClaudeResetClaims(
-        db,
-        Date.now() - CLAUDE_RESET_CLAIM_LOOKBACK_MS
-      ),
+    const [{ accounts, describe }] = await Promise.all([
+      listAccountsWithClaudeResets(db),
       providerAccountSnapshotsRestored(),
     ]);
     const quotas = peekProviderAccountQuotas(db, accounts);
@@ -213,17 +208,14 @@ export const adminAccountsRoutes = new Hono()
         ...toAdminAccountView(account),
         quota: quotas.get(account.id) ?? null,
         profile: profiles.get(account.id) ?? null,
-        claudeResets: describeClaudeResets(account, claims, fences),
+        claudeResets: describe(account),
       })),
       providers: summarizeProviderStatuses(accounts),
     });
   })
   .get("/quotas", async (context) => {
-    const [{ accounts, claims, fences }] = await Promise.all([
-      listProviderAccountsWithClaudeResetClaims(
-        db,
-        Date.now() - CLAUDE_RESET_CLAIM_LOOKBACK_MS
-      ),
+    const [{ accounts, describe }] = await Promise.all([
+      listAccountsWithClaudeResets(db),
       providerAccountSnapshotsRestored(),
     ]);
     const quotas = await listProviderAccountQuotas(db, accounts);
@@ -231,10 +223,7 @@ export const adminAccountsRoutes = new Hono()
       quotas: Object.fromEntries(quotas),
       profiles: Object.fromEntries(peekProviderAccountProfiles(accounts)),
       claudeResets: Object.fromEntries(
-        accounts.map((account) => [
-          account.id,
-          describeClaudeResets(account, claims, fences),
-        ])
+        accounts.map((account) => [account.id, describe(account)])
       ),
     });
   })

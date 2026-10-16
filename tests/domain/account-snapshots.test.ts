@@ -22,7 +22,7 @@ import {
 import * as schema from "../../src/db/schema";
 import { createAccountSnapshotStore } from "../../src/domain/providers/account-snapshot-store";
 import {
-  claudeOrganization,
+  claudeResetIdentity,
   expireProviderAccountTracking,
   listProviderAccountQuotas,
   peekProviderAccountProfiles,
@@ -439,18 +439,7 @@ describe("account snapshots", () => {
     expect(peekProviderAccountProfiles([account]).get(id)?.data).toMatchObject({
       displayName: "Preview user",
     });
-    expect(claudeOrganization(account)).toEqual({ problem: "unverified" });
-    globalThis.fetch = providerFetch(
-      {},
-      {
-        "/api/oauth/usage": () =>
-          Response.json({ five_hour: { utilization: 0 } }),
-      }
-    );
-    expireProviderAccountTracking(id);
-    await listProviderAccountQuotas(database, [account]);
-    await Bun.sleep(0);
-    expect(claudeOrganization(account)).toEqual({ problem: "unverified" });
+    expect(claudeResetIdentity(account)).toBeNull();
     await store.settled();
   });
 
