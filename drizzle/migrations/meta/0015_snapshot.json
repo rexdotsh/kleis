@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "4236ccfd-c17d-4811-94db-bb66a85f86e1",
+  "id": "a51cf542-62f4-4183-b38c-e448596ee6da",
   "prevId": "27127e14-ce95-48d6-8712-517ddfbb22fe",
   "tables": {
     "api_keys": {
@@ -95,6 +95,43 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "claude_reset_claim_fences": {
+      "name": "claude_reset_claim_fences",
+      "columns": {
+        "account_identity": {
+          "name": "account_identity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "organization_uuid": {
+          "name": "organization_uuid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "claude_reset_claim_fences_account_identity_organization_uuid_pk": {
+          "columns": ["account_identity", "organization_uuid"],
+          "name": "claude_reset_claim_fences_account_identity_organization_uuid_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "claude_reset_claims": {
       "name": "claude_reset_claims",
       "columns": {
@@ -109,7 +146,7 @@
           "name": "provider_account_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "account_identity": {
@@ -117,8 +154,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false,
-          "default": "''"
+          "autoincrement": false
         },
         "organization_uuid": {
           "name": "organization_uuid",
@@ -215,12 +251,12 @@
       "indexes": {
         "claude_reset_claims_account_idx": {
           "name": "claude_reset_claims_account_idx",
-          "columns": ["provider_account_id", "updated_at"],
+          "columns": ["account_identity", "organization_uuid", "updated_at"],
           "isUnique": false
         },
         "claude_reset_claims_active_unique": {
           "name": "claude_reset_claims_active_unique",
-          "columns": ["provider_account_id", "account_identity"],
+          "columns": ["account_identity", "organization_uuid"],
           "isUnique": true,
           "where": "\"claude_reset_claims\".\"status\" in ('pending', 'ambiguous')"
         }
@@ -232,7 +268,7 @@
           "tableTo": "provider_accounts",
           "columnsFrom": ["provider_account_id"],
           "columnsTo": ["id"],
-          "onDelete": "cascade",
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },

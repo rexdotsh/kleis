@@ -22,6 +22,7 @@ import {
 import * as schema from "../../src/db/schema";
 import { createAccountSnapshotStore } from "../../src/domain/providers/account-snapshot-store";
 import {
+  claudeOrganization,
   expireProviderAccountTracking,
   listProviderAccountQuotas,
   peekProviderAccountProfiles,
@@ -410,6 +411,47 @@ describe("account snapshots", () => {
     await listProviderAccountQuotas(database, await account());
     await Bun.sleep(0);
     expect(calls["/api/oauth/profile"]).toBe(3);
+  });
+
+  test("a restored display profile cannot prove an identity-less credential's Claude identity", async () => {
+    const id = await insertAccount("claude");
+    const now = Date.now();
+    await upsertProviderAccountSnapshots(database, [
+      {
+        providerAccountId: id,
+        accountIdentity: "",
+        updatedAt: now,
+        profile: {
+          fetchedAt: now,
+          json: JSON.stringify({
+            provider: "claude",
+            displayName: "Preview user",
+            accountUuid: "old-preview-user",
+            organizationUuid: "old-preview-org",
+          }),
+        },
+      },
+    ]);
+    const store = createAccountSnapshotStore(database);
+    await restoreProviderAccountSnapshots(database, store);
+    const [account] = await accountsById(id);
+    if (!account) throw new Error("account missing");
+    expect(peekProviderAccountProfiles([account]).get(id)?.data).toMatchObject({
+      displayName: "Preview user",
+    });
+    expect(claudeOrganization(account)).toEqual({ problem: "unverified" });
+    globalThis.fetch = providerFetch(
+      {},
+      {
+        "/api/oauth/usage": () =>
+          Response.json({ five_hour: { utilization: 0 } }),
+      }
+    );
+    expireProviderAccountTracking(id);
+    await listProviderAccountQuotas(database, [account]);
+    await Bun.sleep(0);
+    expect(claudeOrganization(account)).toEqual({ problem: "unverified" });
+    await store.settled();
   });
 
   test("a Codex plan change is stored at once and looks the workspace up again", async () => {

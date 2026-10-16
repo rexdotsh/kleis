@@ -29,6 +29,7 @@ import { logInfo, logWarn } from "../../utils/log";
 import {
   type ClaudeResetCredits,
   claudeOrganization,
+  currentClaudeResetStatus,
   holdClaudeResetCredits,
   claudeResetIdentityBinding,
   peekClaudeResetCredits,
@@ -57,6 +58,7 @@ export const CLAUDE_RESET_CLAIM_LOOKBACK_MS = OFFER_MAX_AGE_MS;
 export type ClaudeResetClaimConflictReason =
   | "organization_unknown"
   | "identity_unknown"
+  | "identity_unverified"
   | "identity_changed"
   | "claim_in_progress"
   | "claim_unconfirmed"
@@ -110,12 +112,17 @@ const bindOffer = (
 type ResetConfirmation = { grantId: string; offerKey: string };
 
 const confirmedOffer = (
+  account: ProviderAccountRecord,
   credits: ClaudeResetCredits,
   version: number,
   identity: ClaudeResetClaimIdentity,
   confirmation: ResetConfirmation
 ): ClaudeResetOffer => {
-  const { offer } = summarizeClaudeResets(credits.status, Date.now());
+  const now = Date.now();
+  const { offer } = summarizeClaudeResets(
+    currentClaudeResetStatus(account, credits, now),
+    now
+  );
   if (!offer)
     throw new ClaudeResetClaimConflict(
       "not_claimable",
@@ -203,7 +210,11 @@ export type ClaudeResetsView = {
   clears: ClaudeResetLimitType[];
   ineligibleReason: string | null;
   offer: ClaudeResetOffer | null;
-  unavailable: ClaudeResetUnavailableReason | "checking" | null;
+  unavailable:
+    | ClaudeResetUnavailableReason
+    | "checking"
+    | "identity_unverified"
+    | null;
   claim: { status: "pending" | "ambiguous"; startedAt: number } | null;
 };
 
@@ -234,6 +245,13 @@ export const describeClaudeResets = (
     return null;
   }
   const credits = peekClaudeResetCredits(account);
+  const identity = claudeOrganization(account);
+  if (
+    ("problem" in identity && identity.problem === "unverified") ||
+    ("accountUuid" in identity && !identity.accountUuid)
+  ) {
+    return emptyView(credits?.observedAt ?? null, "identity_unverified", null);
+  }
   const claims = claimsForIdentity(allClaims, account);
   const open = findOpenClaim(claims, now);
   if (open && !isReconciled(open, credits)) {
@@ -248,8 +266,10 @@ export const describeClaudeResets = (
   if (!isCurrent(credits, account, claims)) {
     return emptyView(credits.observedAt, "checking", null);
   }
-  const summary = summarizeClaudeResets(credits.status, now);
-  const identity = claudeOrganization(account);
+  const summary = summarizeClaudeResets(
+    currentClaudeResetStatus(account, credits, now),
+    now
+  );
   if (!("organizationUuid" in identity) || !identity.accountUuid)
     return emptyView(credits.observedAt, "checking", null);
   const canonical = {
@@ -327,23 +347,28 @@ const fromError = (
 const sendClaim = async (
   database: Database,
   account: ProviderAccountRecord,
-  claim: ClaudeResetClaimIdentity & { grantId: string; requestId: string }
+  claim: ClaudeResetClaimIdentity & { grantId: string; requestId: string },
+  beforeSend: (current: ProviderAccountRecord) => void
 ): Promise<ClaudeResetClaimOutcome & { lastError: string | null }> => {
-  const send = async (current: ProviderAccountRecord) => ({
-    ...fromResult(
-      claim.requestId,
-      await claimClaudeResetCredit({
-        accessToken: current.accessToken,
-        organizationUuid: claim.organizationUuid,
-        grantId: claim.grantId,
-        requestId: claim.requestId,
-      })
-    ),
-    lastError: null,
-  });
+  const send = async (current: ProviderAccountRecord) => {
+    beforeSend(current);
+    return {
+      ...fromResult(
+        claim.requestId,
+        await claimClaudeResetCredit({
+          accessToken: current.accessToken,
+          organizationUuid: claim.organizationUuid,
+          grantId: claim.grantId,
+          requestId: claim.requestId,
+        })
+      ),
+      lastError: null,
+    };
+  };
   try {
     return await send(account);
   } catch (error) {
+    if (error instanceof ClaudeResetClaimConflict) throw error;
     if (!(error instanceof AccountTrackingHttpError && error.status === 401)) {
       return fromError(claim.requestId, error);
     }
@@ -366,6 +391,7 @@ const sendClaim = async (
     try {
       return await send(refreshed);
     } catch (retryError) {
+      if (retryError instanceof ClaudeResetClaimConflict) throw retryError;
       return fromError(claim.requestId, retryError);
     }
   }
@@ -496,6 +522,11 @@ export const claimClaudeReset = async (
   }
   const organization = claudeOrganization(stored);
   if (!("organizationUuid" in organization)) {
+    if (organization.problem === "unverified")
+      throw new ClaudeResetClaimConflict(
+        "identity_unverified",
+        "This credential's Claude identity isn't verified; reconnect the account or wait for profile sync"
+      );
     throw organization.problem === "mismatch"
       ? new ClaudeResetClaimConflict(
           "identity_changed",
@@ -551,7 +582,7 @@ export const claimClaudeReset = async (
       "Couldn't check this account's resets right now; try again shortly"
     );
   }
-  confirmedOffer(credits, ledger.version, identity, input);
+  confirmedOffer(stored, credits, ledger.version, identity, input);
 
   const account = await resolveTrackingAccount(database, stored);
   if (!account) {
@@ -582,6 +613,7 @@ export const claimClaudeReset = async (
       "Couldn't recheck this account's resets; nothing was used"
     );
   const currentOffer = confirmedOffer(
+    account,
     currentCredits,
     ledger.version,
     identity,
@@ -594,14 +626,49 @@ export const claimClaudeReset = async (
     offer: currentOffer,
     now: Date.now(),
   });
-  holdClaudeResetCredits(account);
   const startedAt = Date.now();
   try {
-    const outcome = await sendClaim(database, account, {
-      ...identity,
-      grantId: currentOffer.grantId,
-      requestId,
-    });
+    const dispatchCredits = peekClaudeResetCredits(account);
+    if (!dispatchCredits || !isFresh(dispatchCredits))
+      throw new ClaudeResetClaimConflict(
+        "stale",
+        "Couldn't recheck this account's resets; nothing was used"
+      );
+    confirmedOffer(account, dispatchCredits, ledger.version, identity, input);
+    holdClaudeResetCredits(account);
+    const outcome = await sendClaim(
+      database,
+      account,
+      {
+        ...identity,
+        grantId: currentOffer.grantId,
+        requestId,
+      },
+      (current) => {
+        if (!isFresh(dispatchCredits))
+          throw new ClaudeResetClaimConflict(
+            "stale",
+            "The reset confirmation expired; review it again"
+          );
+        const canonical = claudeOrganization(current);
+        if (
+          !("organizationUuid" in canonical) ||
+          canonical.organizationUuid !== identity.organizationUuid ||
+          canonical.accountUuid !== identity.accountIdentity
+        )
+          throw new ClaudeResetClaimConflict(
+            "identity_changed",
+            "This account's OAuth identity changed; review it again"
+          );
+        confirmedOffer(
+          current,
+          dispatchCredits,
+          ledger.version,
+          identity,
+          input
+        );
+      }
+    );
     await settle(database, account, outcome);
     (outcome.status === "completed" ? logInfo : logWarn)(
       "claude_reset_claim_settled",
@@ -617,6 +684,21 @@ export const claimClaudeReset = async (
     );
     const { lastError: _lastError, ...result } = outcome;
     return result;
+  } catch (error) {
+    if (error instanceof ClaudeResetClaimConflict) {
+      await settle(database, account, {
+        requestId,
+        status: reused ? "ambiguous" : "failed",
+        result: null,
+        reason: null,
+        resetsLeft: null,
+        cleared: [],
+        weeklyResetsAt: null,
+        httpStatus: null,
+        lastError: "Confirmation changed before dispatch",
+      });
+    }
+    throw error;
   } finally {
     releaseClaudeResetCredits(database, account);
   }

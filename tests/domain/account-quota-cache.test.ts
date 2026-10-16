@@ -295,11 +295,11 @@ describe("limits from proxied traffic", () => {
       },
     });
 
-    // The usual three minutes now run from the header reading.
+    // Reset discovery stays on its three-minute pace even with live limits.
     setSystemTime(new Date(startedAt + 200_000));
     await listProviderAccountQuotas(database, [account]);
     await Bun.sleep(0);
-    expect(usageCalls).toBe(1);
+    expect(usageCalls).toBe(2);
 
     setSystemTime(new Date(startedAt + 301_000));
     await listProviderAccountQuotas(database, [account]);

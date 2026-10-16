@@ -19,6 +19,7 @@ import type { Database } from "../../src/db";
 import * as claimRepository from "../../src/db/repositories/claude-reset-claims";
 import {
   findProviderAccountById,
+  replaceProviderAccountCredentials,
   type ProviderAccountRecord,
 } from "../../src/db/repositories/provider-accounts";
 import * as schema from "../../src/db/schema";
@@ -29,8 +30,10 @@ import {
   describeClaudeResets,
 } from "../../src/domain/providers/claude-reset-claims";
 import {
+  expireProviderAccountTracking,
   listProviderAccountQuotas,
   recordProviderAccountLiveLimits,
+  refreshClaudeResetCredits,
   setAccountSnapshotStore,
 } from "../../src/domain/providers/provider-account-tracking";
 import { readClaudeLiveLimits } from "../../src/providers/account-tracking/live-limits";
@@ -73,8 +76,14 @@ const cedar = (
 });
 
 const usageBody = (block: unknown) => ({
-  five_hour: { utilization: 40, resets_at: "2026-10-15T15:00:00+00:00" },
-  seven_day: { utilization: 20, resets_at: "2026-10-19T19:00:00+00:00" },
+  five_hour: {
+    utilization: 40,
+    resets_at: new Date(Date.now() + 60 * MINUTE).toISOString(),
+  },
+  seven_day: {
+    utilization: 20,
+    resets_at: new Date(Date.now() + 7 * 24 * 60 * MINUTE).toISOString(),
+  },
   extra_usage: { is_enabled: true, monthly_limit: 5000 },
   limits: [],
   cedar_ember: block,
@@ -94,6 +103,14 @@ const upstream = {
     }),
   organization: ORGANIZATION,
   account: ACCOUNT,
+  profile: (): Response =>
+    Response.json({
+      account: { uuid: upstream.account },
+      organization: {
+        uuid: upstream.organization,
+        organization_type: "claude_max",
+      },
+    }),
   refresh: (): Response => {
     throw new Error("Unexpected token refresh");
   },
@@ -120,15 +137,7 @@ const mockAnthropic = (() =>
       return Promise.resolve(upstream.usage());
     }
     if (url.pathname === "/api/oauth/profile") {
-      return Promise.resolve(
-        Response.json({
-          account: { uuid: upstream.account },
-          organization: {
-            uuid: upstream.organization,
-            organization_type: "claude_max",
-          },
-        })
-      );
+      return Promise.resolve(upstream.profile());
     }
     if (url.pathname === "/api/oauth/claude_cli/roles") {
       return Promise.resolve(Response.json({}));
@@ -246,6 +255,14 @@ describe("Claude reset claims", () => {
       });
     upstream.organization = ORGANIZATION;
     upstream.account = ACCOUNT;
+    upstream.profile = () =>
+      Response.json({
+        account: { uuid: upstream.account },
+        organization: {
+          uuid: upstream.organization,
+          organization_type: "claude_max",
+        },
+      });
     upstream.refresh = () => {
       throw new Error("Unexpected token refresh");
     };
@@ -897,20 +914,31 @@ describe("Claude reset claims", () => {
 
   test("a natural reset requires a new early-use confirmation before dispatch", async () => {
     const account = await addAccount();
-    const initial = grant({ percent_used: { five_hour: 100 } });
+    const initial = grant({
+      clears: ["five_hour"],
+      percent_used: { five_hour: 100 },
+    });
     upstream.usage = () =>
-      Response.json(
-        usageBody(
+      Response.json({
+        ...usageBody(
           cedar([initial], { at_limit: true, exhausted: ["five_hour"] })
-        )
-      );
+        ),
+        five_hour: {
+          utilization: 100,
+          resets_at: new Date(startedAt + 5 * 60 * MINUTE).toISOString(),
+        },
+      });
     await readQuota(account);
     const confirmed = await offerOf(account);
     expect((await view(account))?.offer?.earlyUse).toBeNull();
     upstream.usage = () =>
-      Response.json(
-        usageBody(cedar([{ ...initial, percent_used: { five_hour: 0 } }]))
-      );
+      Response.json({
+        ...usageBody(cedar([{ ...initial, percent_used: { five_hour: 0 } }])),
+        five_hour: {
+          utilization: 0,
+          resets_at: new Date(startedAt + 5 * 60 * MINUTE).toISOString(),
+        },
+      });
     setSystemTime(new Date(startedAt + 4 * MINUTE));
     await readQuota(account);
     await flush();
@@ -990,4 +1018,469 @@ describe("Claude reset claims", () => {
       else expect(key).not.toBe(confirmed.offerKey);
     }
   );
+
+  test.each(["live", "boundary", "reset-only"])(
+    "current limits require renewed early-use confirmation after a natural reset: %s",
+    async (source) => {
+      const account = await addAccount();
+      const block = cedar(
+        [grant({ clears: ["five_hour"], percent_used: { five_hour: 100 } })],
+        { exhausted: ["five_hour"], at_limit: true }
+      );
+      upstream.usage = () =>
+        Response.json({
+          ...usageBody(block),
+          five_hour: {
+            utilization: 100,
+            resets_at: new Date(startedAt + MINUTE).toISOString(),
+          },
+        });
+      await readQuota(account);
+      const confirmed = await offerOf(account);
+      expect((await view(account))?.offer?.earlyUse).toBeNull();
+      setSystemTime(new Date(startedAt + 2 * MINUTE));
+      if (source === "live")
+        recordProviderAccountLiveLimits(
+          account,
+          readClaudeLiveLimits(
+            new Headers({
+              "anthropic-ratelimit-unified-5h-utilization": "0",
+              "anthropic-ratelimit-unified-5h-reset": String(
+                (startedAt + 5 * 60 * MINUTE) / 1000
+              ),
+            })
+          )
+        );
+      if (source === "reset-only")
+        recordProviderAccountLiveLimits(
+          account,
+          readClaudeLiveLimits(
+            new Headers({
+              "anthropic-ratelimit-unified-5h-reset": String(
+                (startedAt + 5 * 60 * MINUTE) / 1000
+              ),
+            })
+          )
+        );
+      const outcome = await claimClaudeReset(
+        database,
+        account.id,
+        confirmed
+      ).catch((error: unknown) => error);
+      expect(outcome).toBeInstanceOf(ClaudeResetClaimConflict);
+      expect((outcome as ClaudeResetClaimConflict).reason).toBe(
+        "offer_changed"
+      );
+      expect(upstream.claims).toHaveLength(0);
+      expect(upstream.usageUrls).toHaveLength(1);
+      expect((await view(account))?.offer?.earlyUse?.percentUsed).toBe(
+        source === "reset-only" ? null : 0
+      );
+      expect((await offerOf(account)).offerKey).not.toBe(confirmed.offerKey);
+    }
+  );
+
+  test.each([false, true])(
+    "reauthorization with identity-less credentials cannot claim using a retained display profile (expire: %s)",
+    async (expire) => {
+      const account = await addAccount();
+      await readQuota(account);
+      const confirmed = await offerOf(account);
+      const replaced = await replaceProviderAccountCredentials(
+        database,
+        account.id,
+        {
+          provider: "claude",
+          accountId: null,
+          accessToken: "fake-other-user-access",
+          refreshToken: "fake-other-user-refresh",
+          expiresAt: startedAt + 24 * 60 * MINUTE,
+          metadata: {
+            provider: "claude",
+            scope: null,
+            oauthMode: "max",
+            oauthHost: "claude.ai",
+          },
+          now: startedAt + 1000,
+        }
+      );
+      if (!replaced) throw new Error("reauthorization missing");
+      if (expire) expireProviderAccountTracking(account.id);
+      upstream.profile = () =>
+        Response.json({ error: "profile unavailable" }, { status: 503 });
+      await readQuota(replaced);
+      await flush();
+      const outcome = await claimClaudeReset(
+        database,
+        account.id,
+        confirmed
+      ).catch((error: unknown) => error);
+      expect(outcome).toBeInstanceOf(ClaudeResetClaimConflict);
+      expect(upstream.claims).toHaveLength(0);
+      expect((await view(replaced))?.offer).toBeNull();
+      expect((await view(replaced))?.unavailable).toBe("identity_unverified");
+    }
+  );
+
+  test("reset discovery stays due at the normal pace under continuous proxy traffic", async () => {
+    const account = await addAccount();
+    const unsupported = cedar([
+      grant({ clears: ["five_hour", "unknown_window"] }),
+    ]);
+    upstream.usage = () => Response.json(usageBody(unsupported));
+    await readQuota(account);
+    expect((await view(account))?.unavailable).toBe("unsupported_limits");
+    upstream.usage = () => Response.json(usageBody(cedar()));
+    for (let minute = 1; minute <= 4; minute++) {
+      setSystemTime(new Date(startedAt + minute * MINUTE));
+      recordProviderAccountLiveLimits(
+        account,
+        readClaudeLiveLimits(
+          new Headers({ "anthropic-ratelimit-unified-5h-utilization": "0.4" })
+        )
+      );
+      await readQuota(account);
+      await flush();
+      if (minute < 3) expect(upstream.usageUrls).toHaveLength(1);
+    }
+    expect(upstream.usageUrls).toHaveLength(2);
+    expect((await view(account))?.unavailable).toBeNull();
+    expect((await view(account))?.offer).not.toBeNull();
+  });
+
+  test("a live reset during ledger reservation is checked again before sending", async () => {
+    const account = await addAccount();
+    const block = cedar(
+      [grant({ clears: ["five_hour"], percent_used: { five_hour: 100 } })],
+      { exhausted: ["five_hour"] }
+    );
+    upstream.usage = () =>
+      Response.json({
+        ...usageBody(block),
+        five_hour: {
+          utilization: 100,
+          resets_at: new Date(startedAt + 5 * 60 * MINUTE).toISOString(),
+        },
+      });
+    await readQuota(account);
+    const confirmed = await offerOf(account);
+    const insert = claimRepository.insertClaudeResetClaim;
+    const intercepted = spyOn(
+      claimRepository,
+      "insertClaudeResetClaim"
+    ).mockImplementation(async (...args) => {
+      await insert(...args);
+      setSystemTime(new Date(startedAt + MINUTE));
+      recordProviderAccountLiveLimits(
+        account,
+        readClaudeLiveLimits(
+          new Headers({ "anthropic-ratelimit-unified-5h-utilization": "0" })
+        )
+      );
+    });
+    try {
+      expect(
+        await conflictOf(claimClaudeReset(database, account.id, confirmed))
+      ).toBe("offer_changed");
+      expect(upstream.claims).toHaveLength(0);
+      expect(await claimRows(account)).toMatchObject([{ status: "failed" }]);
+    } finally {
+      intercepted.mockRestore();
+    }
+  });
+
+  test("aborting a reused reservation keeps the original ambiguous claim fenced", async () => {
+    const account = await addAccount();
+    const block = cedar(
+      [grant({ clears: ["five_hour"], percent_used: { five_hour: 100 } })],
+      { exhausted: ["five_hour"] }
+    );
+    upstream.usage = () =>
+      Response.json({
+        ...usageBody(block),
+        five_hour: {
+          utilization: 100,
+          resets_at: new Date(startedAt + 5 * 60 * MINUTE).toISOString(),
+        },
+      });
+    await readQuota(account);
+    upstream.claim = () => Response.json({}, { status: 503 });
+    const first = await claimClaudeReset(
+      database,
+      account.id,
+      await offerOf(account)
+    );
+    await flush();
+    setSystemTime(new Date(startedAt + 4 * MINUTE));
+    await readQuota(account);
+    await flush();
+    const confirmed = await offerOf(account);
+    const reopen = claimRepository.reopenClaudeResetClaim;
+    const intercepted = spyOn(
+      claimRepository,
+      "reopenClaudeResetClaim"
+    ).mockImplementation(async (...args) => {
+      await reopen(...args);
+      recordProviderAccountLiveLimits(
+        account,
+        readClaudeLiveLimits(
+          new Headers({ "anthropic-ratelimit-unified-5h-utilization": "0" })
+        )
+      );
+    });
+    try {
+      expect(
+        await conflictOf(claimClaudeReset(database, account.id, confirmed))
+      ).toBe("offer_changed");
+      expect(upstream.claims).toHaveLength(1);
+      expect(await claimRows(account)).toMatchObject([
+        { status: "ambiguous", requestId: first?.requestId },
+      ]);
+    } finally {
+      intercepted.mockRestore();
+    }
+  });
+
+  test("a successful profile lookup for the current credential can supply missing token identity", async () => {
+    const account = await addAccount({});
+    await readQuota(account);
+    expect(
+      (await claimClaudeReset(database, account.id, await offerOf(account)))
+        ?.status
+    ).toBe("completed");
+    expect(upstream.claims).toHaveLength(1);
+  });
+
+  test.each([false, true])(
+    "a slow poll cannot overwrite newer live limits used in the confirmation (reset-only: %s)",
+    async (resetOnly) => {
+      const account = await addAccount();
+      const block = cedar(
+        [grant({ clears: ["five_hour"], percent_used: { five_hour: 100 } })],
+        { exhausted: ["five_hour"] }
+      );
+      const body = {
+        ...usageBody(block),
+        five_hour: {
+          utilization: 100,
+          resets_at: new Date(startedAt + 5 * 60 * MINUTE).toISOString(),
+        },
+      };
+      upstream.usage = () => Response.json(body);
+      await readQuota(account);
+      const confirmed = await offerOf(account);
+      let finish: (response: Response) => void = () => undefined;
+      upstream.usage = () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        });
+      setSystemTime(new Date(startedAt + 3 * MINUTE));
+      await readQuota(account);
+      await flush();
+      setSystemTime(new Date(startedAt + 3 * MINUTE + 1000));
+      if (resetOnly)
+        recordProviderAccountLiveLimits(
+          account,
+          readClaudeLiveLimits(
+            new Headers({
+              "anthropic-ratelimit-unified-5h-utilization": "1",
+              "anthropic-ratelimit-unified-5h-reset": String(
+                (startedAt + 5 * 60 * MINUTE) / 1000
+              ),
+            })
+          )
+        );
+      recordProviderAccountLiveLimits(
+        account,
+        readClaudeLiveLimits(
+          new Headers(
+            resetOnly
+              ? {
+                  "anthropic-ratelimit-unified-5h-reset": String(
+                    (startedAt + 6 * 60 * MINUTE) / 1000
+                  ),
+                }
+              : { "anthropic-ratelimit-unified-5h-utilization": "0" }
+          )
+        )
+      );
+      finish(Response.json(body));
+      await flush();
+      expect((await view(account))?.offer?.earlyUse?.percentUsed).toBe(
+        resetOnly ? null : 0
+      );
+      expect(
+        await conflictOf(claimClaudeReset(database, account.id, confirmed))
+      ).toBe("offer_changed");
+      expect(upstream.claims).toHaveLength(0);
+      upstream.usage = () => Response.json(body);
+      setSystemTime(new Date(startedAt + 6 * MINUTE));
+      await readQuota(account);
+      await flush();
+      expect((await view(account))?.offer?.earlyUse).toBeNull();
+    }
+  );
+
+  test("reset discovery under traffic still respects the shared 429 pause and retry pace", async () => {
+    const account = await addAccount();
+    upstream.usage = () =>
+      Response.json(
+        usageBody(cedar([grant({ blocking: ["unknown_window"] })]))
+      );
+    await readQuota(account);
+    upstream.usage = () => Response.json({}, { status: 429 });
+    try {
+      for (let minute = 1; minute <= 4; minute++) {
+        setSystemTime(new Date(startedAt + minute * MINUTE));
+        recordProviderAccountLiveLimits(
+          account,
+          readClaudeLiveLimits(
+            new Headers({ "anthropic-ratelimit-unified-5h-utilization": "0.4" })
+          )
+        );
+        await readQuota(account);
+        await flush();
+      }
+      expect(upstream.usageUrls).toHaveLength(2);
+    } finally {
+      upstream.usage = () => Response.json(usageBody(cedar()));
+      setSystemTime(new Date(startedAt + 5 * MINUTE + 1000));
+      recordProviderAccountLiveLimits(
+        account,
+        readClaudeLiveLimits(
+          new Headers({ "anthropic-ratelimit-unified-5h-utilization": "0.4" })
+        )
+      );
+      await readQuota(account);
+      await flush();
+    }
+    expect(upstream.usageUrls).toHaveLength(3);
+    expect((await view(account))?.offer).not.toBeNull();
+    for (let minute = 6; minute <= 7; minute++) {
+      setSystemTime(new Date(startedAt + minute * MINUTE));
+      recordProviderAccountLiveLimits(
+        account,
+        readClaudeLiveLimits(
+          new Headers({ "anthropic-ratelimit-unified-5h-utilization": "0.4" })
+        )
+      );
+      await readQuota(account);
+      await flush();
+    }
+    expect(upstream.usageUrls).toHaveLength(3);
+  });
+
+  test.each([false, true])(
+    "a rejected token retry rechecks current limits without changing the request ID (reset: %s)",
+    async (reset) => {
+      const account = await addAccount();
+      const block = cedar(
+        [grant({ clears: ["five_hour"], percent_used: { five_hour: 100 } })],
+        { exhausted: ["five_hour"] }
+      );
+      upstream.usage = () =>
+        Response.json({
+          ...usageBody(block),
+          five_hour: {
+            utilization: 100,
+            resets_at: new Date(startedAt + 5 * 60 * MINUTE).toISOString(),
+          },
+        });
+      await readQuota(account);
+      const confirmed = await offerOf(account);
+      upstream.claim = () =>
+        upstream.claims.length === 1
+          ? Response.json({}, { status: 401 })
+          : Response.json({ result: "reset" });
+      upstream.refresh = () => {
+        if (reset)
+          recordProviderAccountLiveLimits(
+            account,
+            readClaudeLiveLimits(
+              new Headers({ "anthropic-ratelimit-unified-5h-utilization": "0" })
+            )
+          );
+        return Response.json({
+          access_token: "fake-refreshed-access",
+          refresh_token: "fake-refreshed-token",
+          expires_in: 3600,
+          account: { uuid: ACCOUNT },
+          organization: { uuid: ORGANIZATION },
+        });
+      };
+      const outcome = await claimClaudeReset(
+        database,
+        account.id,
+        confirmed
+      ).catch((error: unknown) => error);
+      if (reset) {
+        expect(outcome).toBeInstanceOf(ClaudeResetClaimConflict);
+        expect(upstream.claims).toHaveLength(1);
+      } else {
+        expect(outcome).toMatchObject({ status: "completed", result: "reset" });
+        expect(upstream.claims).toHaveLength(2);
+        expect(upstream.claims[0]?.body.request_id).toBe(
+          upstream.claims[1]?.body.request_id
+        );
+      }
+    }
+  );
+
+  test("a reset block refreshed during reservation must still match before dispatch", async () => {
+    const account = await addAccount();
+    await readQuota(account);
+    const confirmed = await offerOf(account);
+    const insert = claimRepository.insertClaudeResetClaim;
+    const intercepted = spyOn(
+      claimRepository,
+      "insertClaudeResetClaim"
+    ).mockImplementation(async (...args) => {
+      await insert(...args);
+      upstream.usage = () =>
+        Response.json(
+          usageBody(cedar([grant({ blocking: ["unknown_window"] })]))
+        );
+      await refreshClaudeResetCredits(database, account);
+    });
+    try {
+      expect(
+        await conflictOf(claimClaudeReset(database, account.id, confirmed))
+      ).toBe("not_claimable");
+      expect(upstream.claims).toHaveLength(0);
+      expect(await claimRows(account)).toMatchObject([{ status: "failed" }]);
+    } finally {
+      intercepted.mockRestore();
+    }
+  });
+
+  test("an exhausted reset block cannot suppress the warning when current window usage is unknown", async () => {
+    const account = await addAccount();
+    const block = cedar(
+      [grant({ clears: ["five_hour"], percent_used: { five_hour: 100 } })],
+      { exhausted: ["five_hour"] }
+    );
+    upstream.usage = () =>
+      Response.json({
+        ...usageBody(block),
+        five_hour: {
+          utilization: 100,
+          resets_at: new Date(startedAt + 5 * 60 * MINUTE).toISOString(),
+        },
+      });
+    await readQuota(account);
+    const confirmed = await offerOf(account);
+    upstream.usage = () =>
+      Response.json({ ...usageBody(block), five_hour: null });
+    setSystemTime(new Date(startedAt + 3 * MINUTE));
+    await readQuota(account);
+    await flush();
+    expect(
+      await conflictOf(claimClaudeReset(database, account.id, confirmed))
+    ).toBe("offer_changed");
+    expect(upstream.claims).toHaveLength(0);
+    expect((await view(account))?.offer?.earlyUse).toEqual({
+      limit: null,
+      percentUsed: null,
+    });
+  });
 });

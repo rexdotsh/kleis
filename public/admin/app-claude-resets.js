@@ -70,6 +70,13 @@ function claudeResetsFact(account) {
       "Kleis checks again shortly",
     ]);
   }
+  if (resets.unavailable === "identity_unverified") {
+    return fact(
+      "Limit resets",
+      '<span class="muted">Identity not verified</span>',
+      ["reconnect or wait for sync"]
+    );
+  }
   if (resets.ineligibleReason === "surface") {
     return fact("Limit resets", '<span class="muted">claude.ai only</span>', [
       "can't be used through Kleis",

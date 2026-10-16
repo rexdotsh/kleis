@@ -27,9 +27,13 @@ import {
   fetchClaudeAccountProfile,
   fetchClaudeSubscriptionUsage,
 } from "../../providers/account-tracking/claude";
-import type { ClaudeResetStatus } from "../../providers/account-tracking/claude-resets";
+import {
+  type ClaudeResetStatus,
+  claudeResetLimitTypes,
+} from "../../providers/account-tracking/claude-resets";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
 import {
+  type ClaudeLiveLimits,
   type LiveLimits,
   mergeClaudeLiveLimits,
   mergeCodexLiveLimits,
@@ -69,6 +73,7 @@ type CodexTrackingData = {
 // refresh the quota, never the resets.
 export type ClaudeResetCredits = {
   observedAt: number;
+  credential: string;
   // Binds this read to the canonical OAuth user and organization, not a local row.
   identity: string | null;
   status: ClaudeResetStatus;
@@ -95,7 +100,23 @@ export type AccountQuota = {
   data: TrackingData;
 };
 
-const cache = new Map<string, { expiresAt: number; quota: AccountQuota }>();
+type QuotaEntry = {
+  expiresAt: number;
+  // Live traffic cannot postpone reset discovery.
+  resetPollAt: number;
+  credential: string;
+  quota: AccountQuota;
+};
+const cache = new Map<string, QuotaEntry>();
+
+const credentialBinding = (account: ProviderAccountRecord): string =>
+  Bun.CryptoHasher.hash("sha256", account.accessToken, "hex");
+
+// Only readings received during a poll can supersede that poll's windows.
+const claudeLiveDuringPoll = new Map<
+  string,
+  { credential: string; limits: ClaudeLiveLimits }
+>();
 
 let snapshots: AccountSnapshotStore | null = null;
 let snapshotsRestored: Promise<void> = Promise.resolve();
@@ -247,6 +268,9 @@ type ProfileEntry = {
   // The token response's organization when the profile was looked up; a
   // different one means the account moved and the profile is out of date.
   organizationKey: string | null;
+  lookupCredential: string | null;
+  // Display data can survive a failed lookup; identity proof cannot change hands.
+  identityCredential: string | null;
 };
 
 // Plans and profiles rarely change, so they are looked up once a day (spread
@@ -281,9 +305,15 @@ const getClaudeProfile = async (
   const previous =
     cached?.profile?.provider === "claude" ? cached.profile : null;
   const organizationKey = claudeOrganizationKey(account);
+  const credential = credentialBinding(account);
   const organizationChanged =
     organizationKey !== null && cached?.organizationKey !== organizationKey;
-  if (cached && cached.expiresAt > Date.now() && !organizationChanged) {
+  if (
+    cached &&
+    cached.expiresAt > Date.now() &&
+    !organizationChanged &&
+    cached.lookupCredential === credential
+  ) {
     return previous;
   }
   try {
@@ -298,6 +328,8 @@ const getClaudeProfile = async (
       error: null,
       expiresAt: profileExpiry(fetchedAt),
       organizationKey: organizationKey ?? profileOrganizationKey(profile),
+      lookupCredential: credential,
+      identityCredential: credential,
     });
     snapshots?.recordProfile(account, profile, fetchedAt);
     return profile;
@@ -315,6 +347,8 @@ const getClaudeProfile = async (
       expiresAt:
         Date.now() + Math.max(PROFILE_RETRY_MS, cacheDuration([error])),
       organizationKey: organizationKey ?? cached?.organizationKey ?? null,
+      lookupCredential: credential,
+      identityCredential: cached?.identityCredential ?? null,
     });
     return previous;
   }
@@ -400,6 +434,8 @@ const updateCodexProfile = async (
     error: profileError,
     expiresAt,
     organizationKey: null,
+    lookupCredential: null,
+    identityCredential: null,
   });
   if (
     fetchedAt !== (cached?.fetchedAt ?? null) ||
@@ -437,6 +473,7 @@ const fetchAccountData = async (
           ...(resets && {
             resetCredits: {
               observedAt: now,
+              credential: credentialBinding(current),
               identity:
                 "organizationUuid" in organization && organization.accountUuid
                   ? claudeResetIdentityBinding(
@@ -519,7 +556,8 @@ const keepClaudeResetCredits = (
   key: string,
   data: TrackingData,
   previous: TrackingData | undefined,
-  startedAt: number
+  startedAt: number,
+  credential: string
 ): void => {
   if (data.provider !== "claude") {
     return;
@@ -531,7 +569,7 @@ const keepClaudeResetCredits = (
   if (
     !data.resetCredits &&
     previous?.provider === "claude" &&
-    previous.resetCredits
+    previous.resetCredits?.credential === credential
   ) {
     data.resetCredits = previous.resetCredits;
   }
@@ -555,13 +593,14 @@ const fetchProviderAccountQuota = async (
   generation: number
 ): Promise<AccountQuota | null> => {
   const now = Date.now();
+  let credential = credentialBinding(stored);
   // Limits read from proxied traffic while this lookup ran are newer than
   // what was cached when it started.
   const latest = (): AccountQuota | undefined => cache.get(key)?.quota;
   const publish = (quota: AccountQuota, expiresAt: number): AccountQuota => {
     // A lookup started later, or an invalidation, owns the cache entry.
     if (generations.get(key) === generation) {
-      cache.set(key, { expiresAt, quota });
+      cache.set(key, { expiresAt, resetPollAt: expiresAt, credential, quota });
       snapshots?.recordQuota(stored, quota, quotaSignature(quota.data));
     }
     return quota;
@@ -583,8 +622,21 @@ const fetchProviderAccountQuota = async (
     if (!account) {
       return null;
     }
+    credential = credentialBinding(account);
+    const duringPoll: ClaudeLiveLimits = { provider: "claude", windows: {} };
+    if (account.provider === "claude")
+      claudeLiveDuringPoll.set(key, { credential, limits: duringPoll });
     const result = await fetchAccountData(database, account, now);
-    keepClaudeResetCredits(key, result.data, latest()?.data, now);
+    if (result.data.provider === "claude") {
+      credential = result.data.resetCredits?.credential ?? credential;
+      if (result.data.subscription && Object.keys(duringPoll.windows).length) {
+        result.data.subscription = mergeClaudeLiveLimits(
+          result.data.subscription,
+          duringPoll
+        );
+      }
+    }
+    keepClaudeResetCredits(key, result.data, latest()?.data, now, credential);
     let expiresAt = now + Math.max(baseMs, cacheDuration(result.errors));
     if (account.provider === "claude") {
       noteClaudeUsageResult(result.errors);
@@ -620,6 +672,7 @@ const loadProviderAccountQuota = (
   ).finally(() => {
     if (inFlight.get(key) === request) {
       inFlight.delete(key);
+      claudeLiveDuringPoll.delete(key);
     }
   });
   inFlight.set(key, request);
@@ -637,11 +690,20 @@ const getProviderAccountQuota = (
   if (force || !cached) {
     return loadProviderAccountQuota(database, stored, force);
   }
-  if (cached.expiresAt <= Date.now()) {
+  if (quotaRefreshDue(stored, cached)) {
     loadProviderAccountQuota(database, stored, false).catch(() => undefined);
   }
   return Promise.resolve(cached.quota);
 };
+
+const quotaRefreshDue = (
+  account: TrackingAccount,
+  entry: QuotaEntry
+): boolean =>
+  entry.expiresAt <= Date.now() ||
+  (account.provider === "claude" &&
+    (entry.credential !== credentialBinding(account) ||
+      entry.resetPollAt <= Date.now()));
 
 const toResetTimestamp = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -712,6 +774,8 @@ const restoreSnapshot = (
       error: null,
       expiresAt: row.profileFetchedAt ? profileExpiry(row.profileFetchedAt) : 0,
       organizationKey: profileOrganizationKey(restoredProfile),
+      lookupCredential: credentialBinding(account),
+      identityCredential: null,
     });
   }
 
@@ -729,6 +793,14 @@ const restoreSnapshot = (
       // Restored limits count as fresh only for what is left of the usual
       // interval since they were fetched, so normal refreshes continue.
       expiresAt: (row.quotaFetchedAt ?? 0) + baseMs,
+      resetPollAt:
+        (data.provider === "claude"
+          ? (data.resetCredits?.observedAt ?? row.quotaFetchedAt ?? 0)
+          : 0) + baseMs,
+      credential:
+        data.provider === "claude" && data.resetCredits
+          ? (data.resetCredits.credential ?? "")
+          : credentialBinding(account),
       quota: {
         fetchedAt: row.quotaFetchedAt,
         error: row.lastError,
@@ -791,11 +863,17 @@ export const expireProviderAccountTracking = (
   for (const [key, entry] of profiles) {
     if (key.startsWith(prefix)) {
       entry.expiresAt = 0;
+      entry.identityCredential = null;
+      entry.lookupCredential = null;
     }
   }
   for (const [key, entry] of cache) {
     if (key.startsWith(prefix)) {
       entry.expiresAt = 0;
+      entry.resetPollAt = 0;
+      dropCachedResetCredits(key);
+      inFlight.delete(key);
+      nextGeneration(key);
     }
   }
 };
@@ -835,7 +913,7 @@ export const peekProviderAccountQuotas = (
   const quotas = new Map<string, AccountQuota | null>();
   for (const account of providerAccounts.filter(isTrackingAccount)) {
     const cached = cache.get(quotaKey(account));
-    if (!cached || cached.expiresAt <= Date.now()) {
+    if (!cached || quotaRefreshDue(account, cached)) {
       loadProviderAccountQuota(database, account, false).catch(() => undefined);
     }
     quotas.set(account.id, cached?.quota ?? null);
@@ -864,11 +942,8 @@ const mergeLiveLimits = (
   };
 };
 
-// Limits read from a proxied response count as a fresh sync: the next poll
-// waits the usual interval from now, so busy accounts rarely need one. It runs
-// on the proxy hot path, so it only touches memory and the buffered snapshot
-// store, and never throws. The shared Claude 429 pause is about the usage
-// endpoint, so it stays.
+// Traffic refreshes ordinary limits, but Claude reset discovery keeps its
+// own due time. This hot path only updates memory and buffered snapshots.
 export const recordProviderAccountLiveLimits = (
   account: ProviderAccountRecord,
   limits: LiveLimits | null
@@ -882,7 +957,22 @@ export const recordProviderAccountLiveLimits = (
   try {
     const key = quotaKey(account);
     const now = Date.now();
-    const entry = cache.get(key);
+    const cached = cache.get(key);
+    const credential = credentialBinding(account);
+    const entry = cached?.credential === credential ? cached : undefined;
+    const poll = claudeLiveDuringPoll.get(key);
+    if (limits.provider === "claude" && poll?.credential === credential) {
+      for (const [type, reading] of Object.entries(limits.windows)) {
+        const previous = poll.limits.windows[type];
+        poll.limits.windows[type] = {
+          ...previous,
+          ...(reading.resetsAt && reading.resetsAt !== previous?.resetsAt
+            ? { utilization: null }
+            : {}),
+          ...reading,
+        };
+      }
+    }
     const quota: AccountQuota = {
       fetchedAt: now,
       error: null,
@@ -893,6 +983,8 @@ export const recordProviderAccountLiveLimits = (
     const baseMs = account.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS;
     cache.set(key, {
       quota,
+      credential,
+      resetPollAt: entry?.resetPollAt ?? now,
       // Without an earlier poll the plan and the limits only the usage
       // endpoints report are missing, so the next read still polls.
       expiresAt: entry ? Math.max(entry.expiresAt, now + baseMs) : now,
@@ -1037,7 +1129,7 @@ export const redeemCodexResetCredit = async (
 
 export type ClaudeOrganization =
   | { organizationUuid: string; accountUuid: string | null }
-  | { problem: "unknown" | "mismatch" };
+  | { problem: "unknown" | "mismatch" | "unverified" };
 
 // Reset claims use the OAuth user and organization, which must agree with
 // the profile Anthropic last returned.
@@ -1048,9 +1140,13 @@ export const claudeOrganization = (
     account.metadata?.provider === "claude"
       ? (account.metadata.organizationUuid ?? null)
       : null;
-  const profile = isTrackingAccount(account)
-    ? profiles.get(quotaKey(account))?.profile
+  const entry = isTrackingAccount(account)
+    ? profiles.get(quotaKey(account))
     : null;
+  const profile =
+    entry?.identityCredential === credentialBinding(account)
+      ? entry.profile
+      : null;
   const lookedUp =
     profile?.provider === "claude" ? profile.organizationUuid : null;
   const storedAccount =
@@ -1075,7 +1171,13 @@ export const claudeOrganization = (
         organizationUuid,
         accountUuid: normalize(profileAccount ?? storedAccount),
       }
-    : { problem: "unknown" };
+    : {
+        problem:
+          entry?.profile &&
+          entry.identityCredential !== credentialBinding(account)
+            ? "unverified"
+            : "unknown",
+      };
 };
 
 // Stored limits retain an identity binding without exposing the OAuth IDs.
@@ -1096,7 +1198,71 @@ export const peekClaudeResetCredits = (
     return null;
   }
   const data = cache.get(quotaKey(account))?.quota.data;
-  return (data?.provider === "claude" && data.resetCredits) || null;
+  const credits = data?.provider === "claude" ? data.resetCredits : null;
+  return credits?.credential === credentialBinding(account) ? credits : null;
+};
+
+export const currentClaudeResetStatus = (
+  account: ProviderAccountRecord,
+  credits: ClaudeResetCredits,
+  now: number
+): ClaudeResetStatus => {
+  const entry = cache.get(quotaKey(account));
+  const data =
+    entry &&
+    (entry.credential === credentialBinding(account) ||
+      entry.credential === credits.credential)
+      ? entry.quota.data
+      : null;
+  const usage = data?.provider === "claude" ? data.subscription : null;
+  const windows: ClaudeLiveLimits["windows"] = {
+    ...(usage?.fiveHour && { five_hour: usage.fiveHour }),
+    ...(usage?.sevenDay && { seven_day: usage.sevenDay }),
+    ...Object.fromEntries(
+      Object.entries(usage?.modelWindows ?? {}).filter(
+        ([, window]) => window !== null
+      )
+    ),
+  };
+  // A cached grant cannot prove that a current window is still exhausted.
+  const exhausted = new Set<(typeof claudeResetLimitTypes)[number]>();
+  const percents = new Map<
+    (typeof claudeResetLimitTypes)[number],
+    number | null
+  >();
+  for (const type of claudeResetLimitTypes) {
+    const window = windows[type];
+    const reset = toResetTimestamp(window?.resetsAt);
+    const percent = reset !== null && reset <= now ? 0 : window?.utilization;
+    if (!window) {
+      percents.set(type, null);
+      continue;
+    }
+    if (
+      typeof percent !== "number" ||
+      !Number.isFinite(percent) ||
+      percent < 0
+    ) {
+      exhausted.delete(type);
+      percents.set(type, null);
+      continue;
+    }
+    percents.set(type, Math.min(100, percent));
+    if (percent < 100) exhausted.delete(type);
+    else exhausted.add(type);
+  }
+  return {
+    ...credits.status,
+    exhausted: [...exhausted],
+    grants: credits.status.grants.map((grant) => {
+      const percentUsed = usage ? { ...grant.percentUsed } : {};
+      for (const [type, percent] of percents) {
+        if (percent === null) delete percentUsed[type];
+        else percentUsed[type] = percent;
+      }
+      return { ...grant, percentUsed };
+    }),
+  };
 };
 
 // Waits for a usage read through the usual path: it joins one already
