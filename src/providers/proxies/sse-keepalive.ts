@@ -1,10 +1,10 @@
+import { createProxyResponseHeaders } from "./response";
+
 const SSE_KEEPALIVE_INTERVAL_MS = 25_000;
 const SSE_KEEPALIVE_BYTES = new TextEncoder().encode(": kleis-keepalive\n\n");
 
 export const createSseResponseHeaders = (source?: HeadersInit): Headers => {
-  const headers = new Headers(source);
-  headers.delete("content-encoding");
-  headers.delete("content-length");
+  const headers = createProxyResponseHeaders(source ?? {});
   headers.set("cache-control", "no-cache, no-transform");
   if (!headers.has("content-type")) {
     headers.set("content-type", "text/event-stream");
@@ -24,7 +24,7 @@ export const createSseKeepAlive = (
 ): { clear(): void } => {
   let active = true;
   const timer = setInterval(() => {
-    if (!active) {
+    if (!active || (controller.desiredSize ?? 0) <= 0) {
       return;
     }
 

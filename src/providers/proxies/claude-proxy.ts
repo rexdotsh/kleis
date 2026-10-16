@@ -12,20 +12,23 @@ import {
   readAnthropicUsageObject,
   type TokenUsage,
 } from "../../usage/token-usage";
-import { errorLogFields, hashLogId, logError, logWarn } from "../../utils/log";
 import { toNonNegativeInteger } from "../../utils/number";
 import { isObjectRecord, type JsonObject, withField } from "../../utils/object";
 import {
   type ClaudeToolNames,
   mapClaudeRequestToolNames,
 } from "./claude-tool-names";
+import { readSseData, replaceSseData } from "./sse-events";
+import { createSseRelay } from "./sse-relay";
 import {
-  createSseEventFramer,
-  readSseData,
-  replaceSseData,
-} from "./sse-events";
-import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
-import { readUpstreamErrorFields } from "./upstream-error";
+  isEventStreamResponse,
+  passthroughProxyResponse,
+  transformJsonResponse,
+} from "./response";
+import {
+  readStreamErrorStatus,
+  readUpstreamErrorFields,
+} from "./upstream-error";
 
 // Anthropic OAuth rejects these system-prompt markers from third-party clients.
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/prompt/anthropic.txt
@@ -198,21 +201,6 @@ const transformSseEventChunk = (
   }
 };
 
-// 529 is Anthropic's overloaded status.
-const readStreamErrorStatus = (payload: Record<string, unknown>): number => {
-  const type = isObjectRecord(payload.error) ? payload.error.type : null;
-  if (type === "rate_limit_error") {
-    return 429;
-  }
-  return type === "overloaded_error" ? 529 : 502;
-};
-
-export const isEventStreamResponse = (response: Response): boolean =>
-  response.body !== null &&
-  (response.headers.get("content-type") ?? "")
-    .toLowerCase()
-    .includes("text/event-stream");
-
 const maybeTransformClaudeStreamResponse = (
   response: Response,
   toolNames: ClaudeToolNames,
@@ -220,45 +208,7 @@ const maybeTransformClaudeStreamResponse = (
   onStreamEnd?: ((statusCode: number) => void) | null,
   providerAccountId?: string
 ): Response => {
-  if (!response.body) {
-    return response;
-  }
-
-  const reader = response.body.getReader();
-  const encoder = new TextEncoder();
-  const framer = createSseEventFramer();
-  const startedAt = Date.now();
-  let bytes = 0;
-  let chunks = 0;
-  let lastChunkAt = startedAt;
-  let lastWriteAt = startedAt;
-  let closed = false;
   let endStatus: number | null = response.ok ? null : response.status;
-  let clearKeepAlive: (() => void) | null = null;
-
-  const logStreamAnomaly = (
-    event: string,
-    fields: Record<string, string | number | boolean | null> = {},
-    error?: unknown
-  ): void => {
-    const log = error === undefined ? logWarn : logError;
-    log(event, {
-      provider: "claude",
-      providerAccountId,
-      requestIdHash: hashLogId(
-        response.headers.get("request-id") ??
-          response.headers.get("x-request-id")
-      ),
-      transport: "sse_transform",
-      elapsedMs: Date.now() - startedAt,
-      idleMs: Date.now() - lastChunkAt,
-      downstreamIdleMs: Date.now() - lastWriteAt,
-      bytes,
-      chunks,
-      ...fields,
-      ...(error === undefined ? {} : errorLogFields(error)),
-    });
-  };
 
   const streamUsage: TokenUsage = {
     inputTokens: 0,
@@ -267,22 +217,6 @@ const maybeTransformClaudeStreamResponse = (
     cacheWriteTokens: 0,
   };
   let sawStreamUsage = false;
-  let usageReported = false;
-  const reportStreamUsage = (): void => {
-    if (usageReported || !sawStreamUsage) {
-      return;
-    }
-    usageReported = true;
-    onTokenUsage?.({ ...streamUsage });
-  };
-
-  // Usage goes first so the request recorded at the end includes it.
-  const finishStream = (fallbackStatus: number): void => {
-    closed = true;
-    clearKeepAlive?.();
-    reportStreamUsage();
-    onStreamEnd?.(endStatus ?? fallbackStatus);
-  };
 
   const readOptionalUsageToken = (
     usage: Record<string, unknown>,
@@ -294,190 +228,91 @@ const maybeTransformClaudeStreamResponse = (
       : toNonNegativeInteger(value);
   };
 
-  const observePayload = (payload: unknown): void => {
-    if (!isObjectRecord(payload)) {
-      return;
-    }
+  return createSseRelay({
+    response,
+    provider: "claude",
+    providerAccountId,
+    transport: "sse_transform",
+    streamFailedEvent: "claude_sse_stream_failed",
+    onTokenUsage,
+    onStreamEnd,
+    createProtocol: ({ log }) => {
+      const observePayload = (payload: unknown): void => {
+        if (!isObjectRecord(payload)) {
+          return;
+        }
 
-    if (payload.type === "message_start") {
-      const message = isObjectRecord(payload.message) ? payload.message : null;
-      const usage = readAnthropicUsageObject(message?.usage);
-      if (!usage) {
-        return;
-      }
-
-      sawStreamUsage = true;
-      Object.assign(streamUsage, usage);
-      return;
-    }
-
-    if (payload.type === "message_delta") {
-      const usage = isObjectRecord(payload.usage) ? payload.usage : null;
-      if (!usage) {
-        return;
-      }
-
-      sawStreamUsage = true;
-      streamUsage.inputTokens =
-        readOptionalUsageToken(usage, "input_tokens") ??
-        streamUsage.inputTokens;
-      streamUsage.outputTokens =
-        readOptionalUsageToken(usage, "output_tokens") ??
-        streamUsage.outputTokens;
-      streamUsage.cacheReadTokens =
-        readOptionalUsageToken(usage, "cache_read_input_tokens") ??
-        streamUsage.cacheReadTokens;
-      streamUsage.cacheWriteTokens =
-        readOptionalUsageToken(usage, "cache_creation_input_tokens") ??
-        streamUsage.cacheWriteTokens;
-      return;
-    }
-
-    if (payload.type === "message_stop") {
-      endStatus ??= 200;
-      return;
-    }
-
-    if (payload.type === "error") {
-      endStatus ??= readStreamErrorStatus(payload);
-      if (response.ok) {
-        logStreamAnomaly("claude_sse_error_event", {
-          status: readStreamErrorStatus(payload),
-          ...readUpstreamErrorFields(payload),
-        });
-      }
-    }
-  };
-
-  const transformEvents = (events: string[]): string => {
-    let output = "";
-    for (const event of events) {
-      output += transformSseEventChunk(event, toolNames, observePayload);
-    }
-    return output;
-  };
-
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller): void {
-      clearKeepAlive = createSseKeepAlive(controller, {
-        onKeepAlive: () => {
-          lastWriteAt = Date.now();
-        },
-      }).clear;
-    },
-    async pull(controller): Promise<void> {
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            if (closed) {
-              clearKeepAlive?.();
-              return;
-            }
-            const { events, rest } = framer.end();
-            const output = transformEvents(rest ? [...events, rest] : events);
-            if (output) {
-              controller.enqueue(encoder.encode(output));
-              lastWriteAt = Date.now();
-            }
-            // Forwarded as is: OpenCode treats an EOF without message_stop as
-            // an interrupted stream and can continue from the partial output.
-            if (endStatus === null) {
-              logStreamAnomaly("claude_sse_missing_message_stop", {
-                truncatedEvent: rest.trim().length > 0,
-              });
-            }
-            finishStream(502);
-            controller.close();
+        if (payload.type === "message_start") {
+          const message = isObjectRecord(payload.message)
+            ? payload.message
+            : null;
+          const usage = readAnthropicUsageObject(message?.usage);
+          if (!usage) {
             return;
           }
 
-          if (!value) {
-            continue;
-          }
-
-          bytes += value.byteLength;
-          chunks++;
-          lastChunkAt = Date.now();
-          const events = framer.push(value);
-          if (!events.length) {
-            continue;
-          }
-          controller.enqueue(encoder.encode(transformEvents(events)));
-          lastWriteAt = Date.now();
+          sawStreamUsage = true;
+          Object.assign(streamUsage, usage);
           return;
         }
-      } catch (error) {
-        if (closed) {
-          clearKeepAlive?.();
+
+        if (payload.type === "message_delta") {
+          const usage = isObjectRecord(payload.usage) ? payload.usage : null;
+          if (!usage) {
+            return;
+          }
+
+          sawStreamUsage = true;
+          streamUsage.inputTokens =
+            readOptionalUsageToken(usage, "input_tokens") ??
+            streamUsage.inputTokens;
+          streamUsage.outputTokens =
+            readOptionalUsageToken(usage, "output_tokens") ??
+            streamUsage.outputTokens;
+          streamUsage.cacheReadTokens =
+            readOptionalUsageToken(usage, "cache_read_input_tokens") ??
+            streamUsage.cacheReadTokens;
+          streamUsage.cacheWriteTokens =
+            readOptionalUsageToken(usage, "cache_creation_input_tokens") ??
+            streamUsage.cacheWriteTokens;
           return;
         }
-        finishStream(502);
-        logStreamAnomaly("claude_sse_stream_failed", {}, error);
-        reader.cancel(error).catch(() => undefined);
-        controller.error(error);
-      }
-    },
-    cancel(reason): Promise<void> {
-      if (!closed) {
-        // 499: the client closed the request.
-        finishStream(499);
-      }
-      return reader.cancel(reason);
-    },
-  });
 
-  return new Response(stream, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: createSseResponseHeaders(response.headers),
+        if (payload.type === "message_stop") {
+          endStatus ??= 200;
+          return;
+        }
+
+        if (payload.type === "error") {
+          endStatus ??= readStreamErrorStatus(payload);
+          if (response.ok) {
+            log("claude_sse_error_event", {
+              status: readStreamErrorStatus(payload),
+              ...readUpstreamErrorFields(payload),
+            });
+          }
+        }
+      };
+
+      return {
+        transformEvent: (event) =>
+          transformSseEventChunk(event, toolNames, observePayload),
+        getUsage: () => (sawStreamUsage ? { ...streamUsage } : null),
+        getEndStatus: () => endStatus,
+        onEof(rest): void {
+          // OpenCode treats an EOF without message_stop as an interrupted stream.
+          if (endStatus === null) {
+            log("claude_sse_missing_message_stop", {
+              truncatedEvent: rest.trim().length > 0,
+            });
+          }
+        },
+      };
+    },
   });
 };
 
-const maybeTransformClaudeJsonResponse = async (
-  response: Response,
-  toolNames: ClaudeToolNames,
-  onTokenUsage?: ((usage: TokenUsage) => void) | null
-): Promise<Response> => {
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.toLowerCase().includes("application/json")) {
-    return response;
-  }
-
-  const bodyText = await response.text();
-  let jsonBody: unknown;
-  try {
-    jsonBody = JSON.parse(bodyText) as unknown;
-  } catch {
-    return new Response(bodyText, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
-  }
-
-  const transformedBody = transformClaudeResponsePayload(jsonBody, toolNames);
-  const usage = readAnthropicUsageFromResponse(jsonBody);
-  if (usage) {
-    onTokenUsage?.(usage);
-  }
-  const headers = new Headers(response.headers);
-  headers.delete("content-length");
-  if (transformedBody === jsonBody) {
-    return new Response(bodyText, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
-  }
-  return Response.json(transformedBody, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-};
-
-const transformClaudeResponse = (
+const transformClaudeResponse = async (
   response: Response,
   toolNames: ClaudeToolNames,
   onTokenUsage?: ((usage: TokenUsage) => void) | null,
@@ -485,21 +320,28 @@ const transformClaudeResponse = (
   providerAccountId?: string
 ): Promise<Response> => {
   if (isEventStreamResponse(response)) {
-    return Promise.resolve(
-      maybeTransformClaudeStreamResponse(
-        response,
-        toolNames,
-        onTokenUsage,
-        onStreamEnd,
-        providerAccountId
-      )
+    return maybeTransformClaudeStreamResponse(
+      response,
+      toolNames,
+      onTokenUsage,
+      onStreamEnd,
+      providerAccountId
     );
   }
   if (!response.body) {
-    return Promise.resolve(response);
+    return response;
   }
-
-  return maybeTransformClaudeJsonResponse(response, toolNames, onTokenUsage);
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("application/json")) {
+    return passthroughProxyResponse(response);
+  }
+  return transformJsonResponse({
+    response,
+    readUsage: readAnthropicUsageFromResponse,
+    transformPayload: (payload) =>
+      transformClaudeResponsePayload(payload, toolNames),
+    onTokenUsage,
+  });
 };
 
 const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {

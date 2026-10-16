@@ -17,10 +17,8 @@ import {
   readClaudeLiveLimits,
   readCodexLiveLimits,
 } from "../../providers/account-tracking/live-limits";
-import {
-  isEventStreamResponse,
-  prepareClaudeProxyRequest,
-} from "../../providers/proxies/claude-proxy";
+import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
+import { isEventStreamResponse } from "../../providers/proxies/response";
 import {
   deriveCodexSessionId,
   prepareCodexProxyRequest,
@@ -321,6 +319,9 @@ const proxyRequest = async (
 
   const headers = createUpstreamProxyHeaders(context.req.raw.headers);
   let sendAttempt: (account: ProviderAccountRecord) => Promise<ProxyAttempt>;
+  let respondedAt = 0;
+  const onStreamEnd = (statusCode: number): void =>
+    usageRecorder.recordFinal(statusCode, respondedAt);
 
   switch (route.provider) {
     case "codex": {
@@ -347,6 +348,7 @@ const proxyRequest = async (
           bodyJson: requestBodyJson,
           sessionId: codexUpstreamSessionId,
           onTokenUsage: usageRecorder.onTokenUsage,
+          onStreamEnd,
         });
 
         if (CODEX_WEBSOCKET_ENABLED && route.operation !== "compact") {
@@ -384,7 +386,6 @@ const proxyRequest = async (
     case "claude": {
       sendAttempt = async (attemptAccount) => {
         const attemptHeaders = new Headers(headers);
-        let respondedAt = 0;
         const claudeProxy = prepareClaudeProxyRequest({
           requestUrl,
           headers: attemptHeaders,
@@ -397,8 +398,7 @@ const proxyRequest = async (
               ? attemptAccount.metadata
               : null,
           onTokenUsage: usageRecorder.onTokenUsage,
-          onStreamEnd: (statusCode) =>
-            usageRecorder.recordFinal(statusCode, respondedAt),
+          onStreamEnd,
         });
         const response = await fetchProxyUpstream({
           url: claudeProxy.upstreamUrl,
@@ -408,7 +408,6 @@ const proxyRequest = async (
           signal: context.req.raw.signal,
           useCodexSseHeaderTimeout: false,
         });
-        respondedAt = Date.now();
         return { response, transformResponse: claudeProxy.transformResponse };
       };
       break;
@@ -447,6 +446,7 @@ const proxyRequest = async (
     throw error;
   }
   account = result.account;
+  respondedAt = Date.now();
   const { attempt } = result;
   await logUpstreamResponse(attempt.response, route, account.id, startedAt);
   recordProviderAccountLiveLimits(
@@ -472,7 +472,7 @@ const proxyRequest = async (
     }
   }
 
-  if (route.provider === "codex" || !isEventStreamResponse(attempt.response)) {
+  if (!attempt.transformResponse || !isEventStreamResponse(responseToClient)) {
     usageRecorder.recordFinal(attempt.response.status);
   }
   return responseToClient;

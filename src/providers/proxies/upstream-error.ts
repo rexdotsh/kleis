@@ -42,6 +42,25 @@ export const readUpstreamErrorFields = (
   };
 };
 
+export const readStreamErrorStatus = (payload: unknown): number => {
+  const { errorType, errorCode } = readUpstreamErrorFields(payload);
+  if (
+    [errorType, errorCode].some(
+      (code) =>
+        code === "rate_limit_error" ||
+        code === "rate_limit_exceeded" ||
+        code === "usage_limit_reached" ||
+        code === "insufficient_quota"
+    )
+  ) {
+    return 429;
+  }
+  // 529 is Anthropic's overloaded status.
+  return errorType === "overloaded_error" || errorCode === "overloaded_error"
+    ? 529
+    : 502;
+};
+
 const MAX_ERROR_BYTES = 8192;
 const ERROR_READ_TIMEOUT_MS = 100;
 
