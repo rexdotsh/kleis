@@ -59,13 +59,21 @@ function resetCreditsDetail(account, windows) {
     : offer.status?.link
       ? `<a class="link small" href="${offer.settingsUrl}" target="_blank" rel="noopener" aria-label="${escapeHtml(`${providerLabel(account.provider)} settings: ${offer.status.label}`)}">${escapeHtml(offer.status.link)}</a>`
       : "";
-  const line = `<span class="reset-line${offer.retry || offer.status?.warning ? " warn" : ""}" title="${escapeHtml(title)}"><span class="reset-copy">${escapeHtml(text)}</span>${expiring ? `<span class="reset-expiry">\u00b7 expires ${escapeHtml(untilText(offer.expiresAt))}</span>` : ""}${action ? `<span aria-hidden="true">\u00b7</span>${action}` : ""}</span>`;
+  const copy = expiring
+    ? `${text} \u00b7 ${untilText(offer.expiresAt).replace(/^in /, "")} left`
+    : text;
+  const tone = offer.retry || offer.status?.warning ? " warn" : "";
+  const line = `<span class="reset-line${tone}" title="${escapeHtml(title)}"><span class="reset-copy">${escapeHtml(copy)}</span>${action ? `<span aria-hidden="true">\u00b7</span>${action}` : ""}</span>`;
   return {
     window,
     line,
     fallback: window
       ? ""
-      : fact(`${offer.heading}${offer.count === 1 ? "" : "s"}`, line),
+      : fact(
+          `${offer.heading}${offer.count === 1 ? "" : "s"}`,
+          `<span class="${tone.trim()}" title="${escapeHtml(title)}">${escapeHtml(copy)}</span>`,
+          [action && `<span class="reset-line${tone}">${action}</span>`]
+        ),
   };
 }
 
