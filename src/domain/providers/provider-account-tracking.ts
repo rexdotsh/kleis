@@ -777,7 +777,7 @@ const restoreSnapshot = (
           : 0) + baseMs,
       credential:
         data.provider === "claude" && data.resetCredits
-          ? (data.resetCredits.credential ?? "")
+          ? data.resetCredits.credential
           : credentialBinding(account),
       quota: {
         fetchedAt: row.quotaFetchedAt,
