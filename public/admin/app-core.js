@@ -4,7 +4,6 @@ const DAILY_TOKEN_DAYS = 30;
 const ADMIN_TOKEN_STORAGE_KEY = "kleis_admin_token";
 const FREE_TIER_STORAGE_KEY = "kleis_show_free_tier";
 const REVOKED_KEYS_STORAGE_KEY = "kleis_show_revoked_keys";
-const PROVIDER_ORDER = ["codex", "claude"];
 const FREE_TIER_CURSOR_ID = "free-tier-group";
 const REVOKED_KEYS_CURSOR_ID = "revoked-group";
 
@@ -19,14 +18,7 @@ function clearPersistedToken() {
   localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY);
 }
 
-const state = {
-  token: readPersistedToken(),
-  sessionActive: false,
-  sessionRequestSeq: 0,
-  pendingMutations: new Map(),
-  dashboardAbort: null,
-  accountUsageRequestSeq: 0,
-  keyUsageRequestSeq: 0,
+const sessionState = () => ({
   accounts: [],
   accountsLoaded: false,
   overviewReady: false,
@@ -39,10 +31,8 @@ const state = {
   keyUsageById: new Map(),
   keyUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   keysLoaded: false,
-  showRevokedKeys: localStorage.getItem(REVOKED_KEYS_STORAGE_KEY) === "true",
   keyFilter: "",
   accountFilter: "",
-  showFreeTier: localStorage.getItem(FREE_TIER_STORAGE_KEY) === "true",
   expandedAccountId: null,
   pendingExpandedAccountId: null,
   showAllReauthorize: false,
@@ -50,25 +40,38 @@ const state = {
   pendingExpandedKeyId: null,
   cursorAccountId: null,
   cursorKeyId: null,
-  enteringDetail: null,
-  motionAnchor: null,
   editingKeyId: null,
   editingAccountId: null,
   creatingKey: false,
   setupOpen: false,
   setupKeyId: null,
-  usageDetails: new Map(),
-  visibleUsageDetails: new Map(),
   activeOAuth: null,
   reauthorizeAccountId: null,
-  oauthRequestSeq: 0,
-  accountsRequestSeq: 0,
-  keysRequestSeq: 0,
-  revealedKeyIds: new Set(),
   dashboardWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   dashboardData: null,
   dashboardError: null,
   dashboardLoading: false,
+});
+
+const state = {
+  ...sessionState(),
+  token: readPersistedToken(),
+  sessionActive: false,
+  sessionRequestSeq: 0,
+  pendingMutations: new Map(),
+  dashboardAbort: null,
+  accountUsageRequestSeq: 0,
+  keyUsageRequestSeq: 0,
+  showRevokedKeys: localStorage.getItem(REVOKED_KEYS_STORAGE_KEY) === "true",
+  showFreeTier: localStorage.getItem(FREE_TIER_STORAGE_KEY) === "true",
+  enteringDetail: null,
+  motionAnchor: null,
+  usageDetails: new Map(),
+  visibleUsageDetails: new Map(),
+  revealedKeyIds: new Set(),
+  oauthRequestSeq: 0,
+  accountsRequestSeq: 0,
+  keysRequestSeq: 0,
   dashboardRequestSeq: 0,
   pendingResetRedemptions: new Map(),
 };
@@ -87,32 +90,18 @@ function setShowRevokedKeys(show) {
   localStorage.setItem(REVOKED_KEYS_STORAGE_KEY, String(show));
 }
 
-function syncDashboardWindowButtons() {
-  for (const btn of $$("#dash-window-selector .dash-window-btn")) {
-    btn.classList.toggle(
-      "active",
-      Number(btn.dataset.window) === state.dashboardWindowMs
-    );
+function syncWindowButtons(selector, windowMs) {
+  for (const btn of $$(`${selector} .dash-window-btn`)) {
+    btn.classList.toggle("active", Number(btn.dataset.window) === windowMs);
   }
 }
 
-function syncAccountWindowButtons() {
-  for (const btn of $$("#accounts-window-selector .dash-window-btn")) {
-    btn.classList.toggle(
-      "active",
-      Number(btn.dataset.window) === state.accountUsageWindowMs
-    );
-  }
-}
-
-function syncKeyWindowButtons() {
-  for (const btn of $$("#keys-window-selector .dash-window-btn")) {
-    btn.classList.toggle(
-      "active",
-      Number(btn.dataset.window) === state.keyUsageWindowMs
-    );
-  }
-}
+const syncDashboardWindowButtons = () =>
+  syncWindowButtons("#dash-window-selector", state.dashboardWindowMs);
+const syncAccountWindowButtons = () =>
+  syncWindowButtons("#accounts-window-selector", state.accountUsageWindowMs);
+const syncKeyWindowButtons = () =>
+  syncWindowButtons("#keys-window-selector", state.keyUsageWindowMs);
 
 const prefetchTimers = new Map();
 
@@ -445,41 +434,8 @@ function logout() {
   invalidateSessionRequests();
   clearPersistedToken();
   state.token = "";
-  state.accounts = [];
-  state.accountsLoaded = false;
-  state.overviewReady = false;
-  state.accountsById = new Map();
-  state.providerStatuses = [];
-  state.accountUsageById = new Map();
-  state.accountUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
-  state.keys = [];
-  state.keysById = new Map();
-  state.keyUsageById = new Map();
-  state.keyUsageWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
-  state.keysLoaded = false;
-  state.keyFilter = "";
-  state.accountFilter = "";
-  state.expandedAccountId = null;
-  state.pendingExpandedAccountId = null;
-  state.showAllReauthorize = false;
-  state.expandedKeyId = null;
-  state.pendingExpandedKeyId = null;
-  state.cursorAccountId = null;
-  state.cursorKeyId = null;
-  state.editingKeyId = null;
-  state.editingAccountId = null;
-  state.creatingKey = false;
-  state.setupOpen = false;
-  state.setupKeyId = null;
-  state.activeOAuth = null;
-  state.reauthorizeAccountId = null;
+  Object.assign(state, sessionState());
   state.revealedKeyIds.clear();
-  state.dashboardWindowMs = DEFAULT_KEY_USAGE_WINDOW_MS;
-  state.dashboardData = null;
-  state.dashboardError = null;
-  state.dashboardLoading = false;
-  $("#oauth-flow-active").style.display = "none";
-  $("#oauth-flow-active").innerHTML = "";
   $("#dash-content").innerHTML = "";
   $("#overview-loading").hidden = true;
   $("#attention").innerHTML = "";
@@ -586,10 +542,8 @@ function parseOptionalJsonObject(raw, fieldLabel) {
 }
 
 export {
-  DEFAULT_KEY_USAGE_WINDOW_MS,
   USAGE_DETAIL_TTL_MS,
   DAILY_TOKEN_DAYS,
-  PROVIDER_ORDER,
   FREE_TIER_CURSOR_ID,
   REVOKED_KEYS_CURSOR_ID,
   setShowRevokedKeys,
@@ -598,7 +552,6 @@ export {
   clearPersistedToken,
   state,
   setShowFreeTier,
-  APP_ORIGIN,
   $,
   $$,
   syncDashboardWindowButtons,
