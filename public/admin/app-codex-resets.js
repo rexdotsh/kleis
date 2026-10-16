@@ -73,7 +73,6 @@ function codexResetOffer(account) {
       ? `${count > 1 ? "next expires" : "expires"} ${untilText(expiry)}`
       : "expiry not reported",
     title: next?.title,
-    description: next?.description,
     earlyUse:
       tightest && tightest.percent < 100
         ? {

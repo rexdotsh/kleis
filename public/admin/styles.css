@@ -441,6 +441,9 @@ a.link {
   font-size: 12px;
   color: var(--muted);
 }
+.link .kbd {
+  margin-left: 6px;
+}
 @media (hover: hover) {
   .link.small:hover {
     color: var(--text);

@@ -52,8 +52,6 @@ function resetConfirmation(account, offer = resetOfferFor(account)) {
       : `${remaining} ${offer.noun}${remaining === 1 ? "" : "s"} left after this`;
   const context = [
     [balance, offer.expiryText].filter(Boolean).join(" \u00b7 "),
-    offer.title,
-    offer.description,
     ...offer.notes,
   ].filter(Boolean);
   const warning = earlyUseText(offer.earlyUse);
