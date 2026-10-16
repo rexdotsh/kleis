@@ -213,7 +213,7 @@ const listSkeletonRows = (columns) =>
       `<div class="row skeleton ${columns}"><span class="bone"></span><span class="l2">&nbsp;</span></div>`
   ).join("");
 const accountColumnsHtml = (requests = "Requests") =>
-  `<span class="col d">Limits</span><span class="col num d">Token expires</span><span class="col num">${requests}</span><span></span>`;
+  `<span class="col d">Limits</span><span class="col num d">Resets</span><span class="col num">${requests}</span><span></span>`;
 const ACCOUNT_LOADING_HTML = PROVIDERS.map(
   (provider) =>
     `<div class="group t-acc"><span class="group-name"><span class="cap">${providerName(provider)}</span></span>${accountColumnsHtml()}</div><div class="group-rows">${listSkeletonRows("t-acc")}</div>`
@@ -535,14 +535,23 @@ function spanLabel(seconds, fallback) {
   return hours >= 24 && hours % 24 === 0 ? `${hours / 24}d` : `${hours}h`;
 }
 
-function windowEntry(label, window, named = false) {
+function windowEntry(label, window, named = false, fetchedAt = null) {
   const percent = window?.usedPercent ?? window?.utilization;
   if (typeof percent !== "number" || !Number.isFinite(percent)) return null;
+  let resetsAt = quotaTimestamp(window?.resetAt ?? window?.resetsAt);
+  if (
+    resetsAt === null &&
+    Number.isFinite(fetchedAt) &&
+    Number.isFinite(window?.resetAfterSeconds)
+  ) {
+    // Relative resets belong to the snapshot, not the time of each render.
+    resetsAt = fetchedAt + window.resetAfterSeconds * 1000;
+  }
   return {
     label,
     named,
     percent: Math.max(0, Math.min(100, percent)),
-    resetsAt: quotaTimestamp(window?.resetAt ?? window?.resetsAt),
+    resetsAt,
   };
 }
 
@@ -554,17 +563,22 @@ function accountWindows(account) {
     return [
       windowEntry(
         spanLabel(status?.primaryWindow?.windowSeconds, "5h"),
-        status?.primaryWindow
+        status?.primaryWindow,
+        false,
+        account.quota.fetchedAt
       ),
       windowEntry(
         spanLabel(status?.secondaryWindow?.windowSeconds, "7d"),
-        status?.secondaryWindow
+        status?.secondaryWindow,
+        false,
+        account.quota.fetchedAt
       ),
       ...(status?.additionalRateLimits || []).map((limit) =>
         windowEntry(
           limit.limitName || limit.meteredFeature || "Extra",
           limit.primaryWindow,
-          true
+          true,
+          account.quota.fetchedAt
         )
       ),
     ].filter(Boolean);
@@ -595,7 +609,7 @@ function tightestWindow(account) {
 
 function limitSeverity(percent) {
   if (percent >= 100) return "err";
-  return percent >= 75 ? "warn" : "";
+  return percent >= 80 ? "warn" : "";
 }
 
 const ACCOUNT_ON_HOLD = "account_on_hold";
@@ -611,12 +625,18 @@ function reauthorizeDeadline(account) {
     : null;
 }
 
-function needsReauthorization(account) {
+function hasTokenFailure(account) {
   return (
-    tokenStatus(account.expiresAt).class !== "active" ||
     (account.lastRefreshStatus && account.lastRefreshStatus !== "success") ||
     account.quota?.errorStatus === 401 ||
     account.quota?.errorStatus === 403
+  );
+}
+
+function needsReauthorization(account) {
+  return (
+    tokenStatus(account.expiresAt).class !== "active" ||
+    hasTokenFailure(account)
   );
 }
 
@@ -752,6 +772,7 @@ export {
   isOnHold,
   reauthorizeDeadline,
   needsReauthorization,
+  hasTokenFailure,
   isRateLimited,
   isRateLimitedWithData,
   syncFailureText,

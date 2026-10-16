@@ -13,6 +13,7 @@ import {
 } from "./app-core.js";
 import {
   CODEX_PLAN_LABELS,
+  DAY_MS,
   PROVIDERS,
   accountColumnsHtml,
   accountIssues,
@@ -25,6 +26,7 @@ import {
   formatCompact,
   formatMetadataForInput,
   hasTraffic,
+  hasTokenFailure,
   icon,
   isAccountServing,
   isOnHold,
@@ -56,12 +58,6 @@ import {
 } from "./app-usage.js";
 import { renderAttention, usageSlotHtml } from "./app-usage-render.js";
 
-function tokenCell(account) {
-  if (!account.expiresAt) return { text: "\u2014", cls: "muted" };
-  if (account.expiresAt <= Date.now()) return { text: "Expired", cls: "err" };
-  return { text: untilText(account.expiresAt), cls: "muted" };
-}
-
 // Rows show the main windows (5h, 7d); model-specific windows stay in the
 // expanded row.
 const mainWindows = (account) =>
@@ -69,8 +65,34 @@ const mainWindows = (account) =>
     .filter((window) => !window.named)
     .slice(0, 2);
 
-function limitMetersHtml(account) {
-  const windows = mainWindows(account);
+function bindingWindow(windows) {
+  let binding = null;
+  for (const window of windows) {
+    if (!Number.isFinite(window.resetsAt)) continue;
+    if (
+      !binding ||
+      window.percent > binding.percent ||
+      (window.percent === binding.percent && window.resetsAt > binding.resetsAt)
+    ) {
+      binding = window;
+    }
+  }
+  return binding;
+}
+
+function resetCountdown(timestamp, now = Date.now()) {
+  if (!Number.isFinite(timestamp)) return "\u2014";
+  const diff = timestamp - now;
+  if (diff <= 0) return "now";
+  if (diff < 60_000) return "in <1m";
+  const minutes = Math.floor(diff / 60_000);
+  if (diff < 3_600_000) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (diff < DAY_MS) return `in ${hours}h ${minutes % 60}m`;
+  return `in ${Math.floor(hours / 24)}d ${hours % 24}h`;
+}
+
+function limitMetersHtml(account, windows) {
   if (!windows.length) {
     if (account.quota?.error) {
       return `<span class="warn">${syncFailureText(account.quota)}</span>`;
@@ -92,8 +114,7 @@ function limitMetersHtml(account) {
     .join("");
 }
 
-function limitSummaryText(account) {
-  const windows = mainWindows(account);
+function limitSummaryText(account, windows) {
   if (!windows.length) {
     return account.quota?.error
       ? `<span class="warn">${syncFailureText(account.quota).toLowerCase()}</span>`
@@ -115,20 +136,29 @@ function accountRowHtml(account, serving, grouped = false) {
   let dot = "off";
   if (serving)
     dot = issues[0]?.severity || (account.isPrimary ? "primary" : "");
-  const token = tokenCell(account);
+  const tokenNote =
+    tokenStatus(account.expiresAt).class === "expired"
+      ? "Token expired"
+      : hasTokenFailure(account)
+        ? "Reauthorize"
+        : "";
+  const windows = mainWindows(account);
+  const reset = bindingWindow(windows);
+  const resetSeverity = reset ? limitSeverity(reset.percent) : "";
+  const countdown = resetCountdown(reset?.resetsAt);
   const usage = accountUsageForId(account.id);
   const phoneParts = [
-    limitSummaryText(account),
-    token.cls === "err"
-      ? '<span class="err">token expired</span>'
-      : `expires ${escapeHtml(token.text)}`,
+    tokenNote && `<span class="err">${tokenNote}</span>`,
+    limitSummaryText(account, windows),
+    reset &&
+      `<span class="${resetSeverity}">${escapeHtml(reset.label)} resets ${escapeHtml(countdown)}</span>`,
   ].filter(Boolean);
   const cursor = state.cursorAccountId === account.id ? " cursor" : "";
 
   return `<div class="row t-acc${open ? " open" : ""}${serving ? "" : " dim"}${cursor}" data-account-id="${account.id}" data-flip="account:${account.id}" tabindex="0" role="button" aria-expanded="${open}">
-    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag tag-primary">Primary</span>' : ""}${isFreeTierAccount(account) ? `<span class="tag">${grouped ? escapeHtml(providerName(account.provider)) : "Free"}</span>` : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}</span>
-    <span class="meters d">${limitMetersHtml(account)}</span>
-    <span class="num d ${token.cls}">${escapeHtml(token.text)}</span>
+    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag tag-primary">Primary</span>' : ""}${isFreeTierAccount(account) ? `<span class="tag">${grouped ? escapeHtml(providerName(account.provider)) : "Free"}</span>` : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}${tokenNote ? `<span class="token-note err small d">${tokenNote}</span>` : ""}</span>
+    <span class="meters d">${limitMetersHtml(account, windows)}</span>
+    <span class="num d reset ${resetSeverity || "muted"}">${reset ? `<small>${escapeHtml(reset.label)}</small> ` : ""}${escapeHtml(countdown)}</span>
     <span class="num">${requestsCellHtml(usage)}</span>
     <button class="more" type="button" data-menu="account" data-account-id="${account.id}" aria-label="Actions for ${escapeHtml(name)}" aria-haspopup="menu" aria-expanded="false">${icon("more")}</button>
     <span class="l2">${phoneParts.join(" \u00b7 ")}</span>
@@ -574,4 +604,4 @@ function renderReauthorizeList() {
   el.innerHTML = rows.join("");
 }
 
-export { renderAccounts, accountMenuItems };
+export { renderAccounts, accountMenuItems, bindingWindow, resetCountdown };

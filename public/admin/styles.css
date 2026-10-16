@@ -894,6 +894,14 @@ button.row {
 .t-acc {
   grid-template-columns: minmax(0, 1fr) 196px 112px 160px 24px;
 }
+.reset small {
+  margin-right: 3px;
+  color: var(--faint);
+  font-size: 12px;
+}
+.token-note {
+  flex-shrink: 0;
+}
 .meters {
   display: flex;
   gap: 14px;
@@ -2314,6 +2322,9 @@ input[type="checkbox"].toggle:checked::after {
   }
   .t-acc .more {
     display: none;
+  }
+  .t-acc .l2 {
+    white-space: normal;
   }
   .t-key {
     grid-template-columns: minmax(0, 1fr) auto 24px;
