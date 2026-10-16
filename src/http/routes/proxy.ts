@@ -155,6 +155,11 @@ type UsageRecorderInput = {
   getProviderAccountId: () => string;
 };
 
+type ProxyAttempt = {
+  response: Response;
+  transformResponse: ((response: Response) => Promise<Response>) | null;
+};
+
 const createUsageRecorder = (input: UsageRecorderInput) => {
   let requestOccurredAt = 0;
   let requestPersisted = false;
@@ -315,10 +320,10 @@ const proxyRequest = async (
   });
 
   const headers = createUpstreamProxyHeaders(context.req.raw.headers);
+  let sendAttempt: (account: ProviderAccountRecord) => Promise<ProxyAttempt>;
 
   switch (route.provider) {
     case "codex": {
-      const initialCodexAccount = account;
       const codexSessionId = readCodexSessionId(requestBodyJson, headers);
       const codexUpstreamSessionId = codexSessionId
         ? await deriveCodexSessionId(
@@ -326,15 +331,8 @@ const proxyRequest = async (
             codexSessionId
           )
         : null;
-      const baseHeaders = new Headers(headers);
-      const baseRequestBody = requestBody;
-      const sendAttempt = async (
-        attemptAccount: ProviderAccountRecord
-      ): Promise<{
-        response: Response;
-        transformResponse: ((response: Response) => Promise<Response>) | null;
-      }> => {
-        const attemptHeaders = new Headers(baseHeaders);
+      sendAttempt = async (attemptAccount) => {
+        const attemptHeaders = new Headers(headers);
         const codexProxy = prepareCodexProxyRequest({
           ...(route.operation ? { operation: route.operation } : {}),
           headers: attemptHeaders,
@@ -345,7 +343,7 @@ const proxyRequest = async (
             attemptAccount.metadata?.provider === "codex"
               ? attemptAccount.metadata
               : null,
-          bodyText: baseRequestBody,
+          bodyText: requestBody,
           bodyJson: requestBodyJson,
           sessionId: codexUpstreamSessionId,
           onTokenUsage: usageRecorder.onTokenUsage,
@@ -380,66 +378,12 @@ const proxyRequest = async (
         });
         return { response, transformResponse: codexProxy.transformResponse };
       };
-
-      const sendCodexWithAuthReplay = () =>
-        sendWithAuthReplay<
-          ProviderAccountRecord,
-          Awaited<ReturnType<typeof sendAttempt>>
-        >({
-          account: initialCodexAccount,
-          signal: context.req.raw.signal,
-          send: sendAttempt,
-          refresh: (accountId, failedAccessToken) =>
-            refreshProviderAccountAfterAuthFailure(
-              db,
-              accountId,
-              failedAccessToken,
-              context.req.raw.signal
-            ),
-        });
-      let result: Awaited<ReturnType<typeof sendCodexWithAuthReplay>>;
-      try {
-        result = await sendCodexWithAuthReplay();
-      } catch (error) {
-        if (context.req.raw.signal.aborted) {
-          throw error;
-        }
-        usageRecorder.recordImmediate(500);
-        throw error;
-      }
-      account = result.account;
-      const { attempt } = result;
-      await logUpstreamResponse(attempt.response, route, account.id, startedAt);
-      recordProviderAccountLiveLimits(
-        account,
-        readCodexLiveLimits(attempt.response.headers)
-      );
-
-      let responseToClient = attempt.response;
-      if (attempt.transformResponse) {
-        try {
-          responseToClient = await attempt.transformResponse(attempt.response);
-          responseToClient.headers.delete("content-encoding");
-        } catch (error) {
-          context.set("proxyLogContext", {
-            ...context.get("proxyLogContext"),
-            stage: "response_transform",
-            upstreamStatus: attempt.response.status,
-          });
-          usageRecorder.recordImmediate(500);
-          throw error;
-        }
-      }
-
-      usageRecorder.recordFinal(attempt.response.status);
-      return responseToClient;
+      break;
     }
 
     case "claude": {
-      const initialClaudeAccount = account;
-      const baseHeaders = new Headers(headers);
-      const sendAttempt = async (attemptAccount: ProviderAccountRecord) => {
-        const attemptHeaders = new Headers(baseHeaders);
+      sendAttempt = async (attemptAccount) => {
+        const attemptHeaders = new Headers(headers);
         let respondedAt = 0;
         const claudeProxy = prepareClaudeProxyRequest({
           requestUrl,
@@ -467,58 +411,7 @@ const proxyRequest = async (
         respondedAt = Date.now();
         return { response, transformResponse: claudeProxy.transformResponse };
       };
-      let result: Awaited<
-        ReturnType<
-          typeof sendWithAuthReplay<
-            ProviderAccountRecord,
-            Awaited<ReturnType<typeof sendAttempt>>
-          >
-        >
-      >;
-      try {
-        result = await sendWithAuthReplay({
-          account: initialClaudeAccount,
-          signal: context.req.raw.signal,
-          send: sendAttempt,
-          refresh: (accountId, failedAccessToken) =>
-            refreshProviderAccountAfterAuthFailure(
-              db,
-              accountId,
-              failedAccessToken,
-              context.req.raw.signal
-            ),
-        });
-      } catch (error) {
-        if (context.req.raw.signal.aborted) {
-          throw error;
-        }
-        usageRecorder.recordImmediate(500);
-        throw error;
-      }
-      account = result.account;
-      const { attempt } = result;
-      await logUpstreamResponse(attempt.response, route, account.id, startedAt);
-      recordProviderAccountLiveLimits(
-        account,
-        readClaudeLiveLimits(attempt.response.headers)
-      );
-      let responseToClient = attempt.response;
-      try {
-        responseToClient = await attempt.transformResponse(attempt.response);
-        responseToClient.headers.delete("content-encoding");
-      } catch (error) {
-        context.set("proxyLogContext", {
-          ...context.get("proxyLogContext"),
-          stage: "response_transform",
-          upstreamStatus: attempt.response.status,
-        });
-        usageRecorder.recordImmediate(500);
-        throw error;
-      }
-      if (!isEventStreamResponse(attempt.response)) {
-        usageRecorder.recordFinal(attempt.response.status);
-      }
-      return responseToClient;
+      break;
     }
 
     default: {
@@ -532,6 +425,57 @@ const proxyRequest = async (
       );
     }
   }
+
+  let result: { account: ProviderAccountRecord; attempt: ProxyAttempt };
+  try {
+    result = await sendWithAuthReplay({
+      account,
+      signal: context.req.raw.signal,
+      send: sendAttempt,
+      refresh: (accountId, failedAccessToken) =>
+        refreshProviderAccountAfterAuthFailure(
+          db,
+          accountId,
+          failedAccessToken,
+          context.req.raw.signal
+        ),
+    });
+  } catch (error) {
+    if (!context.req.raw.signal.aborted) {
+      usageRecorder.recordImmediate(500);
+    }
+    throw error;
+  }
+  account = result.account;
+  const { attempt } = result;
+  await logUpstreamResponse(attempt.response, route, account.id, startedAt);
+  recordProviderAccountLiveLimits(
+    account,
+    route.provider === "codex"
+      ? readCodexLiveLimits(attempt.response.headers)
+      : readClaudeLiveLimits(attempt.response.headers)
+  );
+
+  let responseToClient = attempt.response;
+  if (attempt.transformResponse) {
+    try {
+      responseToClient = await attempt.transformResponse(attempt.response);
+      responseToClient.headers.delete("content-encoding");
+    } catch (error) {
+      context.set("proxyLogContext", {
+        ...context.get("proxyLogContext"),
+        stage: "response_transform",
+        upstreamStatus: attempt.response.status,
+      });
+      usageRecorder.recordImmediate(500);
+      throw error;
+    }
+  }
+
+  if (route.provider === "codex" || !isEventStreamResponse(attempt.response)) {
+    usageRecorder.recordFinal(attempt.response.status);
+  }
+  return responseToClient;
 };
 
 const routes = new Hono();

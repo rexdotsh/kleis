@@ -113,19 +113,6 @@ const resolveCodexWebSocketUrl = (): string => {
   return url.toString();
 };
 
-const headersToRecord = (headers: Headers): Record<string, string> => {
-  const record: Record<string, string> = {};
-  for (const [key, value] of headers) {
-    record[key] = value;
-  }
-  return record;
-};
-
-const createSseResponse = (body: ReadableStream<Uint8Array>): Response =>
-  new Response(body, {
-    headers: createSseResponseHeaders(),
-  });
-
 const readString = (value: unknown): string | null => {
   if (typeof value !== "string") {
     return null;
@@ -251,21 +238,13 @@ const scheduleExpiry = (key: string, cached: CachedSocket): void => {
   }, SESSION_SOCKET_TTL_MS);
 };
 
-const getWebSocketConstructor = (): WebSocketConstructor | null => {
-  if (webSocketConstructorOverride) {
-    return webSocketConstructorOverride;
-  }
-  return WebSocket as unknown as WebSocketConstructor;
-};
-
 const connectWebSocket = (
   headers: Headers,
   signal?: AbortSignal
 ): Promise<WebSocketLike> => {
-  const WebSocketCtor = getWebSocketConstructor();
-  if (!WebSocketCtor) {
-    return Promise.reject(new Error("WebSocket is not available"));
-  }
+  const WebSocketCtor =
+    webSocketConstructorOverride ??
+    (WebSocket as unknown as WebSocketConstructor);
   if (signal?.aborted) {
     return Promise.reject(new Error("Request was aborted"));
   }
@@ -317,8 +296,12 @@ const connectWebSocket = (
     };
 
     try {
+      const socketHeaders: Record<string, string> = {};
+      for (const [key, value] of headers) {
+        socketHeaders[key] = value;
+      }
       socket = new WebSocketCtor(resolveCodexWebSocketUrl(), {
-        headers: headersToRecord(headers),
+        headers: socketHeaders,
       });
     } catch (error) {
       reject(extractWebSocketError(error));
@@ -358,75 +341,64 @@ const acquireSocket = async (
     return acquired;
   }
 
-  const existing = socketCache.get(cacheKey);
-  if (existing) {
-    if (existing.busy) {
-      existing.continuation = null;
-      existing.skipNextContinuationStore = true;
+  let cached = socketCache.get(cacheKey);
+  if (cached) {
+    if (cached.busy) {
+      cached.continuation = null;
+      cached.skipNextContinuationStore = true;
       throw new Error("Codex WebSocket session is busy");
     }
 
-    if (existing.idleTimer) {
-      clearTimeout(existing.idleTimer);
-      existing.idleTimer = null;
+    if (cached.idleTimer) {
+      clearTimeout(cached.idleTimer);
+      cached.idleTimer = null;
     }
 
-    if (isSocketOpen(existing.socket) && isSocketFresh(existing)) {
-      existing.busy = true;
-      return {
-        socket: existing.socket,
-        cached: existing,
-        release(keep: boolean): void {
-          if (!(keep && isSocketOpen(existing.socket))) {
-            terminateSocket(existing.socket);
-            socketCache.delete(cacheKey);
-            return;
-          }
-          existing.busy = false;
-          scheduleExpiry(cacheKey, existing);
-        },
-      };
+    if (!(isSocketOpen(cached.socket) && isSocketFresh(cached))) {
+      closeSocket(cached.socket);
+      socketCache.delete(cacheKey);
+      cached = undefined;
     }
-
-    closeSocket(existing.socket);
-    socketCache.delete(cacheKey);
   }
 
-  if (pendingSocketKeys.has(cacheKey)) {
-    suppressContinuationStoreKeys.add(cacheKey);
-    throw new Error("Codex WebSocket session is connecting");
+  if (!cached) {
+    if (pendingSocketKeys.has(cacheKey)) {
+      suppressContinuationStoreKeys.add(cacheKey);
+      throw new Error("Codex WebSocket session is connecting");
+    }
+    pendingSocketKeys.add(cacheKey);
+    let socket: WebSocketLike;
+    try {
+      socket = await connectWebSocket(headers, signal);
+    } catch (error) {
+      suppressContinuationStoreKeys.delete(cacheKey);
+      throw error;
+    } finally {
+      pendingSocketKeys.delete(cacheKey);
+    }
+    cached = {
+      socket,
+      connectedAt: Date.now(),
+      busy: true,
+      idleTimer: null,
+      continuation: null,
+      skipNextContinuationStore: suppressContinuationStoreKeys.delete(cacheKey),
+    };
+    socketCache.set(cacheKey, cached);
   }
-
-  pendingSocketKeys.add(cacheKey);
-  let socket: WebSocketLike;
-  try {
-    socket = await connectWebSocket(headers, signal);
-  } catch (error) {
-    suppressContinuationStoreKeys.delete(cacheKey);
-    throw error;
-  } finally {
-    pendingSocketKeys.delete(cacheKey);
-  }
-  const cached: CachedSocket = {
-    socket,
-    connectedAt: Date.now(),
-    busy: true,
-    idleTimer: null,
-    continuation: null,
-    skipNextContinuationStore: suppressContinuationStoreKeys.delete(cacheKey),
-  };
-  socketCache.set(cacheKey, cached);
+  const session = cached;
+  session.busy = true;
   return {
-    socket,
-    cached,
+    socket: session.socket,
+    cached: session,
     release(keep: boolean): void {
-      if (!(keep && isSocketOpen(cached.socket))) {
-        terminateSocket(cached.socket);
+      if (!(keep && isSocketOpen(session.socket))) {
+        terminateSocket(session.socket);
         socketCache.delete(cacheKey);
         return;
       }
-      cached.busy = false;
-      scheduleExpiry(cacheKey, cached);
+      session.busy = false;
+      scheduleExpiry(cacheKey, session);
     },
   };
 };
@@ -466,9 +438,6 @@ const withoutTransportFields = (
 
 const sameJson = (left: unknown, right: unknown): boolean =>
   JSON.stringify(left) === JSON.stringify(right);
-
-const hasOwn = (body: Record<string, unknown>, key: string): boolean =>
-  Object.hasOwn(body, key);
 
 const sameOptionalJson = (left: unknown, right: unknown): boolean =>
   (left === undefined && right === undefined) ||
@@ -589,13 +558,10 @@ const buildRequestBody = (
   webSocketBody: Record<string, unknown>,
   cached: CachedSocket | null
 ): Record<string, unknown> => {
-  if (!cached) {
-    return webSocketBody;
-  }
-  if (!cached.continuation) {
-    return webSocketBody;
-  }
-  if (hasOwn(webSocketBody, "previous_response_id")) {
+  if (
+    !cached?.continuation ||
+    Object.hasOwn(webSocketBody, "previous_response_id")
+  ) {
     return webSocketBody;
   }
   if (!Array.isArray(webSocketBody.input)) {
@@ -635,22 +601,18 @@ const buildRequestBody = (
       baseline.length
     );
     if (
-      sameJson(webSocketBody.input.slice(0, cachedInput.length), cachedInput) &&
-      matchesLoweredResponseItems(
+      !sameJson(
+        webSocketBody.input.slice(0, cachedInput.length),
+        cachedInput
+      ) ||
+      !matchesLoweredResponseItems(
         continuation.lastResponseItems,
         responsePrefix
       )
     ) {
-      const delta = webSocketBody.input.slice(baseline.length);
-      return {
-        ...webSocketBody,
-        previous_response_id: continuation.lastResponseId,
-        input: delta,
-      };
+      cached.continuation = null;
+      return webSocketBody;
     }
-
-    cached.continuation = null;
-    return webSocketBody;
   }
 
   const delta = webSocketBody.input.slice(baseline.length);
@@ -1381,5 +1343,5 @@ export const tryProxyCodexWebSocket = async (
     },
   });
 
-  return createSseResponse(stream);
+  return new Response(stream, { headers: createSseResponseHeaders() });
 };

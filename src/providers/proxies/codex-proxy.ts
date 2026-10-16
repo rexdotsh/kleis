@@ -6,11 +6,10 @@ import {
 } from "../../utils/object";
 import {
   readOpenAiResponsesUsageFromResponse,
-  readOpenAiResponsesUsageFromSseEvent,
   type TokenUsage,
 } from "../../usage/token-usage";
 import CODEX_DEFAULT_INSTRUCTIONS from "../codex-default-instructions.txt";
-import { transformOpenAiUsageResponse } from "./openai-usage-response";
+import { createOpenAiSseUsagePassthrough } from "./openai-sse-passthrough";
 
 import {
   CODEX_ACCOUNT_ID_HEADER,
@@ -80,15 +79,7 @@ export const transformCodexBodyJson = (
     return null;
   }
 
-  // Codex's chatgpt.com backend endpoint behaves differently from generic OpenAI Responses:
-  // - OpenCode only sets top-level `instructions` in native Codex/OAuth mode.
-  //   https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/session/llm.ts#L65-L112
-  // - Codex-native clients include `instructions` explicitly in the request body.
-  //   https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/openai-codex-responses.ts#L286-L291
-  // The ChatGPT backend rejects a requested output limit, so drop it along with
-  // the legacy completions-only field and force stateless Responses storage.
-  // OpenCode strips the same limit for its first-party ChatGPT provider, but
-  // only for requests routed through its own `openai` provider ID:
+  // ChatGPT rejects output limits and requires instructions and stateless storage.
   // https://github.com/anomalyco/opencode/blob/d9987ef9c896383eb47b9103f6c93fa772a44b83/packages/core/src/plugin/provider/openai.ts#L311-L317
   const {
     max_completion_tokens: _maxCompletionTokens,
@@ -148,20 +139,52 @@ const transformCodexCompactionBodyJson = (
   return compactBody;
 };
 
-const transformCodexResponse = (
+const transformCodexResponse = async (
   response: Response,
   onTokenUsage: ((usage: TokenUsage) => void) | null | undefined,
   isStreamingRequest: boolean,
   providerAccountId: string | undefined
-): Promise<Response> =>
-  transformOpenAiUsageResponse({
-    response,
-    extractSseUsage: readOpenAiResponsesUsageFromSseEvent,
-    extractJsonUsage: readOpenAiResponsesUsageFromResponse,
-    onTokenUsage,
-    isStreamingRequest,
-    providerAccountId,
+): Promise<Response> => {
+  if (!response.body) {
+    return response;
+  }
+  // Codex can omit content-type on SSE, so request intent also selects it.
+  if (
+    isStreamingRequest ||
+    (response.headers.get("content-type") ?? "")
+      .toLowerCase()
+      .includes("text/event-stream")
+  ) {
+    return createOpenAiSseUsagePassthrough({
+      response,
+      providerAccountId,
+      onTokenUsage,
+    });
+  }
+
+  const bodyText = await response.text();
+  let bodyJson: unknown;
+  try {
+    bodyJson = JSON.parse(bodyText) as unknown;
+  } catch {
+    return new Response(bodyText, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  }
+  const usage = readOpenAiResponsesUsageFromResponse(bodyJson);
+  if (usage) {
+    onTokenUsage?.(usage);
+  }
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return Response.json(bodyJson, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   });
+};
 
 type CodexProxyPreparationInput = {
   operation?: ProxyOperation;
@@ -213,9 +236,10 @@ export const prepareCodexProxyRequest = (
   if (accountId) {
     input.headers.set(CODEX_ACCOUNT_ID_HEADER, accountId);
   }
-  clearCodexSessionHeaders(input.headers);
   if (input.sessionId) {
     applyCodexSessionHeaders(input.headers, input.sessionId);
+  } else {
+    clearCodexSessionHeaders(input.headers);
   }
 
   return {
