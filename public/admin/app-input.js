@@ -56,9 +56,9 @@ import {
 } from "./app-usage.js";
 
 const accountActions = {
-  "edit-account": (id) => startEditAccount(id),
-  "save-account": () => saveAccountEdits(),
-  "cancel-edit-account": () => cancelEditAccount(),
+  "edit-account": startEditAccount,
+  "save-account": saveAccountEdits,
+  "cancel-edit-account": cancelEditAccount,
   "set-primary": (id) => setPrimary(id),
   "refresh-account": (id) => refreshAccount(id),
   "reauthorize-account": (id) => reauthorizeAccount(id),
@@ -85,7 +85,7 @@ const keyActions = {
       toast("Scoped models URL unavailable", "error");
     }
   },
-  "open-setup": (id) => openOpenCodeSetup(id),
+  "open-setup": openOpenCodeSetup,
   "toggle-key": (id) => {
     if (state.revealedKeyIds.has(id)) {
       state.revealedKeyIds.delete(id);
@@ -95,15 +95,15 @@ const keyActions = {
     }
     renderKeys();
   },
-  "edit-key": (id) => startEditKey(id),
-  "save-key": () => saveKeyEdits(),
-  "cancel-edit-key": () => cancelEditKey(),
-  "open-create-key": () => startCreateKey(),
-  "submit-key": () => createKey(),
-  "cancel-create-key": () => cancelCreateKey(),
-  "rotate-key": (id) => rotateKey(id),
-  "revoke-key": (id) => revokeKey(id),
-  "delete-key": (id) => deleteKey(id),
+  "edit-key": startEditKey,
+  "save-key": saveKeyEdits,
+  "cancel-edit-key": cancelEditKey,
+  "open-create-key": startCreateKey,
+  "submit-key": createKey,
+  "cancel-create-key": cancelCreateKey,
+  "rotate-key": rotateKey,
+  "revoke-key": revokeKey,
+  "delete-key": deleteKey,
   "toggle-free-tier": (_id, button) => toggleFreeTier(button),
   "clear-filter": () => clearFilter("#keys-filter", "keyFilter", renderKeys),
   "toggle-revoked": (_id, button) => toggleRevokedKeys(button),
@@ -163,76 +163,63 @@ function revealDetail(listId, id) {
   }
 }
 
-let accountOpenSeq = 0;
-let keyOpenSeq = 0;
-
-async function setExpandedAccount(id) {
-  const seq = ++accountOpenSeq;
+async function setExpanded(tab, id) {
+  const list = LISTS[tab];
+  const seq = ++list.openSeq;
   const sessionSeq = state.sessionRequestSeq;
-  state.pendingExpandedAccountId = id;
-  if (id)
-    await Promise.all([
-      waitForUsageDetail("account", id),
-      waitForDailyTokens(id),
-    ]);
+  state[list.pendingField] = id;
+  if (id && (tab === "accounts" || usageHasTraffic("key", id)))
+    await list.wait(id);
   if (
-    seq !== accountOpenSeq ||
+    seq !== list.openSeq ||
     sessionSeq !== state.sessionRequestSeq ||
-    state.pendingExpandedAccountId !== id
+    state[list.pendingField] !== id
   )
     return false;
-  state.pendingExpandedAccountId = null;
-  if (id && (activeTab() !== "accounts" || !state.accountsById.has(id)))
+  state[list.pendingField] = null;
+  if (id && (activeTab() !== tab || !state[list.recordsField].has(id)))
     return false;
-  state.expandedAccountId = id;
-  if (state.editingAccountId !== id) state.editingAccountId = null;
-  if (id) state.cursorAccountId = id;
-  state.enteringDetail = id ? `account:${id}` : null;
-  state.motionAnchor = id ? `account:${id}` : null;
-  renderAccounts();
+  state[list.expandedField] = id;
+  if (state[list.editingField] !== id) state[list.editingField] = null;
+  if (id) state[list.cursorField] = id;
+  state.enteringDetail = id ? `${list.kind}:${id}` : null;
+  state.motionAnchor = state.enteringDetail;
+  list.render();
   state.enteringDetail = null;
   state.motionAnchor = null;
-  if (id) revealDetail("#accounts-list", id);
-  return true;
-}
-
-async function setExpandedKey(id) {
-  const seq = ++keyOpenSeq;
-  const sessionSeq = state.sessionRequestSeq;
-  state.pendingExpandedKeyId = id;
-  if (id && usageHasTraffic("key", id)) await waitForUsageDetail("key", id);
-  if (
-    seq !== keyOpenSeq ||
-    sessionSeq !== state.sessionRequestSeq ||
-    state.pendingExpandedKeyId !== id
-  )
-    return false;
-  state.pendingExpandedKeyId = null;
-  if (id && (activeTab() !== "keys" || !state.keysById.has(id))) return false;
-  state.expandedKeyId = id;
-  if (state.editingKeyId !== id) state.editingKeyId = null;
-  if (id) state.cursorKeyId = id;
-  state.enteringDetail = id ? `key:${id}` : null;
-  state.motionAnchor = id ? `key:${id}` : null;
-  renderKeys();
-  state.enteringDetail = null;
-  state.motionAnchor = null;
-  if (id) revealDetail("#keys-list", id);
+  if (id) revealDetail(list.container, id);
   return true;
 }
 
 const LISTS = {
   accounts: {
+    kind: "account",
+    openSeq: 0,
     container: "#accounts-list",
     selector: "#accounts-list :is(.row[data-account-id], [data-cursor-id])",
     idOf: (row) => row.dataset.accountId ?? row.dataset.cursorId,
     cursorField: "cursorAccountId",
+    pendingField: "pendingExpandedAccountId",
+    expandedField: "expandedAccountId",
+    editingField: "editingAccountId",
+    recordsField: "accountsById",
+    render: renderAccounts,
+    wait: (id) =>
+      Promise.all([waitForUsageDetail("account", id), waitForDailyTokens(id)]),
   },
   keys: {
+    kind: "key",
+    openSeq: 0,
     container: "#keys-list",
     selector: "#keys-list :is(.row[data-key-id], [data-cursor-id])",
     idOf: (row) => row.dataset.keyId ?? row.dataset.cursorId,
     cursorField: "cursorKeyId",
+    pendingField: "pendingExpandedKeyId",
+    expandedField: "expandedKeyId",
+    editingField: "editingKeyId",
+    recordsField: "keysById",
+    render: renderKeys,
+    wait: (id) => waitForUsageDetail("key", id),
   },
 };
 
@@ -257,7 +244,7 @@ function setCursor(tab, row, { focus = false, mouse = false } = {}) {
   }
   state[list.cursorField] = row ? list.idOf(row) : null;
   scheduleUsagePrefetch(
-    tab === "accounts" ? "account" : "key",
+    list.kind,
     row?.dataset.accountId ?? row?.dataset.keyId ?? null
   );
   if (!row) return;
@@ -308,7 +295,8 @@ async function toggleAccount(id) {
     accountCursorRow(id)?.click();
     return;
   }
-  const applied = await setExpandedAccount(
+  const applied = await setExpanded(
+    "accounts",
     (state.pendingExpandedAccountId || state.expandedAccountId) === id
       ? null
       : id
@@ -321,7 +309,8 @@ async function toggleKey(id) {
     $(".revoked-heading")?.click();
     return;
   }
-  const applied = await setExpandedKey(
+  const applied = await setExpanded(
+    "keys",
     (state.pendingExpandedKeyId || state.expandedKeyId) === id ? null : id
   );
   if (applied) keyRow(id)?.focus({ preventScroll: true });
@@ -347,7 +336,7 @@ async function showAccount(id) {
     $("#accounts-filter").value = "";
   }
   switchToTab("accounts");
-  if (await setExpandedAccount(id)) reveal(accountRow(id));
+  if (await setExpanded("accounts", id)) reveal(accountRow(id));
 }
 
 async function showKey(id) {
@@ -357,7 +346,7 @@ async function showKey(id) {
     $("#keys-filter").value = "";
   }
   switchToTab("keys");
-  if (await setExpandedKey(id)) reveal(keyRow(id));
+  if (await setExpanded("keys", id)) reveal(keyRow(id));
 }
 
 function openOpenCodeSetup(id = null) {
@@ -490,14 +479,14 @@ function handleEscape() {
   if (tab === "accounts") {
     const id = state.pendingExpandedAccountId || state.expandedAccountId;
     if (state.editingAccountId) cancelEditAccount();
-    else if (id) runAction(setExpandedAccount(null));
+    else if (id) runAction(setExpanded("accounts", null));
     else setCursor("accounts", null);
     if (id) accountRow(id)?.focus();
   } else if (tab === "keys") {
     const id = state.pendingExpandedKeyId || state.expandedKeyId;
     if (state.creatingKey) cancelCreateKey();
     else if (state.editingKeyId) cancelEditKey();
-    else if (id) runAction(setExpandedKey(null));
+    else if (id) runAction(setExpanded("keys", null));
     else setCursor("keys", null);
     if (id) keyRow(id)?.focus();
   }
@@ -507,12 +496,7 @@ export {
   accountActions,
   keyActions,
   activeTab,
-  accountRow,
-  keyRow,
-  setExpandedAccount,
-  setExpandedKey,
   LISTS,
-  setCursor,
   moveCursor,
   toggleAccount,
   toggleKey,
@@ -522,6 +506,7 @@ export {
   WINDOW_CONTROLS,
   isTyping,
   TABS,
+  WINDOWS,
   runRowShortcut,
   stepWindow,
   toggleShortcuts,
