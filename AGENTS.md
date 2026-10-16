@@ -4,7 +4,7 @@ Single OAuth account proxy for coding agents. One base URL that stores OAuth cre
 
 ## Architecture
 
-- **Runtime**: Bun + Hono, self-hosted as a long-running server
+- **Runtime**: Bun + Hono, self-hosted as a long-running server. Use the exact Bun version in `package.json#packageManager` for local development and CI; keep the Dockerfile and `@types/bun` pins aligned.
 - **Database**: Turso (libSQL) via Drizzle ORM
 - **Admin UI**: Vanilla HTML/CSS/JS SPA in `public/admin/`
 - **Formatting and linting**: `bun fix` (oxfmt + oxlint), `bun lint` to check
