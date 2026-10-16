@@ -1,124 +1,86 @@
-import { escapeHtml, mutationAttributes, state } from "./app-core.js";
-import {
-  accountWindows,
-  fact,
-  kbd,
-  limitSeverity,
-  needsReauthorization,
-  quotaTimestamp,
-  untilText,
-} from "./app-render-shared.js";
+import { claudeResets, claudeResetsFact } from "./app-claude-resets.js";
+import { codexResets } from "./app-codex-resets.js";
+import { escapeHtml, mutationAttributes } from "./app-core.js";
+import { accountName, fact, kbd, providerLabel } from "./app-render-shared.js";
 
-function createResetRequestId() {
-  if (crypto.randomUUID) return crypto.randomUUID();
-  // randomUUID requires HTTPS; getRandomValues also supports self-hosted HTTP.
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6] % 16) + 64;
-  bytes[8] = (bytes[8] % 64) + 128;
-  const hex = Array.from(bytes, (byte) =>
-    byte.toString(16).padStart(2, "0")
-  ).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
+const resetProviders = { codex: codexResets, claude: claudeResets };
 
-function resetCreditsFor(account) {
-  const data = account?.quota?.data;
-  if (data?.provider !== "codex") return null;
-  if (
-    !data.resetCredits &&
-    typeof data.status?.resetCreditsAvailable !== "number"
-  )
-    return null;
-  const listed = data.resetCredits?.credits || [];
-  const credits = listed
-    .filter((credit) => {
-      const expiry = quotaTimestamp(credit.expiresAt);
-      return (
-        credit.status === "available" &&
-        (expiry === null || expiry > Date.now())
-      );
-    })
-    .sort(
-      (a, b) =>
-        (quotaTimestamp(a.expiresAt) ?? Number.POSITIVE_INFINITY) -
-        (quotaTimestamp(b.expiresAt) ?? Number.POSITIVE_INFINITY)
-    );
-  const available =
-    data.resetCredits?.availableCount ?? data.status?.resetCreditsAvailable;
-  const count = listed.length
-    ? credits.length
-    : Math.max(0, typeof available === "number" ? available : 0);
-  const next = credits[0] || null;
-  const expiry = quotaTimestamp(next?.expiresAt);
-  const expiryText = next
-    ? expiry
-      ? `${count > 1 ? "next expires" : "expires"} ${untilText(expiry)}`
-      : "no expiry reported"
-    : "expiry not reported";
-  const windows = accountWindows(account).filter((window) => !window.named);
-  const scope =
-    next?.resetType === "codex_rate_limits"
-      ? windows.length
-        ? `${windows.map((window) => window.label).join(" + ")} windows`
-        : "Codex rate-limit windows"
-      : null;
-  const useful =
-    count > 0 &&
-    !account.quota.error &&
-    !needsReauthorization(account) &&
-    windows.some(
-      (window) =>
-        limitSeverity(window.percent) &&
-        (!window.resetsAt || window.resetsAt > Date.now())
-    );
-  return { count, next, expiryText, scope, useful };
+function resetOfferFor(account) {
+  return resetProviders[account?.provider]?.offerFor(account) || null;
 }
 
 function resetCreditsFact(account) {
-  const credits = resetCreditsFor(account);
-  const pending = state.pendingResetRedemptions.has(account.id);
-  if (!credits?.count && !pending) return "";
-  const use = `<button class="link small" type="button" data-action="redeem-reset-credit" data-account-id="${account.id}" ${mutationAttributes("redeem-reset-credit", account.id)}>${pending ? "Retry reset" : "Use credit"}${kbd("U")}</button>`;
+  const offer = resetOfferFor(account);
+  if (!offer?.canUse) return claudeResetsFact(account);
+  const use = `<button class="link small" type="button" data-action="redeem-reset-credit" data-account-id="${account.id}" ${mutationAttributes("redeem-reset-credit", account.id)} title="${escapeHtml(offer.title || offer.noun)}">${offer.retry ? "Retry reset" : offer.action}${kbd("U")}</button>`;
   return fact(
-    credits?.count === 1 ? "Reset credit" : "Reset credits",
-    `${credits?.count ?? "\u2014"}${use}`,
+    `${offer.heading}${offer.count === 1 ? "" : "s"}`,
+    `${offer.count ?? "\u2014"}${use}`,
     [
-      escapeHtml(credits?.scope || "Reset scope not reported"),
-      escapeHtml(credits?.expiryText),
-      pending && '<span class="warn">reset not confirmed</span>',
+      escapeHtml(
+        offer.scope ? `refills ${offer.scope}` : "Reset scope not reported"
+      ),
+      escapeHtml(offer.expiryText),
+      offer.retry && '<span class="warn">reset not confirmed</span>',
     ]
   );
 }
 
-function resetCreditConfirmation(account, retry) {
-  const credits = resetCreditsFor(account);
-  const label = account.label || account.accountId || account.id;
-  if (retry) {
+function earlyUseText(earlyUse) {
+  if (!earlyUse) return "";
+  if (earlyUse.scope && typeof earlyUse.percentUsed === "number") {
+    return `You still have ${100 - earlyUse.percentUsed}% of the ${earlyUse.scope} left. Using the reset now spends it early.`;
+  }
+  return "You haven't reached a limit it refills yet. Using the reset now spends it early.";
+}
+
+function resetConfirmation(account, offer = resetOfferFor(account)) {
+  if (!offer) return null;
+  const name = accountName(account);
+  if (offer.retry)
     return {
-      title: "Retry Codex reset?",
-      message: `Check the pending reset for "${label}". Retrying the same request cannot spend a second credit.`,
+      title: `Retry ${providerLabel(account.provider)} reset?`,
+      message: `Check the pending reset for "${name}". Retrying the same request cannot spend a second credit.`,
       action: "Retry reset",
       extrasHtml: "",
+      danger: false,
     };
-  }
-  const scope = credits?.scope;
-  const description = credits?.next?.description;
+  const remaining = typeof offer.count === "number" ? offer.count - 1 : null;
+  const balance =
+    remaining === null
+      ? ""
+      : `${remaining} ${offer.noun}${remaining === 1 ? "" : "s"} left after this`;
   const context = [
-    credits?.next?.title,
-    description,
-    credits?.expiryText,
+    [balance, offer.expiryText].filter(Boolean).join(" \u00b7 "),
+    offer.title,
+    offer.description,
+    ...offer.notes,
   ].filter(Boolean);
+  const warning = earlyUseText(offer.earlyUse);
   return {
-    title: "Use reset credit?",
-    message: `Spend 1 reset credit on "${label}" to reset ${scope ? `its ${scope}` : "its Codex usage limits"} now. ${scope ? "" : "Codex has not reported which windows will reset. "}This cannot be undone.`,
-    action: "Use credit",
-    extrasHtml: `<p class="popover-text">${context.map(escapeHtml).join("<br>")}</p>`,
+    title: `Use ${offer.noun}?`,
+    message: `Spend 1 ${offer.noun} on "${name}" to refill ${offer.scope ? `its ${offer.scope}` : "its usage limits"} now. ${offer.scope ? "" : `${providerLabel(account.provider)} has not reported which windows will reset. `}This cannot be undone.`,
+    action: offer.action,
+    danger: Boolean(warning),
+    extrasHtml: `<div class="confirm-notes">${warning ? `<p class="warn">${escapeHtml(warning)}</p>` : ""}${context.map((line) => `<p>${escapeHtml(line)}</p>`).join("")}</div>`,
   };
 }
 
+function resetFeedback(feedback, offer, refreshedAccount) {
+  const remaining =
+    feedback.remaining ??
+    (feedback.showBalance ? resetOfferFor(refreshedAccount)?.count : null);
+  const balance =
+    typeof remaining === "number"
+      ? ` \u00b7 ${remaining} ${offer.unit}${remaining === 1 ? "" : "s"} left`
+      : "";
+  return { ...feedback, message: `${feedback.message}${balance}` };
+}
+
 export {
-  createResetRequestId,
-  resetCreditsFor,
+  resetProviders,
+  resetOfferFor,
   resetCreditsFact,
-  resetCreditConfirmation,
+  resetConfirmation,
+  resetFeedback,
 };

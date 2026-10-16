@@ -45,7 +45,7 @@ import {
 } from "./app-keys.js";
 import { renderKeys, renderOpenCodeSetup } from "./app-keys-render.js";
 import { reauthorizeAccount } from "./app-oauth.js";
-import { resetCreditsFor } from "./app-reset-credits.js";
+import { resetOfferFor } from "./app-reset-credits.js";
 import {
   loadDashboard,
   scheduleUsagePrefetch,
@@ -427,8 +427,7 @@ function runRowShortcut(tab, key) {
     if (!(row && action)) return false;
     if (
       action === "redeem-reset-credit" &&
-      !resetCreditsFor(accountById(id))?.count &&
-      !state.pendingResetRedemptions.has(id)
+      !resetOfferFor(accountById(id))?.canUse
     )
       return false;
     setConfirmAnchor(row.querySelector(".more") ?? row);

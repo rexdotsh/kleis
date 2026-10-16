@@ -56,7 +56,7 @@ import {
   requestUsageDetail,
 } from "./app-usage.js";
 import { renderAttention, usageSlotHtml } from "./app-usage-render.js";
-import { resetCreditsFact, resetCreditsFor } from "./app-reset-credits.js";
+import { resetCreditsFact, resetOfferFor } from "./app-reset-credits.js";
 
 // Rows show the main windows (5h, 7d); model-specific windows stay in the
 // expanded row.
@@ -154,10 +154,10 @@ function accountRowHtml(account, serving, grouped = false) {
       `<span class="${resetSeverity}">${escapeHtml(reset.label)} resets ${escapeHtml(countdown)}</span>`,
   ].filter(Boolean);
   const cursor = state.cursorAccountId === account.id ? " cursor" : "";
-  const credits = resetCreditsFor(account);
+  const credits = resetOfferFor(account);
   const creditHint =
     serving && credits?.useful
-      ? `<span class="tag">${credits.count} reset credit${credits.count === 1 ? "" : "s"}</span>`
+      ? `<span class="tag">${credits.count} ${credits.noun}${credits.count === 1 ? "" : "s"}</span>`
       : "";
 
   return `<div class="row t-acc${open ? " open" : ""}${serving ? "" : " dim"}${cursor}" data-account-id="${account.id}" data-flip="account:${account.id}" tabindex="0" role="button" aria-expanded="${open}">
@@ -503,14 +503,12 @@ function renderAccounts() {
 }
 
 function accountMenuItems(account) {
+  const reset = resetOfferFor(account);
   const supportsOAuth =
     account.provider === "codex" || account.provider === "claude";
   return [
-    (resetCreditsFor(account)?.count > 0 ||
-      state.pendingResetRedemptions.has(account.id)) && {
-      label: state.pendingResetRedemptions.has(account.id)
-        ? "Retry reset"
-        : "Use reset credit",
+    reset?.canUse && {
+      label: reset.retry ? "Retry reset" : `Use ${reset.noun}`,
       action: "redeem-reset-credit",
       shortcut: "U",
     },

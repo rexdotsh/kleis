@@ -177,6 +177,64 @@ export const codexResetCreditRedemptions = sqliteTable(
   ]
 );
 
+export const claudeResetClaimStatuses = [
+  "pending",
+  "ambiguous",
+  "completed",
+  "failed",
+  "reconciled",
+] as const;
+export type ClaudeResetClaimStatus = (typeof claudeResetClaimStatuses)[number];
+
+export const claudeResetClaimFences = sqliteTable(
+  "claude_reset_claim_fences",
+  {
+    accountIdentity: text("account_identity").notNull(),
+    organizationUuid: text("organization_uuid").notNull(),
+    version: integer("version").notNull().default(0),
+  },
+  (table) => [
+    primaryKey({ columns: [table.accountIdentity, table.organizationUuid] }),
+  ]
+);
+
+// Canonical OAuth user + organization fences survive local account removal.
+// A claim is recorded before sending, across every Kleis process.
+export const claudeResetClaims = sqliteTable(
+  "claude_reset_claims",
+  {
+    requestId: text("request_id").primaryKey(),
+    providerAccountId: text("provider_account_id").references(
+      () => providerAccounts.id,
+      { onDelete: "set null" }
+    ),
+    accountIdentity: text("account_identity").notNull(),
+    organizationUuid: text("organization_uuid").notNull(),
+    program: text("program").notNull(),
+    grantId: text("grant_id").notNull(),
+    offerKey: text("offer_key").notNull(),
+    status: text("status", { enum: claudeResetClaimStatuses }).notNull(),
+    result: text("result"),
+    reason: text("reason"),
+    resetsLeft: integer("resets_left", { mode: "number" }),
+    clearedJson: text("cleared_json"),
+    weeklyResetsAt: text("weekly_resets_at"),
+    lastError: text("last_error"),
+    createdAt: integer("created_at", { mode: "number" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    index("claude_reset_claims_account_idx").on(
+      table.accountIdentity,
+      table.organizationUuid,
+      table.updatedAt
+    ),
+    uniqueIndex("claude_reset_claims_active_unique")
+      .on(table.accountIdentity, table.organizationUuid)
+      .where(sql`${table.status} in ('pending', 'ambiguous')`),
+  ]
+);
+
 // The last known profile and limits per account, kept out of
 // provider_accounts so these frequent writes never clear the proxy's routing
 // lookups. account_identity is the provider account ID the data belongs to.

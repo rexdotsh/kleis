@@ -434,6 +434,9 @@ code,
     text-underline-offset: 3px;
   }
 }
+a.link {
+  text-decoration: none;
+}
 .link.small {
   font-size: 12px;
   color: var(--muted);
@@ -1636,6 +1639,14 @@ input[type="checkbox"]:disabled {
 }
 .popover-text {
   margin-top: 4px;
+  color: var(--muted);
+}
+.confirm-notes {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 17px;
   color: var(--muted);
 }
 .popover-actions {
