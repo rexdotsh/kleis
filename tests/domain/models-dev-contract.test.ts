@@ -1,521 +1,130 @@
-import { describe, expect, test } from "bun:test";
-
+import { expect, test } from "bun:test";
 import { buildProxyModelsRegistry } from "../../src/domain/models/models-dev";
+import {
+  parseModelForProxyRoute,
+  resolveProxyRoute,
+} from "../../src/http/proxy-routing";
 
 const upstreamRegistry = {
-  openai: {
-    id: "openai",
-    name: "OpenAI",
-    env: ["OPENAI_API_KEY"],
-    models: {
-      "gpt-5.3-codex": {
-        id: "gpt-5.3-codex",
-        name: "GPT-5.3 Codex",
-        provider: {
-          api: "https://api.openai.com/v1",
-          npm: "@ai-sdk/openai",
-        },
-      },
-      "gpt-5.3-codex-spark": {
-        id: "gpt-5.3-codex-spark",
-        name: "GPT-5.3 Codex Spark",
-        provider: {
-          api: "https://api.openai.com/v1",
-          npm: "@ai-sdk/openai",
-        },
-      },
-      "gpt-5.5": {
-        id: "gpt-5.5",
-        name: "GPT-5.5",
-        limit: {
-          context: 1_000_000,
-          input: 800_000,
-          output: 64_000,
-        },
-        provider: {
-          api: "https://api.openai.com/v1",
-          npm: "@ai-sdk/openai",
-        },
-      },
-      "gpt-5.5-pro": {
-        id: "gpt-5.5-pro",
-        name: "GPT-5.5 Pro",
-        provider: {
-          api: "https://api.openai.com/v1",
-          npm: "@ai-sdk/openai",
-        },
-      },
-      "gpt-5.6": {
-        id: "gpt-5.6",
-        name: "GPT-5.6",
-        provider: {
-          api: "https://api.openai.com/v1",
-          npm: "@ai-sdk/openai",
-        },
-      },
-      "gpt-5.6-luna": {
-        id: "gpt-5.6-luna",
-        name: "GPT-5.6 Luna",
-        provider: {
-          api: "https://api.openai.com/v1",
-          npm: "@ai-sdk/openai",
-        },
-      },
-      "gpt-6-astra": {
-        id: "gpt-6-astra",
-        name: "GPT-6 Astra",
-        provider: {
-          api: "https://api.openai.com/v1",
-          npm: "@ai-sdk/openai",
-        },
-      },
-      "gpt-5": {
-        id: "gpt-5",
-        name: "GPT-5",
-        provider: {
-          api: "https://api.openai.com/v1",
-          npm: "@ai-sdk/openai",
-        },
-      },
-      "text-embedding-3-large": {
-        id: "text-embedding-3-large",
-        name: "text-embedding-3-large",
-        provider: {
-          api: "https://api.openai.com/v1",
-          npm: "@ai-sdk/openai",
-        },
-      },
-    },
-  },
-  anthropic: {
-    id: "anthropic",
-    name: "Anthropic",
-    env: ["ANTHROPIC_API_KEY"],
-    models: {
-      "claude-sonnet-4": {
-        id: "claude-sonnet-4",
-        name: "Claude Sonnet 4",
-        provider: {
-          api: "https://api.anthropic.com/v1",
-          npm: "@ai-sdk/anthropic",
-        },
-      },
-    },
-  },
-} as const;
-
-describe("models registry contract", () => {
-  test("keeps upstream canonical providers untouched", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
-      baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex", "claude"],
-    });
-
-    const anthropic = registry.anthropic as {
-      env?: string[];
-      models?: Record<string, { id?: string; provider?: { api?: string } }>;
-    };
-    expect(anthropic.env).toEqual(["ANTHROPIC_API_KEY"]);
-    expect(anthropic.models?.["claude-sonnet-4"]?.provider?.api).toBe(
-      "https://api.anthropic.com/v1"
-    );
-
-    const openai = registry.openai as {
-      env?: string[];
-      models?: Record<string, { provider?: { api?: string } }>;
-    };
-    expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(openai.models?.["gpt-5.3-codex"]?.provider?.api).toBe(
-      "https://api.openai.com/v1"
-    );
-    expect(openai.models?.["gpt-5"]?.provider?.api).toBe(
-      "https://api.openai.com/v1"
-    );
-    expect(openai.models?.["text-embedding-3-large"]?.provider?.api).toBe(
-      "https://api.openai.com/v1"
-    );
+  openai: { models: { "gpt-99-test": { id: "gpt-99-test" } } },
+  anthropic: { models: { "claude-test": { id: "claude-test" } } },
+};
+const build = (
+  options: Partial<Parameters<typeof buildProxyModelsRegistry>[0]> = {}
+) =>
+  buildProxyModelsRegistry({
+    upstreamRegistry,
+    baseOrigin: "https://kleis.example/",
+    configuredProviders: ["codex", "claude"],
+    ...options,
   });
-
-  test("keeps kleis aggregate ids routable", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
-      baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex", "claude"],
-    });
-
-    const kleis = registry.kleis as {
-      env?: string[];
-      models?: Record<
-        string,
-        { id?: string; name?: string; provider?: { api?: string } }
-      >;
-    };
-    expect(kleis.env).toEqual(["KLEIS_API_KEY"]);
-    expect(kleis.models?.["gpt-5.3-codex-spark"]?.id).toBe(
-      "gpt-5.3-codex-spark"
-    );
-    expect(kleis.models?.["gpt-5.5"]?.id).toBe("gpt-5.5");
-    expect(kleis.models?.["gpt-5.5"]?.name).toBe("GPT-5.5");
-    expect(kleis.models?.["anthropic/claude-sonnet-4"]).toMatchObject({
-      id: "anthropic/claude-sonnet-4",
-      name: "Claude Sonnet 4",
-      provider: { api: "https://kleis.example/anthropic/v1" },
-    });
-    expect(kleis.models?.["gpt-5.5-pro"]).toBeUndefined();
-    expect(kleis.models?.["gpt-5.6"]).toBeUndefined();
-    expect(kleis.models?.["gpt-5.6-luna"]?.id).toBe("gpt-5.6-luna");
-    expect(kleis.models?.["gpt-6-astra"]?.id).toBe("gpt-6-astra");
-    expect(kleis.models?.["openai/gpt-5.3-codex"]).toBeUndefined();
-    expect(kleis.models?.["openai/text-embedding-3-large"]).toBeUndefined();
-  });
-
-  test("caps Codex gpt-5.5 context and input without changing output", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
-      baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex"],
-    });
-
-    const kleis = registry.kleis as {
-      models?: Record<string, { limit?: unknown }>;
-    };
-    expect(kleis.models?.["gpt-5.5"]?.limit).toEqual({
-      context: 400_000,
-      input: 272_000,
-      output: 64_000,
-    });
-  });
-
-  test("caps Codex gpt-5.6 variant limits without inventing output", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
-      baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex"],
-    });
-
-    const kleis = registry.kleis as {
-      models?: Record<string, { limit?: unknown }>;
-    };
-    expect(kleis.models?.["gpt-5.6-luna"]?.limit).toEqual({
-      context: 400_000,
-      input: 272_000,
-    });
-  });
-
-  test("gives Codex GPT-6.1 Sol its larger subscription window", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: {
-        ...upstreamRegistry,
-        openai: {
-          ...upstreamRegistry.openai,
-          models: {
-            ...upstreamRegistry.openai.models,
-            "gpt-6.1-sol": {
-              id: "gpt-6.1-sol",
-              name: "GPT-6.1 Sol",
-              limit: { context: 1_050_000, input: 922_000, output: 128_000 },
-              provider: {
-                api: "https://api.openai.com/v1",
-                npm: "@ai-sdk/openai",
-              },
-            },
-          },
-        },
-      },
-      baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex"],
-    });
-    const kleis = registry.kleis as {
-      models?: Record<string, { limit?: unknown }>;
-    };
-
-    expect(kleis.models?.["gpt-6.1-sol"]?.limit).toEqual({
-      context: 628_000,
-      input: 500_000,
-      output: 128_000,
-    });
-  });
-
-  test("caps GPT-6 Sol and Luna limits only for the Codex proxy", () => {
-    const model = (id: string, output: number) => ({
-      id,
-      name: id === "gpt-6-sol" ? "GPT-6 Sol" : id,
-      limit: { context: 1_050_000, input: 922_000, output },
-      provider: { api: "https://api.openai.com/v1", npm: "@ai-sdk/openai" },
-    });
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: {
-        ...upstreamRegistry,
-        openai: {
-          ...upstreamRegistry.openai,
-          models: {
-            ...upstreamRegistry.openai.models,
-            "gpt-6-sol": model("gpt-6-sol", 128_000),
-            "gpt-6-luna": model("gpt-6-luna", 64_000),
-          },
-        },
-      },
-      baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex"],
-    });
-    const kleis = registry.kleis as {
-      models?: Record<string, { limit?: unknown; name?: string }>;
-    };
-    const openai = registry.openai as {
-      models?: Record<string, { limit?: unknown }>;
-    };
-
-    for (const [id, output] of [
-      ["gpt-6-sol", 128_000],
-      ["gpt-6-luna", 64_000],
-    ] as const) {
-      expect(kleis.models?.[id]?.limit).toEqual({
-        context: 400_000,
-        input: 272_000,
-        output,
-      });
-      expect(openai.models?.[id]?.limit).toEqual({
-        context: 1_050_000,
-        input: 922_000,
-        output,
-      });
+const models = (registry: Record<string, unknown>) =>
+  (
+    registry.kleis as {
+      models: Record<string, { id: string; provider: { api: string } }>;
     }
-    expect(kleis.models?.["gpt-6-sol"]?.name).toBe("GPT-6 Sol");
-  });
+  ).models;
 
-  test("hides pro reasoning modes from Codex models like OpenCode's ChatGPT OAuth", () => {
-    const modes = {
-      fast: { provider: { body: { service_tier: "priority" } } },
-      pro: { provider: { body: { reasoning: { mode: "pro" } } } },
-      ultrafast: { provider: { body: { service_tier: "ultrafast" } } },
-    };
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: {
-        ...upstreamRegistry,
-        openai: {
-          ...upstreamRegistry.openai,
-          models: {
-            ...upstreamRegistry.openai.models,
-            "gpt-6.1-sol": {
-              id: "gpt-6.1-sol",
-              name: "GPT-6.1 Sol",
-              limit: { context: 1_050_000, input: 922_000, output: 128_000 },
-              experimental: { modes },
-            },
-          },
-        },
-      },
-      baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex"],
-    });
-    const modeNames = (provider: unknown) =>
-      Object.keys(
-        (
-          provider as {
-            models: Record<
-              string,
-              { experimental?: { modes?: Record<string, unknown> } }
-            >;
-          }
-        ).models["gpt-6.1-sol"]?.experimental?.modes ?? {}
-      );
-
-    expect(modeNames(registry.kleis)).toEqual(["fast", "ultrafast"]);
-    expect(modeNames(registry.openai)).toEqual(["fast", "pro", "ultrafast"]);
-  });
-
-  test("follows OpenCode's current OAuth exclusion of retired GPT-5.4 models", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: {
-        ...upstreamRegistry,
-        openai: {
-          ...upstreamRegistry.openai,
-          models: {
-            ...upstreamRegistry.openai.models,
-            "gpt-5.4": { id: "gpt-5.4" },
-            "gpt-5.4-mini": { id: "gpt-5.4-mini" },
-          },
-        },
-      },
-      baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex"],
-    });
-    const kleis = registry.kleis as { models?: Record<string, unknown> };
-
-    expect(kleis.models?.["gpt-5.4"]).toBeUndefined();
-    expect(kleis.models?.["gpt-5.4-mini"]).toBeUndefined();
-  });
-
-  test("appends to existing kleis provider without replacing entries", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: {
-        ...upstreamRegistry,
-        kleis: {
-          id: "kleis",
-          name: "Existing Kleis",
-          env: ["EXISTING_ENV"],
-          models: {
-            "openai/gpt-5.3-codex": {
-              id: "openai/gpt-5.3-codex",
-              provider: {
-                api: "https://keep-me.example/v1",
-              },
-            },
-            "custom/model": {
-              id: "custom/model",
-            },
-          },
-        },
-      } as unknown as Record<string, unknown>,
-      baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex", "claude"],
-    });
-
-    const kleis = registry.kleis as {
-      name?: string;
-      env?: string[];
-      models?: Record<string, { id?: string; provider?: { api?: string } }>;
-    };
-
-    expect(kleis.name).toBe("Existing Kleis");
-    expect(kleis.env).toEqual(["EXISTING_ENV", "KLEIS_API_KEY"]);
-    expect(kleis.models?.["openai/gpt-5.3-codex"]?.provider?.api).toBe(
-      "https://keep-me.example/v1"
+test("advertised aggregate models route to the configured proxy without mutating upstream", () => {
+  const original = structuredClone(upstreamRegistry);
+  const registry = build();
+  for (const [id, model] of Object.entries(models(registry))) {
+    const suffix = id.startsWith("anthropic/") ? "/messages" : "/responses";
+    const route = resolveProxyRoute(
+      new URL(`${model.provider.api}${suffix}`).pathname
     );
-    expect(kleis.models?.["custom/model"]?.id).toBe("custom/model");
-    expect(kleis.models?.["anthropic/claude-sonnet-4"]?.provider?.api).toBe(
-      "https://kleis.example/anthropic/v1"
+    if (!route) throw new Error(`Unroutable advertised model: ${id}`);
+    expect(model.id).toBe(id);
+    expect(parseModelForProxyRoute(id, route).upstreamModel).toBe(
+      id.startsWith("anthropic/") ? "claude-test" : "gpt-99-test"
     );
-  });
+  }
+  expect(Object.keys(models(registry))).toHaveLength(2);
+  expect(registry.openai).toEqual(original.openai);
+  expect(registry.anthropic).toEqual(original.anthropic);
+  expect(upstreamRegistry).toEqual(original);
+});
 
-  test("preserves unconfigured providers from upstream unchanged", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
-      baseOrigin: "https://kleis.example/",
-      configuredProviders: ["codex"],
+test.each([
+  {
+    configuredProviders: [] as ("codex" | "claude")[],
+    providerScopes: null,
+    modelScopes: null,
+    expected: [],
+  },
+  {
+    configuredProviders: ["codex"] as const,
+    providerScopes: null,
+    modelScopes: null,
+    expected: ["gpt-99-test"],
+  },
+  {
+    configuredProviders: ["codex", "claude"] as const,
+    providerScopes: ["claude"],
+    modelScopes: null,
+    expected: ["anthropic/claude-test"],
+  },
+  {
+    configuredProviders: ["codex", "claude"] as const,
+    providerScopes: null,
+    modelScopes: ["openai/gpt-99-test"],
+    expected: ["gpt-99-test"],
+  },
+  {
+    configuredProviders: ["codex", "claude"] as const,
+    providerScopes: ["claude"],
+    modelScopes: ["openai/claude-test"],
+    expected: [],
+  },
+])(
+  "discovery respects configuration and key scopes: %j",
+  ({ configuredProviders, providerScopes, modelScopes, expected }) => {
+    const registry = build({
+      configuredProviders,
+      apiKeyScopes: { providerScopes, modelScopes },
     });
+    expect(Object.keys(models(registry))).toEqual(expected);
+    expect(registry.openai).toEqual(upstreamRegistry.openai);
+    expect(registry.anthropic).toEqual(upstreamRegistry.anthropic);
+  }
+);
 
-    const anthropic = registry.anthropic as {
-      env?: string[];
-      models?: Record<string, { provider?: { api?: string } }>;
-    };
-    expect(anthropic.env).toEqual(["ANTHROPIC_API_KEY"]);
-    expect(anthropic.models?.["claude-sonnet-4"]?.provider?.api).toBe(
-      "https://api.anthropic.com/v1"
-    );
-
-    const openai = registry.openai as {
-      env?: string[];
-      models?: Record<string, { id?: string }>;
-    };
-    expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(Object.keys(openai.models ?? {})).toHaveLength(9);
-
-    const kleis = registry.kleis as {
-      models?: Record<string, { id?: string }>;
-    };
-    expect(kleis.models?.["gpt-5.3-codex"]).toBeUndefined();
-    expect(kleis.models?.["gpt-5.3-codex-spark"]?.id).toBe(
-      "gpt-5.3-codex-spark"
-    );
-    expect(kleis.models?.["anthropic/claude-sonnet-4"]).toBeUndefined();
+test("preserves existing aggregate models when appending proxy models", () => {
+  const existing = {
+    id: "gpt-99-test",
+    provider: { api: "https://keep.example/v1" },
+  };
+  const registry = build({
+    upstreamRegistry: {
+      ...upstreamRegistry,
+      kleis: { models: { "gpt-99-test": existing } },
+    },
   });
+  expect(models(registry)["gpt-99-test"]).toEqual(existing);
+  expect(Object.keys(models(registry))).toHaveLength(2);
+});
 
-  test("preserves all upstream providers when none are configured", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
-      baseOrigin: "https://kleis.example/",
-      configuredProviders: [],
-    });
-
-    const openai = registry.openai as {
-      env?: string[];
-      models?: Record<string, unknown>;
-    };
-    expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(Object.keys(openai.models ?? {})).toHaveLength(9);
-
-    expect(registry.anthropic).toBeDefined();
-    const kleis = registry.kleis as {
-      env?: string[];
-      models?: Record<string, unknown>;
-    };
-    expect(kleis.env).toEqual(["KLEIS_API_KEY"]);
-    expect(Object.keys(kleis.models ?? {})).toHaveLength(0);
+test("removes unsupported reasoning modes by their request body, only in the proxy copy", () => {
+  const modes = {
+    speedy: { provider: { body: { service_tier: "priority" } } },
+    unsupported: { provider: { body: { reasoning: { mode: "pro" } } } },
+  };
+  const registry = build({
+    upstreamRegistry: {
+      openai: { models: { "gpt-99-test": { experimental: { modes } } } },
+    },
   });
-
-  test("applies api key scopes only to the kleis aggregate provider", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
-      baseOrigin: "https://kleis.example/api/kmd_abc123",
-      configuredProviders: ["codex", "claude"],
-      apiKeyScopes: {
-        providerScopes: ["codex"],
-        modelScopes: ["openai/gpt-5.6-luna"],
-      },
-    });
-
-    expect(Object.keys(registry).sort()).toEqual([
-      "anthropic",
-      "kleis",
-      "openai",
-    ]);
-
-    const openai = registry.openai as {
-      env?: string[];
-      models?: Record<string, { id?: string; provider?: { api?: string } }>;
-    };
-    expect(openai.env).toEqual(["OPENAI_API_KEY"]);
-    expect(Object.keys(openai.models ?? {})).toEqual([
-      "gpt-5.3-codex",
-      "gpt-5.3-codex-spark",
-      "gpt-5.5",
-      "gpt-5.5-pro",
-      "gpt-5.6",
-      "gpt-5.6-luna",
-      "gpt-6-astra",
-      "gpt-5",
-      "text-embedding-3-large",
-    ]);
-    expect(openai.models?.["gpt-5.3-codex"]?.provider?.api).toBe(
-      "https://api.openai.com/v1"
-    );
-
-    const kleis = registry.kleis as {
-      models?: Record<string, { id?: string }>;
-    };
-    expect(Object.keys(kleis.models ?? {}).sort()).toEqual(["gpt-5.6-luna"]);
+  expect(models(registry)["gpt-99-test"]).toMatchObject({
+    experimental: { modes: { speedy: modes.speedy } },
   });
-
-  test("scoped mode preserves upstream providers unchanged", () => {
-    const registry = buildProxyModelsRegistry({
-      upstreamRegistry: upstreamRegistry as unknown as Record<string, unknown>,
-      baseOrigin: "https://kleis.example/api/kmd_xyz789",
-      configuredProviders: ["codex"],
-      apiKeyScopes: {
-        providerScopes: ["codex"],
-        modelScopes: null,
-      },
-    });
-
-    const anthropic = registry.anthropic as {
-      env?: string[];
-      models?: Record<string, { provider?: { api?: string } }>;
-    };
-    expect(anthropic.env).toEqual(["ANTHROPIC_API_KEY"]);
-    expect(anthropic.models?.["claude-sonnet-4"]?.provider?.api).toBe(
-      "https://api.anthropic.com/v1"
-    );
-
-    const kleis = registry.kleis as {
-      models?: Record<string, unknown>;
-    };
-    expect(Object.keys(kleis.models ?? {})).toEqual([
-      "gpt-5.3-codex-spark",
-      "gpt-5.5",
-      "gpt-5.6-luna",
-      "gpt-6-astra",
-    ]);
+  expect(
+    (
+      models(registry)["gpt-99-test"] as unknown as {
+        experimental: { modes: unknown };
+      }
+    ).experimental.modes
+  ).not.toHaveProperty("unsupported");
+  expect(registry.openai).toEqual({
+    models: { "gpt-99-test": { experimental: { modes } } },
   });
 });

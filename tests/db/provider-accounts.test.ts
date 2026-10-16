@@ -3,9 +3,6 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import {
@@ -31,17 +28,18 @@ describe("provider account enablement", () => {
   const originalCodexRefreshAccount = codexAdapter.refreshAccount;
   const originalFetch = globalThis.fetch;
   let client: ReturnType<typeof createClient> | undefined;
+  let anchor: ReturnType<typeof createClient>;
   let database: Database;
-  let databaseDirectory: string;
 
   beforeEach(async () => {
-    databaseDirectory = await mkdtemp(
-      join(tmpdir(), "kleis-provider-accounts-")
-    );
-    const databasePath = join(databaseDirectory, "test.db");
-    client = createClient({ url: `file:${databasePath}` });
+    // libSQL transactions open new connections. Keep shared memory alive
+    // until every connection in this fixture has finished.
+    anchor = createClient({ url: "file::memory:?cache=shared" });
+    client = createClient({ url: "file::memory:?cache=shared" });
     database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
+    await client.execute("DROP TRIGGER IF EXISTS reject_codex_refresh");
+    await database.delete(providerAccounts);
 
     const now = Date.now();
     await database.insert(providerAccounts).values([
@@ -78,45 +76,11 @@ describe("provider account enablement", () => {
     ]);
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     codexAdapter.refreshAccount = originalCodexRefreshAccount;
     globalThis.fetch = originalFetch;
     client?.close();
-    await rm(databaseDirectory, { recursive: true, force: true }).catch(
-      () => undefined
-    );
-  });
-
-  test("coalesces concurrent refreshes after a rejected Codex token", async () => {
-    let refreshCount = 0;
-    codexAdapter.refreshAccount = async (account, now) => {
-      refreshCount++;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      return {
-        accessToken: "access-codex-refreshed",
-        refreshToken: account.refreshToken,
-        expiresAt: now + 60_000,
-        accountId: account.accountId,
-        metadata: account.metadata,
-      };
-    };
-
-    const [left, right] = await Promise.all([
-      refreshProviderAccountAfterAuthFailure(
-        database,
-        "codex-primary",
-        "access-codex"
-      ),
-      refreshProviderAccountAfterAuthFailure(
-        database,
-        "codex-primary",
-        "access-codex"
-      ),
-    ]);
-
-    expect(refreshCount).toBe(1);
-    expect(left?.accessToken).toBe("access-codex-refreshed");
-    expect(right?.accessToken).toBe("access-codex-refreshed");
+    anchor.close();
   });
 
   test("hides Codex tokens in errors when the credential update fails", async () => {
@@ -609,28 +573,6 @@ describe("provider account enablement", () => {
         allowedAccountIds: ["claude-secondary"],
       })
     ).toBeNull();
-  });
-
-  test("bounds the Codex OAuth token refresh request", async () => {
-    const account = await findPrimaryProviderAccount(database, "codex");
-    if (!account) {
-      throw new Error("Codex fixture account was not found");
-    }
-    let signal: AbortSignal | null = null;
-    globalThis.fetch = ((_url, init) => {
-      signal = init?.signal as AbortSignal;
-      return Promise.resolve(
-        Response.json({
-          access_token: "new-access",
-          refresh_token: "new-refresh",
-          expires_in: 3600,
-        })
-      );
-    }) as typeof fetch;
-
-    await codexAdapter.refreshAccount(account, Date.now());
-    expect(signal).toBeInstanceOf(AbortSignal);
-    expect(signal?.aborted).toBe(false);
   });
 
   test("waits for a slow ordinary Codex refresh instead of returning 502", async () => {

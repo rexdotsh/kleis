@@ -3,9 +3,6 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import {
@@ -26,11 +23,9 @@ describe("OAuth account reauthorization", () => {
   const claudeId = "9a249097-40c4-4e8d-895a-251f45494c2a";
   let client: ReturnType<typeof createClient>;
   let database: Database;
-  let directory: string;
 
   beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), "kleis-reauthorize-"));
-    client = createClient({ url: `file:${join(directory, "test.db")}` });
+    client = createClient({ url: ":memory:" });
     database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
     const now = Date.now();
@@ -62,10 +57,9 @@ describe("OAuth account reauthorization", () => {
     ]);
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     globalThis.fetch = originalFetch;
     client.close();
-    await rm(directory, { recursive: true, force: true });
   });
 
   test("replaces selected Claude credentials without changing the account or its status", async () => {

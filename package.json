@@ -28,7 +28,6 @@
     "@types/ws": "8.18.1",
     "@typescript/native-preview": "^7.0.0-dev.20260223.1",
     "drizzle-kit": "^0.31.9",
-    "happy-dom": "^21.0.1",
     "lefthook": "^2.1.1",
     "oxfmt": "0.73.0",
     "oxlint": "1.88.0",

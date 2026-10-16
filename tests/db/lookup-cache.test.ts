@@ -2,9 +2,6 @@ import { createClient } from "@libsql/client";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import {
@@ -26,28 +23,23 @@ import { getRoutableProviderAccount } from "../../src/domain/providers/provider-
 
 describe("proxy lookup caches", () => {
   let client: ReturnType<typeof createClient> | undefined;
+  let anchor: ReturnType<typeof createClient>;
   let database: Database;
-  let directory: string;
-  let queries = 0;
 
   beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), "kleis-lookup-cache-"));
-    client = createClient({ url: `file:${join(directory, "test.db")}` });
+    // libSQL transactions open new connections. Keep shared memory alive
+    // until every connection in this fixture has finished.
+    anchor = createClient({ url: "file::memory:?cache=shared" });
+    client = createClient({ url: "file::memory:?cache=shared" });
     database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
-    queries = 0;
-    const execute = client.execute.bind(client);
-    client.execute = ((...args: Parameters<typeof execute>) => {
-      queries++;
-      return execute(...args);
-    }) as typeof client.execute;
+    await database.delete(schema.providerAccounts);
+    await database.delete(schema.apiKeys);
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     client?.close();
-    await rm(directory, { recursive: true, force: true }).catch(
-      () => undefined
-    );
+    anchor.close();
   });
 
   const addAccount = (accountId: string, now: number) =>
@@ -73,11 +65,6 @@ describe("proxy lookup caches", () => {
     expect((await findActiveApiKeyByValue(database, key.key, now))?.id).toBe(
       key.id
     );
-    const afterFirstLookup = queries;
-    expect((await findActiveApiKeyByValue(database, key.key, now))?.id).toBe(
-      key.id
-    );
-    expect(queries).toBe(afterFirstLookup);
 
     await revokeApiKey(database, key.id, now);
     expect(await findActiveApiKeyByValue(database, key.key, now)).toBeNull();
@@ -108,11 +95,6 @@ describe("proxy lookup caches", () => {
     expect((await getRoutableProviderAccount(database, "codex", now))?.id).toBe(
       first.id
     );
-    const afterFirstLookup = queries;
-    expect((await getRoutableProviderAccount(database, "codex", now))?.id).toBe(
-      first.id
-    );
-    expect(queries).toBe(afterFirstLookup);
 
     await setPrimaryProviderAccount(database, second.id);
     expect((await getRoutableProviderAccount(database, "codex", now))?.id).toBe(

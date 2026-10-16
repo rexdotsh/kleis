@@ -13,7 +13,7 @@ export type ClaudeToolNames = ReadonlyMap<string, string>;
 // The name alone decides the result, so a tool keeps its upstream name across
 // turns. Lowercase-initial names get `mcp_` + an uppercase letter and all
 // others `mcp__`, and only digest-suffixed names reach the length limit.
-export const toUpstreamToolName = (name: string): string => {
+const toUpstreamToolName = (name: string): string => {
   const upstream = /^[a-z]/u.test(name)
     ? `${CLAUDE_TOOL_PREFIX}${name.charAt(0).toUpperCase()}${name.slice(1)}`
     : `${CLAUDE_TOOL_PREFIX}_${name}`;

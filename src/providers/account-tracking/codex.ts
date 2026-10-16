@@ -68,7 +68,7 @@ const decodeIndividualLimit = (value: unknown) =>
 
 export type CodexUsageStatus = ReturnType<typeof decodeCodexUsageStatus>;
 
-export const decodeCodexUsageStatus = (value: unknown) => {
+const decodeCodexUsageStatus = (value: unknown) => {
   const input = requireObject(value, "Codex usage response is malformed");
   const rateLimit = readObject(input.rate_limit);
   const credits = readObject(input.credits);
@@ -123,7 +123,7 @@ const decodeResetCredit = (value: unknown) => {
     : null;
 };
 
-export const decodeCodexResetCredits = (value: unknown) => {
+const decodeCodexResetCredits = (value: unknown) => {
   const input = requireObject(
     value,
     "Codex reset-credit response is malformed"
@@ -136,7 +136,7 @@ export const decodeCodexResetCredits = (value: unknown) => {
 
 export type CodexResetCredits = ReturnType<typeof decodeCodexResetCredits>;
 
-export const decodeCodexUsageProfile = (value: unknown) => {
+const decodeCodexUsageProfile = (value: unknown) => {
   const input = requireObject(
     value,
     "Codex usage profile response is malformed"
@@ -179,7 +179,7 @@ const decodeCodexAccount = (value: unknown) => {
   };
 };
 
-export const decodeCodexAccounts = (value: unknown) => {
+const decodeCodexAccounts = (value: unknown) => {
   const input = requireObject(value, "Codex accounts response is malformed");
   const rawAccounts = Array.isArray(input.accounts)
     ? input.accounts
@@ -241,9 +241,7 @@ export type CodexThreadUsageEntry = NonNullable<
   ReturnType<typeof decodeThread>
 >;
 
-export const decodeCodexThreadUsage = (
-  value: unknown
-): CodexThreadUsageEntry[] => {
+const decodeCodexThreadUsage = (value: unknown): CodexThreadUsageEntry[] => {
   const input = requireObject(
     value,
     "Codex thread usage response is malformed"
@@ -274,7 +272,7 @@ type CodexTrackingOperation =
   | "accounts/check"
   | "usage/thread_usage/query";
 
-export const buildCodexTrackingUrl = (
+const buildCodexTrackingUrl = (
   operation: CodexTrackingOperation,
   baseUrl = CODEX_TRACKING_BASE_URL
 ): string => {

@@ -110,4 +110,48 @@ describe("graceful shutdown", () => {
     );
     expect(cancelled).toBe(true);
   });
+
+  test("lets an in-flight SSE response finish before completing its drain", async () => {
+    let upstream: ReadableStreamDefaultController<Uint8Array> | undefined;
+    let cancelled = false;
+    const encoder = new TextEncoder();
+    const server = Bun.serve({
+      port: 0,
+      idleTimeout: 0,
+      fetch: () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              upstream = controller;
+              controller.enqueue(encoder.encode("data: first\n\n"));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } }
+        ),
+    });
+    try {
+      const response = await fetch(server.url);
+      const reader = response.body?.getReader();
+      expect(new TextDecoder().decode((await reader?.read())?.value)).toBe(
+        "data: first\n\n"
+      );
+      const shutdown = createGracefulShutdown();
+      shutdown.trackServer(server);
+      const draining = shutdown.drain({ graceMs: 0, timeoutMs: 2000 });
+      await Bun.sleep(20);
+      upstream?.enqueue(encoder.encode("data: last\n\n"));
+      upstream?.close();
+      expect(new TextDecoder().decode((await reader?.read())?.value)).toBe(
+        "data: last\n\n"
+      );
+      expect((await reader?.read())?.done).toBe(true);
+      expect(await draining).toBe("drained");
+      expect(cancelled).toBe(false);
+    } finally {
+      await server.stop(true);
+    }
+  });
 });

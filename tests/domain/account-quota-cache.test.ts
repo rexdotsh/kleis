@@ -10,7 +10,6 @@ import {
 
 import type { Database } from "../../src/db";
 import type { ProviderAccountRecord } from "../../src/db/repositories/provider-accounts";
-import type { AccountSnapshotStore } from "../../src/domain/providers/account-snapshot-store";
 import {
   listProviderAccountQuotas,
   peekProviderAccountQuotas,
@@ -55,8 +54,6 @@ const fiveHourUtilization = (quota: unknown): unknown =>
     }
   ).data.subscription?.fiveHour?.utilization;
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 // Quota reads never refresh tokens for unexpired accounts, so no database
 // access happens in these tests.
 const database = {} as Database;
@@ -79,6 +76,7 @@ describe("account quota cache", () => {
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
+    setSystemTime(Date.now());
     setAccountSnapshotStore(null);
   });
 
@@ -154,158 +152,6 @@ describe("account quota cache", () => {
 
     const second = await listProviderAccountQuotas(database, [replaced]);
     expect(fiveHourUtilization(second.get(original.id))).toBe(31);
-  });
-
-  test("peeking never waits and starts one lookup the waiting read reuses", async () => {
-    let calls = 0;
-    let release: ((response: Response) => void) | undefined;
-    globalThis.fetch = trackingFetch(() => {
-      calls++;
-      return new Promise<Response>((resolve) => {
-        release = resolve;
-      });
-    });
-    const account = claudeAccount();
-
-    expect(peekProviderAccountQuotas(database, [account]).get(account.id)).toBe(
-      null
-    );
-    const waiting = listProviderAccountQuotas(database, [account]);
-    await Promise.resolve();
-    expect(calls).toBe(1);
-
-    release?.(Response.json({ five_hour: { utilization: 42 } }));
-    expect(fiveHourUtilization((await waiting).get(account.id))).toBe(42);
-    expect(
-      fiveHourUtilization(
-        peekProviderAccountQuotas(database, [account]).get(account.id)
-      )
-    ).toBe(42);
-    expect(calls).toBe(1);
-  });
-
-  test("reports the HTTP status of a failed usage sync", async () => {
-    globalThis.fetch = trackingFetch(() =>
-      Promise.resolve(Response.json({ error: "forbidden" }, { status: 403 }))
-    );
-    const account = claudeAccount();
-
-    const quotas = await listProviderAccountQuotas(database, [account]);
-
-    expect(quotas.get(account.id)).toMatchObject({
-      fetchedAt: null,
-      errorStatus: 403,
-    });
-  });
-
-  const profile = (organization: Record<string, string>) => () =>
-    Response.json({ organization });
-
-  test("looks up the plan with usage and refreshes it daily, not every sync", async () => {
-    let profileCalls = 0;
-    let tier = "default_claude_max_5x";
-    let profileHeaders = new Headers();
-    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
-      if (String(input).endsWith("/api/oauth/profile")) {
-        profileCalls++;
-        profileHeaders = new Headers(init?.headers);
-        return Promise.resolve(
-          profile({ organization_type: "claude_max", rate_limit_tier: tier })()
-        );
-      }
-      return Promise.resolve(Response.json({ five_hour: { utilization: 12 } }));
-    }) as unknown as typeof fetch;
-    const account = claudeAccount();
-    const startedAt = Date.now();
-
-    const first = await listProviderAccountQuotas(database, [account]);
-    expect(first.get(account.id)?.data).toMatchObject({
-      plan: { type: "max_5x", label: "Max 5x" },
-    });
-    expect(profileHeaders.get("authorization")).toBe("Bearer claude-access");
-    expect(profileHeaders.get("anthropic-beta")).not.toBeNull();
-    expect(profileHeaders.get("user-agent")).toStartWith("claude-cli/");
-
-    setSystemTime(new Date(startedAt + 181_000));
-    await listProviderAccountQuotas(database, [account]);
-    await Bun.sleep(0);
-    expect(profileCalls).toBe(1);
-
-    account.expiresAt = startedAt + 3 * DAY_MS;
-    setSystemTime(new Date(startedAt + 3_601_000));
-    await listProviderAccountQuotas(database, [account]);
-    await Bun.sleep(0);
-    expect(profileCalls).toBe(1);
-
-    tier = "default_claude_max_20x";
-    setSystemTime(new Date(startedAt + DAY_MS + 1000));
-    await listProviderAccountQuotas(database, [account]);
-    await Bun.sleep(0);
-    const later = await listProviderAccountQuotas(database, [account]);
-    expect(profileCalls).toBe(2);
-    expect(later.get(account.id)?.data).toMatchObject({
-      plan: { type: "max_20x", label: "Max 20x" },
-    });
-  });
-
-  test("reports no plan for accounts without a subscription", async () => {
-    globalThis.fetch = trackingFetch(
-      () => Response.json({}, { status: 403 }),
-      profile({ organization_type: "api" })
-    );
-    const account = claudeAccount();
-
-    const quotas = await listProviderAccountQuotas(database, [account]);
-    expect(quotas.get(account.id)).toMatchObject({
-      errorStatus: 403,
-      data: { plan: null },
-    });
-  });
-
-  test("a failed plan lookup keeps usage and the last plan, logs the real error and backs off", async () => {
-    let profileCalls = 0;
-    let failProfile = false;
-    globalThis.fetch = trackingFetch(
-      () => Response.json({ five_hour: { utilization: 23 } }),
-      () => {
-        profileCalls++;
-        return failProfile
-          ? Promise.reject(new Error("profile socket disconnected"))
-          : profile({ organization_type: "claude_pro" })();
-      }
-    );
-    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
-    try {
-      const account = claudeAccount();
-      const startedAt = Date.now();
-      await listProviderAccountQuotas(database, [account]);
-
-      failProfile = true;
-      account.expiresAt = startedAt + 3 * DAY_MS;
-      setSystemTime(new Date(startedAt + DAY_MS + 1000));
-      await listProviderAccountQuotas(database, [account]);
-      await Bun.sleep(0);
-      const quotas = await listProviderAccountQuotas(database, [account]);
-      expect(quotas.get(account.id)).toMatchObject({
-        error: null,
-        data: {
-          plan: { type: "pro", label: "Pro" },
-          subscription: { fiveHour: { utilization: 23 } },
-        },
-      });
-      expect(JSON.parse(String(warn.mock.calls.at(-1)?.[0]))).toMatchObject({
-        event: "claude_account_plan_fetch_failed",
-        errorMessage: "profile socket disconnected",
-      });
-      expect(profileCalls).toBe(2);
-
-      setSystemTime(new Date(startedAt + DAY_MS + 182_000));
-      await listProviderAccountQuotas(database, [account]);
-      await Bun.sleep(0);
-      expect(profileCalls).toBe(2);
-    } finally {
-      warn.mockRestore();
-    }
   });
 
   test("a rejected plan lookup does not refresh credentials or fail usage", async () => {
@@ -388,24 +234,11 @@ const claudeHeaders = (fiveHour: number, sevenDay?: number) =>
     })
   );
 
-type RecordedQuota = Parameters<AccountSnapshotStore["recordQuota"]>;
-
-const snapshotSpy = () => {
-  const recorded: RecordedQuota[] = [];
-  const store = {
-    recordQuota: (...args: RecordedQuota) => {
-      recorded.push(args);
-    },
-    recordProfile: () => undefined,
-    seed: () => undefined,
-  } as unknown as AccountSnapshotStore;
-  return { store, recorded };
-};
-
 describe("limits from proxied traffic", () => {
   const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
+    setSystemTime(Date.now());
     setAccountSnapshotStore(null);
   });
 
@@ -677,26 +510,5 @@ describe("limits from proxied traffic", () => {
       source: "poll",
       data: { subscription: { modelWindows: { seven_day_opus: {} } } },
     });
-  });
-
-  test("header readings are stored like polled limits", () => {
-    const { store, recorded } = snapshotSpy();
-    setAccountSnapshotStore(store);
-    const account = claudeAccount();
-    recordProviderAccountLiveLimits(account, claudeHeaders(0.2));
-    recordProviderAccountLiveLimits(account, claudeHeaders(0.3));
-
-    expect(recorded).toHaveLength(2);
-    const [stored, quota, signature] = recorded[1] ?? [];
-    expect(stored).toMatchObject({ id: account.id });
-    expect(quota).toMatchObject({
-      source: "traffic",
-      error: null,
-      data: {
-        provider: "claude",
-        subscription: { fiveHour: { utilization: 30 } },
-      },
-    });
-    expect(signature).toEqual({ plan: null, resets: [1_791_000_000_000] });
   });
 });

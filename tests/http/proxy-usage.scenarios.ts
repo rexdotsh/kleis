@@ -5,13 +5,21 @@ import { installErrorHandler } from "../../src/http/error-handler";
 
 // Run through proxy-usage.test.ts, which starts this file in its own process
 // with an in-memory database.
-if (process.env.TURSO_CONNECTION_URL !== ":memory:") {
-  throw new Error("proxy usage scenarios need TURSO_CONNECTION_URL=:memory:");
+if (
+  process.env.TURSO_CONNECTION_URL !== ":memory:" ||
+  process.env.TURSO_AUTH_TOKEN
+) {
+  throw new Error(
+    "proxy usage scenarios need an unauthenticated in-memory database"
+  );
 }
 const { db } = await import("../../src/db");
 const { upsertProviderAccount, updateProviderAccountTokens } =
   await import("../../src/db/repositories/provider-accounts");
 const { requestUsageBuckets } = await import("../../src/db/schema");
+const { createApiKey } = await import("../../src/db/repositories/api-keys");
+const { requireProxyApiKey } =
+  await import("../../src/http/middleware/api-key-auth");
 const { proxyRoutes, flushProxyUsage, flushProxyFailureLogs } =
   await import("../../src/http/routes/proxy");
 
@@ -67,6 +75,131 @@ const complete =
   event({ type: "message_stop" });
 const request = () =>
   app.request("/anthropic/v1/messages", { method: "POST", body: "{}" });
+
+test("proxy authorization enforces credentials, provider and model scopes before forwarding", async () => {
+  const key = await createApiKey(
+    db,
+    {
+      providerScopes: ["codex"],
+      modelScopes: ["openai/gpt-fake"],
+    },
+    Date.now()
+  );
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const original = globalThis.fetch;
+  let forwarded = 0;
+  globalThis.fetch = (async () => {
+    forwarded++;
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  try {
+    for (const { path, token, model, status } of [
+      {
+        path: "/openai/v1/responses",
+        token: "",
+        model: "gpt-fake",
+        status: 401,
+      },
+      {
+        path: "/openai/v1/responses",
+        token: "Bearer wrong",
+        model: "gpt-fake",
+        status: 401,
+      },
+      {
+        path: "/anthropic/v1/messages",
+        token: `Bearer ${key.key}`,
+        model: "claude-fake",
+        status: 403,
+      },
+      {
+        path: "/openai/v1/responses",
+        token: `Bearer ${key.key}`,
+        model: "gpt-other",
+        status: 403,
+      },
+      {
+        path: "/openai/v1/responses",
+        token: `Bearer ${key.key}`,
+        model: "anthropic/gpt-fake",
+        status: 403,
+      },
+      {
+        path: "/openai/v1/responses",
+        token: `Bearer ${key.key}`,
+        model: "",
+        status: 400,
+      },
+      {
+        path: "/openai/v1/responses",
+        token: `bEaReR ${key.key}`,
+        model: "openai/gpt-fake",
+        status: 200,
+      },
+      {
+        path: "/openai/v1/responses/compact",
+        token: `Bearer ${key.key}`,
+        model: "codex/gpt-fake",
+        status: 200,
+      },
+    ]) {
+      const before = forwarded;
+      const response = await authenticated.request(path, {
+        method: "POST",
+        headers: { authorization: token },
+        body: JSON.stringify({ model }),
+      });
+      expect(response.status).toBe(status);
+      await response.text();
+      expect(forwarded - before).toBe(status === 200 ? 1 : 0);
+    }
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("the proxy forwards its selected credential, never client secrets, spoofed accounts or IPs", async () => {
+  const original = globalThis.fetch;
+  let upstream = new Headers();
+  globalThis.fetch = (async (_input, init) => {
+    upstream = new Headers(init?.headers);
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  try {
+    const response = await app.request("/openai/v1/responses", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer kleis_private",
+        "x-api-key": "kleis_private",
+        "ChatGPT-Account-Id": "spoofed",
+        cookie: "session=private",
+        forwarded: "for=192.0.2.4",
+        "x-forwarded-for": "192.0.2.4",
+        "cf-connecting-ip": "192.0.2.4",
+      },
+      body: "{}",
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(upstream.get("authorization")).toBe("Bearer fake-codex-token");
+    expect(upstream.get("ChatGPT-Account-Id")).toBe("fake-codex-account");
+    for (const name of [
+      "x-api-key",
+      "cookie",
+      "forwarded",
+      "x-forwarded-for",
+      "cf-connecting-ip",
+    ]) {
+      expect(upstream.has(name)).toBe(false);
+    }
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
 
 test("route records one successful SSE request including latest tokens", async () => {
   await db.delete(requestUsageBuckets);

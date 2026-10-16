@@ -11,9 +11,6 @@ import {
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import { upsertProviderAccountSnapshots } from "../../src/db/repositories/provider-account-snapshots";
@@ -68,7 +65,6 @@ describe("account snapshots", () => {
   const originalFetch = globalThis.fetch;
   let client: ReturnType<typeof createClient>;
   let database: Database;
-  let directory: string;
 
   const insertAccount = async (
     provider: "claude" | "codex",
@@ -105,18 +101,16 @@ describe("account snapshots", () => {
     (await listProviderAccounts(database)).filter((row) => row.id === id);
 
   beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), "kleis-snapshots-"));
-    client = createClient({ url: `file:${join(directory, "test.db")}` });
+    client = createClient({ url: ":memory:" });
     database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     globalThis.fetch = originalFetch;
     setSystemTime();
     setAccountSnapshotStore(null);
     client.close();
-    await rm(directory, { recursive: true, force: true });
   });
 
   test("writes a quota at most every five minutes unless the plan changes or a window resets", async () => {
