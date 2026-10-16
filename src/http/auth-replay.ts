@@ -34,7 +34,7 @@ export const sendWithAuthReplay = async <
     };
   }
 
-  let refreshed: Account | null;
+  let refreshed: Account | null = null;
   try {
     refreshed = await input.refresh(
       input.account.id,
@@ -42,12 +42,6 @@ export const sendWithAuthReplay = async <
     );
   } catch {
     input.signal?.throwIfAborted();
-    return {
-      account: input.account,
-      attempt: firstAttempt,
-      replayed: false,
-      refreshFailed: true,
-    };
   }
   if (!refreshed || refreshed.accessToken === input.account.accessToken) {
     return {
