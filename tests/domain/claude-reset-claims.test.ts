@@ -715,6 +715,26 @@ describe("Claude reset claims", () => {
   });
 
   describe("confirmation binding", () => {
+    test("an unchanged confirmed grant cannot be spent after its expiry", async () => {
+      const account = await addAccount();
+      const body = usageBody(
+        cedar([grant({ ends_at: new Date(startedAt + MINUTE).toISOString() })])
+      );
+      upstream.usage = () => Response.json(body);
+      await read(account);
+      const confirmed = await offerOf(account);
+
+      at(MINUTE + 1);
+      const outcome = await claim(account, confirmed).catch(
+        (error: unknown) => error
+      );
+      expect(upstream.claims).toHaveLength(0);
+      expect(outcome).toBeInstanceOf(ClaudeResetClaimConflict);
+      expect((outcome as ClaudeResetClaimConflict).reason).toBe(
+        "not_claimable"
+      );
+    });
+
     test.each([
       { eligible: false },
       { grants: [grant({ resets_left: 0 })] },
