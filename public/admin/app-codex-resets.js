@@ -69,6 +69,11 @@ function codexResetOffer(account) {
           ? `${windows.map((window) => window.label).join(" + ")} windows`
           : "Codex rate-limit windows"
         : null,
+    windowLabels:
+      next?.resetType === "codex_rate_limits"
+        ? windows.map((window) => window.label)
+        : [],
+    expiresAt: expiry,
     expiryText: expiry
       ? `${count > 1 ? "next expires" : "expires"} ${untilText(expiry)}`
       : "expiry not reported",

@@ -56,7 +56,7 @@ import {
   requestUsageDetail,
 } from "./app-usage.js";
 import { renderAttention, usageSlotHtml } from "./app-usage-render.js";
-import { resetCreditsFact, resetOfferFor } from "./app-reset-credits.js";
+import { resetCreditsDetail, resetOfferFor } from "./app-reset-credits.js";
 
 // Rows show the main windows (5h, 7d); model-specific windows stay in the
 // expanded row.
@@ -181,18 +181,21 @@ function resetText(window) {
 
 function limitFacts(account) {
   const quota = account.quota;
+  const windows = accountWindows(account);
+  const reset = resetCreditsDetail(account, windows);
   if (!quota)
     return [
       fact("Rate limits", '<span class="muted">\u2014</span>', [
         "waiting for the first sync",
       ]),
+      reset?.fallback,
     ];
-  const facts = accountWindows(account).map((window) => {
+  const facts = windows.map((window) => {
     const severity = limitSeverity(window.percent);
     return fact(
       escapeHtml(window.named ? window.label : `${window.label} window`),
       `<span class="${severity}">${Math.round(window.percent)}%</span>`,
-      [escapeHtml(resetText(window))],
+      [escapeHtml(resetText(window)), reset?.window === window && reset.line],
       `<span class="bar${severity ? ` ${severity}` : ""}"><i style="width:${window.percent}%"></i></span>`
     );
   });
@@ -214,6 +217,7 @@ function limitFacts(account) {
     );
   else if (!facts.length)
     facts.push(fact("Rate limits", '<span class="muted">None reported</span>'));
+  if (reset?.fallback) facts.push(reset.fallback);
   return facts;
 }
 
@@ -363,7 +367,6 @@ function accountDetailHtml(account) {
   return `<div class="detail${entering}" data-detail-for="${account.id}" data-flip="detail:${account.id}">
     <div class="facts">${[
       ...limitFacts(account),
-      resetCreditsFact(account),
       tokenFact(account),
       usageFact(accountUsageForId(account.id), state.accountUsageWindowMs),
       accountFact(account),
