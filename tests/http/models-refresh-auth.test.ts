@@ -1,22 +1,20 @@
 import { afterAll, expect, test } from "bun:test";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { Hono } from "hono";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 const originalDatabaseUrl = process.env.TURSO_CONNECTION_URL;
+const originalDatabaseToken = process.env.TURSO_AUTH_TOKEN;
 const originalAdminToken = process.env.ADMIN_TOKEN;
 const originalFetch = globalThis.fetch;
-const databaseDirectory = await mkdtemp(join(tmpdir(), "kleis-models-auth-"));
-process.env.TURSO_CONNECTION_URL = `file:${join(databaseDirectory, "test.db")}`;
+process.env.TURSO_CONNECTION_URL = ":memory:";
+process.env.TURSO_AUTH_TOKEN = "";
 process.env.ADMIN_TOKEN = "test-admin-token";
 
 const { db } = await import("../../src/db");
 const { modelsRoutes } = await import("../../src/http/routes/models");
 await migrate(db, { migrationsFolder: "./drizzle/migrations" });
 
-afterAll(async () => {
+afterAll(() => {
   globalThis.fetch = originalFetch;
   if (originalDatabaseUrl === undefined) {
     Reflect.deleteProperty(process.env, "TURSO_CONNECTION_URL");
@@ -28,7 +26,11 @@ afterAll(async () => {
   } else {
     process.env.ADMIN_TOKEN = originalAdminToken;
   }
-  await rm(databaseDirectory, { recursive: true, force: true });
+  if (originalDatabaseToken === undefined) {
+    Reflect.deleteProperty(process.env, "TURSO_AUTH_TOKEN");
+  } else {
+    process.env.TURSO_AUTH_TOKEN = originalDatabaseToken;
+  }
 });
 
 test("public models discovery cannot force a new upstream fetch", async () => {

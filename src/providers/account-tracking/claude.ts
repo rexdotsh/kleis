@@ -68,7 +68,7 @@ const readClaudePlanType = (
   }
 };
 
-export const decodeClaudeSubscriptionPlan = (
+const decodeClaudeSubscriptionPlan = (
   value: unknown
 ): ClaudeSubscriptionPlan | null => {
   const input = requireObject(
@@ -210,7 +210,7 @@ const decodeLimit = (value: unknown) => {
   };
 };
 
-export const decodeClaudeSubscriptionUsage = (value: unknown) => {
+const decodeClaudeSubscriptionUsage = (value: unknown) => {
   const input = requireObject(
     value,
     "Claude subscription usage response is malformed"

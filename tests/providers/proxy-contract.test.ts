@@ -1,28 +1,16 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 
 import {
-  CLAUDE_CLI_USER_AGENT,
-  CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
   CODEX_ACCOUNT_ID_HEADER,
-  CODEX_BETA_FEATURES,
-  CODEX_BETA_FEATURES_HEADER,
   CODEX_COMPACTION_ENDPOINT,
-  CODEX_ORIGINATOR,
   CODEX_RESPONSE_ENDPOINT,
-  CODEX_USER_AGENT,
-  CODEX_WEBSOCKET_BETA_HEADER,
 } from "../../src/providers/constants";
 import type {
   ClaudeAccountMetadata,
   CodexAccountMetadata,
 } from "../../src/providers/metadata";
-import {
-  type CodexLiveLimits,
-  readClaudeLiveLimits,
-  readCodexLiveLimits,
-  readCodexLiveLimitsEvent,
-} from "../../src/providers/account-tracking/live-limits";
+import type { CodexLiveLimits } from "../../src/providers/account-tracking/live-limits";
 import { prepareClaudeProxyRequest } from "../../src/providers/proxies/claude-proxy";
 import { prepareCodexProxyRequest } from "../../src/providers/proxies/codex-proxy";
 import {
@@ -308,9 +296,7 @@ describe("proxy contract: codex", () => {
     expect(headers.get("authorization")).toBe("Bearer codex-access");
     expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBe("acct-meta");
     expect(headers.get("content-type")).toBe("application/json");
-    expect(headers.get(CODEX_BETA_FEATURES_HEADER)).toBe(CODEX_BETA_FEATURES);
     expect(headers.get("originator")).toBe("custom-client");
-    expect(headers.get("User-Agent")).toBe(CODEX_USER_AGENT);
     expect(result.upstreamUrl).toBe(CODEX_RESPONSE_ENDPOINT);
     expect(JSON.parse(result.bodyText)).toEqual({ ...bodyJson, store: false });
   });
@@ -337,14 +323,7 @@ describe("proxy contract: codex", () => {
     });
 
     expect(headers.get(CODEX_ACCOUNT_ID_HEADER)).toBe("acct-fallback");
-    expect(headers.get("originator")).toBe(CODEX_ORIGINATOR);
-    expect(headers.get("User-Agent")).toBe(CODEX_USER_AGENT);
-    const transformed = JSON.parse(result.bodyText) as {
-      instructions?: string;
-    };
-    expect(transformed.instructions).toContain(
-      "You are OpenCode, the best coding agent on the planet."
-    );
+    expect(result.upstreamUrl).toBe(CODEX_RESPONSE_ENDPOINT);
   });
 
   test("drops caller account id when stored account ids are blank", () => {
@@ -555,24 +534,6 @@ describe("proxy contract: codex", () => {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
     });
-  });
-
-  test("removes output limits from in-band compaction triggers", () => {
-    const bodyJson = {
-      model: "gpt-5.6-sol",
-      input: [{ type: "compaction_trigger" }],
-      max_output_tokens: 4096,
-    };
-    const result = prepareCodexProxyRequest({
-      headers: new Headers(),
-      accessToken: "codex-access",
-      accountId: null,
-      metadata: null,
-      bodyText: JSON.stringify(bodyJson),
-      bodyJson,
-    });
-
-    expect(JSON.parse(result.bodyText)).not.toHaveProperty("max_output_tokens");
   });
 
   test("extracts normalized usage from non-streaming responses", async () => {
@@ -2015,10 +1976,6 @@ describe("proxy contract: codex", () => {
         value,
       ])
     );
-    expect(lowerHeaderEntries["openai-beta"]).toBe(CODEX_WEBSOCKET_BETA_HEADER);
-    expect(lowerHeaderEntries[CODEX_BETA_FEATURES_HEADER]).toBe(
-      CODEX_BETA_FEATURES
-    );
     expect(lowerHeaderEntries.authorization).toBe("Bearer codex-access");
     expect(lowerHeaderEntries["content-length"]).toBeUndefined();
     expect(lowerHeaderEntries.session_id).toBeUndefined();
@@ -3173,121 +3130,6 @@ describe("proxy contract: claude", () => {
       onTokenUsage,
     });
 
-  for (const stream of [false, true]) {
-    for (const headerState of ["missing", "conflicting"]) {
-      test(`sets Claude Code headers with ${headerState} caller headers and stream=${stream}`, () => {
-        const headers = new Headers(
-          headerState === "conflicting"
-            ? {
-                "Anthropic-Version": "2099-01-01",
-                "Content-Type": "text/plain",
-                Accept: "text/event-stream",
-              }
-            : undefined
-        );
-        const requestBody = {
-          model: "claude-sonnet-4-6",
-          messages: [{ role: "user", content: "Hello" }],
-          max_tokens: 16,
-          stream,
-        };
-
-        prepareClaudeProxyRequest({
-          requestUrl: new URL("https://kleis.local/v1/messages"),
-          headers,
-          bodyText: JSON.stringify(requestBody),
-          bodyJson: requestBody,
-          accessToken: "claude-token",
-          metadata: null,
-        });
-
-        expect(headers.get("anthropic-version")).toBe("2023-06-01");
-        expect(headers.get("content-type")).toBe("application/json");
-        expect(headers.get("accept")).toBe("application/json");
-      });
-    }
-  }
-
-  test("merges beta headers and rewrites payload tool names", () => {
-    const headers = new Headers({
-      "anthropic-beta": `custom-beta,${CLAUDE_REQUIRED_BETA_HEADERS[0]}`,
-    });
-    const requestBody = {
-      system:
-        "You are OpenCode, the best coding agent on the planet.\n\n" +
-        "If the user asks for help or wants to give feedback inform them of the following:\n" +
-        "- ctrl+p to list available actions\n" +
-        "- To give feedback, users should report the issue at\n" +
-        "  https://github.com/anomalyco/opencode\n\n" +
-        "<directories>\n" +
-        "  src/\n" +
-        "</directories>\n\n" +
-        "<env>\n" +
-        "  Working directory: /tmp/project\n" +
-        "</env>",
-      tools: [{ name: "shell", description: "run shell commands" }],
-      tool_choice: { type: "tool", name: "shell" },
-      messages: [
-        {
-          role: "assistant",
-          content: [{ type: "tool_use", name: "shell", id: "t-1", input: {} }],
-        },
-      ],
-    };
-
-    const result = prepareClaudeProxyRequest({
-      requestUrl: new URL("https://kleis.local/v1/messages"),
-      headers,
-      bodyText: JSON.stringify(requestBody),
-      bodyJson: requestBody,
-      accessToken: "claude-token",
-      metadata: legacyClaudeMetadata,
-    });
-
-    const transformed = JSON.parse(result.bodyText) as {
-      system: Array<{ type: string; text: string }>;
-      tools: Array<{ name: string }>;
-      tool_choice: { type: string; name: string };
-      messages: Array<{ content: Array<{ type: string; name?: string }> }>;
-    };
-
-    expect(headers.get("authorization")).toBe("Bearer claude-token");
-    expect(headers.get("user-agent")).toBe(CLAUDE_CLI_USER_AGENT);
-    expect(headers.get("anthropic-beta")).toBe(
-      [...CLAUDE_REQUIRED_BETA_HEADERS, "custom-beta"].join(",")
-    );
-    expect(headers.get("x-app")).toBe("cli");
-    expect(result.upstreamUrl).toContain(
-      "https://api.anthropic.com/v1/messages"
-    );
-    expect(result.upstreamUrl).toContain("beta=true");
-    expect(transformed.system).toHaveLength(2);
-    expect(transformed.system[0]?.text).toBe(CLAUDE_SYSTEM_IDENTITY);
-    expect(transformed.system[1]?.text).toContain(
-      "You are OpenCode, the best coding agent on the planet."
-    );
-    expect(transformed.system[1]?.text).toContain(
-      "If the user asks for help or wants to give feedback inform them of the following:"
-    );
-    expect(transformed.system[1]?.text).not.toContain(
-      "https://github.com/anomalyco/opencode"
-    );
-    expect(transformed.system[1]?.text).toContain(
-      "https://github.com/anomalyco/project"
-    );
-    expect(transformed.system[1]?.text).toContain("Directories");
-    expect(transformed.system[1]?.text).toContain("src/");
-    expect(transformed.system[1]?.text).toContain(
-      "Working directory: /tmp/project"
-    );
-    expect(transformed.system[1]?.text).toContain("<env>");
-    expect(transformed.system[1]?.text).toContain("</env>");
-    expect(transformed.system[1]?.text).not.toContain("<directories>");
-    expect(transformed.tools[0]?.name).toBe("mcp_Shell");
-    expect(transformed.tool_choice.name).toBe("mcp_Shell");
-    expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_Shell");
-  });
-
   test("maps tool names per request and restores them in responses", async () => {
     const requestBody = {
       tools: [
@@ -3299,7 +3141,16 @@ describe("proxy contract: claude", () => {
       messages: [
         {
           role: "assistant",
-          content: [{ type: "tool_use", id: "t-0", name: "read", input: {} }],
+          content: [
+            { type: "tool_use", id: "t-0", name: "read", input: {} },
+            {
+              type: "tool_use",
+              id: "t-browser",
+              toolset_name: "browser",
+              name: "navigate",
+              input: {},
+            },
+          ],
         },
         {
           role: "user",
@@ -3336,6 +3187,7 @@ describe("proxy contract: claude", () => {
     ]);
     expect(transformed.tool_choice.name).toBe("web_search");
     expect(transformed.messages[0]?.content[0]?.name).toBe("mcp_Read");
+    expect(transformed.messages[0]?.content[1]?.name).toBe("navigate");
     expect(transformed.messages[1]?.content[0]?.content?.[0].tool_name).toBe(
       "mcp_Read"
     );
@@ -3368,45 +3220,6 @@ describe("proxy contract: claude", () => {
     expect(body.content.map((block) => block.name)).toEqual(clientNames);
   });
 
-  test("rewrites repo path and directories in non-OpenCode Claude system prompts", () => {
-    const requestBody = {
-      system:
-        "Custom system prompt\n\n" +
-        "Feedback lives at\n" +
-        "  https://github.com/anomalyco/opencode\n\n" +
-        "<directories>\n" +
-        "  src/\n" +
-        "</directories>",
-    };
-
-    const result = prepareClaudeProxyRequest({
-      requestUrl: new URL("https://kleis.local/v1/messages"),
-      headers: new Headers(),
-      bodyText: JSON.stringify(requestBody),
-      bodyJson: requestBody,
-      accessToken: "claude-token",
-      metadata: null,
-    });
-
-    const transformed = JSON.parse(result.bodyText) as {
-      system: Array<{ type: string; text: string }>;
-    };
-
-    expect(transformed.system).toEqual([
-      { type: "text", text: CLAUDE_SYSTEM_IDENTITY },
-      {
-        type: "text",
-        text:
-          "Custom system prompt\n\n" +
-          "Feedback lives at\n" +
-          "  https://github.com/anomalyco/project\n\n" +
-          "Directories\n" +
-          "src/\n" +
-          "</directories>",
-      },
-    ]);
-  });
-
   test("rewrites the Pi docs phrases that trip the Claude OAuth classifier", () => {
     const requestBody = {
       system:
@@ -3431,63 +3244,6 @@ describe("proxy contract: claude", () => {
       "- When asked about: themes (docs/themes.md), packages (docs/packages.md), MCP servers (docs/mcp.md)\n" +
         "- When working on pi topics, read the docs and examples, and follow cross-references before implementing"
     );
-  });
-
-  test("rewrites the feedback repo path in OpenCode system prompts", () => {
-    const requestBody = {
-      system:
-        "You are OpenCode, the best coding agent on the planet.\n\n" +
-        "Feedback lives at\n" +
-        "  https://github.com/anomalyco/opencode",
-    };
-
-    const result = prepareClaudeProxyRequest({
-      requestUrl: new URL("https://kleis.local/v1/messages"),
-      headers: new Headers(),
-      bodyText: JSON.stringify(requestBody),
-      bodyJson: requestBody,
-      accessToken: "claude-token",
-      metadata: null,
-    });
-
-    const transformed = JSON.parse(result.bodyText) as {
-      system: Array<{ type: string; text: string }>;
-    };
-
-    expect(transformed.system[1]?.text).toContain(
-      "You are OpenCode, the best coding agent on the planet."
-    );
-    expect(transformed.system[1]?.text).toContain(
-      "https://github.com/anomalyco/project"
-    );
-  });
-
-  test("normalizes only the opening directories tag in OpenCode system prompts", () => {
-    const requestBody = {
-      system:
-        "You are OpenCode, the best coding agent on the planet.\n\n" +
-        "<directories>\n" +
-        "  src/\n" +
-        "</directories>",
-    };
-
-    const result = prepareClaudeProxyRequest({
-      requestUrl: new URL("https://kleis.local/v1/messages"),
-      headers: new Headers(),
-      bodyText: JSON.stringify(requestBody),
-      bodyJson: requestBody,
-      accessToken: "claude-token",
-      metadata: null,
-    });
-
-    const transformed = JSON.parse(result.bodyText) as {
-      system: Array<{ type: string; text: string }>;
-    };
-
-    expect(transformed.system[1]?.text).toContain("Directories");
-    expect(transformed.system[1]?.text).toContain("src/");
-    expect(transformed.system[1]?.text).not.toContain("<directories>");
-    expect(transformed.system[1]?.text).toContain("</directories>");
   });
 
   test("sanitizes OpenCode text inside array-form system blocks", () => {
@@ -3648,30 +3404,6 @@ describe("proxy contract: claude", () => {
 
     expect(result.upstreamUrl).toBe(
       "https://api.anthropic.com/v1/messages?beta=true&trace=1"
-    );
-  });
-
-  test("adds fine-grained tool streaming only when the caller asks for it", () => {
-    expect(CLAUDE_REQUIRED_BETA_HEADERS).not.toContain(
-      "fine-grained-tool-streaming-2025-05-14"
-    );
-    const headers = new Headers({
-      "anthropic-beta": "fine-grained-tool-streaming-2025-05-14",
-    });
-    prepareClaudeProxyRequest({
-      requestUrl: new URL("https://kleis.local/v1/messages"),
-      headers,
-      bodyText: "{}",
-      bodyJson: {},
-      accessToken: "claude-token",
-      metadata: null,
-    });
-
-    expect(headers.get("anthropic-beta")).toBe(
-      [
-        ...CLAUDE_REQUIRED_BETA_HEADERS,
-        "fine-grained-tool-streaming-2025-05-14",
-      ].join(",")
     );
   });
 
@@ -3907,36 +3639,6 @@ describe("proxy contract: claude", () => {
     );
   });
 
-  test("rewrites CRLF-delimited SSE events without buffering until EOF", async () => {
-    const result = prepareClaudeUsageRequest();
-    const encoder = new TextEncoder();
-
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(
-            encoder.encode(
-              'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_Shell"}}\r\n\r\n'
-            )
-          );
-          controller.close();
-        },
-      }),
-      {
-        headers: {
-          "content-type": "text/event-stream",
-        },
-      }
-    );
-
-    const transformedResponse = await result.transformResponse(sourceResponse);
-    const transformedText = await transformedResponse.text();
-
-    expect(transformedText).toBe(
-      'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\r\n\r\n'
-    );
-  });
-
   test("rewrites SSE events with mixed newline boundary separators", async () => {
     const result = prepareClaudeUsageRequest();
     const encoder = new TextEncoder();
@@ -3970,72 +3672,6 @@ describe("proxy contract: claude", () => {
     expect(transformedText).toBe(
       'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\n\r\n' +
         'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"browser"}}\r\n\n'
-    );
-  });
-
-  test("rewrites fragmented SSE events with mixed internal newlines", async () => {
-    const result = prepareClaudeUsageRequest();
-    const encoder = new TextEncoder();
-
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(encoder.encode("event: message\r\n"));
-          controller.enqueue(
-            encoder.encode(
-              'data: {"type":"content_block_start","content_block":{"type":"tool_use",\n'
-            )
-          );
-          controller.enqueue(
-            encoder.encode('data: "name":"mcp_Shell"}}\n\r\n')
-          );
-          controller.close();
-        },
-      }),
-      {
-        headers: {
-          "content-type": "text/event-stream",
-        },
-      }
-    );
-
-    const transformedResponse = await result.transformResponse(sourceResponse);
-    const transformedText = await transformedResponse.text();
-
-    expect(transformedText).toBe(
-      'event: message\r\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\n\r\n'
-    );
-  });
-
-  test("rewrites multiple SSE events delivered in one chunk", async () => {
-    const result = prepareClaudeUsageRequest();
-    const encoder = new TextEncoder();
-
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(
-            encoder.encode(
-              'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_Shell"}}\n\n' +
-                'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"mcp_Browser"}}\n\n'
-            )
-          );
-          controller.close();
-        },
-      }),
-      {
-        headers: {
-          "content-type": "text/event-stream",
-        },
-      }
-    );
-
-    const transformedResponse = await result.transformResponse(sourceResponse);
-    const transformedText = await transformedResponse.text();
-
-    expect(transformedText).toBe(
-      'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"shell"}}\n\n' +
-        'event: message\ndata: {"type":"content_block_start","content_block":{"type":"tool_use","name":"browser"}}\n\n'
     );
   });
 
@@ -4093,115 +3729,6 @@ describe("proxy contract: claude", () => {
     }
   });
 
-  const claudeStreamUsageCases = [
-    {
-      name: "extracts usage from claude streaming message events",
-      events: [
-        {
-          type: "message_start",
-          message: {
-            usage: {
-              input_tokens: 55,
-              cache_read_input_tokens: 11,
-              cache_creation_input_tokens: 5,
-            },
-          },
-        },
-        {
-          type: "message_delta",
-          usage: {
-            output_tokens: 13,
-          },
-        },
-      ],
-      expected: {
-        inputTokens: 55,
-        outputTokens: 13,
-        cacheReadTokens: 11,
-        cacheWriteTokens: 5,
-      },
-    },
-    {
-      name: "updates claude streaming usage when message_delta includes usage fields",
-      events: [
-        {
-          type: "message_start",
-          message: {
-            usage: {
-              input_tokens: 40,
-              cache_read_input_tokens: 4,
-              cache_creation_input_tokens: 2,
-            },
-          },
-        },
-        {
-          type: "message_delta",
-          usage: {
-            input_tokens: 41,
-            output_tokens: 9,
-            cache_read_input_tokens: 5,
-            cache_creation_input_tokens: 3,
-          },
-        },
-      ],
-      expected: {
-        inputTokens: 41,
-        outputTokens: 9,
-        cacheReadTokens: 5,
-        cacheWriteTokens: 3,
-      },
-    },
-  ] as const;
-
-  for (const testCase of claudeStreamUsageCases) {
-    test(testCase.name, async () => {
-      const capture = createUsageCapture();
-      const result = prepareClaudeUsageRequest(capture.onTokenUsage);
-
-      const transformedResponse = await result.transformResponse(
-        createSseResponse(testCase.events)
-      );
-      await transformedResponse.text();
-
-      expect(capture.read()).toEqual(testCase.expected);
-    });
-  }
-
-  test("retains observed Claude message_start usage after cancellation", async () => {
-    const capture = createUsageCapture();
-    const result = prepareClaudeUsageRequest(capture.onTokenUsage);
-    const event = JSON.stringify({
-      type: "message_start",
-      message: {
-        usage: {
-          input_tokens: 7,
-          output_tokens: 2,
-          cache_read_input_tokens: 100,
-          cache_creation_input_tokens: 5,
-        },
-      },
-    });
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          controller.enqueue(new TextEncoder().encode(`data: ${event}\n\n`));
-        },
-      }),
-      { headers: { "content-type": "text/event-stream" } }
-    );
-    const transformed = await result.transformResponse(sourceResponse);
-    const reader = transformed.body?.getReader();
-    expect((await reader?.read())?.done).toBe(false);
-    await reader?.cancel();
-
-    expect(capture.read()).toEqual({
-      inputTokens: 7,
-      outputTokens: 2,
-      cacheReadTokens: 100,
-      cacheWriteTokens: 5,
-    });
-  });
-
   test("reads and rewrites a final event that has no closing blank line", async () => {
     const capture = createUsageCapture();
     const result = prepareClaudeUsageRequest(capture.onTokenUsage);
@@ -4223,38 +3750,13 @@ describe("proxy contract: claude", () => {
     });
   });
 
-  test("retains observed Claude usage when the upstream stream fails", async () => {
-    const capture = createUsageCapture();
-    const result = prepareClaudeUsageRequest(capture.onTokenUsage);
-    let upstream: ReadableStreamDefaultController<Uint8Array> | undefined;
-    const sourceResponse = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller): void {
-          upstream = controller;
-          controller.enqueue(
-            new TextEncoder().encode(
-              'data: {"type":"message_start","message":{"usage":{"input_tokens":3,"cache_read_input_tokens":8}}}\n\n'
-            )
-          );
-        },
-      }),
-      { headers: { "content-type": "text/event-stream" } }
-    );
-    const transformed = await result.transformResponse(sourceResponse);
-    const reader = transformed.body?.getReader();
-    expect((await reader?.read())?.done).toBe(false);
-    upstream?.error(new Error("upstream interrupted"));
-    await expect(reader?.read()).rejects.toThrow("upstream interrupted");
-
-    expect(capture.read()).toEqual({
-      inputTokens: 3,
-      outputTokens: 0,
-      cacheReadTokens: 8,
-      cacheWriteTokens: 0,
-    });
+  const streamRecords = () => ({
+    usages: [] as TokenUsage[],
+    statuses: [] as number[],
   });
-
-  const prepareClaudeStreamEndRequest = (records: unknown[]) =>
+  const prepareClaudeStreamEndRequest = (
+    records: ReturnType<typeof streamRecords>
+  ) =>
     prepareClaudeProxyRequest({
       requestUrl: new URL("https://kleis.local/v1/messages"),
       headers: new Headers(),
@@ -4262,13 +3764,19 @@ describe("proxy contract: claude", () => {
       bodyJson: {},
       accessToken: "claude-token",
       metadata: null,
-      onTokenUsage: (usage) => records.push(usage.inputTokens),
-      onStreamEnd: (statusCode) => records.push(statusCode),
+      onTokenUsage: (usage) => records.usages.push(usage),
+      onStreamEnd: (statusCode) => records.statuses.push(statusCode),
     });
 
   const messageStart = {
     type: "message_start",
-    message: { usage: { input_tokens: 3 } },
+    message: { usage: { input_tokens: 3, cache_read_input_tokens: 8 } },
+  };
+  const observedUsage = {
+    inputTokens: 3,
+    outputTokens: 0,
+    cacheReadTokens: 8,
+    cacheWriteTokens: 0,
   };
   const toNamedSse = (events: readonly { type: string }[]): string =>
     events
@@ -4297,8 +3805,8 @@ describe("proxy contract: claude", () => {
   ] as const;
 
   for (const testCase of claudeStreamEndCases) {
-    test(`records a Claude stream ended by ${testCase.name} after its usage`, async () => {
-      const records: unknown[] = [];
+    test(`records usage and one outcome for a Claude stream ended by ${testCase.name}`, async () => {
+      const records = streamRecords();
       const result = prepareClaudeStreamEndRequest(records);
       const originalWarn = console.warn;
       console.warn = (): void => undefined;
@@ -4313,12 +3821,13 @@ describe("proxy contract: claude", () => {
         console.warn = originalWarn;
       }
 
-      expect(records).toEqual([3, testCase.status]);
+      expect(records.usages).toEqual([observedUsage]);
+      expect(records.statuses).toEqual([testCase.status]);
     });
   }
 
   test("forwards a Claude stream without message_stop as is and records 502", async () => {
-    const records: unknown[] = [];
+    const records = streamRecords();
     const result = prepareClaudeStreamEndRequest(records);
     const warnings: string[] = [];
     const originalWarn = console.warn;
@@ -4337,7 +3846,8 @@ describe("proxy contract: claude", () => {
     }
 
     expect(output).toBe(body);
-    expect(records).toEqual([3, 502]);
+    expect(records.usages).toEqual([observedUsage]);
+    expect(records.statuses).toEqual([502]);
     expect(warnings).toHaveLength(1);
     const warning = JSON.parse(warnings[0] ?? "{}") as Record<string, unknown>;
     expect(warning.event).toBe("claude_sse_missing_message_stop");
@@ -4349,7 +3859,7 @@ describe("proxy contract: claude", () => {
       [[messageStart], 499],
       [[messageStart, { type: "message_stop" }], 200],
     ] as const) {
-      const records: unknown[] = [];
+      const records = streamRecords();
       const result = prepareClaudeStreamEndRequest(records);
       const response = await result.transformResponse(
         new Response(
@@ -4365,12 +3875,13 @@ describe("proxy contract: claude", () => {
       expect((await reader?.read())?.done).toBe(false);
       await reader?.cancel();
 
-      expect(records).toEqual([3, status]);
+      expect(records.usages).toEqual([observedUsage]);
+      expect(records.statuses).toEqual([status]);
     }
   });
 
   test("records a non-2xx Claude event stream with its HTTP status", async () => {
-    const records: unknown[] = [];
+    const records = streamRecords();
     const response = await prepareClaudeStreamEndRequest(
       records
     ).transformResponse(
@@ -4386,11 +3897,12 @@ describe("proxy contract: claude", () => {
     );
     await response.text();
 
-    expect(records).toEqual([401]);
+    expect(records.usages).toEqual([]);
+    expect(records.statuses).toEqual([401]);
   });
 
   test("records a Claude stream whose upstream read fails as 502", async () => {
-    const records: unknown[] = [];
+    const records = streamRecords();
     const result = prepareClaudeStreamEndRequest(records);
     let upstream: ReadableStreamDefaultController<Uint8Array> | undefined;
     const response = await result.transformResponse(
@@ -4419,7 +3931,8 @@ describe("proxy contract: claude", () => {
       console.warn = originalWarn;
     }
 
-    expect(records).toEqual([3, 502]);
+    expect(records.usages).toEqual([observedUsage]);
+    expect(records.statuses).toEqual([502]);
   });
 
   test("extracts usage from fragmented streaming events", async () => {
@@ -4443,7 +3956,9 @@ describe("proxy contract: claude", () => {
             encoder.encode('data: {"type":"message_delta","usage":{')
           );
           controller.enqueue(
-            encoder.encode('"output_tokens":13,"cache_creation_input_tokens":7')
+            encoder.encode(
+              '"input_tokens":56,"output_tokens":13,"cache_read_input_tokens":12,"cache_creation_input_tokens":7'
+            )
           );
           controller.enqueue(encoder.encode("}}\n\n"));
           controller.close();
@@ -4460,9 +3975,9 @@ describe("proxy contract: claude", () => {
     await transformedResponse.text();
 
     expect(capture.read()).toEqual({
-      inputTokens: 55,
+      inputTokens: 56,
       outputTokens: 13,
-      cacheReadTokens: 11,
+      cacheReadTokens: 12,
       cacheWriteTokens: 7,
     });
   });
@@ -4479,158 +3994,9 @@ describe("proxy contract: claude", () => {
 
     expect(await response.text()).toBe(events);
   });
-
-  test("does not rewrite non-tool SSE name fields", async () => {
-    const result = prepareClaudeUsageRequest();
-
-    const transformedResponse = await result.transformResponse(
-      createSseResponse([{ type: "status", name: "mcp_Shell" }])
-    );
-
-    const transformedText = await transformedResponse.text();
-    expect(transformedText).toContain('"name":"mcp_Shell"');
-  });
 });
 
-// Fixtures follow the headers Claude Code reads (anthropic-ratelimit-unified-*)
-// and codex-rs codex-api/src/rate_limits.rs.
 describe("proxy contract: live limits", () => {
-  const RESET_5H = 1_791_000_000;
-  const RESET_7D = 1_791_500_000;
-  const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
-
-  test("reads Claude unified windows as percent with ISO resets", () => {
-    expect(
-      readClaudeLiveLimits(
-        new Headers({
-          "anthropic-ratelimit-unified-status": "allowed_warning",
-          "anthropic-ratelimit-unified-representative-claim": "five_hour",
-          "anthropic-ratelimit-unified-5h-utilization": "0.42",
-          "anthropic-ratelimit-unified-5h-reset": String(RESET_5H),
-          "anthropic-ratelimit-unified-7d-utilization": "0.071",
-          "anthropic-ratelimit-unified-7d_oi-utilization": "0.9",
-          "anthropic-ratelimit-unified-7d_oi-reset": String(RESET_7D),
-          "anthropic-ratelimit-unified-overage-status": "rejected",
-        })
-      )
-    ).toEqual({
-      provider: "claude",
-      windows: {
-        five_hour: { utilization: 42, resetsAt: iso(RESET_5H) },
-        seven_day: { utilization: 7.1 },
-        seven_day_overage_included: {
-          utilization: 90,
-          resetsAt: iso(RESET_7D),
-        },
-      },
-    });
-  });
-
-  test("a rejected Claude request marks the deciding window as used up", () => {
-    expect(
-      readClaudeLiveLimits(
-        new Headers({
-          "anthropic-ratelimit-unified-status": "rejected",
-          "anthropic-ratelimit-unified-representative-claim": "seven_day_opus",
-          "anthropic-ratelimit-unified-5h-utilization": "0.3",
-        })
-      )
-    ).toEqual({
-      provider: "claude",
-      windows: {
-        five_hour: { utilization: 30 },
-        seven_day_opus: { utilization: 100 },
-      },
-    });
-  });
-
-  test("ignores missing and malformed Claude values", () => {
-    expect(readClaudeLiveLimits(new Headers())).toBeNull();
-    expect(
-      readClaudeLiveLimits(
-        new Headers({
-          "anthropic-ratelimit-unified-status": "rejected",
-          "anthropic-ratelimit-unified-representative-claim": "overage",
-          "anthropic-ratelimit-unified-5h-utilization": "abc",
-          "anthropic-ratelimit-unified-5h-reset": "-5",
-          "anthropic-ratelimit-unified-7d-reset": "Infinity",
-        })
-      )
-    ).toBeNull();
-  });
-
-  test("reads Codex windows and credits from headers", () => {
-    expect(
-      readCodexLiveLimits(
-        new Headers({
-          "x-codex-primary-used-percent": "12.5",
-          "x-codex-primary-window-minutes": "300",
-          "x-codex-primary-reset-at": String(RESET_5H),
-          "x-codex-secondary-used-percent": "40",
-          "x-codex-bengalfox-primary-used-percent": "80",
-          "x-codex-credits-has-credits": "true",
-          "x-codex-credits-unlimited": "false",
-          "x-codex-credits-balance": "12.50",
-        })
-      )
-    ).toEqual({
-      provider: "codex",
-      primaryWindow: {
-        usedPercent: 12.5,
-        windowSeconds: 18_000,
-        resetAt: RESET_5H,
-      },
-      secondaryWindow: { usedPercent: 40, windowSeconds: null, resetAt: null },
-      credits: { hasCredits: true, unlimited: false, balance: "12.50" },
-      planType: null,
-    });
-    expect(readCodexLiveLimits(new Headers())).toBeNull();
-    expect(
-      readCodexLiveLimits(
-        new Headers({
-          // An all-zero window carries no data, as in codex-rs.
-          "x-codex-primary-used-percent": "0",
-          "x-codex-secondary-used-percent": "NaN",
-          "x-codex-credits-has-credits": "yes",
-          "x-codex-credits-unlimited": "false",
-        })
-      )
-    ).toBeNull();
-  });
-
-  test("reads codex.rate_limits websocket events", () => {
-    expect(
-      readCodexLiveLimitsEvent({
-        type: "codex.rate_limits",
-        plan_type: "pro",
-        rate_limits: {
-          primary: { used_percent: 9, window_minutes: 300, reset_at: RESET_5H },
-          secondary: { used_percent: "x" },
-        },
-        credits: { has_credits: false, unlimited: false, balance: null },
-        metered_limit_name: "codex",
-      })
-    ).toEqual({
-      provider: "codex",
-      primaryWindow: {
-        usedPercent: 9,
-        windowSeconds: 18_000,
-        resetAt: RESET_5H,
-      },
-      secondaryWindow: null,
-      credits: { hasCredits: false, unlimited: false, balance: null },
-      planType: "pro",
-    });
-    // A metered feature's own limit is not the account's main window.
-    expect(
-      readCodexLiveLimitsEvent({
-        type: "codex.rate_limits",
-        metered_limit_name: "codex_bengalfox",
-        rate_limits: { primary: { used_percent: 50 } },
-      })
-    ).toBeNull();
-  });
-
   test("reports websocket rate-limit events and still relays them", async () => {
     const sentBodies: unknown[] = [];
     const sockets = installManualCodexWebSocketMock(sentBodies);

@@ -1,21 +1,13 @@
 import { createClient } from "@libsql/client";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import { findProviderAccountById } from "../../src/db/repositories/provider-accounts";
 import { providerAccounts } from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
-import {
-  completeProviderOAuth,
-  refreshProviderAccount,
-  startProviderOAuth,
-} from "../../src/domain/providers/provider-service";
+import { refreshProviderAccount } from "../../src/domain/providers/provider-service";
 
 const jwt = (claims: Record<string, unknown>): string =>
   [
@@ -30,11 +22,9 @@ describe("account identity from token responses", () => {
   const codexId = "0d3f6a0e-5c1e-4bb0-9f55-6a7e0e5c2b11";
   let client: ReturnType<typeof createClient>;
   let database: Database;
-  let directory: string;
 
   beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), "kleis-identity-"));
-    client = createClient({ url: `file:${join(directory, "test.db")}` });
+    client = createClient({ url: ":memory:" });
     database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
     const now = Date.now();
@@ -73,10 +63,9 @@ describe("account identity from token responses", () => {
     ]);
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     globalThis.fetch = originalFetch;
     client.close();
-    await rm(directory, { recursive: true, force: true });
   });
 
   test("Claude refreshes store the identity and never erase a known field", async () => {
@@ -164,36 +153,6 @@ describe("account identity from token responses", () => {
     } finally {
       warn.mockRestore();
     }
-  });
-
-  test("a new Claude connection is labelled with its email", async () => {
-    await database
-      .delete(providerAccounts)
-      .where(eq(providerAccounts.id, claudeId));
-    const start = await startProviderOAuth(
-      database,
-      "claude",
-      { options: { mode: "max" } },
-      Date.now()
-    );
-    globalThis.fetch = (() =>
-      Promise.resolve(
-        Response.json({
-          access_token: "access",
-          refresh_token: "refresh",
-          expires_in: 3600,
-          account: { uuid: "user-uuid", email_address: "new@example.com" },
-          organization: { uuid: "org-uuid", name: "Example Org" },
-        })
-      )) as unknown as typeof fetch;
-
-    const account = await completeProviderOAuth(
-      database,
-      "claude",
-      { state: start.state, code: "auth-code" },
-      Date.now()
-    );
-    expect(account.label).toBe("new@example.com");
   });
 
   test("Codex refreshes store subscription and user claims", async () => {

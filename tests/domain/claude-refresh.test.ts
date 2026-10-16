@@ -2,9 +2,6 @@ import { createClient } from "@libsql/client";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import {
@@ -24,11 +21,9 @@ describe("Claude refresh lifecycle", () => {
   const id = "23ab7a29-6338-4382-83ba-f8508ed59a56";
   let client: ReturnType<typeof createClient>;
   let database: Database;
-  let directory: string;
 
   beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), "kleis-claude-refresh-"));
-    client = createClient({ url: `file:${join(directory, "test.db")}` });
+    client = createClient({ url: ":memory:" });
     database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
     const now = Date.now();
@@ -45,10 +40,9 @@ describe("Claude refresh lifecycle", () => {
     });
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     globalThis.fetch = originalFetch;
     client.close();
-    await rm(directory, { recursive: true, force: true });
   });
 
   test("refreshes via Platform and atomically persists the rotated token", async () => {

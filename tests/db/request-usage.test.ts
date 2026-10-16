@@ -2,9 +2,6 @@ import { createClient } from "@libsql/client";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import { createApiKey } from "../../src/db/repositories/api-keys";
@@ -21,22 +18,15 @@ import * as schema from "../../src/db/schema";
 describe("request usage token accounting", () => {
   let client: ReturnType<typeof createClient> | undefined;
   let database: Database;
-  let databaseDirectory: string;
 
   beforeEach(async () => {
-    databaseDirectory = await mkdtemp(join(tmpdir(), "kleis-request-usage-"));
-    client = createClient({
-      url: `file:${join(databaseDirectory, "test.db")}`,
-    });
+    client = createClient({ url: ":memory:" });
     database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     client?.close();
-    await rm(databaseDirectory, { recursive: true, force: true }).catch(
-      () => undefined
-    );
   });
 
   test("stores rich usage and derives totals for historical rows", async () => {

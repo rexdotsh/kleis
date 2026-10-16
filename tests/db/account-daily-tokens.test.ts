@@ -2,9 +2,6 @@ import { createClient } from "@libsql/client";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import { listProviderAccountDailyTokens } from "../../src/db/repositories/account-daily-tokens";
@@ -33,7 +30,6 @@ type BucketInput = {
 describe("account daily tokens", () => {
   let client: ReturnType<typeof createClient> | undefined;
   let database: Database;
-  let databaseDirectory: string;
 
   const insertBucket = (input: BucketInput) =>
     database.insert(requestUsageBuckets).values({
@@ -55,10 +51,7 @@ describe("account daily tokens", () => {
     });
 
   beforeEach(async () => {
-    databaseDirectory = await mkdtemp(join(tmpdir(), "kleis-daily-tokens-"));
-    client = createClient({
-      url: `file:${join(databaseDirectory, "test.db")}`,
-    });
+    client = createClient({ url: ":memory:" });
     database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
     const account = (id: string, provider: "claude" | "codex", at: number) => ({
@@ -79,11 +72,8 @@ describe("account daily tokens", () => {
       ]);
   });
 
-  afterEach(async () => {
+  afterEach(() => {
     client?.close();
-    await rm(databaseDirectory, { recursive: true, force: true }).catch(
-      () => undefined
-    );
   });
 
   test("groups by UTC day and fills days without traffic", async () => {

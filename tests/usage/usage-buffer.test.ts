@@ -1,10 +1,7 @@
 import { createClient } from "@libsql/client";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import type { Database } from "../../src/db";
 import {
@@ -73,10 +70,9 @@ const tokens = [
 
 describe("usage buffer", () => {
   const clients: ReturnType<typeof createClient>[] = [];
-  let directory: string;
 
-  const openDatabase = async (name: string): Promise<Database> => {
-    const client = createClient({ url: `file:${join(directory, name)}` });
+  const openDatabase = async (): Promise<Database> => {
+    const client = createClient({ url: ":memory:" });
     clients.push(client);
     const database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
@@ -89,23 +85,16 @@ describe("usage buffer", () => {
       .from(requestUsageBuckets)
       .orderBy(requestUsageBuckets.bucketStart);
 
-  beforeEach(async () => {
-    directory = await mkdtemp(join(tmpdir(), "kleis-usage-buffer-"));
-  });
-
-  afterEach(async () => {
+  afterEach(() => {
     for (const client of clients.splice(0)) client.close();
-    await rm(directory, { recursive: true, force: true }).catch(
-      () => undefined
-    );
   });
 
   test("writes the same buckets as recording each request directly", async () => {
-    const direct = await openDatabase("direct.db");
+    const direct = await openDatabase();
     for (const input of requests) await recordRequestUsage(direct, input);
     for (const input of tokens) await recordTokenUsage(direct, input);
 
-    const buffered = await openDatabase("buffered.db");
+    const buffered = await openDatabase();
     const buffer = createUsageBuffer(buffered, { flushIntervalMs: 60_000 });
     for (const input of requests) buffer.add(buildRequestUsageRow(input));
     for (const input of tokens) buffer.add(buildTokenUsageRow(input));
@@ -126,7 +115,7 @@ describe("usage buffer", () => {
   });
 
   test("adds to buckets already in the database", async () => {
-    const database = await openDatabase("existing.db");
+    const database = await openDatabase();
     await recordRequestUsage(database, okRequest);
     const buffer = createUsageBuffer(database, { flushIntervalMs: 60_000 });
     buffer.add(buildRequestUsageRow(rateLimitedRequest));
@@ -140,7 +129,7 @@ describe("usage buffer", () => {
   });
 
   test("keeps rows from a failed flush for the next one", async () => {
-    const database = await openDatabase("retry.db");
+    const database = await openDatabase();
     let failNextInsert = true;
     const flaky = new Proxy(database, {
       get(target, property, receiver) {
