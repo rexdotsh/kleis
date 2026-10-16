@@ -4,6 +4,7 @@ import {
   type ClaudeResetClaimIdentity,
   type ClaudeResetClaimRow,
   ClaudeResetReservationConflict,
+  listProviderAccountsWithClaudeResetClaims,
   readClaudeResetClaimLedger,
   reserveClaudeResetClaim,
   settleClaudeResetClaim,
@@ -49,22 +50,22 @@ const UNCONFIRMED_REASONS = new Set([
   "reset_unconfirmed",
 ]);
 
-export const CLAUDE_RESET_CLAIM_LOOKBACK_MS = OFFER_MAX_AGE_MS;
+const conflictMessages = {
+  identity_unverified:
+    "This credential's Claude identity isn't verified; reconnect the account or wait for profile sync",
+  identity_changed: "This account's OAuth identity changed; review it again",
+  claim_in_progress: "A reset is already being claimed for this account",
+  claim_unconfirmed:
+    "An earlier reset claim couldn't be confirmed; check Claude settings",
+  stale: "Couldn't check this account's resets right now; nothing was used",
+  not_claimable: "This account has no reset that can be used now",
+  offer_changed: "The reset on offer changed; review it again",
+} as const;
 
 export class ClaudeResetClaimConflict extends Error {
-  readonly reason:
-    | "identity_unverified"
-    | "identity_changed"
-    | "claim_in_progress"
-    | "claim_unconfirmed"
-    | "stale"
-    | "not_claimable"
-    | "offer_changed";
-
-  constructor(reason: ClaudeResetClaimConflict["reason"], message: string) {
-    super(message);
+  constructor(readonly reason: keyof typeof conflictMessages) {
+    super(conflictMessages[reason]);
     this.name = "ClaudeResetClaimConflict";
-    this.reason = reason;
   }
 }
 
@@ -138,7 +139,6 @@ const summarize = (
   );
 
 export type ClaudeResetsView = Omit<ClaudeResetSummary, "unavailable"> & {
-  observedAt: number | null;
   unavailable:
     | ClaudeResetSummary["unavailable"]
     | "checking"
@@ -147,11 +147,9 @@ export type ClaudeResetsView = Omit<ClaudeResetSummary, "unavailable"> & {
 };
 
 const emptyView = (
-  observedAt: number | null,
   unavailable: ClaudeResetsView["unavailable"],
   claim: ClaudeResetsView["claim"] = null
 ): ClaudeResetsView => ({
-  observedAt,
   saved: 0,
   nextEndsAt: null,
   clears: [],
@@ -163,7 +161,7 @@ const emptyView = (
 
 // What the admin shows for an account's saved resets; null when there is
 // nothing to show. `claims` are the recent and open claims, newest first.
-export const describeClaudeResets = (
+const describeClaudeResets = (
   account: ProviderAccountRecord,
   claims: readonly ClaudeResetClaimRow[],
   fences: readonly ClaudeResetClaimFenceRow[],
@@ -175,12 +173,12 @@ export const describeClaudeResets = (
   const credits = peekClaudeResetCredits(account);
   const identity = claudeResetIdentity(account);
   if (!identity) {
-    return credits && emptyView(credits.observedAt, "identity_unverified");
+    return credits && emptyView("identity_unverified");
   }
   const own = claims.filter((claim) => isSameIdentity(claim, identity));
   const open = findOpenClaim(own, now);
   if (open && !isReconciled(open, credits)) {
-    return emptyView(credits?.observedAt ?? null, null, {
+    return emptyView(null, {
       status: open.state,
       startedAt: open.row.createdAt,
     });
@@ -189,14 +187,28 @@ export const describeClaudeResets = (
     return null;
   }
   if (!isCurrent(credits, own)) {
-    return emptyView(credits.observedAt, "checking");
+    return emptyView("checking");
   }
   const version =
     fences.find((fence) => isSameIdentity(fence, identity))?.version ?? 0;
   return {
-    observedAt: credits.observedAt,
     ...summarize(account, credits, version, identity, now),
     claim: null,
+  };
+};
+
+// Lists accounts with a describer for their saved resets. Describe after
+// reading quotas, so the view reflects them.
+export const listAccountsWithClaudeResets = async (database: Database) => {
+  const { accounts, claims, fences } =
+    await listProviderAccountsWithClaudeResetClaims(
+      database,
+      Date.now() - OFFER_MAX_AGE_MS
+    );
+  return {
+    accounts,
+    describe: (account: ProviderAccountRecord) =>
+      describeClaudeResets(account, claims, fences),
   };
 };
 
@@ -265,29 +277,20 @@ export const claimClaudeReset = async (
   }
   const identity = claudeResetIdentity(stored);
   if (!identity) {
-    throw new ClaudeResetClaimConflict(
-      "identity_unverified",
-      "This credential's Claude identity isn't verified; reconnect the account or wait for profile sync"
-    );
+    throw new ClaudeResetClaimConflict("identity_unverified");
   }
   const { version, claims } = await readClaudeResetClaimLedger(
     database,
     identity,
-    Date.now() - CLAUDE_RESET_CLAIM_LOOKBACK_MS
+    Date.now() - OFFER_MAX_AGE_MS
   );
   const open = findOpenClaim(claims, Date.now());
   if (open?.state === "pending") {
-    throw new ClaudeResetClaimConflict(
-      "claim_in_progress",
-      "A reset is already being claimed for this account"
-    );
+    throw new ClaudeResetClaimConflict("claim_in_progress");
   }
   // Only a read the admin could already see settles an unconfirmed claim.
   if (open && !isReconciled(open, peekClaudeResetCredits(stored))) {
-    throw new ClaudeResetClaimConflict(
-      "claim_unconfirmed",
-      "An earlier reset claim couldn't be confirmed; check Claude settings"
-    );
+    throw new ClaudeResetClaimConflict("claim_unconfirmed");
   }
   const account = await resolveAccount(database, stored);
   const isFresh = (
@@ -302,10 +305,7 @@ export const claimClaudeReset = async (
     credits = await refreshClaudeResetCredits(database, account);
   }
   if (!(account && isFresh(credits))) {
-    throw new ClaudeResetClaimConflict(
-      "stale",
-      "Couldn't check this account's resets right now; nothing was used"
-    );
+    throw new ClaudeResetClaimConflict("stale");
   }
   // Runs before reserving and again right before each send, including after
   // a token refresh: the identity, offer and current limits must still match.
@@ -317,32 +317,20 @@ export const claimClaudeReset = async (
       current.accountId !== stored.accountId ||
       !isSameIdentity(claudeResetIdentity(current), identity)
     ) {
-      throw new ClaudeResetClaimConflict(
-        "identity_changed",
-        "This account's OAuth identity changed; review it again"
-      );
+      throw new ClaudeResetClaimConflict("identity_changed");
     }
     if (!isFresh(latest)) {
-      throw new ClaudeResetClaimConflict(
-        "stale",
-        "The reset confirmation expired; review it again"
-      );
+      throw new ClaudeResetClaimConflict("stale");
     }
     const { offer } = summarize(current, latest, version, identity, Date.now());
     if (!offer) {
-      throw new ClaudeResetClaimConflict(
-        "not_claimable",
-        "This account has no reset that can be used now"
-      );
+      throw new ClaudeResetClaimConflict("not_claimable");
     }
     if (
       offer.grantId !== confirmation.grantId ||
       offer.key !== confirmation.offerKey
     ) {
-      throw new ClaudeResetClaimConflict(
-        "offer_changed",
-        "The reset on offer changed; review it again"
-      );
+      throw new ClaudeResetClaimConflict("offer_changed");
     }
   };
   check(account, credits);
@@ -367,10 +355,7 @@ export const claimClaudeReset = async (
     );
   } catch (error) {
     if (error instanceof ClaudeResetReservationConflict) {
-      throw new ClaudeResetClaimConflict(
-        "offer_changed",
-        "Another reset claim changed this offer; review it again"
-      );
+      throw new ClaudeResetClaimConflict("offer_changed");
     }
     throw error;
   }

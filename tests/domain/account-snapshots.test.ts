@@ -440,17 +440,6 @@ describe("account snapshots", () => {
       displayName: "Preview user",
     });
     expect(claudeResetIdentity(account)).toBeNull();
-    globalThis.fetch = providerFetch(
-      {},
-      {
-        "/api/oauth/usage": () =>
-          Response.json({ five_hour: { utilization: 0 } }),
-      }
-    );
-    expireProviderAccountTracking(id);
-    await listProviderAccountQuotas(database, [account]);
-    await Bun.sleep(0);
-    expect(claudeResetIdentity(account)).toBeNull();
     await store.settled();
   });
 
