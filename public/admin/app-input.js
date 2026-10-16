@@ -45,6 +45,7 @@ import {
 } from "./app-keys.js";
 import { renderKeys, renderOpenCodeSetup } from "./app-keys-render.js";
 import { reauthorizeAccount } from "./app-oauth.js";
+import { resetCreditsFor } from "./app-reset-credits.js";
 import {
   loadDashboard,
   scheduleUsagePrefetch,
@@ -61,8 +62,7 @@ const accountActions = {
   "set-primary": (id) => setPrimary(id),
   "refresh-account": (id) => refreshAccount(id),
   "reauthorize-account": (id) => reauthorizeAccount(id),
-  "redeem-reset-credit": (id, button) =>
-    redeemResetCredit(id, button?.dataset.creditId || null),
+  "redeem-reset-credit": (id) => redeemResetCredit(id),
   "delete-account": (id) => deleteAccount(id),
   "toggle-free-tier": (_id, button) => toggleFreeTier(button),
   "clear-filter": () =>
@@ -398,6 +398,7 @@ const TABS = ["usage", "accounts", "keys", "oauth"];
 const WINDOWS = [3_600_000, 21_600_000, 86_400_000, 604_800_000, 2_592_000_000];
 
 const ACCOUNT_SHORTCUTS = {
+  u: "redeem-reset-credit",
   p: "set-primary",
   r: "refresh-account",
   a: "reauthorize-account",
@@ -424,6 +425,12 @@ function runRowShortcut(tab, key) {
     const action = ACCOUNT_SHORTCUTS[key];
     const row = id ? accountRow(id) : null;
     if (!(row && action)) return false;
+    if (
+      action === "redeem-reset-credit" &&
+      !resetCreditsFor(accountById(id))?.count &&
+      !state.pendingResetRedemptions.has(id)
+    )
+      return false;
     setConfirmAnchor(row.querySelector(".more") ?? row);
     runAction(accountActions[action](id, null));
     return true;

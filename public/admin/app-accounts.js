@@ -20,6 +20,11 @@ import {
   showLoading,
 } from "./app-render-shared.js";
 import {
+  createResetRequestId,
+  resetCreditConfirmation,
+  resetCreditsFor,
+} from "./app-reset-credits.js";
+import {
   invalidateUsageDetails,
   pruneUsageDetails,
   renderOverviewWhenReady,
@@ -80,6 +85,7 @@ async function loadAccounts() {
       renderKeys();
     }
     runAction(finishAccountLoad(requestSeq, missingQuotas));
+    return accounts;
   } catch (e) {
     if (requestSeq !== state.accountsRequestSeq) return;
     if (!state.accounts.length)
@@ -287,44 +293,61 @@ function resetResultToast(result) {
   }
 }
 
-async function redeemResetCreditAction(request, accountId, creditId) {
-  const redemptionKey = `${accountId}:${creditId || "auto"}`;
+async function redeemResetCreditAction(request, accountId) {
   const account = accountById(accountId);
-  const label = account?.label || account?.accountId || accountId;
-  const existingRequestId = state.pendingResetRedemptions.get(redemptionKey);
-  const credit = account?.quota?.data?.resetCredits?.credits?.find(
-    (entry) => entry.id === creditId
-  );
-  const creditName = credit?.title ? `"${credit.title}"` : "a reset credit";
+  if (!account || account.provider !== "codex") return;
+  const pending = state.pendingResetRedemptions.get(accountId);
+  const credits = resetCreditsFor(account);
+  if (!pending && !credits?.count) return;
+  const creditId = pending ? pending.creditId : credits.next?.id;
+  const confirmation = resetCreditConfirmation(account, Boolean(pending));
   const confirmed = await request.confirm(
-    "Reset Codex limits?",
-    existingRequestId
-      ? `Retry the pending reset for "${label}" with the same idempotency key?`
-      : `Use ${creditName} on "${label}"? Its Codex rate limits reset upstream right away.`,
-    existingRequestId ? "Retry reset" : "Use credit"
+    confirmation.title,
+    confirmation.message,
+    confirmation.action,
+    { extrasHtml: confirmation.extrasHtml }
   );
   if (!confirmed) return;
 
+  const redeemRequestId = pending?.redeemRequestId || createResetRequestId();
   try {
-    const body = {};
+    const body = { redeemRequestId };
     if (creditId) body.creditId = creditId;
-    if (existingRequestId) body.redeemRequestId = existingRequestId;
     const response = await request(
       `/admin/accounts/${accountId}/tracking/codex/reset-credits/consume`,
       { method: "POST", body: JSON.stringify(body) }
     );
-    state.pendingResetRedemptions.delete(redemptionKey);
+    state.pendingResetRedemptions.delete(accountId);
+    const refreshed = await loadAccounts();
+    if (!request.isCurrent()) return;
     const { message, type } = resetResultToast(response.result);
-    toast(message, type);
-    await loadAccounts();
+    const remaining = resetCreditsFor(
+      refreshed?.find((entry) => entry.id === accountId)
+    )?.count;
+    const balance =
+      type === "success" && remaining !== undefined
+        ? ` · ${remaining} credit${remaining === 1 ? "" : "s"} left`
+        : "";
+    toast(`${message}${balance}`, type);
   } catch (e) {
     if (!request.isCurrent()) return;
-    const redeemRequestId = e.body?.redeemRequestId;
-    if (redeemRequestId) {
-      state.pendingResetRedemptions.set(redemptionKey, redeemRequestId);
+    if (e.body?.redeemRequestId || !e.status || e.status >= 500 || pending) {
+      const retry = {
+        creditId,
+        redeemRequestId: e.body?.redeemRequestId || redeemRequestId,
+      };
+      state.pendingResetRedemptions.set(accountId, retry);
+      renderAccounts();
       toast(
-        "Reset status is ambiguous; the next retry will reuse its request ID",
-        "error"
+        `${e.message} Reset not confirmed; retry safely with the same request.`,
+        "error",
+        {
+          label: "Retry",
+          run: () => {
+            if (state.pendingResetRedemptions.get(accountId) === retry)
+              return redeemResetCredit(accountId);
+          },
+        }
       );
       return;
     }
@@ -436,8 +459,7 @@ const deleteAccount = mutation("delete-account", deleteAccountAction);
 const refreshAccount = mutation("refresh-account", refreshAccountAction);
 const redeemResetCredit = mutation(
   "redeem-reset-credit",
-  redeemResetCreditAction,
-  (accountId, creditId) => `${accountId}:${creditId || "auto"}`
+  redeemResetCreditAction
 );
 const saveAccountEdits = mutation(
   "save-account",
