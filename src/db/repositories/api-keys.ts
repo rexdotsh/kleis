@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, isNull, or, type SQL } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, or, sql, type SQL } from "drizzle-orm";
 
 import {
   apiKeys,
@@ -140,12 +140,67 @@ export const createApiKey = async (
     accountScopeJson: serializeScopeList(input.accountScopes),
     expiresAt: input.expiresAt ?? null,
     revokedAt: null,
+    rotatedToId: null,
     createdAt: now,
   };
 
   await database.insert(apiKeys).values(row);
   invalidateLookupCaches();
   return toRecord(row);
+};
+
+export const rotateApiKey = async (
+  database: Database,
+  id: string,
+  now: number,
+  revokeOld = true
+): Promise<ApiKeyRecord | null> => {
+  const replacementId = crypto.randomUUID();
+  const keyValue = `kleis_${crypto.randomUUID().replaceAll("-", "")}`;
+  const modelsToken = `kmd_${crypto.randomUUID().replaceAll("-", "")}`;
+  const [, replacements] = await database.batch([
+    database
+      .update(apiKeys)
+      .set({
+        rotatedToId: replacementId,
+        ...(revokeOld ? { revokedAt: now } : {}),
+      })
+      .where(
+        and(
+          eq(apiKeys.id, id),
+          isNull(apiKeys.revokedAt),
+          isNull(apiKeys.rotatedToId),
+          or(isNull(apiKeys.expiresAt), gt(apiKeys.expiresAt, now))
+        )
+      ),
+    database
+      .insert(apiKeys)
+      .select(
+        database
+          .select({
+            id: sql<string>`${replacementId}`.as("id"),
+            key: sql<string>`${keyValue}`.as("key"),
+            modelsDiscoveryToken: sql<string>`${modelsToken}`.as(
+              "models_discovery_token"
+            ),
+            label: apiKeys.label,
+            providerScopeJson: apiKeys.providerScopeJson,
+            modelScopeJson: apiKeys.modelScopeJson,
+            accountScopeJson: apiKeys.accountScopeJson,
+            expiresAt: apiKeys.expiresAt,
+            revokedAt: sql<null>`null`.as("revoked_at"),
+            rotatedToId: sql<null>`null`.as("rotated_to_id"),
+            createdAt: sql<number>`${now}`.as("created_at"),
+          })
+          .from(apiKeys)
+          .where(
+            and(eq(apiKeys.id, id), eq(apiKeys.rotatedToId, replacementId))
+          )
+      )
+      .returning(),
+  ]);
+  invalidateLookupCaches();
+  return replacements[0] ? toRecord(replacements[0]) : null;
 };
 
 export const revokeApiKey = async (

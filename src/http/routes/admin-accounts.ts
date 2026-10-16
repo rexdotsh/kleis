@@ -96,6 +96,7 @@ const codexThreadUsageBodySchema = z.strictObject({
 const codexResetCreditBodySchema = z.strictObject({
   creditId: z.string().trim().min(1).max(300).nullable().optional(),
   redeemRequestId: z.string().trim().min(1).max(200).nullable().optional(),
+  offerKey: z.string().trim().min(1).max(200).nullable().optional(),
 });
 
 const claudeResetClaimBodySchema = z.strictObject({
@@ -347,12 +348,12 @@ export const adminAccountsRoutes = new Hono()
         if (error instanceof CodexResetCreditConsumeError) {
           return context.json(
             {
-              error: "upstream_error",
+              error: error.status === 409 ? "conflict" : "upstream_error",
               message: error.message,
               redeemRequestId: error.redeemRequestId,
-              retryable: true,
+              retryable: error.redeemRequestId !== null,
             },
-            502
+            error.status
           );
         }
         throw error;

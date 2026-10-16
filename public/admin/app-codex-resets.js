@@ -22,7 +22,18 @@ function createResetRequestId() {
 function codexResetOffer(account) {
   if (account?.provider !== "codex") return null;
   const data = account.quota?.data;
-  const retry = state.pendingResetRedemptions.has(account.id);
+  const action = data?.resetCreditAction;
+  const confirmation = action?.kind === "offer" ? action : action?.recovery;
+  const retry =
+    action?.kind === "pending" || state.pendingResetRedemptions.has(account.id);
+  const fresh =
+    confirmation &&
+    confirmation.observedAt <= Date.now() &&
+    confirmation.observedAt >= Date.now() - 10 * 60_000 &&
+    (confirmation.mode !== "spend" ||
+      confirmation.expiresAt === null ||
+      confirmation.expiresAt > Date.now());
+  if (!fresh && !retry) return null;
   if (
     !data?.resetCredits &&
     typeof data?.status?.resetCreditsAvailable !== "number" &&
@@ -50,19 +61,26 @@ function codexResetOffer(account) {
     : typeof available === "number"
       ? Math.max(0, available)
       : null;
-  const next = credits[0] || null;
+  const next = credits.find((credit) => credit.id === action?.creditId) || null;
   const expiry = quotaTimestamp(next?.expiresAt);
   const windows = accountWindows(account).filter((window) => !window.named);
-  const tightest = [...windows].sort((a, b) => b.percent - a.percent)[0];
   return {
+    key: fresh ? confirmation.offerKey : null,
     count,
     next,
     unit: "credit",
     noun: "reset credit",
     heading: "Reset credit",
-    action: "Use credit",
-    canUse: Boolean(count || retry),
+    action:
+      confirmation?.mode === "review"
+        ? "Mark reviewed"
+        : retry && confirmation?.mode === "spend"
+          ? "Retry original credit"
+          : "Use credit",
+    canUse: Boolean((fresh && next && count) || retry),
     retry,
+    requiresConfirmation: retry && fresh && confirmation.mode === "spend",
+    review: retry && fresh && confirmation.mode === "review",
     scope:
       next?.resetType === "codex_rate_limits"
         ? windows.length
@@ -74,14 +92,14 @@ function codexResetOffer(account) {
       : "expiry not reported",
     title: next?.title,
     description: next?.description,
-    earlyUse:
-      tightest && tightest.percent < 100
-        ? {
-            scope: `${tightest.label} window`,
-            percentUsed: Math.round(tightest.percent),
-          }
-        : null,
-    notes: [],
+    earlyUse: fresh ? confirmation.earlyUse : null,
+    notes: retry
+      ? [
+          confirmation?.mode === "review"
+            ? "Verify this is the original login and check its reset status in Codex settings. Marking reviewed closes the old record without sending a reset request or spending a credit."
+            : "Reuses the original request and credit. A new request ID will not be created.",
+        ]
+      : [],
     useful:
       count > 0 &&
       !account.quota?.error &&
@@ -118,6 +136,11 @@ function codexResultToast(result) {
       };
     case "already_redeemed":
       return { message: `Credit was already redeemed${windows}`, type: "info" };
+    case "reconciled":
+      return {
+        message: "Reset marked reviewed; no credit was spent",
+        type: "info",
+      };
     default:
       return {
         message: `Codex reset result: ${result?.code || "complete"}`,
@@ -129,13 +152,24 @@ function codexResultToast(result) {
 const codexResets = {
   offerFor: codexResetOffer,
   attemptFor(account, offer) {
-    const pending = state.pendingResetRedemptions.get(account.id);
-    const creditId = pending ? pending.creditId : offer.next?.id;
+    const action = account.quota?.data?.resetCreditAction;
+    const pending =
+      action?.kind === "pending"
+        ? action
+        : state.pendingResetRedemptions.get(account.id);
     return {
-      body: {
-        redeemRequestId: pending?.redeemRequestId || createResetRequestId(),
-        ...(creditId ? { creditId } : {}),
-      },
+      body: pending
+        ? {
+            redeemRequestId: pending.redeemRequestId,
+            ...((offer.requiresConfirmation || offer.review) && {
+              offerKey: offer.key,
+            }),
+          }
+        : {
+            redeemRequestId: createResetRequestId(),
+            creditId: offer.next.id,
+            offerKey: offer.key,
+          },
       retry: Boolean(pending),
     };
   },
@@ -143,6 +177,10 @@ const codexResets = {
     if (!error) {
       state.pendingResetRedemptions.delete(account.id);
       return { ...codexResultToast(response.result), refresh: true };
+    }
+    if (error.body?.retryable === false) {
+      state.pendingResetRedemptions.delete(account.id);
+      return { message: error.message, type: "error", refresh: true };
     }
     if (
       !(
@@ -162,6 +200,7 @@ const codexResets = {
     return {
       message: `${error.message} Reset not confirmed; retry safely with the same request.`,
       type: "error",
+      refresh: true,
       retryAllowed: () =>
         state.pendingResetRedemptions.get(account.id) === retry,
     };

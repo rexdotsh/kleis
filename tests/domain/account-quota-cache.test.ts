@@ -1,5 +1,7 @@
 import {
+  afterAll,
   afterEach,
+  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -7,8 +9,11 @@ import {
   spyOn,
   test,
 } from "bun:test";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
+import { migrate } from "drizzle-orm/libsql/migrator";
 
-import type { Database } from "../../src/db";
+import * as schema from "../../src/db/schema";
 import type { ProviderAccountRecord } from "../../src/db/repositories/provider-accounts";
 import {
   listProviderAccountQuotas,
@@ -54,9 +59,12 @@ const fiveHourUtilization = (quota: unknown): unknown =>
     }
   ).data.subscription?.fiveHour?.utilization;
 
-// Quota reads never refresh tokens for unexpired accounts, so no database
-// access happens in these tests.
-const database = {} as Database;
+const client = createClient({ url: ":memory:" });
+const database = drizzle(client, { schema });
+beforeAll(() =>
+  migrate(database, { migrationsFolder: "./drizzle/migrations" })
+);
+afterAll(() => client.close());
 
 const trackingFetch = (
   usage: () => Response | Promise<Response>,

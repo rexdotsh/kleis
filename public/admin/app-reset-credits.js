@@ -12,7 +12,7 @@ function resetOfferFor(account) {
 function resetCreditsFact(account) {
   const offer = resetOfferFor(account);
   if (!offer?.canUse) return claudeResetsFact(account);
-  const use = `<button class="link small" type="button" data-action="redeem-reset-credit" data-account-id="${account.id}" ${mutationAttributes("redeem-reset-credit", account.id)} title="${escapeHtml(offer.title || offer.noun)}">${offer.retry ? "Retry reset" : offer.action}${kbd("U")}</button>`;
+  const use = `<button class="link small" type="button" data-action="redeem-reset-credit" data-account-id="${account.id}" ${mutationAttributes("redeem-reset-credit", account.id)} title="${escapeHtml(offer.title || offer.noun)}">${offer.retry && !offer.requiresConfirmation && !offer.review ? "Retry reset" : offer.action}${kbd("U")}</button>`;
   return fact(
     `${offer.heading}${offer.count === 1 ? "" : "s"}`,
     `${offer.count ?? "\u2014"}${use}`,
@@ -37,7 +37,15 @@ function earlyUseText(earlyUse) {
 function resetConfirmation(account, offer = resetOfferFor(account)) {
   if (!offer) return null;
   const name = accountName(account);
-  if (offer.retry)
+  if (offer.review)
+    return {
+      title: "Review uncertain reset?",
+      message: `Check the original reset for "${name}" in Codex settings. Confirm that you have reviewed its status and login. This closes the unverified record; no reset request will be sent and no credit will be spent.`,
+      action: "Mark reviewed",
+      extrasHtml: `<div class="confirm-notes">${offer.notes.map((note) => `<p class="warn">${escapeHtml(note)}</p>`).join("")}</div>`,
+      danger: true,
+    };
+  if (offer.retry && !offer.requiresConfirmation)
     return {
       title: `Retry ${providerLabel(account.provider)} reset?`,
       message: `Check the pending reset for "${name}". Retrying the same request cannot spend a second credit.`,

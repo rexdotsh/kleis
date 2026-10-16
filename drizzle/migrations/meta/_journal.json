@@ -113,6 +113,20 @@
       "when": 1792164833982,
       "tag": "0015_claude_saved_resets",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1792170926561,
+      "tag": "0016_server_side_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1792170941633,
+      "tag": "0017_codex_ledger_identity_lifetime",
+      "breakpoints": true
     }
   ]
 }

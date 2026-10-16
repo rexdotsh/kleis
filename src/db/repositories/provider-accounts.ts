@@ -1,13 +1,47 @@
 import { and, desc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
 
 import type { Database } from "../index";
-import { providerAccounts, providers, type Provider } from "../schema";
+import {
+  codexResetCreditRedemptions,
+  providerAccounts,
+  providers,
+  type Provider,
+} from "../schema";
 import {
   parseProviderAccountMetadata,
   serializeProviderAccountMetadata,
   type ProviderAccountMetadata,
 } from "../../providers/metadata";
 import { invalidateLookupCaches } from "../lookup-cache";
+import {
+  codexResetAccountIdentity,
+  preserveCodexResetIdentity,
+} from "./codex-reset-redemptions";
+
+const withResetIdentity = async <T extends { rowsAffected: number }>(
+  database: Database,
+  id: string,
+  write: (tx: Pick<Database, "update" | "delete">) => PromiseLike<T>,
+  verifiedIdentity?: string | null
+): Promise<T> => {
+  const legacy = await database.query.codexResetCreditRedemptions.findFirst({
+    columns: { redeemRequestId: true },
+    where: and(
+      eq(codexResetCreditRedemptions.providerAccountId, id),
+      isNull(codexResetCreditRedemptions.accountIdentity)
+    ),
+  });
+  if (!legacy) return write(database);
+  return database.transaction(async (tx) => {
+    const original = await tx.query.providerAccounts.findFirst({
+      where: eq(providerAccounts.id, id),
+    });
+    const result = await write(tx);
+    if (result.rowsAffected > 0)
+      await preserveCodexResetIdentity(tx, id, verifiedIdentity, original);
+    return result;
+  });
+};
 
 // Every write clears the proxy's routing lookups once it completes.
 const withInvalidation =
@@ -176,21 +210,23 @@ export const upsertProviderAccount = withInvalidation(
     const updateExisting = async (
       account: ProviderAccountRecord
     ): Promise<ProviderAccountRecord> => {
-      await database
-        .update(providerAccounts)
-        .set({
-          label: input.label === undefined ? account.label : input.label,
-          accessToken: input.accessToken,
-          refreshToken: input.refreshToken,
-          refreshLockToken: null,
-          refreshLockExpiresAt: null,
-          lastRefreshAt: input.now,
-          lastRefreshStatus: "success",
-          expiresAt: input.expiresAt,
-          metadataJson: serializeProviderAccountMetadata(input.metadata),
-          updatedAt: input.now,
-        })
-        .where(eq(providerAccounts.id, account.id));
+      await withResetIdentity(database, account.id, (tx) =>
+        tx
+          .update(providerAccounts)
+          .set({
+            label: input.label === undefined ? account.label : input.label,
+            accessToken: input.accessToken,
+            refreshToken: input.refreshToken,
+            refreshLockToken: null,
+            refreshLockExpiresAt: null,
+            lastRefreshAt: input.now,
+            lastRefreshStatus: "success",
+            expiresAt: input.expiresAt,
+            metadataJson: serializeProviderAccountMetadata(input.metadata),
+            updatedAt: input.now,
+          })
+          .where(eq(providerAccounts.id, account.id))
+      );
 
       const updated = await findProviderAccountById(database, account.id);
       if (!updated) {
@@ -313,27 +349,36 @@ export const replaceProviderAccountCredentials = withInvalidation(
 
     let result: { rowsAffected: number };
     try {
-      result = await database
-        .update(providerAccounts)
-        .set({
-          accountId: input.accountId ?? existing.accountId,
-          accessToken: input.accessToken,
-          refreshToken: input.refreshToken,
-          expiresAt: input.expiresAt,
-          metadataJson: serializeProviderAccountMetadata(input.metadata),
-          refreshLockToken: null,
-          refreshLockExpiresAt: null,
-          lastRefreshAt: input.now,
-          lastRefreshStatus: "success",
-          updatedAt: input.now,
+      result = await withResetIdentity(
+        database,
+        id,
+        (tx) =>
+          tx
+            .update(providerAccounts)
+            .set({
+              accountId: input.accountId ?? existing.accountId,
+              accessToken: input.accessToken,
+              refreshToken: input.refreshToken,
+              expiresAt: input.expiresAt,
+              metadataJson: serializeProviderAccountMetadata(input.metadata),
+              refreshLockToken: null,
+              refreshLockExpiresAt: null,
+              lastRefreshAt: input.now,
+              lastRefreshStatus: "success",
+              updatedAt: input.now,
+            })
+            .where(
+              and(
+                eq(providerAccounts.id, id),
+                eq(providerAccounts.provider, input.provider),
+                eq(providerAccounts.updatedAt, existing.updatedAt)
+              )
+            ),
+        codexResetAccountIdentity({
+          accountId: input.accountId,
+          metadata: input.metadata,
         })
-        .where(
-          and(
-            eq(providerAccounts.id, id),
-            eq(providerAccounts.provider, input.provider),
-            eq(providerAccounts.updatedAt, existing.updatedAt)
-          )
-        );
+      );
     } catch (error) {
       if (isUniqueConstraintError(error)) {
         throw new ProviderAccountReauthorizationConflict(
@@ -405,10 +450,15 @@ export const updateProviderAccountTokens = withInvalidation(
         : [])
     );
 
-    const result = await database
-      .update(providerAccounts)
-      .set(setValues)
-      .where(whereClause);
+    const result = await withResetIdentity(
+      database,
+      id,
+      (tx) => tx.update(providerAccounts).set(setValues).where(whereClause),
+      codexResetAccountIdentity({
+        accountId: input.accountId ?? null,
+        metadata: input.metadata ?? null,
+      })
+    );
     if (result.rowsAffected === 0) {
       return null;
     }
@@ -553,15 +603,17 @@ export const updateProviderAccountProfile = withInvalidation(
     }
   ): Promise<ProviderAccountRecord | "account_id_conflict" | null> => {
     try {
-      const result = await database
-        .update(providerAccounts)
-        .set({
-          label: input.label,
-          accountId: input.accountId,
-          metadataJson: serializeProviderAccountMetadata(input.metadata),
-          updatedAt: input.now,
-        })
-        .where(eq(providerAccounts.id, id));
+      const result = await withResetIdentity(database, id, (tx) =>
+        tx
+          .update(providerAccounts)
+          .set({
+            label: input.label,
+            accountId: input.accountId,
+            metadataJson: serializeProviderAccountMetadata(input.metadata),
+            updatedAt: input.now,
+          })
+          .where(eq(providerAccounts.id, id))
+      );
       if (result.rowsAffected === 0) {
         return null;
       }
@@ -588,9 +640,9 @@ export const deleteProviderAccount = withInvalidation(
       return false;
     }
 
-    const result = await database
-      .delete(providerAccounts)
-      .where(eq(providerAccounts.id, id));
+    const result = await withResetIdentity(database, id, (tx) =>
+      tx.delete(providerAccounts).where(eq(providerAccounts.id, id))
+    );
     if (result.rowsAffected === 0) {
       return false;
     }
