@@ -1002,9 +1002,6 @@ button.row {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.fact-value .link {
-  font-weight: 400;
-}
 .fact-sub {
   overflow: hidden;
   font-size: 12px;
@@ -1019,6 +1016,42 @@ button.row {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow-wrap: anywhere;
+}
+.reset-line {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  min-width: 0;
+  width: 100%;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  color: var(--muted);
+}
+.reset-copy,
+.reset-expiry {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reset-copy {
+  flex: 0 1 auto;
+}
+.reset-expiry {
+  flex-shrink: 0;
+}
+.reset-line .link {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 6px;
+  align-items: center;
+  color: var(--text);
+  white-space: nowrap;
+}
+.reset-line.warn,
+.reset-line.warn .link {
+  color: var(--warn);
 }
 .fact .bar {
   display: block;
@@ -2299,6 +2332,11 @@ input[type="checkbox"].toggle:checked::after {
   .fact .bar {
     margin: 6px 0 2px;
   }
+  .reset-line .link {
+    min-width: 44px;
+    min-height: 32px;
+    justify-content: center;
+  }
   .create-form {
     padding: 16px;
     border-radius: 0;
@@ -2308,6 +2346,12 @@ input[type="checkbox"].toggle:checked::after {
   }
   .shortcuts {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 360px) {
+  .reset-line {
+    gap: 2px;
   }
 }
 
