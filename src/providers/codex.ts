@@ -58,10 +58,8 @@ const codexOAuthStateMetadataSchema = z.discriminatedUnion("mode", [
   }),
 ]);
 
-type CodexOAuthStateMetadata = z.infer<typeof codexOAuthStateMetadataSchema>;
-
 type CodexTokenResponse = {
-  access_token?: string;
+  access_token: string;
   refresh_token?: string;
   expires_in?: number;
   scope?: string;
@@ -102,16 +100,8 @@ type CodexDeviceTokenErrorResponse = {
 const resolveCodexOAuthMode = (
   options: Record<string, unknown> | undefined
 ): "browser" | "headless" => {
-  if (!options) {
-    return "browser";
-  }
-
   const parsed = codexStartOptionsSchema.safeParse(options);
-  if (!parsed.success) {
-    return "browser";
-  }
-
-  return parsed.data.mode ?? "browser";
+  return parsed.success ? (parsed.data.mode ?? "browser") : "browser";
 };
 
 const buildAuthorizeUrl = (input: {
@@ -156,21 +146,10 @@ const parseJwtClaims = (token: string): IdTokenClaims | null => {
 
 const extractAccountIdFromClaims = (
   claims: IdTokenClaims | null
-): string | null => {
-  if (!claims) {
-    return null;
-  }
-
-  if (claims.chatgpt_account_id) {
-    return claims.chatgpt_account_id;
-  }
-
-  if (claims["https://api.openai.com/auth"]?.chatgpt_account_id) {
-    return claims["https://api.openai.com/auth"]?.chatgpt_account_id ?? null;
-  }
-
-  return null;
-};
+): string | null =>
+  claims?.chatgpt_account_id ||
+  claims?.["https://api.openai.com/auth"]?.chatgpt_account_id ||
+  null;
 
 const parseTokenResponse = async (
   response: Response
@@ -375,26 +354,24 @@ const readClaimTimestamp = (value: unknown): number | null => {
   return null;
 };
 
-const buildCodexMetadata = (input: {
-  tokens: CodexTokenResponse;
-  fallbackAccountId: string | null;
-  existing: CodexAccountMetadata | null;
-}): CodexAccountMetadata => {
+const buildCodexMetadata = (
+  tokens: CodexTokenResponse,
+  account?: ProviderAccountRecord
+): CodexAccountMetadata => {
+  const existing =
+    account?.metadata?.provider === "codex" ? account.metadata : null;
   const claims =
-    (input.tokens.id_token ? parseJwtClaims(input.tokens.id_token) : null) ??
-    (input.tokens.access_token
-      ? parseJwtClaims(input.tokens.access_token)
-      : null);
+    (tokens.id_token ? parseJwtClaims(tokens.id_token) : null) ??
+    parseJwtClaims(tokens.access_token);
   const chatgptAccountId =
     extractAccountIdFromClaims(claims) ??
-    input.fallbackAccountId ??
-    input.existing?.chatgptAccountId ??
+    account?.accountId ??
+    existing?.chatgptAccountId ??
     null;
   const auth = claims?.["https://api.openai.com/auth"];
-  const existing = input.existing;
   return {
     provider: "codex",
-    scope: input.tokens.scope ?? existing?.scope ?? null,
+    scope: tokens.scope ?? existing?.scope ?? null,
     chatgptAccountId,
     email:
       readClaimText(claims?.email) ??
@@ -423,44 +400,21 @@ const buildCodexMetadata = (input: {
   };
 };
 
-const buildFreshOAuthTokenResult = (
+const buildTokenResult = (
   tokens: CodexTokenResponse,
-  now: number
-): ProviderTokenResult =>
-  buildTokenResult({
-    tokens,
-    now,
-    fallbackRefreshToken: null,
-    fallbackAccountId: null,
-    existingMetadata: null,
-  });
-
-const buildTokenResult = (input: {
-  tokens: CodexTokenResponse;
-  now: number;
-  fallbackRefreshToken: string | null;
-  fallbackAccountId: string | null;
-  existingMetadata: CodexAccountMetadata | null;
-}): ProviderTokenResult => {
-  const accessToken = input.tokens.access_token;
-  if (!accessToken) {
-    throw new Error("Codex OAuth response is missing access_token");
-  }
-
-  const metadata = buildCodexMetadata({
-    tokens: input.tokens,
-    fallbackAccountId: input.fallbackAccountId,
-    existing: input.existingMetadata,
-  });
+  now: number,
+  account?: ProviderAccountRecord
+): ProviderTokenResult => {
+  const metadata = buildCodexMetadata(tokens, account);
   const accountId = metadata.chatgptAccountId;
-  const expiresAt = input.now + (input.tokens.expires_in ?? 3600) * 1000;
-  const refreshToken = input.tokens.refresh_token ?? input.fallbackRefreshToken;
+  const expiresAt = now + (tokens.expires_in ?? 3600) * 1000;
+  const refreshToken = tokens.refresh_token ?? account?.refreshToken;
   if (!refreshToken) {
     throw new Error("Codex OAuth response is missing refresh_token");
   }
 
   return {
-    accessToken,
+    accessToken: tokens.access_token,
     refreshToken,
     expiresAt,
     accountId,
@@ -544,11 +498,13 @@ export const codexAdapter: ProviderAdapter = {
       throw new Error("Codex OAuth state is missing or expired");
     }
 
-    const metadata: CodexOAuthStateMetadata = parseOAuthStateMetadata(
+    const metadata = parseOAuthStateMetadata(
       "Codex",
       pendingState.metadataJson,
       codexOAuthStateMetadataSchema
     );
+    let code: string;
+    let deviceVerifier: string | null = null;
     if (metadata.mode === "headless") {
       const deviceAuthorization = await pollDeviceAuthorizationCode({
         deviceAuthId: metadata.deviceAuthId,
@@ -557,43 +513,22 @@ export const codexAdapter: ProviderAdapter = {
         expiresAt: pendingState.expiresAt,
       });
 
-      const completedAt = Date.now();
-
-      const consumedState = await consumeOAuthState(
-        input.database,
-        input.state,
-        "codex",
-        completedAt
-      );
-      if (!consumedState) {
-        throw new Error("Codex OAuth state is missing or expired");
+      code = deviceAuthorization.authorizationCode;
+      deviceVerifier = deviceAuthorization.codeVerifier;
+    } else {
+      if (!input.code) {
+        throw new Error(
+          "Codex OAuth completion requires an authorization code"
+        );
       }
-
-      const tokens = await exchangeAuthorizationCodeForTokens({
-        code: deviceAuthorization.authorizationCode,
-        redirectUri: CODEX_DEVICE_REDIRECT_URI,
-        codeVerifier: deviceAuthorization.codeVerifier,
-      });
-
-      return {
-        ...buildFreshOAuthTokenResult(tokens, completedAt),
-        ...(metadata.replaceAccountId
-          ? { replaceAccountId: metadata.replaceAccountId }
-          : {}),
-      };
-    }
-
-    const browserCode = input.code;
-    if (!browserCode) {
-      throw new Error("Codex OAuth completion requires an authorization code");
-    }
-
-    const codeInput = parseAuthorizationCodeInput(
-      browserCode,
-      "Codex OAuth completion requires an authorization code"
-    );
-    if (codeInput.state && codeInput.state !== input.state) {
-      throw new Error("Codex OAuth callback state mismatch");
+      const codeInput = parseAuthorizationCodeInput(
+        input.code,
+        "Codex OAuth completion requires an authorization code"
+      );
+      if (codeInput.state && codeInput.state !== input.state) {
+        throw new Error("Codex OAuth callback state mismatch");
+      }
+      code = codeInput.code;
     }
 
     const completedAt = Date.now();
@@ -608,18 +543,22 @@ export const codexAdapter: ProviderAdapter = {
       throw new Error("Codex OAuth state is missing or expired");
     }
 
-    if (!stateRecord.pkceVerifier) {
+    const codeVerifier = deviceVerifier ?? stateRecord.pkceVerifier;
+    if (!codeVerifier) {
       throw new Error("Codex OAuth state is missing PKCE verifier");
     }
 
     const tokens = await exchangeAuthorizationCodeForTokens({
-      code: codeInput.code,
-      redirectUri: metadata.redirectUri,
-      codeVerifier: stateRecord.pkceVerifier,
+      code,
+      redirectUri:
+        metadata.mode === "headless"
+          ? CODEX_DEVICE_REDIRECT_URI
+          : metadata.redirectUri,
+      codeVerifier,
     });
 
     return {
-      ...buildFreshOAuthTokenResult(tokens, completedAt),
+      ...buildTokenResult(tokens, completedAt),
       ...(metadata.replaceAccountId
         ? { replaceAccountId: metadata.replaceAccountId }
         : {}),
@@ -630,14 +569,6 @@ export const codexAdapter: ProviderAdapter = {
     now: number
   ): Promise<ProviderTokenResult> {
     const tokens = await refreshCodexTokens(account.refreshToken);
-    const existingMetadata =
-      account.metadata?.provider === "codex" ? account.metadata : null;
-    return buildTokenResult({
-      tokens,
-      now,
-      fallbackRefreshToken: account.refreshToken,
-      fallbackAccountId: account.accountId,
-      existingMetadata,
-    });
+    return buildTokenResult(tokens, now, account);
   },
 };

@@ -3,41 +3,13 @@ import { and, eq } from "drizzle-orm";
 import type { Database } from "../index";
 import { oauthStates, type Provider } from "../schema";
 
-type OAuthStateRecord = {
-  state: string;
-  provider: Provider;
-  pkceVerifier: string | null;
-  metadataJson: string | null;
-  expiresAt: number;
-};
-
-const toRecord = (row: typeof oauthStates.$inferSelect): OAuthStateRecord => ({
-  state: row.state,
-  provider: row.provider,
-  pkceVerifier: row.pkceVerifier,
-  metadataJson: row.metadataJson,
-  expiresAt: row.expiresAt,
-});
-
-type CreateOAuthStateInput = {
-  state: string;
-  provider: Provider;
-  pkceVerifier: string | null;
-  metadataJson: string | null;
-  expiresAt: number;
-};
+type OAuthStateRecord = typeof oauthStates.$inferSelect;
 
 export const createOAuthState = async (
   database: Database,
-  input: CreateOAuthStateInput
+  input: OAuthStateRecord
 ): Promise<void> => {
-  await database.insert(oauthStates).values({
-    state: input.state,
-    provider: input.provider,
-    pkceVerifier: input.pkceVerifier,
-    metadataJson: input.metadataJson,
-    expiresAt: input.expiresAt,
-  });
+  await database.insert(oauthStates).values(input);
 };
 
 export const findOAuthState = async (
@@ -57,7 +29,7 @@ export const findOAuthState = async (
     return null;
   }
 
-  return toRecord(row);
+  return row;
 };
 
 export const consumeOAuthState = async (
