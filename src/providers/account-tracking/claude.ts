@@ -102,6 +102,7 @@ export const decodeClaudeAccountProfile = (value: unknown) => {
   const organization = readObject(input.organization);
   return {
     plan: decodeClaudeSubscriptionPlan(input),
+    accountUuid: readString(account?.uuid),
     displayName: readString(account?.display_name),
     fullName: readString(account?.full_name),
     organizationUuid: readString(organization?.uuid),

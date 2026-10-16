@@ -51,6 +51,7 @@ const UNAVAILABLE_TEXT = {
   cooldown: "another reset was just used \u00b7 try later",
   not_usable: "can't be used right now",
   checking: "checking again",
+  unsupported_limits: "unrecognized limits",
 };
 
 // Claude's saved limit resets ("Reset for free" in Claude settings).
@@ -82,7 +83,8 @@ function claudeResetsFact(account) {
     resets.saved === 1 ? "Limit reset" : "Limit resets",
     String(resets.saved),
     [
-      escapeHtml(`refills ${limitsText(resets.clears)}`),
+      resets.unavailable !== "unsupported_limits" &&
+        escapeHtml(`refills ${limitsText(resets.clears)}`),
       escapeHtml(expiryText(resets.nextEndsAt)),
       reason && escapeHtml(reason),
       reason && settingsLink(),

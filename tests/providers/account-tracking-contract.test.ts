@@ -358,6 +358,7 @@ describe("Claude saved reset contracts", () => {
             seven_day_overage_included: 55,
           },
           blocking: [],
+          hasUnknownLimits: false,
         },
       ],
       nextGrantId: "grant_fake_1",
@@ -425,7 +426,10 @@ describe("Claude saved reset contracts", () => {
       [{ grants: [grant({ ends_at: "soon" })] }, "none_left"],
       [{ grants: [grant({ paused: true })] }, "paused"],
       [{ grants: [grant({ usable_now: false })] }, "not_usable"],
-      [{ grants: [grant({ clears: ["mystery_window"] })] }, "not_usable"],
+      [
+        { grants: [grant({ clears: ["mystery_window"] })] },
+        "unsupported_limits",
+      ],
       [{ grants: [grant({ blocking: ["seven_day_opus"] })] }, "not_usable"],
       [{ next_grant_id: null }, "not_usable"],
       [{ cooldown_until: "2026-10-15T13:00:00Z" }, "cooldown"],
@@ -489,5 +493,25 @@ describe("Claude saved reset contracts", () => {
     expect(() => decodeClaudeResetClaimResult({ result: "granted" })).toThrow();
     expect(() => decodeClaudeResetClaimResult({})).toThrow();
     expect(() => decodeClaudeResetClaimResult("reset")).toThrow();
+  });
+
+  test("confirmation keys bind early use, labels, weekly dates, and the displayed saved count", () => {
+    const key = summarize().offer?.key;
+    for (const changed of [
+      { exhausted: ["five_hour"] },
+      { grants: [grant({ percent_used: { five_hour: 0 } })] },
+      { grants: [grant({ label: "A different offer" })] },
+      { weekly_resets_at: "2026-10-20T19:00:00Z" },
+      { grants: [grant(), grant({ id: "another_grant" })] },
+    ])
+      expect(summarize(changed).offer?.key).not.toBe(key);
+  });
+
+  test("a persisted grant without validated limit-type information is not claimable", () => {
+    const status = decodeClaudeResetStatus(block());
+    const first = status?.grants[0];
+    if (!status || !first) throw new Error("grant missing");
+    Reflect.deleteProperty(first, "hasUnknownLimits");
+    expect(summarizeClaudeResets(status, now).offer).toBeNull();
   });
 });

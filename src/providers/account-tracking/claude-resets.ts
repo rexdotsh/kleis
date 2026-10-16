@@ -77,13 +77,16 @@ const readCount = (value: unknown): number | null =>
     ? value
     : null;
 
-// Unknown limit types are dropped: Kleis can't say what they refill.
 const readLimitTypes = (value: unknown): ClaudeResetLimitType[] =>
   Array.isArray(value)
     ? value
         .map((entry) => readEnum(claudeResetLimitTypes, entry))
         .filter((entry) => entry !== null)
     : [];
+
+const hasUnknownLimitTypes = (value: unknown): boolean =>
+  !Array.isArray(value) ||
+  value.some((entry) => readEnum(claudeResetLimitTypes, entry) === null);
 
 const readPercentUsed = (
   value: unknown
@@ -124,6 +127,9 @@ const decodeGrant = (value: unknown) => {
     useRequiresLimit: readBoolean(input.use_requires_limit) ?? true,
     percentUsed: readPercentUsed(input.percent_used),
     blocking: readLimitTypes(input.blocking),
+    hasUnknownLimits:
+      hasUnknownLimitTypes(input.clears) ||
+      hasUnknownLimitTypes(input.blocking),
   };
 };
 
@@ -214,6 +220,7 @@ export type ClaudeResetUnavailableReason =
   | "paused"
   | "cooldown"
   | "requires_limit"
+  | "unsupported_limits"
   | "not_usable";
 
 export type ClaudeResetOffer = {
@@ -241,7 +248,11 @@ export type ClaudeResetSummary = {
   unavailable: ClaudeResetUnavailableReason | null;
 };
 
-const offerKey = (grant: ClaudeResetGrant): string =>
+const offerKey = (
+  grant: ClaudeResetGrant,
+  status: ClaudeResetStatus,
+  saved: number
+): string =>
   Bun.CryptoHasher.hash(
     "sha256",
     JSON.stringify([
@@ -250,6 +261,10 @@ const offerKey = (grant: ClaudeResetGrant): string =>
       grant.clears,
       grant.endsAt,
       grant.useRequiresLimit,
+      grant.label,
+      saved,
+      status.weeklyResetsAt,
+      earlyUse(grant, status),
     ]),
     "hex"
   ).slice(0, 32);
@@ -302,6 +317,8 @@ const selectOffer = (
   if (grant.paused) {
     return "paused";
   }
+  // Cached grants need an explicit successful scope check to authorize a claim.
+  if (grant.hasUnknownLimits !== false) return "unsupported_limits";
   if (!(grant.usableNow && grant.clears.length) || grant.blocking.length) {
     return "not_usable";
   }
@@ -310,7 +327,11 @@ const selectOffer = (
     return "requires_limit";
   }
   return {
-    key: offerKey(grant),
+    key: offerKey(
+      grant,
+      status,
+      live.reduce((total, entry) => total + entry.resetsLeft, 0)
+    ),
     grantId: grant.id,
     label: grant.label,
     clears: grant.clears,

@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { Database } from "../../src/db";
+import * as claimRepository from "../../src/db/repositories/claude-reset-claims";
 import {
   findProviderAccountById,
   type ProviderAccountRecord,
@@ -36,6 +37,7 @@ import { readClaudeLiveLimits } from "../../src/providers/account-tracking/live-
 
 const MINUTE = 60_000;
 const ORGANIZATION = "00000000-0000-4000-8000-000000000001";
+const ACCOUNT = "aaaaaaaa-0000-4000-8000-000000000001";
 
 const grant = (overrides: Record<string, unknown> = {}) => ({
   id: "grant_fake_1",
@@ -91,6 +93,10 @@ const upstream = {
       weekly_resets_at: "2026-10-19T19:00:00+00:00",
     }),
   organization: ORGANIZATION,
+  account: ACCOUNT,
+  refresh: (): Response => {
+    throw new Error("Unexpected token refresh");
+  },
   usageUrls: [] as string[],
   claims: [] as ClaimCall[],
   claimHeaders: [] as Headers[],
@@ -101,6 +107,11 @@ const originalFetch = globalThis.fetch;
 const mockAnthropic = (() =>
   ((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input));
+    if (
+      url.hostname === "platform.claude.com" &&
+      url.pathname === "/v1/oauth/token"
+    )
+      return Promise.resolve(upstream.refresh());
     if (url.hostname !== "api.anthropic.com") {
       throw new Error(`Unexpected request to ${url.hostname}`);
     }
@@ -111,6 +122,7 @@ const mockAnthropic = (() =>
     if (url.pathname === "/api/oauth/profile") {
       return Promise.resolve(
         Response.json({
+          account: { uuid: upstream.account },
           organization: {
             uuid: upstream.organization,
             organization_type: "claude_max",
@@ -139,6 +151,14 @@ const flush = async () => {
   }
 };
 
+const gate = () => {
+  let release: () => void = () => undefined;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+};
+
 describe("Claude reset claims", () => {
   let client: ReturnType<typeof createClient>;
   let database: Database;
@@ -146,7 +166,10 @@ describe("Claude reset claims", () => {
   let startedAt: number;
 
   const addAccount = async (
-    metadata: Record<string, unknown> = { organizationUuid: ORGANIZATION }
+    metadata: Record<string, unknown> = {
+      accountUuid: ACCOUNT,
+      organizationUuid: ORGANIZATION,
+    }
   ): Promise<ProviderAccountRecord> => {
     const now = Date.now();
     const id = crypto.randomUUID();
@@ -179,8 +202,14 @@ describe("Claude reset claims", () => {
       .from(claudeResetClaims)
       .where(eq(claudeResetClaims.providerAccountId, account.id));
 
-  const view = async (account: ProviderAccountRecord) =>
-    describeClaudeResets(account, await claimRows(account));
+  const view = async (account: ProviderAccountRecord) => {
+    const { claims, fences } =
+      await claimRepository.listProviderAccountsWithClaudeResetClaims(
+        database,
+        startedAt - 10 * MINUTE
+      );
+    return describeClaudeResets(account, claims, fences);
+  };
 
   const offerOf = async (account: ProviderAccountRecord) => {
     const offer = (await view(account))?.offer;
@@ -216,6 +245,10 @@ describe("Claude reset claims", () => {
         weekly_resets_at: "2026-10-19T19:00:00+00:00",
       });
     upstream.organization = ORGANIZATION;
+    upstream.account = ACCOUNT;
+    upstream.refresh = () => {
+      throw new Error("Unexpected token refresh");
+    };
     upstream.usageUrls = [];
     upstream.claims = [];
     upstream.claimHeaders = [];
@@ -223,6 +256,7 @@ describe("Claude reset claims", () => {
   });
 
   afterEach(async () => {
+    await flush();
     globalThis.fetch = originalFetch;
     setSystemTime();
     client.close();
@@ -567,6 +601,7 @@ describe("Claude reset claims", () => {
     await database.insert(claudeResetClaims).values({
       requestId: "other-process-request",
       providerAccountId: account.id,
+      accountIdentity: ACCOUNT,
       organizationUuid: ORGANIZATION,
       program: "cedar_ember",
       grantId: "grant_fake_1",
@@ -595,6 +630,7 @@ describe("Claude reset claims", () => {
         await database.insert(claudeResetClaims).values({
           requestId: "second-open-request",
           providerAccountId: account.id,
+          accountIdentity: ACCOUNT,
           organizationUuid: ORGANIZATION,
           program: "cedar_ember",
           grantId: "grant_fake_1",
@@ -614,6 +650,7 @@ describe("Claude reset claims", () => {
     await database.insert(claudeResetClaims).values({
       requestId: "other-process-request",
       providerAccountId: account.id,
+      accountIdentity: ACCOUNT,
       organizationUuid: ORGANIZATION,
       program: "cedar_ember",
       grantId: "grant_fake_1",
@@ -728,4 +765,229 @@ describe("Claude reset claims", () => {
     ).toBeNull();
     expect(upstream.claims).toHaveLength(0);
   });
+
+  test.each([false, true])(
+    "reservation fences a completed claim when a delayed INSERT resumes (duplicate row: %s)",
+    async (duplicate) => {
+      const firstAccount = await addAccount();
+      const secondAccount = duplicate ? await addAccount() : firstAccount;
+      await readQuota(firstAccount);
+      if (duplicate) await readQuota(secondAccount);
+      const confirmed = await offerOf(secondAccount);
+      const contenderClient = createClient({
+        url: `file:${join(directory, "test.db")}`,
+      });
+      const contender = drizzle(contenderClient, { schema });
+      const entered = gate();
+      const resume = gate();
+      const insert = claimRepository.insertClaudeResetClaim;
+      let calls = 0;
+      const paused = spyOn(
+        claimRepository,
+        "insertClaudeResetClaim"
+      ).mockImplementation(async (...args) => {
+        if (++calls === 1) {
+          entered.release();
+          await resume.promise;
+        }
+        await insert(...args);
+      });
+      const delayed = claimClaudeReset(
+        contender,
+        secondAccount.id,
+        confirmed
+      ).catch((error: unknown) => error);
+      try {
+        await entered.promise;
+        expect(
+          (await claimClaudeReset(database, firstAccount.id, confirmed))?.status
+        ).toBe("completed");
+        resume.release();
+        const outcome = await delayed;
+        expect(outcome).toBeInstanceOf(ClaudeResetClaimConflict);
+        expect(upstream.claims).toHaveLength(1);
+      } finally {
+        resume.release();
+        paused.mockRestore();
+        await delayed;
+        contenderClient.close();
+      }
+    }
+  );
+
+  test("duplicate local rows with a null accountId share the OAuth identity's active fence", async () => {
+    const first = await addAccount();
+    const second = await addAccount();
+    expect(first.accountId).toBeNull();
+    expect(second.accountId).toBeNull();
+    await readQuota(first);
+    await readQuota(second);
+    const confirmed = await offerOf(first);
+    const sending = gate();
+    const release = gate();
+    upstream.claim = async () => {
+      if (upstream.claims.length === 1) {
+        sending.release();
+        await release.promise;
+      }
+      return Response.json({ result: "reset" });
+    };
+    const pending = claimClaudeReset(database, first.id, confirmed);
+    try {
+      await sending.promise;
+      const duplicate = await claimClaudeReset(
+        database,
+        second.id,
+        confirmed
+      ).catch((error: unknown) => error);
+      expect(duplicate).toBeInstanceOf(ClaudeResetClaimConflict);
+      expect(upstream.claims).toHaveLength(1);
+    } finally {
+      release.release();
+      await pending;
+    }
+  });
+
+  test.each(["organization", "account", "offer", "none"])(
+    "proactive refresh cannot change the confirmed %s identity",
+    async (changed) => {
+      const account = await addAccount();
+      await readQuota(account);
+      const confirmed = await offerOf(account);
+      await database
+        .update(providerAccounts)
+        .set({ expiresAt: startedAt + 1000 })
+        .where(eq(providerAccounts.id, account.id));
+      upstream.refresh = () =>
+        Response.json({
+          access_token: "fake-refreshed-access",
+          refresh_token: "fake-refreshed-token",
+          expires_in: 3600,
+          account: {
+            uuid:
+              changed === "account"
+                ? "10000000-0000-4000-8000-000000000002"
+                : ACCOUNT,
+          },
+          organization: {
+            uuid:
+              changed === "organization"
+                ? "00000000-0000-4000-8000-000000000002"
+                : ORGANIZATION,
+          },
+        });
+      if (changed === "offer")
+        upstream.usage = () =>
+          Response.json(usageBody(cedar([grant({ resets_left: 1 })])));
+      const result = await claimClaudeReset(
+        database,
+        account.id,
+        confirmed
+      ).catch((error: unknown) => error);
+      if (changed === "none") {
+        expect(result).toMatchObject({ status: "completed", result: "reset" });
+        expect(upstream.claims).toHaveLength(1);
+      } else {
+        expect(result).toBeInstanceOf(ClaudeResetClaimConflict);
+        expect(upstream.claims).toHaveLength(0);
+        expect(await claimRows(account)).toHaveLength(0);
+      }
+    }
+  );
+
+  test("a natural reset requires a new early-use confirmation before dispatch", async () => {
+    const account = await addAccount();
+    const initial = grant({ percent_used: { five_hour: 100 } });
+    upstream.usage = () =>
+      Response.json(
+        usageBody(
+          cedar([initial], { at_limit: true, exhausted: ["five_hour"] })
+        )
+      );
+    await readQuota(account);
+    const confirmed = await offerOf(account);
+    expect((await view(account))?.offer?.earlyUse).toBeNull();
+    upstream.usage = () =>
+      Response.json(
+        usageBody(cedar([{ ...initial, percent_used: { five_hour: 0 } }]))
+      );
+    setSystemTime(new Date(startedAt + 4 * MINUTE));
+    await readQuota(account);
+    await flush();
+    expect((await view(account))?.offer?.earlyUse?.percentUsed).toBe(0);
+    const result = await claimClaudeReset(
+      database,
+      account.id,
+      confirmed
+    ).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(ClaudeResetClaimConflict);
+    expect(upstream.claims).toHaveLength(0);
+  });
+
+  test.each([
+    { clears: ["five_hour", "unknown_window"] },
+    { blocking: ["unknown_window"] },
+  ])(
+    "unknown grant limits disable claiming but preserve ordinary usage: %j",
+    async (fields) => {
+      const account = await addAccount();
+      await readQuota(account);
+      const confirmed = await offerOf(account);
+      upstream.usage = () => Response.json(usageBody(cedar([grant(fields)])));
+      setSystemTime(new Date(startedAt + 4 * MINUTE));
+      await readQuota(account);
+      await flush();
+      const quotas = await readQuota(account);
+      expect(quotas.get(account.id)?.data).toMatchObject({
+        subscription: { fiveHour: { utilization: 40 } },
+      });
+      expect((await view(account))?.offer).toBeNull();
+      expect((await view(account))?.unavailable).toBe("unsupported_limits");
+      const result = await claimClaudeReset(
+        database,
+        account.id,
+        confirmed
+      ).catch((error: unknown) => error);
+      expect(result).toBeInstanceOf(ClaudeResetClaimConflict);
+      expect(upstream.claims).toHaveLength(0);
+    }
+  );
+
+  test("a completed reservation invalidates the confirmed key even beyond the ledger lookback", async () => {
+    const first = await addAccount();
+    const second = await addAccount();
+    const block = cedar();
+    upstream.usage = () => Response.json(usageBody(block));
+    await readQuota(first);
+    await readQuota(second);
+    const confirmed = await offerOf(second);
+    await claimClaudeReset(database, first.id, confirmed);
+    await flush();
+    setSystemTime(new Date(startedAt + 14 * MINUTE));
+    const result = await claimClaudeReset(database, second.id, confirmed).catch(
+      (error: unknown) => error
+    );
+    expect(result).toBeInstanceOf(ClaudeResetClaimConflict);
+    expect(upstream.claims).toHaveLength(1);
+    expect((await offerOf(second)).offerKey).not.toBe(confirmed.offerKey);
+  });
+
+  test.each([ACCOUNT.toUpperCase(), "10000000-0000-4000-8000-000000000002"])(
+    "identical grant data binds the canonical OAuth user: %s",
+    async (nextAccount) => {
+      const first = await addAccount();
+      await readQuota(first);
+      const confirmed = await offerOf(first);
+      upstream.account = nextAccount;
+      const second = await addAccount({
+        accountUuid: upstream.account,
+        organizationUuid: ORGANIZATION,
+      });
+      await readQuota(second);
+      const key = (await offerOf(second)).offerKey;
+      if (nextAccount === ACCOUNT.toUpperCase())
+        expect(key).toBe(confirmed.offerKey);
+      else expect(key).not.toBe(confirmed.offerKey);
+    }
+  );
 });

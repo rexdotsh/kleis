@@ -113,6 +113,13 @@
       "when": 1792064606623,
       "tag": "0015_blue_mesmero",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1792154526224,
+      "tag": "0016_claude_reset_identity_fences",
+      "breakpoints": true
     }
   ]
 }

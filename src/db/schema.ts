@@ -186,17 +186,29 @@ export const claudeResetClaimStatuses = [
 ] as const;
 export type ClaudeResetClaimStatus = (typeof claudeResetClaimStatuses)[number];
 
-// Every claim of a saved Claude limit reset, written before the request is
-// sent. At most one pending or ambiguous claim exists per account identity,
-// across every Kleis process sharing the database.
+export const claudeResetClaimFences = sqliteTable(
+  "claude_reset_claim_fences",
+  {
+    accountIdentity: text("account_identity").notNull(),
+    organizationUuid: text("organization_uuid").notNull(),
+    version: integer("version").notNull().default(0),
+  },
+  (table) => [
+    primaryKey({ columns: [table.accountIdentity, table.organizationUuid] }),
+  ]
+);
+
+// Canonical OAuth user + organization fences survive local account removal.
+// A claim is recorded before sending, across every Kleis process.
 export const claudeResetClaims = sqliteTable(
   "claude_reset_claims",
   {
     requestId: text("request_id").primaryKey(),
-    providerAccountId: text("provider_account_id")
-      .notNull()
-      .references(() => providerAccounts.id, { onDelete: "cascade" }),
-    accountIdentity: text("account_identity").notNull().default(""),
+    providerAccountId: text("provider_account_id").references(
+      () => providerAccounts.id,
+      { onDelete: "set null" }
+    ),
+    accountIdentity: text("account_identity").notNull(),
     organizationUuid: text("organization_uuid").notNull(),
     program: text("program").notNull(),
     grantId: text("grant_id").notNull(),
@@ -213,11 +225,12 @@ export const claudeResetClaims = sqliteTable(
   },
   (table) => [
     index("claude_reset_claims_account_idx").on(
-      table.providerAccountId,
+      table.accountIdentity,
+      table.organizationUuid,
       table.updatedAt
     ),
     uniqueIndex("claude_reset_claims_active_unique")
-      .on(table.providerAccountId, table.accountIdentity)
+      .on(table.accountIdentity, table.organizationUuid)
       .where(sql`${table.status} in ('pending', 'ambiguous')`),
   ]
 );

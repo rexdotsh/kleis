@@ -69,8 +69,8 @@ type CodexTrackingData = {
 // refresh the quota, never the resets.
 export type ClaudeResetCredits = {
   observedAt: number;
-  // Which organization the read was made for; see organizationBinding.
-  organization: string | null;
+  // Binds this read to the canonical OAuth user and organization, not a local row.
+  identity: string | null;
   status: ClaudeResetStatus;
 };
 
@@ -263,14 +263,14 @@ const claudeOrganizationKey = (account: TrackingAccount): string | null => {
   if (metadata?.provider !== "claude" || !metadata.organizationUuid) {
     return null;
   }
-  return `${metadata.organizationUuid}|${metadata.organizationName ?? ""}`;
+  return `${metadata.organizationUuid}|${metadata.organizationName ?? ""}|${metadata.accountUuid ?? ""}`;
 };
 
 const profileOrganizationKey = (
   profile: AccountProfile | null
 ): string | null =>
   profile?.provider === "claude" && profile.organizationUuid
-    ? `${profile.organizationUuid}|${profile.organizationName ?? ""}`
+    ? `${profile.organizationUuid}|${profile.organizationName ?? ""}|${profile.accountUuid ?? ""}`
     : null;
 
 const getClaudeProfile = async (
@@ -437,9 +437,12 @@ const fetchAccountData = async (
           ...(resets && {
             resetCredits: {
               observedAt: now,
-              organization:
-                "organizationUuid" in organization
-                  ? organizationBinding(organization.organizationUuid)
+              identity:
+                "organizationUuid" in organization && organization.accountUuid
+                  ? claudeResetIdentityBinding(
+                      organization.accountUuid,
+                      organization.organizationUuid
+                    )
                   : null,
               status: resets,
             },
@@ -1033,11 +1036,11 @@ export const redeemCodexResetCredit = async (
 };
 
 export type ClaudeOrganization =
-  | { organizationUuid: string }
+  | { organizationUuid: string; accountUuid: string | null }
   | { problem: "unknown" | "mismatch" };
 
-// The organization a reset is claimed for comes from the account's stored
-// OAuth identity and must agree with the profile Anthropic last returned.
+// Reset claims use the OAuth user and organization, which must agree with
+// the profile Anthropic last returned.
 export const claudeOrganization = (
   account: ProviderAccountRecord
 ): ClaudeOrganization => {
@@ -1050,17 +1053,41 @@ export const claudeOrganization = (
     : null;
   const lookedUp =
     profile?.provider === "claude" ? profile.organizationUuid : null;
-  if (stored && lookedUp && stored !== lookedUp) {
+  const storedAccount =
+    account.metadata?.provider === "claude"
+      ? account.metadata.accountUuid
+      : null;
+  const profileAccount =
+    profile?.provider === "claude" ? profile.accountUuid : null;
+  const normalize = (value: string | null | undefined) =>
+    value?.trim().toLowerCase() || null;
+  if (
+    (stored && lookedUp && normalize(stored) !== normalize(lookedUp)) ||
+    (storedAccount &&
+      profileAccount &&
+      normalize(storedAccount) !== normalize(profileAccount))
+  ) {
     return { problem: "mismatch" };
   }
-  const organizationUuid = lookedUp ?? stored;
-  return organizationUuid ? { organizationUuid } : { problem: "unknown" };
+  const organizationUuid = normalize(lookedUp ?? stored);
+  return organizationUuid
+    ? {
+        organizationUuid,
+        accountUuid: normalize(profileAccount ?? storedAccount),
+      }
+    : { problem: "unknown" };
 };
 
-// Keeps organization IDs out of stored limits while still tying a reset read
-// to the organization it was made for.
-export const organizationBinding = (organizationUuid: string): string =>
-  Bun.CryptoHasher.hash("sha256", organizationUuid, "hex").slice(0, 16);
+// Stored limits retain an identity binding without exposing the OAuth IDs.
+export const claudeResetIdentityBinding = (
+  accountUuid: string,
+  organizationUuid: string
+): string =>
+  Bun.CryptoHasher.hash(
+    "sha256",
+    JSON.stringify([accountUuid, organizationUuid]),
+    "hex"
+  );
 
 export const peekClaudeResetCredits = (
   account: ProviderAccountRecord
@@ -1081,8 +1108,10 @@ export const refreshClaudeResetCredits = async (
   if (!isTrackingAccount(account)) {
     return null;
   }
-  await loadProviderAccountQuota(database, account, false);
-  return peekClaudeResetCredits(account);
+  const previous = peekClaudeResetCredits(account);
+  const quota = await loadProviderAccountQuota(database, account, false);
+  const current = peekClaudeResetCredits(account);
+  return quota?.error || current === previous ? null : current;
 };
 
 export const holdClaudeResetCredits = (

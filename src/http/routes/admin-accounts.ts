@@ -199,7 +199,7 @@ const toAdminAccountView = (account: ProviderAccountRecord) => ({
 
 export const adminAccountsRoutes = new Hono()
   .get("/", async (context) => {
-    const [{ accounts, claims }] = await Promise.all([
+    const [{ accounts, claims, fences }] = await Promise.all([
       listProviderAccountsWithClaudeResetClaims(
         db,
         Date.now() - CLAUDE_RESET_CLAIM_LOOKBACK_MS
@@ -213,13 +213,13 @@ export const adminAccountsRoutes = new Hono()
         ...toAdminAccountView(account),
         quota: quotas.get(account.id) ?? null,
         profile: profiles.get(account.id) ?? null,
-        claudeResets: describeClaudeResets(account, claims),
+        claudeResets: describeClaudeResets(account, claims, fences),
       })),
       providers: summarizeProviderStatuses(accounts),
     });
   })
   .get("/quotas", async (context) => {
-    const [{ accounts, claims }] = await Promise.all([
+    const [{ accounts, claims, fences }] = await Promise.all([
       listProviderAccountsWithClaudeResetClaims(
         db,
         Date.now() - CLAUDE_RESET_CLAIM_LOOKBACK_MS
@@ -233,7 +233,7 @@ export const adminAccountsRoutes = new Hono()
       claudeResets: Object.fromEntries(
         accounts.map((account) => [
           account.id,
-          describeClaudeResets(account, claims),
+          describeClaudeResets(account, claims, fences),
         ])
       ),
     });
