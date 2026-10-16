@@ -25,8 +25,6 @@ import { errorLogFields, logWarn } from "../../utils/log";
 import { sleep } from "../../utils/sleep";
 import { createLookupCache } from "../../db/lookup-cache";
 
-const normalizeTokenField = (value: string): string => value.trim();
-
 const REFRESH_LOCK_LEASE_MS = 45_000;
 const REFRESH_LOCK_HEARTBEAT_MS = 5000;
 const REFRESH_WAIT_TIMEOUT_MS = 20_000;
@@ -170,6 +168,20 @@ const waitForInFlightRefresh = async (
   return account;
 };
 
+const claimRefreshLock = async (
+  database: Database,
+  accountId: string
+): Promise<string | null> => {
+  const token = crypto.randomUUID();
+  const now = Date.now();
+  const acquired = await tryAcquireProviderAccountRefreshLock(
+    database,
+    accountId,
+    { token, now, expiresAt: now + REFRESH_LOCK_LEASE_MS }
+  );
+  return acquired ? token : null;
+};
+
 const refreshProviderAccountWithLock = async (
   database: Database,
   accountId: string,
@@ -207,8 +219,8 @@ const refreshProviderAccountWithLock = async (
     try {
       const adapter = getProviderAdapter(account.provider);
       const tokens = await adapter.refreshAccount(account, refreshNow);
-      const accessToken = normalizeTokenField(tokens.accessToken);
-      const refreshToken = normalizeTokenField(tokens.refreshToken);
+      const accessToken = tokens.accessToken.trim();
+      const refreshToken = tokens.refreshToken.trim();
       if (!accessToken || !refreshToken) {
         throw new Error("Provider refresh response is missing required tokens");
       }
@@ -337,19 +349,8 @@ const refreshRejectedProviderAccount = async (
     assertClaudeRefreshAllowed(account);
   }
 
-  const lockToken = crypto.randomUUID();
-  const lockClaimedAt = Date.now();
-  const lockAcquired = await tryAcquireProviderAccountRefreshLock(
-    database,
-    account.id,
-    {
-      token: lockToken,
-      now: lockClaimedAt,
-      expiresAt: lockClaimedAt + REFRESH_LOCK_LEASE_MS,
-    }
-  );
-
-  if (lockAcquired) {
+  const lockToken = await claimRefreshLock(database, account.id);
+  if (lockToken) {
     return refreshProviderAccountWithLock(
       database,
       account.id,
@@ -471,8 +472,8 @@ export const completeProviderOAuth = async (
     now,
   });
 
-  const accessToken = normalizeTokenField(tokens.accessToken);
-  const refreshToken = normalizeTokenField(tokens.refreshToken);
+  const accessToken = tokens.accessToken.trim();
+  const refreshToken = tokens.refreshToken.trim();
   if (!accessToken || !refreshToken) {
     throw new Error("Provider OAuth response is missing required tokens");
   }
@@ -522,8 +523,8 @@ export const importProviderAccount = (
   },
   now: number
 ): Promise<ProviderAccountRecord> => {
-  const accessToken = normalizeTokenField(input.accessToken);
-  const refreshToken = normalizeTokenField(input.refreshToken);
+  const accessToken = input.accessToken.trim();
+  const refreshToken = input.refreshToken.trim();
   if (!accessToken || !refreshToken) {
     throw new Error(
       "Provider account import requires access and refresh tokens"
@@ -568,19 +569,8 @@ const refreshProviderAccountOnce = async (
     assertClaudeRefreshAllowed(account);
   }
 
-  const lockToken = crypto.randomUUID();
-  const lockClaimedAt = Date.now();
-  const lockAcquired = await tryAcquireProviderAccountRefreshLock(
-    database,
-    account.id,
-    {
-      token: lockToken,
-      now: lockClaimedAt,
-      expiresAt: lockClaimedAt + REFRESH_LOCK_LEASE_MS,
-    }
-  );
-
-  if (lockAcquired) {
+  const lockToken = await claimRefreshLock(database, account.id);
+  if (lockToken) {
     return refreshProviderAccountWithLock(
       database,
       account.id,
@@ -620,19 +610,8 @@ const refreshProviderAccountOnce = async (
     assertClaudeRefreshAllowed(waited);
   }
 
-  const retryLockToken = crypto.randomUUID();
-  const retryClaimedAt = Date.now();
-  const retryLockAcquired = await tryAcquireProviderAccountRefreshLock(
-    database,
-    account.id,
-    {
-      token: retryLockToken,
-      now: retryClaimedAt,
-      expiresAt: retryClaimedAt + REFRESH_LOCK_LEASE_MS,
-    }
-  );
-
-  if (!retryLockAcquired) {
+  const retryLockToken = await claimRefreshLock(database, account.id);
+  if (!retryLockToken) {
     throw new Error("Provider account refresh is already in progress");
   }
 
@@ -644,47 +623,10 @@ const refreshProviderAccountOnce = async (
   );
 };
 
-const pickPreferredProviderAccount = (
-  accounts: readonly ProviderAccountRecord[]
-): ProviderAccountRecord | null => {
-  if (!accounts.length) {
-    return null;
-  }
-
-  return (
-    [...accounts].sort(
-      (left, right) =>
-        Number(right.isPrimary) - Number(left.isPrimary) ||
-        right.createdAt - left.createdAt
-    )[0] ?? null
-  );
-};
-
 const ROUTABLE_ACCOUNT_CACHE_TTL_MS = 15_000;
 const routableAccountCache = createLookupCache<ProviderAccountRecord | null>(
   ROUTABLE_ACCOUNT_CACHE_TTL_MS
 );
-
-const getPrimaryProviderAccount = async (
-  database: Database,
-  provider: Provider,
-  now: number
-): Promise<ProviderAccountRecord | null> => {
-  const account = await routableAccountCache.get(
-    database,
-    `primary:${provider}`,
-    () => findPrimaryProviderAccount(database, provider)
-  );
-  if (!account) {
-    return null;
-  }
-
-  if (account.expiresAt > now) {
-    return account;
-  }
-
-  return refreshProviderAccount(database, account.id, now);
-};
 
 const pinnedAccountCache = createLookupCache<ProviderAccountRecord[]>(
   ROUTABLE_ACCOUNT_CACHE_TTL_MS
@@ -737,13 +679,11 @@ export const getRoutableProviderAccount = async (
     provider,
     input?.allowedAccountIds
   );
-  if (!pinned.length) {
-    return getPrimaryProviderAccount(database, provider, now);
-  }
-
-  const account = pickPreferredProviderAccount(
-    pinned.filter((candidate) => candidate.enabled)
-  );
+  const account = pinned.length
+    ? pinned.find((candidate) => candidate.enabled)
+    : await routableAccountCache.get(database, `primary:${provider}`, () =>
+        findPrimaryProviderAccount(database, provider)
+      );
   if (!account) {
     return null;
   }

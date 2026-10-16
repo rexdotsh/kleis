@@ -50,13 +50,8 @@ const mergePending = (older: Pending, newer: Pending): Pending => {
 // Quota lookups run every minute or few; their snapshots are written at most
 // every five minutes per account, unless the plan changed or a limit window
 // reset. Profiles change rarely and are written at once.
-export const createAccountSnapshotStore = (
-  database: Database,
-  options: { minWriteIntervalMs?: number; flushTickMs?: number } = {}
-) => {
-  const minWriteIntervalMs =
-    options.minWriteIntervalMs ?? MIN_WRITE_INTERVAL_MS;
-  let pending = new Map<string, Pending>();
+export const createAccountSnapshotStore = (database: Database) => {
+  const pending = new Map<string, Pending>();
   const lastWrittenAt = new Map<string, number>();
   const signatures = new Map<string, QuotaSignature>();
   let flushing: Promise<void> | null = null;
@@ -92,12 +87,10 @@ export const createAccountSnapshotStore = (
     if (!rows.length) {
       return;
     }
-    const remaining = new Map(pending);
     for (const row of rows) {
-      remaining.delete(row.providerAccountId);
+      pending.delete(row.providerAccountId);
       lastWrittenAt.set(row.providerAccountId, now);
     }
-    pending = remaining;
     flushing = write(rows).finally(() => {
       flushing = null;
     });
@@ -110,7 +103,7 @@ export const createAccountSnapshotStore = (
     }
     timer = setInterval(() => {
       flush({ onlyDue: true }).catch(() => undefined);
-    }, options.flushTickMs ?? FLUSH_TICK_MS);
+    }, FLUSH_TICK_MS);
     timer.unref?.();
   };
 
@@ -171,7 +164,7 @@ export const createAccountSnapshotStore = (
         dueAt:
           immediate || writtenAt === undefined
             ? now
-            : writtenAt + minWriteIntervalMs,
+            : writtenAt + MIN_WRITE_INTERVAL_MS,
       });
     },
     recordProfile(
@@ -194,7 +187,6 @@ export const createAccountSnapshotStore = (
         await flushing;
       }
     },
-    pendingCount: (): number => pending.size,
   };
 };
 
