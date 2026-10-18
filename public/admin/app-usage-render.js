@@ -30,18 +30,18 @@ import {
 
 /* Usage inside expanded rows */
 
-function usagePanelHtml(table, columns, message = "", loading = false) {
+function usagePanelHtml({ title, columns, head, body }, message, loading) {
   const placeholder = loading
     ? Array.from(
         { length: 3 },
         () => `<div class="row skeleton"><span class="bone"></span></div>`
       ).join("")
     : `<p class="usage-note muted">${escapeHtml(message || "No usage in this window.")}</p>`;
-  if (!(loading || message || table.body)) return "";
+  if (!(loading || message || body)) return "";
   const status = message
     ? ` <span class="usage-status err" title="${escapeHtml(message)}">Unavailable</span>`
     : "";
-  return `<div class="usage-panel"><div class="list usage-table"><div class="row thead ${columns}"><span>${table.title}${status}</span>${table.head}</div>${table.body || placeholder}</div></div>`;
+  return `<div class="usage-panel"><div class="list usage-table"><div class="row thead ${columns}"><span>${title}${status}</span>${head}</div>${body || placeholder}</div></div>`;
 }
 
 const DASHBOARD_LOADING_HTML = `<div class="kpis">${["Requests", "Success", "Tokens", "Cached input", "Avg latency"].map((label) => `<div class="kpi"><div class="kpi-label">${label}</div><div class="val"><span class="bone"></span></div><div class="sub">&nbsp;</div></div>`).join("")}</div><div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><span class="bone chart-bone"></span></div></div><div class="tables">${["By provider", "Top keys"].map((label) => `<div><div class="sh"><h2>${label}</h2></div><div class="list dashboard-table">${SKELETON_HTML}</div></div>`).join("")}</div>`;
@@ -55,9 +55,7 @@ function usageSlotHtml(kind, id) {
   const loading = !data && entry?.status !== "error";
   const message = entry?.status === "error" ? entry.error : "";
   return [
-    kind === "account"
-      ? keyListHtml(data?.apiKeys, data?.totals, message, loading)
-      : accountListHtml(data?.accounts, data?.totals, message, loading),
+    peersListHtml(kind, data, message, loading),
     modelListHtml(data?.models, message, loading),
   ]
     .filter(Boolean)
@@ -90,37 +88,10 @@ function modelListHtml(rows, message, loading) {
   return usagePanelHtml(
     {
       title: "Model",
+      columns: "t-model",
       head: '<span class="num">Requests</span><span class="num">Tokens</span><span class="num d">Cached</span><span class="num d">Latency</span>',
       body,
     },
-    "t-model",
-    message,
-    loading
-  );
-}
-
-function keyListHtml(rows, totals, message, loading) {
-  const total = normalizeUsage(totals).requestCount;
-  const body = [...(rows || [])]
-    .sort((a, b) => (b.requestCount ?? 0) - (a.requestCount ?? 0))
-    .map((row) => {
-      const usage = normalizeUsage(row);
-      const share = total
-        ? `${((usage.requestCount / total) * 100).toFixed(1)}%`
-        : "\u2014";
-      const link = keyById(row.apiKeyId)
-        ? ` data-key-id="${escapeHtml(row.apiKeyId)}" tabindex="0" role="button"`
-        : "";
-      return `<div class="row t-bykey"${link}><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
-    })
-    .join("");
-  return usagePanelHtml(
-    {
-      title: "Key",
-      head: '<span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
-      body,
-    },
-    "t-bykey",
     message,
     loading
   );
@@ -129,48 +100,59 @@ function keyListHtml(rows, totals, message, loading) {
 // Requests refused before an account was chosen are stored under this id.
 const NOT_ROUTED_ACCOUNT_ID = "__missing__";
 
-function accountListHtml(rows, totals, message, loading) {
-  const total = normalizeUsage(totals).requestCount;
-  const body = (rows || [])
-    .filter((row) => {
-      const account = accountById(row.providerAccountId);
-      return (
-        !account ||
-        isAccountVisible(account, {
-          showFreeTier: state.showFreeTier,
-          usage: row,
-        })
-      );
-    })
+function peersListHtml(kind, data, message, loading) {
+  const byKey = kind === "account";
+  const total = normalizeUsage(data?.totals).requestCount;
+  const rows = byKey
+    ? [...(data?.apiKeys || [])].sort(
+        (a, b) => (b.requestCount ?? 0) - (a.requestCount ?? 0)
+      )
+    : (data?.accounts || []).filter((row) => {
+        const account = accountById(row.providerAccountId);
+        return (
+          !account ||
+          isAccountVisible(account, {
+            showFreeTier: state.showFreeTier,
+            usage: row,
+          })
+        );
+      });
+  const body = rows
     .map((row) => {
       const usage = normalizeUsage(row);
       const share = total
         ? `${((usage.requestCount / total) * 100).toFixed(1)}%`
         : "\u2014";
-      const account = accountById(row.providerAccountId);
-      let name = `<span class="mono muted" title="${escapeHtml(row.providerAccountId)}">Removed account</span>`;
-      if (row.providerAccountId === NOT_ROUTED_ACCOUNT_ID) {
-        name =
-          '<span class="muted" title="Refused before an account was chosen">Not routed</span>';
-      } else if (account) {
-        name = escapeHtml(accountName(account));
-      }
-      const link = account
-        ? ` data-account-id="${account.id}" tabindex="0" role="button"`
+      const id = byKey ? row.apiKeyId : row.providerAccountId;
+      const record = byKey ? keyById(id) : accountById(id);
+      const link = record
+        ? ` data-${byKey ? "key" : "account"}-id="${escapeHtml(id)}" tabindex="0" role="button"`
         : "";
-      return `<div class="row t-bykey"${link}><span class="name"><span class="ellipsis">${name}</span><span class="tag d">${escapeHtml(providerName(row.provider))}</span></span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
+      const name = byKey
+        ? `<span class="ellipsis">${apiKeyDisplayHtml(id)}</span>`
+        : `<span class="name"><span class="ellipsis">${accountDisplayHtml(id)}</span><span class="tag d">${escapeHtml(providerName(row.provider))}</span></span>`;
+      return `<div class="row t-bykey"${link}>${name}<span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
     })
     .join("");
   return usagePanelHtml(
     {
-      title: "Account",
+      title: byKey ? "Key" : "Account",
+      columns: "t-bykey",
       head: '<span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
       body,
     },
-    "t-bykey",
     message,
     loading
   );
+}
+
+function accountDisplayHtml(id) {
+  if (id === NOT_ROUTED_ACCOUNT_ID)
+    return '<span class="muted" title="Refused before an account was chosen">Not routed</span>';
+  const account = accountById(id);
+  return account
+    ? escapeHtml(accountName(account))
+    : `<span class="mono muted" title="${escapeHtml(id)}">Removed account</span>`;
 }
 
 function apiKeyDisplayHtml(apiKeyId) {
@@ -575,7 +557,4 @@ export {
   renderUsageSlot,
   renderAttention,
   renderDashboard,
-  requestChartHtml,
-  showChartHover,
-  hideChartHover,
 };
