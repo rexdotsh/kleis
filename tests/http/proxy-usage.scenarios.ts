@@ -1,4 +1,4 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { Hono } from "hono";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { installErrorHandler } from "../../src/http/error-handler";
@@ -75,6 +75,12 @@ const complete =
   event({ type: "message_stop" });
 const request = () =>
   app.request("/anthropic/v1/messages", { method: "POST", body: "{}" });
+
+beforeEach(async () => {
+  await flushProxyUsage();
+  await flushProxyFailureLogs();
+  await db.delete(requestUsageBuckets);
+});
 
 test("proxy authorization enforces credentials, provider and model scopes before forwarding", async () => {
   const key = await createApiKey(
@@ -202,7 +208,6 @@ test("the proxy forwards its selected credential, never client secrets, spoofed 
 });
 
 test("route records one successful SSE request including latest tokens", async () => {
-  await db.delete(requestUsageBuckets);
   const original = globalThis.fetch;
   globalThis.fetch = (async () =>
     new Response(complete, {
@@ -228,8 +233,35 @@ test("route records one successful SSE request including latest tokens", async (
   }
 });
 
+test("Codex HTTP-200 SSE rate limits count as failed requests", async () => {
+  const original = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const body = event({
+    type: "error",
+    error: { type: "rate_limit_error", message: "Try again later" },
+  });
+  globalThis.fetch = (async () =>
+    new Response(body, {
+      headers: { "content-type": "text/event-stream" },
+    })) as typeof fetch;
+  try {
+    const response = await app.request("/openai/v1/responses", {
+      method: "POST",
+      body: '{"stream":true}',
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe(body);
+    await flushProxyUsage();
+    expect(await db.select().from(requestUsageBuckets)).toMatchObject([
+      { requestCount: 1, successCount: 0, rateLimitCount: 1 },
+    ]);
+  } finally {
+    warn.mockRestore();
+    globalThis.fetch = original;
+  }
+});
+
 test("route auth replay records only final stream with refreshed account", async () => {
-  await db.delete(requestUsageBuckets);
   const original = globalThis.fetch;
   let calls = 0;
   let firstCancelled = 0;
@@ -280,7 +312,6 @@ test("route auth replay records only final stream with refreshed account", async
 });
 
 test("route preserves non-2xx SSE classification in the usage bucket", async () => {
-  await db.delete(requestUsageBuckets);
   const original = globalThis.fetch;
   const log = spyOn(console, "warn").mockImplementation(() => undefined);
   globalThis.fetch = (async () =>
@@ -317,6 +348,41 @@ for (const [provider, path] of [
   ["codex", "/openai/v1/responses"],
   ["claude", "/anthropic/v1/messages"],
 ] as const) {
+  test(`${provider} defers SSE accounting until downstream cancellation`, async () => {
+    const original = globalThis.fetch;
+    let cancelled = 0;
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller): void {
+            controller.enqueue(new TextEncoder().encode(": ping\n\n"));
+          },
+          cancel(): void {
+            cancelled++;
+          },
+        }),
+        provider === "codex"
+          ? {}
+          : { headers: { "content-type": "text/event-stream" } }
+      )) as typeof fetch;
+    try {
+      const response = await app.request(path, {
+        method: "POST",
+        body: '{"stream":true}',
+      });
+      await flushProxyUsage();
+      expect(await db.select().from(requestUsageBuckets)).toEqual([]);
+      await response.body?.cancel();
+      await flushProxyUsage();
+      expect(cancelled).toBe(1);
+      expect(await db.select().from(requestUsageBuckets)).toMatchObject([
+        { requestCount: 1, successCount: 0, clientErrorCount: 1 },
+      ]);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
   test.each([403, 429, 503])(
     `${provider} non-2xx %s is logged once without provider content`,
     async (status) => {
@@ -363,8 +429,6 @@ for (const [provider, path] of [
 }
 
 test("Codex streaming HTTP errors without content-type retain bytes and log safe metadata once", async () => {
-  await flushProxyUsage();
-  await db.delete(requestUsageBuckets);
   const original = globalThis.fetch;
   const warn = spyOn(console, "warn").mockImplementation(() => undefined);
   const error = spyOn(console, "error").mockImplementation(() => undefined);

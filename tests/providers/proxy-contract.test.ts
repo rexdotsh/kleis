@@ -1240,6 +1240,7 @@ describe("proxy contract: codex", () => {
         output_index: 2,
         item: { id: "private-reasoning-3", type: "reasoning" },
       },
+      { type: "response.completed" },
     ];
     const source = createSseResponse(events);
     source.headers.set("x-request-id", "upstream-request-1");
@@ -1313,6 +1314,7 @@ describe("proxy contract: codex", () => {
         output_index: 1,
         item: { id: "reasoning-2", type: "reasoning" },
       },
+      { type: "response.completed" },
     ];
     const warnings: string[] = [];
     const originalWarn = console.warn;
@@ -1334,7 +1336,8 @@ describe("proxy contract: codex", () => {
   });
 
   test("passes unknown valid SSE events without malformed diagnostics", async () => {
-    const event = 'data: {"type":"response.future_event","value":true}\n\n';
+    const event =
+      'data: {"type":"response.future_event","value":true}\n\ndata: {"type":"response.completed"}\n\n';
     const warnings: string[] = [];
     const originalWarn = console.warn;
     console.warn = (message?: unknown): void => {

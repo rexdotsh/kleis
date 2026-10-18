@@ -10,6 +10,11 @@ import {
 } from "../../usage/token-usage";
 import CODEX_DEFAULT_INSTRUCTIONS from "../codex-default-instructions.txt";
 import { createOpenAiSseUsagePassthrough } from "./openai-sse-passthrough";
+import {
+  isEventStreamResponse,
+  passthroughProxyResponse,
+  transformJsonResponse,
+} from "./response";
 
 import {
   CODEX_ACCOUNT_ID_HEADER,
@@ -143,46 +148,35 @@ const transformCodexResponse = async (
   response: Response,
   onTokenUsage: ((usage: TokenUsage) => void) | null | undefined,
   isStreamingRequest: boolean,
-  providerAccountId: string | undefined
+  providerAccountId: string | undefined,
+  onStreamEnd: ((statusCode: number) => void) | null | undefined
 ): Promise<Response> => {
   if (!response.body) {
     return response;
   }
-  // Codex can omit content-type on SSE, so request intent also selects it.
+  const contentType = (
+    response.headers.get("content-type") ?? ""
+  ).toLowerCase();
+  // Codex can omit content-type on successful SSE responses.
   if (
-    isStreamingRequest ||
-    (response.headers.get("content-type") ?? "")
-      .toLowerCase()
-      .includes("text/event-stream")
+    isEventStreamResponse(response) ||
+    (isStreamingRequest && response.ok && !contentType)
   ) {
     return createOpenAiSseUsagePassthrough({
       response,
       providerAccountId,
       onTokenUsage,
+      onStreamEnd,
     });
+  }
+  if (isStreamingRequest && !contentType.includes("application/json")) {
+    return passthroughProxyResponse(response);
   }
 
-  const bodyText = await response.text();
-  let bodyJson: unknown;
-  try {
-    bodyJson = JSON.parse(bodyText) as unknown;
-  } catch {
-    return new Response(bodyText, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
-  }
-  const usage = readOpenAiResponsesUsageFromResponse(bodyJson);
-  if (usage) {
-    onTokenUsage?.(usage);
-  }
-  const headers = new Headers(response.headers);
-  headers.delete("content-length");
-  return Response.json(bodyJson, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
+  return transformJsonResponse({
+    response,
+    readUsage: readOpenAiResponsesUsageFromResponse,
+    onTokenUsage,
   });
 };
 
@@ -197,6 +191,7 @@ type CodexProxyPreparationInput = {
   bodyJson: unknown;
   sessionId?: string | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
+  onStreamEnd?: ((statusCode: number) => void) | null;
 };
 
 type CodexProxyPreparationResult = {
@@ -254,7 +249,8 @@ export const prepareCodexProxyRequest = (
         response,
         input.onTokenUsage,
         isStreamingRequest,
-        input.providerAccountId
+        input.providerAccountId,
+        input.onStreamEnd
       ),
   };
 };

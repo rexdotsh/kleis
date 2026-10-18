@@ -2,27 +2,26 @@ import {
   readOpenAiResponsesUsageFromSseEvent,
   type TokenUsage,
 } from "../../usage/token-usage";
-import { errorLogFields, hashLogId, logError, logWarn } from "../../utils/log";
 import { isObjectRecord } from "../../utils/object";
 import { createCodexStreamDiagnostics } from "./codex-stream-diagnostics";
-import { readUpstreamErrorFields } from "./upstream-error";
+import {
+  readStreamErrorStatus,
+  readUpstreamErrorFields,
+} from "./upstream-error";
 import { readOpenAiResponseStatus } from "./openai-event-types";
 import {
   normalizeOpenAiResponsesEvent,
-  type OpenAiResponsesEventShapeIssue,
   readOpenAiResponsesEventShapeIssue,
 } from "./openai-responses-event";
-import {
-  createSseEventFramer,
-  readSseData,
-  replaceSseData,
-} from "./sse-events";
-import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
+import { readSseData, replaceSseData } from "./sse-events";
+import { passthroughProxyResponse, tryParseJson } from "./response";
+import { createSseRelay } from "./sse-relay";
 
 type OpenAiSsePassthroughInput = {
   response: Response;
   providerAccountId?: string | undefined;
   onTokenUsage?: ((usage: TokenUsage) => void) | null | undefined;
+  onStreamEnd?: ((statusCode: number) => void) | null | undefined;
   keepAliveIntervalMs?: number;
 };
 
@@ -64,70 +63,6 @@ const readSseTerminalAnomaly = (
   return null;
 };
 
-const tryParseJson = (value: string): unknown | null => {
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return null;
-  }
-};
-
-const transformSseEvent = (
-  chunk: string,
-  state: {
-    latestUsage: TokenUsage | null;
-    terminalAnomaly: SseTerminalAnomaly | null;
-    sawTerminal: boolean;
-  },
-  onInvalidJson: (input: { bytes: number; lines: number }) => void,
-  onInvalidShape: (issue: OpenAiResponsesEventShapeIssue) => void,
-  trackDiagnostics: (payload: Record<string, unknown>) => void
-): string => {
-  const payloadText = readSseData(chunk);
-  if (!payloadText) {
-    return chunk;
-  }
-
-  const jsonPayload = tryParseJson(payloadText);
-  if (!isObjectRecord(jsonPayload)) {
-    onInvalidJson({
-      bytes: Buffer.byteLength(payloadText),
-      lines: payloadText.split("\n").length,
-    });
-    return chunk;
-  }
-
-  const shapeIssue = readOpenAiResponsesEventShapeIssue(jsonPayload);
-  if (shapeIssue) {
-    onInvalidShape(shapeIssue);
-  }
-  trackDiagnostics(jsonPayload);
-  const normalized = state.sawTerminal
-    ? jsonPayload
-    : normalizeOpenAiResponsesEvent(jsonPayload);
-  if (
-    normalized.type === "response.completed" ||
-    normalized.type === "response.incomplete" ||
-    normalized.type === "response.failed" ||
-    normalized.type === "error"
-  ) {
-    state.sawTerminal = true;
-  }
-  state.terminalAnomaly =
-    readSseTerminalAnomaly(normalized) ?? state.terminalAnomaly;
-  const usage = readOpenAiResponsesUsageFromSseEvent(normalized);
-  if (usage) {
-    state.latestUsage = usage;
-  }
-  return normalized === jsonPayload
-    ? chunk
-    : replaceSseData(
-        chunk,
-        JSON.stringify(normalized),
-        String(normalized.type)
-      );
-};
-
 export const createOpenAiSseUsagePassthrough = (
   input: OpenAiSsePassthroughInput
 ): Response => {
@@ -143,210 +78,94 @@ export const createOpenAiSseUsagePassthrough = (
     contentType.includes("text/event-stream") ||
     (input.response.ok && !contentType);
   if (!isSseBody) {
-    input.response.headers.delete("content-encoding");
-    input.response.headers.delete("content-length");
-    return input.response;
+    return passthroughProxyResponse(input.response);
   }
-
-  const reader = input.response.body.getReader();
-  const framer = createSseEventFramer();
-  const validationDecoder = new TextDecoder("utf-8", { fatal: true });
-  const encoder = new TextEncoder();
-  const startedAt = Date.now();
-  const usageState = {
-    latestUsage: null as TokenUsage | null,
-    terminalAnomaly: null as SseTerminalAnomaly | null,
-    sawTerminal: false,
-  };
-  let usageReported = false;
-  const reportUsage = (): void => {
-    if (usageReported || !usageState.latestUsage) {
-      return;
-    }
-    usageReported = true;
-    input.onTokenUsage?.(usageState.latestUsage);
-  };
-  const trackDiagnostics = createCodexStreamDiagnostics({
-    providerAccountId: input.providerAccountId,
-    requestId:
-      input.response.headers.get("x-request-id") ??
-      input.response.headers.get("request-id"),
+  return createSseRelay({
+    ...input,
+    provider: "codex",
     transport: "sse",
-    startedAt,
-  });
-  let bytes = 0;
-  let chunks = 0;
-  let lastChunkAt = startedAt;
-  let lastWriteAt = startedAt;
-  let closed = false;
-  let utf8ValidationEnabled = true;
-  let clearKeepAlive: (() => void) | null = null;
-
-  const logStreamAnomaly = (
-    event: string,
-    fields: Record<string, string | number | boolean | null> = {},
-    error?: unknown
-  ): void => {
-    const log = error === undefined ? logWarn : logError;
-    log(event, {
-      provider: "codex",
-      providerAccountId: input.providerAccountId,
-      transport: "sse",
-      requestIdHash: hashLogId(
-        input.response.headers.get("x-request-id") ??
-          input.response.headers.get("request-id")
-      ),
-      elapsedMs: Date.now() - startedAt,
-      idleMs: Date.now() - lastChunkAt,
-      downstreamIdleMs: Date.now() - lastWriteAt,
-      bytes,
-      chunks,
-      ...fields,
-      ...(error === undefined ? {} : errorLogFields(error)),
-    });
-  };
-
-  const reportInvalidJson = (details: {
-    bytes: number;
-    lines: number;
-  }): void => {
-    logStreamAnomaly("openai_sse_invalid_json", {
-      eventDataBytes: details.bytes,
-      eventDataLines: details.lines,
-      parseCategory: "invalid_json_or_non_object",
-    });
-  };
-
-  const reportInvalidShape = (issue: OpenAiResponsesEventShapeIssue): void => {
-    logStreamAnomaly("openai_sse_invalid_shape", {
-      parseCategory: "invalid_field_type",
-      eventType: issue.eventType,
-      fields: issue.fields,
-    });
-  };
-
-  const transformEvent = (event: string): string =>
-    transformSseEvent(
-      event,
-      usageState,
-      reportInvalidJson,
-      reportInvalidShape,
-      trackDiagnostics
-    );
-  const transformEvents = (events: string[]): string => {
-    let output = "";
-    for (const event of events) {
-      output += transformEvent(event);
-    }
-    return output;
-  };
-
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller): void {
-      clearKeepAlive = createSseKeepAlive(controller, {
-        onKeepAlive: () => {
-          lastWriteAt = Date.now();
-        },
-        ...(input.keepAliveIntervalMs
-          ? { intervalMs: input.keepAliveIntervalMs }
-          : {}),
-      }).clear;
-    },
-    async pull(controller): Promise<void> {
-      try {
-        while (true) {
-          let result = await reader.read();
-          while (!(result.done || result.value)) {
-            result = await reader.read();
+    streamFailedEvent: "openai_sse_stream_failed",
+    invalidFrameEvent: "openai_sse_invalid_frame",
+    createProtocol: ({ log, startedAt, requestId }) => {
+      const state = {
+        latestUsage: null as TokenUsage | null,
+        terminalAnomaly: null as SseTerminalAnomaly | null,
+        endStatus: null as number | null,
+      };
+      const trackDiagnostics = createCodexStreamDiagnostics({
+        providerAccountId: input.providerAccountId,
+        requestId,
+        transport: "sse",
+        startedAt,
+      });
+      return {
+        transformEvent(chunk): string {
+          const payloadText = readSseData(chunk);
+          if (!payloadText) return chunk;
+          const payload = tryParseJson(payloadText);
+          if (!isObjectRecord(payload)) {
+            log("openai_sse_invalid_json", {
+              eventDataBytes: Buffer.byteLength(payloadText),
+              eventDataLines: payloadText.split("\n").length,
+              parseCategory: "invalid_json_or_non_object",
+            });
+            return chunk;
           }
-
-          if (result.done) {
-            if (closed) {
-              clearKeepAlive?.();
-              return;
-            }
-            const { events, rest } = framer.end();
-            if (utf8ValidationEnabled) {
-              try {
-                validationDecoder.decode();
-              } catch {
-                logStreamAnomaly("openai_sse_invalid_frame", {
-                  parseCategory: "invalid_utf8",
-                });
-              }
-            }
-            let output = transformEvents(events);
-            if (rest.trim()) {
-              output += transformEvent(rest);
-              logStreamAnomaly("openai_sse_truncated_event", {
-                pendingBytes: Buffer.byteLength(rest),
-                parseCategory: "truncated_event",
-              });
-            } else {
-              output += rest;
-            }
-            if (output) {
-              controller.enqueue(encoder.encode(output));
-            }
-            reportUsage();
-            if (input.response.ok && usageState.terminalAnomaly) {
-              logStreamAnomaly(
-                "openai_sse_terminal_anomaly",
-                usageState.terminalAnomaly
+          const issue = readOpenAiResponsesEventShapeIssue(payload);
+          if (issue) {
+            log("openai_sse_invalid_shape", {
+              parseCategory: "invalid_field_type",
+              eventType: issue.eventType,
+              fields: issue.fields,
+            });
+          }
+          trackDiagnostics(payload);
+          const normalized =
+            state.endStatus !== null
+              ? payload
+              : normalizeOpenAiResponsesEvent(payload);
+          const anomaly = readSseTerminalAnomaly(normalized);
+          state.terminalAnomaly = anomaly ?? state.terminalAnomaly;
+          if (
+            normalized.type === "response.completed" ||
+            normalized.type === "response.incomplete" ||
+            normalized.type === "response.failed" ||
+            normalized.type === "error"
+          ) {
+            state.endStatus ??= anomaly
+              ? readStreamErrorStatus(normalized)
+              : 200;
+          }
+          state.latestUsage =
+            readOpenAiResponsesUsageFromSseEvent(normalized) ??
+            state.latestUsage;
+          return normalized === payload
+            ? chunk
+            : replaceSseData(
+                chunk,
+                JSON.stringify(normalized),
+                String(normalized.type)
               );
-            }
-            closed = true;
-            clearKeepAlive?.();
-            controller.close();
-            return;
+        },
+        getUsage: () => state.latestUsage,
+        getEndStatus: () => state.endStatus,
+        onEof(rest): void {
+          if (rest.trim()) {
+            log("openai_sse_truncated_event", {
+              pendingBytes: Buffer.byteLength(rest),
+              parseCategory: "truncated_event",
+            });
           }
-
-          const value = result.value;
-          bytes += value.byteLength;
-          chunks++;
-          lastChunkAt = Date.now();
-          if (utf8ValidationEnabled) {
-            try {
-              validationDecoder.decode(value, { stream: true });
-            } catch {
-              utf8ValidationEnabled = false;
-              logStreamAnomaly("openai_sse_invalid_frame", {
-                parseCategory: "invalid_utf8",
-                frameBytes: value.byteLength,
-              });
-            }
+          if (!input.response.ok) return;
+          if (state.terminalAnomaly) {
+            log("openai_sse_terminal_anomaly", state.terminalAnomaly);
+          } else if (state.endStatus === null) {
+            log("openai_sse_missing_terminal", {
+              truncatedEvent: rest.trim().length > 0,
+            });
           }
-          const events = framer.push(value);
-          if (events.length) {
-            controller.enqueue(encoder.encode(transformEvents(events)));
-            lastWriteAt = Date.now();
-            return;
-          }
-        }
-      } catch (error) {
-        if (closed) {
-          clearKeepAlive?.();
-          return;
-        }
-        closed = true;
-        clearKeepAlive?.();
-        reportUsage();
-        reader.cancel(error).catch(() => undefined);
-        logStreamAnomaly("openai_sse_stream_failed", {}, error);
-        controller.error(error);
-      }
+        },
+      };
     },
-    cancel(reason): Promise<void> {
-      closed = true;
-      clearKeepAlive?.();
-      reportUsage();
-      return reader.cancel(reason);
-    },
-  });
-
-  return new Response(stream, {
-    status: input.response.status,
-    statusText: input.response.statusText,
-    headers: createSseResponseHeaders(input.response.headers),
   });
 };
