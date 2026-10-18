@@ -1,7 +1,14 @@
-import { claudeResets, claudeResetsFact } from "./app-claude-resets.js";
+import { claudeResets } from "./app-claude-resets.js";
 import { codexResets } from "./app-codex-resets.js";
 import { escapeHtml, mutationAttributes } from "./app-core.js";
-import { accountName, fact, kbd, providerLabel } from "./app-render-shared.js";
+import {
+  DAY_MS,
+  accountName,
+  fact,
+  kbd,
+  providerLabel,
+  untilText,
+} from "./app-render-shared.js";
 
 const resetProviders = { codex: codexResets, claude: claudeResets };
 
@@ -9,21 +16,65 @@ function resetOfferFor(account) {
   return resetProviders[account?.provider]?.offerFor(account) || null;
 }
 
-function resetCreditsFact(account) {
+function windowHours(window) {
+  const span = window.label.match(/(\d+)([dh])$/);
+  return span ? Number(span[1]) * (span[2] === "d" ? 24 : 1) : 0;
+}
+
+function resetCreditsDetail(account, windows) {
   const offer = resetOfferFor(account);
-  if (!offer?.canUse) return claudeResetsFact(account);
-  const use = `<button class="link small" type="button" data-action="redeem-reset-credit" data-account-id="${account.id}" ${mutationAttributes("redeem-reset-credit", account.id)} title="${escapeHtml(offer.title || offer.noun)}">${offer.retry ? "Retry reset" : offer.action}${kbd("U")}</button>`;
-  return fact(
-    `${offer.heading}${offer.count === 1 ? "" : "s"}`,
-    `${offer.count ?? "\u2014"}${use}`,
-    [
-      escapeHtml(
-        offer.scope ? `refills ${offer.scope}` : "Reset scope not reported"
-      ),
-      escapeHtml(offer.expiryText),
-      offer.retry && '<span class="warn">reset not confirmed</span>',
-    ]
+  if (!offer || (!offer.canUse && !offer.status)) return null;
+  const covered = windows.filter(
+    (window) =>
+      (account.provider !== "codex" || !window.named) &&
+      offer.windowLabels.includes(window.label)
   );
+  const window = covered.sort(
+    (a, b) => b.percent - a.percent || windowHours(b) - windowHours(a)
+  )[0];
+  const expiring = offer.expiresAt && offer.expiresAt - Date.now() < 3 * DAY_MS;
+  const noun = account.provider === "codex" ? "credit" : offer.noun;
+  const balance = `${offer.count ?? "\u2014"} ${noun}${offer.count === 1 ? "" : "s"}`;
+  const text = offer.retry
+    ? "reset not confirmed"
+    : offer.status
+      ? offer.status.replaceCount
+        ? offer.status.label
+        : balance
+      : !offer.scope
+        ? `${balance} \u00b7 scope not reported`
+        : `${balance}${account.provider === "codex" && !expiring ? " to refill" : ""}`;
+  const title = [
+    text,
+    offer.status && !offer.status.replaceCount && offer.status.label,
+    offer.scope ? `refills ${offer.scope}` : "reset scope not reported",
+    offer.expiryText,
+    offer.title,
+    offer.status?.description,
+  ]
+    .filter(Boolean)
+    .join(" \u00b7 ");
+  const action = offer.canUse
+    ? `<button class="link small" type="button" data-action="redeem-reset-credit" data-account-id="${account.id}" ${mutationAttributes("redeem-reset-credit", account.id)} aria-label="${escapeHtml(offer.retry ? "Retry reset" : `Use ${offer.noun}`)}">${offer.retry ? "Retry" : "Use"}${kbd("U")}</button>`
+    : offer.status?.link
+      ? `<a class="link small" href="${offer.settingsUrl}" target="_blank" rel="noopener" aria-label="${escapeHtml(`${providerLabel(account.provider)} settings: ${offer.status.label}`)}">${escapeHtml(offer.status.link)}</a>`
+      : "";
+  const copy = expiring
+    ? `${text} \u00b7 ${untilText(offer.expiresAt).replace(/^in /, "")} left`
+    : text;
+  const tone = offer.retry || offer.status?.warning ? " warn" : "";
+  const line = `<span class="reset-line${tone}" title="${escapeHtml(title)}"><span class="reset-copy">${escapeHtml(copy)}</span>${action ? `<span aria-hidden="true">\u00b7</span>${action}` : ""}</span>`;
+  return {
+    window,
+    line,
+    fallback: window
+      ? ""
+      : fact(
+          `${offer.heading}${offer.count === 1 ? "" : "s"}`,
+          `<span class="${tone.trim()}" title="${escapeHtml(title)}">${escapeHtml(copy)}</span>`,
+          [action && `<span class="reset-line${tone}">${action}</span>`]
+        ),
+  };
 }
 
 function earlyUseText(earlyUse) {
@@ -78,7 +129,7 @@ function resetFeedback(feedback, offer, refreshedAccount) {
 export {
   resetProviders,
   resetOfferFor,
-  resetCreditsFact,
+  resetCreditsDetail,
   resetConfirmation,
   resetFeedback,
 };

@@ -1,7 +1,6 @@
-import { escapeHtml } from "./app-core.js";
 import {
   CLAUDE_LIMIT_NAMES,
-  fact,
+  claudeWindowLabel,
   needsReauthorization,
   quotaTimestamp,
   relativeTime,
@@ -16,9 +15,6 @@ const weekdayFormat = new Intl.DateTimeFormat(undefined, {
   day: "numeric",
 });
 
-const settingsLink = (label = "Claude settings") =>
-  `<a class="link small" href="${CLAUDE_USAGE_SETTINGS_URL}" target="_blank" rel="noopener">${label}</a>`;
-
 function limitsText(types) {
   const names = [
     ...new Set(types.map((type) => CLAUDE_LIMIT_NAMES[type])),
@@ -32,85 +28,110 @@ function limitsText(types) {
 
 function expiryText(endsAt) {
   const expiry = quotaTimestamp(endsAt);
-  return expiry ? `use by ${shortDate(expiry)}` : "";
+  return expiry ? `use by ${shortDate(expiry)}` : "expiry not reported";
 }
 
 const UNAVAILABLE_TEXT = {
-  requires_limit: "saved for when you hit a limit",
+  requires_limit: "at limit only",
   paused: "paused",
-  cooldown: "another reset was just used \u00b7 try later",
-  not_usable: "can't be used right now",
-  unsupported_limits: "unrecognized limits",
+  cooldown: "try later",
+  not_usable: "unavailable",
+  checking: "checking",
+  unsupported_limits: "scope not reported",
 };
 
-// Claude's saved limit resets ("Reset for free" in Claude settings).
-function claudeResetsFact(account) {
-  const resets = account.claudeResets;
-  if (account.provider !== "claude" || !resets) return "";
+function claudeResetStatus(resets) {
   if (resets.claim?.status === "pending") {
-    return fact("Limit reset", '<span class="muted">Claiming\u2026</span>', [
-      `started ${escapeHtml(relativeTime(resets.claim.startedAt))}`,
-    ]);
+    return {
+      label: "claiming reset\u2026",
+      replaceCount: true,
+      description: `started ${relativeTime(resets.claim.startedAt)}`,
+    };
   }
   if (resets.claim?.status === "ambiguous") {
-    return fact("Limit reset", '<span class="warn">May have been used</span>', [
-      "claim not confirmed",
-      settingsLink("Check Claude settings"),
-      "Kleis checks again shortly",
-    ]);
+    return {
+      label: "reset not confirmed",
+      replaceCount: true,
+      warning: true,
+      link: "Check",
+      description: "May have been used. Kleis checks again shortly.",
+    };
   }
   if (resets.unavailable === "identity_unverified") {
-    return fact(
-      "Limit resets",
-      '<span class="muted">Identity not verified</span>',
-      ["reconnect or wait for sync"]
-    );
+    return {
+      label: "identity not verified",
+      replaceCount: true,
+      description: "Reconnect or wait for sync.",
+    };
   }
   if (resets.unavailable === "checking") {
-    return fact("Limit resets", '<span class="muted">Waiting for sync</span>', [
-      "next scheduled poll",
-    ]);
+    return {
+      label: "waiting for sync",
+      replaceCount: true,
+      description: "Checked again at the next scheduled poll.",
+    };
   }
   if (resets.ineligibleReason === "surface") {
-    return fact("Limit resets", '<span class="muted">claude.ai only</span>', [
-      "can't be used through Kleis",
-      settingsLink(),
-    ]);
+    return {
+      label: "claude.ai only",
+      replaceCount: true,
+      link: "Settings",
+      description: "Can't be used through Kleis.",
+    };
   }
-  if (!resets.saved) return "";
-  if (resets.offer) return "";
-  const reason = UNAVAILABLE_TEXT[resets.unavailable];
-  return fact(
-    resets.saved === 1 ? "Limit reset" : "Limit resets",
-    String(resets.saved),
-    [
-      resets.unavailable !== "unsupported_limits" &&
-        escapeHtml(`refills ${limitsText(resets.clears)}`),
-      escapeHtml(expiryText(resets.nextEndsAt)),
-      reason && escapeHtml(reason),
-      reason && settingsLink(),
-    ]
-  );
+  if (resets.unavailable === "ineligible") {
+    return {
+      label: "not eligible",
+      replaceCount: true,
+      description: resets.ineligibleReason,
+    };
+  }
+  if (!resets.saved || resets.offer) return null;
+  const label = UNAVAILABLE_TEXT[resets.unavailable] || "waiting";
+  return {
+    label,
+    link: label,
+    description:
+      resets.unavailable === "cooldown"
+        ? "Another reset was just used. Try later."
+        : "Check Claude settings for availability.",
+  };
 }
 
 function claudeResetOffer(account) {
   const resets = account?.claudeResets;
-  const offer = resets?.offer;
-  if (account?.provider !== "claude" || !offer || resets.claim || !resets.saved)
-    return null;
-  const weekly = quotaTimestamp(offer.weeklyResetsAt);
+  if (account?.provider !== "claude" || !resets) return null;
+  const offer = !resets.claim && resets.saved ? resets.offer : null;
+  const status = claudeResetStatus(resets);
+  if (!offer && !status) return null;
+  const clears = offer?.clears || resets.clears;
+  const windowLabels =
+    resets.unavailable === "unsupported_limits"
+      ? []
+      : [
+          ...new Set(
+            clears.map((type) => claudeWindowLabel(type)).filter(Boolean)
+          ),
+        ];
+  const endsAt = offer?.endsAt ?? resets.nextEndsAt;
+  const weekly = quotaTimestamp(offer?.weeklyResetsAt);
   return {
     count: resets.saved,
     unit: "reset",
     noun: "saved reset",
     heading: "Limit reset",
     action: "Use reset",
-    canUse: true,
+    canUse: Boolean(offer),
     retry: false,
-    scope: limitsText(offer.clears),
-    expiryText: expiryText(offer.endsAt),
-    title: offer.label,
-    earlyUse: offer.earlyUse
+    scope: windowLabels.length ? limitsText(clears) : null,
+    windowLabels,
+    expiresAt: quotaTimestamp(endsAt),
+    expiryText: expiryText(endsAt),
+    title: offer?.label,
+    status,
+    settingsUrl: CLAUDE_USAGE_SETTINGS_URL,
+    description: "",
+    earlyUse: offer?.earlyUse
       ? {
           scope: offer.earlyUse.limit
             ? `${CLAUDE_LIMIT_NAMES[offer.earlyUse.limit] || "covered"} limit`
@@ -123,6 +144,7 @@ function claudeResetOffer(account) {
       "Applies to this Claude account everywhere: claude.ai, Claude Code and every Kleis key.",
     ].filter(Boolean),
     useful:
+      Boolean(offer) &&
       !account.quota?.error &&
       !needsReauthorization(account) &&
       (!offer.earlyUse || offer.earlyUse.percentUsed >= 75),
@@ -217,4 +239,4 @@ const claudeResets = {
   },
 };
 
-export { claimToast, claudeResets, claudeResetsFact, limitsText };
+export { claimToast, claudeResets, limitsText };
