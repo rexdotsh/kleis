@@ -171,11 +171,9 @@ const decodeCodexAccount = (value: unknown) => {
   return {
     id,
     name: readString(input.name),
-    profilePictureUrl: readString(input.profile_picture_url),
     structure: readString(input.structure),
     planType: readString(input.plan_type),
     role: readString(input.account_user_role),
-    isDeactivated: readBoolean(input.is_deactivated),
   };
 };
 
@@ -188,36 +186,24 @@ const decodeCodexAccounts = (value: unknown) => {
       : [];
   return {
     accounts: decodeArray(rawAccounts, decodeCodexAccount),
-    accountOrdering: Array.isArray(input.account_ordering)
-      ? input.account_ordering.filter(
-          (entry): entry is string => typeof entry === "string"
-        )
-      : [],
     defaultAccountId: readString(input.default_account_id),
   };
 };
 
 export type CodexAccounts = ReturnType<typeof decodeCodexAccounts>;
 
-const decodeThreadGroup = (value: unknown) => {
-  const input = readObject(value);
-  return input
-    ? decodeFields(input, {
-        model: ["model", readString],
-        reasoningEffort: ["reasoning_effort", readString],
-        speed: ["speed", readString],
-        estimatedUsageCreditsMicros: [
-          "estimated_usage_credits_micros",
-          readNumber,
-        ],
-        netNewInputTokens: ["net_new_input_tokens", readNumber],
-        cachedInputTokens: ["cached_input_tokens", readNumber],
-        inputTokens: ["input_tokens", readNumber],
-        outputTokens: ["output_tokens", readNumber],
-        totalTokens: ["total_tokens", readNumber],
-      })
-    : null;
-};
+const decodeThreadGroup = (value: unknown) =>
+  decodeFields(value, {
+    model: ["model", readString],
+    reasoningEffort: ["reasoning_effort", readString],
+    speed: ["speed", readString],
+    estimatedUsageCreditsMicros: ["estimated_usage_credits_micros", readNumber],
+    netNewInputTokens: ["net_new_input_tokens", readNumber],
+    cachedInputTokens: ["cached_input_tokens", readNumber],
+    inputTokens: ["input_tokens", readNumber],
+    outputTokens: ["output_tokens", readNumber],
+    totalTokens: ["total_tokens", readNumber],
+  });
 
 const decodeThread = (value: unknown) => {
   const input = readObject(value);
@@ -272,20 +258,6 @@ type CodexTrackingOperation =
   | "accounts/check"
   | "usage/thread_usage/query";
 
-const buildCodexTrackingUrl = (
-  operation: CodexTrackingOperation,
-  baseUrl = CODEX_TRACKING_BASE_URL
-): string => {
-  const base = new URL(baseUrl);
-  const isChatGpt = base.hostname === "chatgpt.com";
-  base.pathname = isChatGpt
-    ? `/backend-api/wham/${operation}`
-    : `/api/codex/${operation}`;
-  base.search = "";
-  base.hash = "";
-  return base.toString();
-};
-
 const requestCodex = async <T>(
   operation: CodexTrackingOperation,
   accessToken: string,
@@ -305,7 +277,7 @@ const requestCodex = async <T>(
     headers.set("Content-Type", "application/json");
   }
   const value = await fetchTrackingJson({
-    url: buildCodexTrackingUrl(operation),
+    url: `${CODEX_TRACKING_BASE_URL}/wham/${operation}`,
     headers,
     ...(options?.body
       ? { method: "POST" as const, body: JSON.stringify(options.body) }
