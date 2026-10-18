@@ -7,11 +7,6 @@ import {
   settleResetSpend,
   startResetSpend,
 } from "../../db/repositories/reset-spends";
-import {
-  claudeResetClaims,
-  codexResetCreditRedemptions,
-  type ResetSpendLedger,
-} from "../../db/schema";
 import { claimClaudeResetCredit } from "../../providers/account-tracking/claude";
 import {
   type ClaudeResetSummary,
@@ -61,29 +56,31 @@ const isRefusal = (error: unknown): boolean =>
   error.status < 500 &&
   error.status !== 429;
 
-// Records the spend before sending it. `resultCode` returns null when the
-// answer doesn't settle it, which leaves the spend pending like a timeout.
+// Records the spend before sending it. An answer that `settles` rejects
+// leaves the spend pending, like a timeout.
 const spendReset = async <T>(
   database: Database,
-  ledger: ResetSpendLedger,
   account: TrackingAccount,
   itemId: string,
   send: (requestId: string) => Promise<T>,
-  resultCode: (result: T) => string | null
+  settles: (result: T) => boolean
 ): Promise<T> => {
-  const requestId = await startResetSpend(database, ledger, account.id, itemId);
+  const requestId = await startResetSpend(database, {
+    provider: account.provider,
+    providerAccountId: account.id,
+    itemId,
+  });
   if (!requestId) {
     throw new ResetSpendConflict(
       "A reset is already in progress for this account."
     );
   }
-  const settle = (status: "completed" | "failed", code: string | null) =>
-    settleResetSpend(database, ledger, requestId, status, code).catch(
-      (error: unknown) =>
-        logWarn("reset_spend_record_failed", {
-          providerAccountId: account.id,
-          ...errorLogFields(error),
-        })
+  const settle = (status: "completed" | "failed") =>
+    settleResetSpend(database, requestId, status).catch((error: unknown) =>
+      logWarn("reset_spend_record_failed", {
+        providerAccountId: account.id,
+        ...errorLogFields(error),
+      })
     );
   let result: T;
   try {
@@ -94,13 +91,12 @@ const spendReset = async <T>(
         "Couldn't confirm the reset. Try again in a few minutes; a retry can't spend it twice."
       );
     }
-    await settle("failed", null);
+    await settle("failed");
     throw new ResetSpendError(
       `${error instanceof Error ? error.message : "Reset refused"}. Nothing was used.`
     );
   }
-  const code = resultCode(result);
-  if (code !== null) await settle("completed", code);
+  if (settles(result)) await settle("completed");
   return result;
 };
 
@@ -133,7 +129,6 @@ export const redeemCodexResetCredit = async (
   try {
     return await spendReset(
       database,
-      codexResetCreditRedemptions,
       account,
       creditId,
       (redeemRequestId) =>
@@ -145,7 +140,7 @@ export const redeemCodexResetCredit = async (
             creditId,
           })
         ),
-      (result) => result.code
+      () => true
     );
   } finally {
     await reloadCodexQuota(database, account);
@@ -216,7 +211,6 @@ export const claimClaudeReset = async (
   try {
     return await spendReset(
       database,
-      claudeResetClaims,
       account,
       grantId,
       (requestId) =>
@@ -229,9 +223,7 @@ export const claimClaudeReset = async (
           })
         ),
       ({ result, reason }) =>
-        result === "unavailable" || UNCONFIRMED_REASONS.has(reason ?? "")
-          ? null
-          : result
+        result !== "unavailable" && !UNCONFIRMED_REASONS.has(reason ?? "")
     );
   } finally {
     invalidateClaudeResetCredits(account);

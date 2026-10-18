@@ -17,8 +17,7 @@ export const createResetDatabase = async () => {
     throw new Error("Reset database clients missing");
   const clear = () =>
     anchor.batch([
-      anchor.delete(schema.claudeResetClaims),
-      anchor.delete(schema.codexResetCreditRedemptions),
+      anchor.delete(schema.resetSpends),
       anchor.delete(schema.providerAccounts),
     ]);
   try {

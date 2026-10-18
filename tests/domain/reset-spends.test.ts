@@ -13,11 +13,7 @@ import {
   findProviderAccountById,
   type ProviderAccountRecord,
 } from "../../src/db/repositories/provider-accounts";
-import {
-  claudeResetClaims,
-  codexResetCreditRedemptions,
-  providerAccounts,
-} from "../../src/db/schema";
+import { providerAccounts, resetSpends } from "../../src/db/schema";
 import {
   expireProviderAccountTracking,
   listProviderAccountQuotas,
@@ -37,7 +33,6 @@ const ORGANIZATION = "00000000-0000-4000-8000-000000000001";
 const providers = {
   codex: {
     resetId: "credit_fake_1",
-    ledger: codexResetCreditRedemptions,
     metadata: { provider: "codex", chatgptAccountId: null, email: null },
     spend: redeemCodexResetCredit,
     discovery: (path: string) =>
@@ -52,7 +47,6 @@ const providers = {
   },
   claude: {
     resetId: "grant_fake_1",
-    ledger: claudeResetClaims,
     metadata: {
       provider: "claude",
       oauthMode: "max",
@@ -247,13 +241,14 @@ describe.each(Object.keys(providers) as Provider[])(
       const account = await addAccount();
       const row = {
         requestId: "other-process-request",
+        provider: name,
         providerAccountId: account.id,
         itemId: provider.resetId,
         status: "pending" as const,
         createdAt: startedAt,
         updatedAt: startedAt,
       };
-      await database.insert(provider.ledger).values(row);
+      await database.insert(resetSpends).values(row);
       expect(await failure(spend(account))).toBeInstanceOf(ResetSpendConflict);
       at(4 * MINUTE);
       await poll(account);

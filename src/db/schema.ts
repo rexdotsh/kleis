@@ -161,39 +161,24 @@ const resetSpendStatuses = ["pending", "completed", "failed"] as const;
 
 // One row per reset spend, written before the request is sent. At most one
 // spend per account is pending, across every process sharing the database.
-const resetSpendLedger = (name: string, requestId: string, itemId: string) =>
-  sqliteTable(
-    name,
-    {
-      requestId: text(requestId).primaryKey(),
-      providerAccountId: text("provider_account_id")
-        .notNull()
-        .references(() => providerAccounts.id, { onDelete: "cascade" }),
-      itemId: text(itemId),
-      status: text("status", { enum: resetSpendStatuses }).notNull(),
-      resultCode: text("result_code"),
-      createdAt: integer("created_at", { mode: "number" }).notNull(),
-      updatedAt: integer("updated_at", { mode: "number" }).notNull(),
-    },
-    (table) => [
-      uniqueIndex(`${name}_pending_unique`)
-        .on(table.providerAccountId)
-        .where(sql`${table.status} = 'pending'`),
-    ]
-  );
-
-export type ResetSpendLedger = ReturnType<typeof resetSpendLedger>;
-
-export const codexResetCreditRedemptions = resetSpendLedger(
-  "codex_reset_credit_redemptions",
-  "redeem_request_id",
-  "credit_id"
-);
-
-export const claudeResetClaims = resetSpendLedger(
-  "claude_reset_claims",
-  "request_id",
-  "grant_id"
+export const resetSpends = sqliteTable(
+  "reset_spends",
+  {
+    requestId: text("request_id").primaryKey(),
+    provider: text("provider", { enum: providers }).notNull(),
+    providerAccountId: text("provider_account_id")
+      .notNull()
+      .references(() => providerAccounts.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull(),
+    status: text("status", { enum: resetSpendStatuses }).notNull(),
+    createdAt: integer("created_at", { mode: "number" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("reset_spends_pending_unique")
+      .on(table.providerAccountId)
+      .where(sql`${table.status} = 'pending'`),
+  ]
 );
 
 // The last known profile and limits per account, kept out of

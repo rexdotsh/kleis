@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "5e0bf5b2-e662-4796-9ee7-f946ee24f69b",
+  "id": "1f39be37-6ade-4baa-8c52-fbaab421b728",
   "prevId": "5f00d746-972e-4aa1-823a-fcf19cf2838b",
   "tables": {
     "api_keys": {
@@ -91,82 +91,6 @@
         }
       },
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "codex_reset_credit_redemptions": {
-      "name": "codex_reset_credit_redemptions",
-      "columns": {
-        "redeem_request_id": {
-          "name": "redeem_request_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "provider_account_id": {
-          "name": "provider_account_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "credit_id": {
-          "name": "credit_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "result_code": {
-          "name": "result_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "codex_reset_credit_redemptions_pending_unique": {
-          "name": "codex_reset_credit_redemptions_pending_unique",
-          "columns": ["provider_account_id"],
-          "isUnique": true,
-          "where": "\"codex_reset_credit_redemptions\".\"status\" = 'pending'"
-        }
-      },
-      "foreignKeys": {
-        "codex_reset_credit_redemptions_provider_account_id_provider_accounts_id_fk": {
-          "name": "codex_reset_credit_redemptions_provider_account_id_provider_accounts_id_fk",
-          "tableFrom": "codex_reset_credit_redemptions",
-          "tableTo": "provider_accounts",
-          "columnsFrom": ["provider_account_id"],
-          "columnsTo": ["id"],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
@@ -670,6 +594,82 @@
           "name": "request_usage_buckets_bucket_start_api_key_id_provider_account_id_provider_endpoint_model_pk"
         }
       },
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "reset_spends": {
+      "name": "reset_spends",
+      "columns": {
+        "request_id": {
+          "name": "request_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider_account_id": {
+          "name": "provider_account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "item_id": {
+          "name": "item_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "reset_spends_pending_unique": {
+          "name": "reset_spends_pending_unique",
+          "columns": ["provider_account_id"],
+          "isUnique": true,
+          "where": "\"reset_spends\".\"status\" = 'pending'"
+        }
+      },
+      "foreignKeys": {
+        "reset_spends_provider_account_id_provider_accounts_id_fk": {
+          "name": "reset_spends_provider_account_id_provider_accounts_id_fk",
+          "tableFrom": "reset_spends",
+          "tableTo": "provider_accounts",
+          "columnsFrom": ["provider_account_id"],
+          "columnsTo": ["id"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
     }
