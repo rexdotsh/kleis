@@ -544,6 +544,14 @@ const CLAUDE_LIMIT_NAMES = {
   seven_day_oauth_apps: "OAuth apps 7d",
 };
 
+function claudeWindowLabel(key) {
+  if (key === "seven_day_overage_included") return "7d incl. extra";
+  return (
+    CLAUDE_LIMIT_NAMES[key] ||
+    `${key.replace(/^seven_day_/, "").replaceAll("_", " ")} 7d`
+  );
+}
+
 function claudeNamedWindows(subscription) {
   const windows = new Map();
   const add = (label, window) => {
@@ -572,12 +580,7 @@ function claudeNamedWindows(subscription) {
   for (const [key, window] of Object.entries(
     subscription?.modelWindows || {}
   )) {
-    const label =
-      key === "seven_day_overage_included"
-        ? "7d incl. extra"
-        : CLAUDE_LIMIT_NAMES[key] ||
-          `${key.replace(/^seven_day_/, "").replaceAll("_", " ")} 7d`;
-    add(label, window);
+    add(claudeWindowLabel(key), window);
   }
   return [...windows.values()];
 }
@@ -738,6 +741,7 @@ function isAccountServing(account, statuses = providerStatusMap()) {
 
 export {
   CLAUDE_LIMIT_NAMES,
+  claudeWindowLabel,
   relativeTime,
   tokenStatus,
   maskKey,

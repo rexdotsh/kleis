@@ -1,5 +1,6 @@
 import {
   CLAUDE_LIMIT_NAMES,
+  claudeWindowLabel,
   needsReauthorization,
   quotaTimestamp,
   relativeTime,
@@ -66,6 +67,7 @@ function claudeResetStatus(resets) {
   if (resets.unavailable === "checking") {
     return {
       label: "waiting for sync",
+      replaceCount: true,
       description: "Checked again at the next scheduled poll.",
     };
   }
@@ -108,7 +110,7 @@ function claudeResetOffer(account) {
       ? []
       : [
           ...new Set(
-            clears.map((type) => CLAUDE_LIMIT_NAMES[type]).filter(Boolean)
+            clears.map((type) => claudeWindowLabel(type)).filter(Boolean)
           ),
         ];
   const endsAt = offer?.endsAt ?? resets.nextEndsAt;
