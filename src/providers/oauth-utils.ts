@@ -1,3 +1,5 @@
+import type { ProviderOAuthCompleteInput } from "./types";
+
 const encodeBase64Url = (bytes: Uint8Array): string =>
   btoa(String.fromCharCode(...bytes))
     .replace(/\+/g, "-")
@@ -12,7 +14,7 @@ export const decodeBase64Url = (value: string): string => {
   return atob(padded);
 };
 
-export const parseAuthorizationCodeInput = (
+const parseAuthorizationCodeInput = (
   input: string,
   missingCodeMessage: string
 ): { code: string; state?: string } => {
@@ -53,6 +55,20 @@ export const parseAuthorizationCodeInput = (
   }
 
   return { code: value };
+};
+
+export const readOAuthCallbackCode = (
+  input: ProviderOAuthCompleteInput,
+  providerLabel: string
+): { code: string; state?: string } => {
+  const codeInput = parseAuthorizationCodeInput(
+    input.code ?? "",
+    `${providerLabel} OAuth completion requires an authorization code`
+  );
+  if (codeInput.state && codeInput.state !== input.state) {
+    throw new Error(`${providerLabel} OAuth callback state mismatch`);
+  }
+  return codeInput;
 };
 
 export const generateState = (): string =>

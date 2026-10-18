@@ -17,8 +17,9 @@ import type { Provider } from "../../db/schema";
 import type { ProviderAccountMetadata } from "../../providers/metadata";
 import {
   CLAUDE_ACCOUNT_ON_HOLD,
-  ClaudeOAuthError,
-} from "../../providers/claude";
+  classifyOAuthRefreshError,
+  OAuthError,
+} from "../../providers/http";
 import { getProviderAdapter } from "../../providers/registry";
 import type { ProviderOAuthStartResult } from "../../providers/types";
 import { errorLogFields, logWarn } from "../../utils/log";
@@ -195,9 +196,7 @@ const refreshProviderAccountWithLock = async (
       return null;
     }
 
-    if (account.provider === "claude") {
-      assertClaudeRefreshAllowed(account);
-    }
+    assertProviderRefreshAllowed(account);
 
     if (
       failedAccessToken !== undefined &&
@@ -263,25 +262,15 @@ const refreshProviderAccountWithLock = async (
 
       return updated;
     } catch (error) {
-      // Without an OAuth error response, Anthropic may have rotated the
-      // refresh token before the failure, so the outcome is indeterminate.
-      const status =
-        account.provider === "claude" && error instanceof ClaudeOAuthError
-          ? error.code === "invalid_grant"
-            ? "reauthorize"
-            : error.code === CLAUDE_ACCOUNT_ON_HOLD
-              ? CLAUDE_ACCOUNT_ON_HOLD
-              : error.status === 429
-                ? "rate_limited"
-                : "transient"
-          : account.provider === "claude"
-            ? "indeterminate"
-            : "failed";
+      const status = classifyOAuthRefreshError(
+        error,
+        account.provider === "claude" ? "indeterminate" : "failed"
+      );
       logWarn("provider_oauth_refresh_failed", {
         provider: account.provider,
         providerAccountId: account.id,
-        status: error instanceof ClaudeOAuthError ? error.status : null,
-        errorCode: error instanceof ClaudeOAuthError ? error.code : null,
+        status: error instanceof OAuthError ? error.status : null,
+        errorCode: error instanceof OAuthError ? error.code : null,
         classification: status,
         elapsedMs: Date.now() - refreshNow,
         ...errorLogFields(error),
@@ -345,9 +334,7 @@ const refreshRejectedProviderAccount = async (
   ) {
     return account;
   }
-  if (account.provider === "claude") {
-    assertClaudeRefreshAllowed(account);
-  }
+  assertProviderRefreshAllowed(account);
 
   const lockToken = await claimRefreshLock(database, account.id);
   if (lockToken) {
@@ -430,9 +417,14 @@ export class ProviderReauthorizationTargetError extends Error {
   }
 }
 
-const assertClaudeRefreshAllowed = (account: ProviderAccountRecord): void => {
+const assertProviderRefreshAllowed = (account: ProviderAccountRecord): void => {
   if (account.lastRefreshStatus === "reauthorize") {
-    throw new Error("Claude account needs reauthorization");
+    throw new Error(
+      `${account.provider === "claude" ? "Claude" : "Codex"} account needs reauthorization`
+    );
+  }
+  if (account.provider !== "claude") {
+    return;
   }
   // A hold can be lifted, so refreshes resume after a long pause.
   if (
@@ -565,9 +557,7 @@ const refreshProviderAccountOnce = async (
   if (!account) {
     return null;
   }
-  if (account.provider === "claude") {
-    assertClaudeRefreshAllowed(account);
-  }
+  assertProviderRefreshAllowed(account);
 
   const lockToken = await claimRefreshLock(database, account.id);
   if (lockToken) {
@@ -606,9 +596,7 @@ const refreshProviderAccountOnce = async (
   ) {
     throw new Error("Claude account refresh is already in progress");
   }
-  if (account.provider === "claude") {
-    assertClaudeRefreshAllowed(waited);
-  }
+  assertProviderRefreshAllowed(waited);
 
   const retryLockToken = await claimRefreshLock(database, account.id);
   if (!retryLockToken) {

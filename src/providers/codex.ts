@@ -8,15 +8,21 @@ import {
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
 import { CODEX_ORIGINATOR } from "./constants";
-import { requireOkResponse } from "./http";
+import { readOAuthErrorCode, requireOkResponse } from "./http";
 import type { CodexAccountMetadata } from "./metadata";
 import {
   decodeBase64Url,
   generatePkce,
   generateState,
-  parseAuthorizationCodeInput,
+  readOAuthCallbackCode,
 } from "./oauth-utils";
 import { parseOAuthStateMetadata } from "./oauth-state";
+import {
+  buildOAuthTokenFields,
+  readOAuthText,
+  readOAuthTokenResponse,
+  type OAuthTokenResponse,
+} from "./oauth-tokens";
 import { sleep } from "../utils/sleep";
 import { toMillisecondsTimestamp } from "../utils/timestamp";
 import type {
@@ -58,11 +64,7 @@ const codexOAuthStateMetadataSchema = z.discriminatedUnion("mode", [
   }),
 ]);
 
-type CodexTokenResponse = {
-  access_token: string;
-  refresh_token?: string;
-  expires_in?: number;
-  scope?: string;
+type CodexTokenResponse = OAuthTokenResponse & {
   id_token?: string;
 };
 
@@ -91,10 +93,6 @@ type CodexDeviceAuthorizationResponse = {
 type CodexDeviceTokenResponse = {
   authorization_code?: string;
   code_verifier?: string;
-};
-
-type CodexDeviceTokenErrorResponse = {
-  error?: string | { code?: string };
 };
 
 const resolveCodexOAuthMode = (
@@ -151,43 +149,6 @@ const extractAccountIdFromClaims = (
   claims?.["https://api.openai.com/auth"]?.chatgpt_account_id ||
   null;
 
-const parseTokenResponse = async (
-  response: Response
-): Promise<CodexTokenResponse> => {
-  const body = (await readResponseJson(
-    response,
-    "Codex token response"
-  )) as CodexTokenResponse;
-  if (!body.access_token) {
-    throw new Error("Codex OAuth response is missing access_token");
-  }
-
-  return body;
-};
-
-const readCodexDeviceTokenErrorCode = async (
-  response: Response
-): Promise<string | null> => {
-  const text = await response
-    .clone()
-    .text()
-    .catch(() => "");
-  if (!text) {
-    return null;
-  }
-
-  try {
-    const body = JSON.parse(text) as CodexDeviceTokenErrorResponse;
-    const error = body.error;
-    if (typeof error === "string") {
-      return error;
-    }
-    return typeof error?.code === "string" ? error.code : null;
-  } catch {
-    return null;
-  }
-};
-
 const waitForCodexDevicePoll = async (input: {
   intervalMs: number;
   expiresAt: number;
@@ -222,7 +183,7 @@ const exchangeAuthorizationCodeForTokens = async (input: {
 
   await requireOkResponse(response, "Codex token exchange failed");
 
-  return parseTokenResponse(response);
+  return readOAuthTokenResponse<CodexTokenResponse>(response, "Codex");
 };
 
 const requestDeviceAuthorization = async (): Promise<{
@@ -298,7 +259,7 @@ const pollDeviceAuthorizationCode = async (input: {
       };
     }
 
-    const errorCode = await readCodexDeviceTokenErrorCode(response);
+    const errorCode = await readOAuthErrorCode(response);
     if (errorCode === "slow_down") {
       intervalMs += CODEX_SLOW_DOWN_INCREMENT_MS;
     }
@@ -336,11 +297,8 @@ const refreshCodexTokens = async (
 
   await requireOkResponse(response, "Codex token refresh failed");
 
-  return parseTokenResponse(response);
+  return readOAuthTokenResponse<CodexTokenResponse>(response, "Codex");
 };
-
-const readClaimText = (value: unknown): string | null =>
-  typeof value === "string" && value.trim() ? value : null;
 
 // Subscription claims arrive as ISO strings or epoch seconds.
 const readClaimTimestamp = (value: unknown): number | null => {
@@ -374,16 +332,16 @@ const buildCodexMetadata = (
     scope: tokens.scope ?? existing?.scope ?? null,
     chatgptAccountId,
     email:
-      readClaimText(claims?.email) ??
-      readClaimText(claims?.["https://api.openai.com/profile"]?.email) ??
+      readOAuthText(claims?.email) ??
+      readOAuthText(claims?.["https://api.openai.com/profile"]?.email) ??
       existing?.email ??
       null,
     chatgptUserId:
-      readClaimText(auth?.chatgpt_user_id) ??
-      readClaimText(auth?.user_id) ??
+      readOAuthText(auth?.chatgpt_user_id) ??
+      readOAuthText(auth?.user_id) ??
       existing?.chatgptUserId,
     planTypeClaim:
-      readClaimText(auth?.chatgpt_plan_type) ?? existing?.planTypeClaim,
+      readOAuthText(auth?.chatgpt_plan_type) ?? existing?.planTypeClaim,
     subscriptionActiveStart:
       readClaimTimestamp(auth?.chatgpt_subscription_active_start) ??
       existing?.subscriptionActiveStart,
@@ -407,16 +365,12 @@ const buildTokenResult = (
 ): ProviderTokenResult => {
   const metadata = buildCodexMetadata(tokens, account);
   const accountId = metadata.chatgptAccountId;
-  const expiresAt = now + (tokens.expires_in ?? 3600) * 1000;
-  const refreshToken = tokens.refresh_token ?? account?.refreshToken;
-  if (!refreshToken) {
-    throw new Error("Codex OAuth response is missing refresh_token");
-  }
-
   return {
-    accessToken: tokens.access_token,
-    refreshToken,
-    expiresAt,
+    ...buildOAuthTokenFields("Codex", tokens, {
+      now,
+      fallbackRefreshToken: account?.refreshToken ?? null,
+      defaultExpiresIn: 3600,
+    }),
     accountId,
     metadata,
     label:
@@ -516,19 +470,7 @@ export const codexAdapter: ProviderAdapter = {
       code = deviceAuthorization.authorizationCode;
       deviceVerifier = deviceAuthorization.codeVerifier;
     } else {
-      if (!input.code) {
-        throw new Error(
-          "Codex OAuth completion requires an authorization code"
-        );
-      }
-      const codeInput = parseAuthorizationCodeInput(
-        input.code,
-        "Codex OAuth completion requires an authorization code"
-      );
-      if (codeInput.state && codeInput.state !== input.state) {
-        throw new Error("Codex OAuth callback state mismatch");
-      }
-      code = codeInput.code;
+      code = readOAuthCallbackCode(input, "Codex").code;
     }
 
     const completedAt = Date.now();
