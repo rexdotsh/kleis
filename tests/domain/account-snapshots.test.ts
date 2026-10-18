@@ -227,6 +227,15 @@ describe("account snapshots", () => {
             source: "traffic",
           },
           {
+            name: "jittered traffic for an expired poll window",
+            poll: 100,
+            traffic: 100,
+            pollReset: -10,
+            trafficReset: 30,
+            expected: 100,
+            source: "poll",
+          },
+          {
             name: "unplaceable traffic",
             poll: 10,
             traffic: 70,

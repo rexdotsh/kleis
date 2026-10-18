@@ -330,7 +330,7 @@ const windowForPoll = (
   const trafficReset = windowReset(traffic);
   if (!traffic || trafficReset === null || trafficReset <= now) return null;
   const pollReset = windowReset(polled);
-  if (pollReset === null || pollReset <= now) return trafficReset;
+  if (pollReset === null) return trafficReset;
   const tolerance = Math.min(
     120_000,
     ...[polled?.windowSeconds, traffic.windowSeconds]
@@ -342,7 +342,7 @@ const windowForPoll = (
   );
   const difference = trafficReset - pollReset;
   if (difference > tolerance) return trafficReset;
-  if (difference < -tolerance) return null;
+  if (difference < -tolerance || pollReset <= now) return null;
   const pollPercent = polled?.usedPercent ?? polled?.utilization ?? 0;
   const trafficPercent = traffic.usedPercent ?? traffic.utilization;
   return trafficPercent !== undefined &&
