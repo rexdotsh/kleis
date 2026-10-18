@@ -279,8 +279,6 @@ async function redeemResetCreditAction(request, accountId) {
   const account = accountById(accountId);
   const offer = resetOfferFor(account);
   if (!offer?.canUse) return;
-  const reset = resetProviders[account.provider];
-  const attempt = reset.attemptFor(account, offer);
   const confirmation = resetConfirmation(account, offer);
   const confirmed = await request.confirm(
     confirmation.title,
@@ -290,47 +288,25 @@ async function redeemResetCreditAction(request, accountId) {
   );
   if (!confirmed) return;
 
-  const current = accountById(accountId);
-  if (!current || current.provider !== account.provider) return;
-  reset.begin?.(current, attempt);
-  renderAccounts();
-  let response;
-  let error;
+  let feedback;
   try {
-    response = await request(
+    const { result } = await request(
       `/admin/accounts/${accountId}/tracking/${account.provider}/reset-credits/consume`,
-      { method: "POST", body: JSON.stringify(attempt.body) }
+      { method: "POST", body: JSON.stringify({ resetId: offer.resetId }) }
     );
-  } catch (cause) {
-    error = cause;
+    feedback = resetProviders[account.provider].resultToast(result);
+  } catch (error) {
+    feedback = { message: error.message, type: "error" };
   }
   if (!request.isCurrent()) return;
-  const feedback = reset.settle(
-    accountById(accountId) || current,
-    attempt,
-    response,
-    error
-  );
-  renderAccounts();
-  const refreshed = feedback.refresh ? await loadAccounts() : null;
+  const refreshed = await loadAccounts();
   if (!request.isCurrent()) return;
   const { message, type } = resetFeedback(
     feedback,
     offer,
     refreshed?.find((entry) => entry.id === accountId)
   );
-  toast(
-    message,
-    type,
-    feedback.retryAllowed
-      ? {
-          label: "Retry",
-          run: () => {
-            if (feedback.retryAllowed()) return redeemResetCredit(accountId);
-          },
-        }
-      : null
-  );
+  toast(message, type);
 }
 
 function startEditAccount(id) {

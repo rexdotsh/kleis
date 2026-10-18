@@ -1,4 +1,3 @@
-import { state } from "./app-core.js";
 import {
   accountWindows,
   limitSeverity,
@@ -7,26 +6,12 @@ import {
   untilText,
 } from "./app-render-shared.js";
 
-function createResetRequestId() {
-  if (crypto.randomUUID) return crypto.randomUUID();
-  // randomUUID requires HTTPS; getRandomValues also supports self-hosted HTTP.
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6] % 16) + 64;
-  bytes[8] = (bytes[8] % 64) + 128;
-  const hex = Array.from(bytes, (byte) =>
-    byte.toString(16).padStart(2, "0")
-  ).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
 function codexResetOffer(account) {
   if (account?.provider !== "codex") return null;
   const data = account.quota?.data;
-  const retry = state.pendingResetRedemptions.has(account.id);
   if (
     !data?.resetCredits &&
-    typeof data?.status?.resetCreditsAvailable !== "number" &&
-    !retry
+    typeof data?.status?.resetCreditsAvailable !== "number"
   )
     return null;
   const listed = data?.resetCredits?.credits || [];
@@ -61,8 +46,8 @@ function codexResetOffer(account) {
     noun: "reset credit",
     heading: "Reset credit",
     action: "Use credit",
-    canUse: Boolean(count || retry),
-    retry,
+    canUse: Boolean(count && next),
+    resetId: next?.id,
     scope:
       next?.resetType === "codex_rate_limits"
         ? windows.length
@@ -132,44 +117,7 @@ function codexResultToast(result) {
 
 const codexResets = {
   offerFor: codexResetOffer,
-  attemptFor(account, offer) {
-    const pending = state.pendingResetRedemptions.get(account.id);
-    const creditId = pending ? pending.creditId : offer.next?.id;
-    return {
-      body: {
-        redeemRequestId: pending?.redeemRequestId || createResetRequestId(),
-        ...(creditId ? { creditId } : {}),
-      },
-      retry: Boolean(pending),
-    };
-  },
-  settle(account, attempt, response, error) {
-    if (!error) {
-      state.pendingResetRedemptions.delete(account.id);
-      return { ...codexResultToast(response.result), refresh: true };
-    }
-    if (
-      !(
-        error.body?.redeemRequestId ||
-        !error.status ||
-        error.status >= 500 ||
-        attempt.retry
-      )
-    )
-      return { message: error.message, type: "error" };
-    const retry = {
-      creditId: attempt.body.creditId,
-      redeemRequestId:
-        error.body?.redeemRequestId || attempt.body.redeemRequestId,
-    };
-    state.pendingResetRedemptions.set(account.id, retry);
-    return {
-      message: `${error.message} Reset not confirmed; retry safely with the same request.`,
-      type: "error",
-      retryAllowed: () =>
-        state.pendingResetRedemptions.get(account.id) === retry,
-    };
-  },
+  resultToast: codexResultToast,
 };
 
-export { codexResets, codexResetOffer, createResetRequestId };
+export { codexResets };

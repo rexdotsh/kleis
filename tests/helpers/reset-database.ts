@@ -6,7 +6,7 @@ import * as schema from "../../src/db/schema";
 
 export const createResetDatabase = async () => {
   // libSQL transactions detach their connection, so an anchor keeps the shared
-  // in-memory database alive while independent clients reserve claims.
+  // in-memory database alive while independent clients record spends.
   const clients = [0, 1, 2].map(() =>
     createClient({ url: "file::memory:?cache=shared" })
   );
@@ -18,7 +18,7 @@ export const createResetDatabase = async () => {
   const clear = () =>
     anchor.batch([
       anchor.delete(schema.claudeResetClaims),
-      anchor.delete(schema.claudeResetClaimFences),
+      anchor.delete(schema.codexResetCreditRedemptions),
       anchor.delete(schema.providerAccounts),
     ]);
   try {

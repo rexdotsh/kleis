@@ -3,7 +3,6 @@ import {
   claudeWindowLabel,
   needsReauthorization,
   quotaTimestamp,
-  relativeTime,
   shortDate,
 } from "./app-render-shared.js";
 
@@ -41,29 +40,6 @@ const UNAVAILABLE_TEXT = {
 };
 
 function claudeResetStatus(resets) {
-  if (resets.claim?.status === "pending") {
-    return {
-      label: "claiming reset\u2026",
-      replaceCount: true,
-      description: `started ${relativeTime(resets.claim.startedAt)}`,
-    };
-  }
-  if (resets.claim?.status === "ambiguous") {
-    return {
-      label: "reset not confirmed",
-      replaceCount: true,
-      warning: true,
-      link: "Check",
-      description: "May have been used. Kleis checks again shortly.",
-    };
-  }
-  if (resets.unavailable === "identity_unverified") {
-    return {
-      label: "identity not verified",
-      replaceCount: true,
-      description: "Reconnect or wait for sync.",
-    };
-  }
   if (resets.unavailable === "checking") {
     return {
       label: "waiting for sync",
@@ -101,7 +77,7 @@ function claudeResetStatus(resets) {
 function claudeResetOffer(account) {
   const resets = account?.claudeResets;
   if (account?.provider !== "claude" || !resets) return null;
-  const offer = !resets.claim && resets.saved ? resets.offer : null;
+  const offer = resets.saved ? resets.offer : null;
   const status = claudeResetStatus(resets);
   if (!offer && !status) return null;
   const clears = offer?.clears || resets.clears;
@@ -122,7 +98,7 @@ function claudeResetOffer(account) {
     heading: "Limit reset",
     action: "Use reset",
     canUse: Boolean(offer),
-    retry: false,
+    resetId: offer?.grantId,
     scope: windowLabels.length ? limitsText(clears) : null,
     windowLabels,
     expiresAt: quotaTimestamp(endsAt),
@@ -166,77 +142,26 @@ const CLAIM_RESULT_TOASTS = {
 };
 
 function claimToast(claim) {
-  if (claim.status === "ambiguous") {
-    return [
-      "Couldn't confirm the reset \u00b7 it may have been used, check Claude settings",
-      "error",
-    ];
-  }
-  if (claim.status === "failed") {
-    return [
-      `Anthropic refused the reset${claim.httpStatus ? ` (${claim.httpStatus})` : ""} \u00b7 nothing was used`,
-      "error",
-    ];
+  if (claim.result === "unavailable") {
+    return {
+      message:
+        "Couldn't confirm the reset \u00b7 try again in a few minutes, a retry can't spend it twice",
+      type: "error",
+    };
   }
   const [message, type] = CLAIM_RESULT_TOASTS[claim.result] || [
     "Reset finished",
     "info",
   ];
-  if (claim.result !== "reset") return [message, type];
-  return [`Refilled the ${limitsText(claim.cleared)}`, type];
+  return claim.result === "reset"
+    ? {
+        message: `Refilled the ${limitsText(claim.cleared)}`,
+        type,
+        remaining: claim.resetsLeft,
+      }
+    : { message, type };
 }
 
-function claudeClaimState(claim, error) {
-  if (!error) return claim.status === "ambiguous" ? "ambiguous" : null;
-  if (error.status === 409) {
-    if (error.body?.reason === "claim_in_progress") return "pending";
-    return error.body?.reason === "claim_unconfirmed" ? "ambiguous" : null;
-  }
-  if ([400, 401, 403, 404, 422, 429].includes(error.status)) return null;
-  return "ambiguous";
-}
+const claudeResets = { offerFor: claudeResetOffer, resultToast: claimToast };
 
-const claudeResets = {
-  offerFor: claudeResetOffer,
-  attemptFor(account) {
-    const offer = account.claudeResets.offer;
-    return { body: { grantId: offer.grantId, offerKey: offer.key } };
-  },
-  begin(account, attempt) {
-    attempt.startedAt = Date.now();
-    account.claudeResets = {
-      ...account.claudeResets,
-      offer: null,
-      claim: { status: "pending", startedAt: attempt.startedAt },
-    };
-  },
-  settle(account, attempt, response, error) {
-    const claim = response?.claim || { status: "ambiguous" };
-    const status = claudeClaimState(claim, error);
-    account.claudeResets = {
-      ...account.claudeResets,
-      saved:
-        typeof claim.resetsLeft === "number"
-          ? claim.resetsLeft
-          : (account.claudeResets?.saved ?? 0),
-      offer: null,
-      unavailable: "checking",
-      claim: status ? { status, startedAt: attempt.startedAt } : null,
-    };
-    if (error)
-      return {
-        message: `${error.message}${status === "ambiguous" ? " The reset may have been used; check Claude settings." : ""}`,
-        type: "error",
-        refresh: true,
-      };
-    const [message, type] = claimToast(claim);
-    return {
-      message,
-      type,
-      refresh: true,
-      remaining: type === "success" ? claim.resetsLeft : null,
-    };
-  },
-};
-
-export { claimToast, claudeResets, limitsText };
+export { claudeResets };

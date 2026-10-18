@@ -73,7 +73,6 @@ const state = {
   accountsRequestSeq: 0,
   keysRequestSeq: 0,
   dashboardRequestSeq: 0,
-  pendingResetRedemptions: new Map(),
 };
 
 const APP_ORIGIN = window.location.origin;
@@ -419,7 +418,6 @@ function invalidateSessionRequests() {
   state.keyUsageRequestSeq++;
   state.pendingMutations.clear();
   syncMutationControls();
-  state.pendingResetRedemptions.clear();
   state.usageDetails.clear();
   state.visibleUsageDetails.clear();
   for (const timer of prefetchTimers.values()) clearTimeout(timer);
