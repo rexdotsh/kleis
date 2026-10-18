@@ -13,14 +13,13 @@ import {
   findApiKeyById,
   listApiKeys,
   revokeApiKey,
-  type CreateApiKeyInput,
-  type UpdateApiKeyInput,
   updateApiKey,
 } from "../../db/repositories/api-keys";
 import { findProviderAccountsByIds } from "../../db/repositories/provider-accounts";
 import { providers, type Provider } from "../../db/schema";
 import { normalizeEditableText, resolvePatchedValue } from "../../utils/patch";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
+import { normalizeStringList } from "../../utils/string-list";
 import { resolveExternalRequestUrl } from "../utils/request-origin";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 
@@ -77,24 +76,6 @@ const duplicateScopedAccountProvidersBody = {
   message: "accountScopes can include at most one account per provider",
 } as const;
 
-const normalizeStringScopeList = (
-  scopes: readonly string[] | null | undefined
-): string[] | null => {
-  if (!scopes?.length) {
-    return null;
-  }
-
-  const normalized = new Set<string>();
-  for (const scope of scopes) {
-    const value = scope.trim();
-    if (value) {
-      normalized.add(value);
-    }
-  }
-
-  return normalized.size ? Array.from(normalized) : null;
-};
-
 const normalizeProviderScopeList = (
   scopes: readonly Provider[] | null | undefined
 ): Provider[] | null => (scopes?.length ? Array.from(new Set(scopes)) : null);
@@ -132,41 +113,13 @@ const validateAccountScopes = async (input: {
   return null;
 };
 
-const resolvePatchedExpiresAt = (
-  current: number | null,
-  patched: number | null | undefined
-): number | null => {
-  if (patched === undefined) {
-    return current;
-  }
-
-  if (patched === null) {
-    return null;
-  }
-
-  return toMillisecondsTimestamp(patched);
-};
-
 type ApiKeyRecord = Awaited<ReturnType<typeof listApiKeys>>[number];
 
-type ApiKeyView = ApiKeyRecord & {
-  scopedModelsUrl: string | null;
-};
-
-const scopedModelsUrl = (
-  requestUrl: URL,
-  modelsDiscoveryToken: string | null
-): string | null => {
-  if (!modelsDiscoveryToken) {
-    return null;
-  }
-
-  return `${requestUrl.origin}/api/${modelsDiscoveryToken}`;
-};
-
-const toApiKeyView = (requestUrl: URL, key: ApiKeyRecord): ApiKeyView => ({
+const toApiKeyView = (requestUrl: URL, key: ApiKeyRecord) => ({
   ...key,
-  scopedModelsUrl: scopedModelsUrl(requestUrl, key.modelsDiscoveryToken),
+  scopedModelsUrl: key.modelsDiscoveryToken
+    ? `${requestUrl.origin}/api/${key.modelsDiscoveryToken}`
+    : null,
 });
 
 export const adminKeysRoutes = new Hono()
@@ -200,8 +153,8 @@ export const adminKeysRoutes = new Hono()
     const expiresAt =
       input.expiresAt != null ? toMillisecondsTimestamp(input.expiresAt) : null;
     const providerScopes = normalizeProviderScopeList(input.providerScopes);
-    const modelScopes = normalizeStringScopeList(input.modelScopes);
-    const accountScopes = normalizeStringScopeList(input.accountScopes);
+    const modelScopes = normalizeStringList(input.modelScopes);
+    const accountScopes = normalizeStringList(input.accountScopes);
 
     if (expiresAt !== null && expiresAt <= now) {
       return context.json(expiresAtInvalidBody, 400);
@@ -215,21 +168,17 @@ export const adminKeysRoutes = new Hono()
       return context.json(accountScopeError, 400);
     }
 
-    const payload: CreateApiKeyInput = {
-      label: input.label ?? null,
-      expiresAt,
-    };
-    if (providerScopes) {
-      payload.providerScopes = providerScopes;
-    }
-    if (modelScopes) {
-      payload.modelScopes = modelScopes;
-    }
-    if (accountScopes) {
-      payload.accountScopes = accountScopes;
-    }
-
-    const key = await createApiKey(db, payload, now);
+    const key = await createApiKey(
+      db,
+      {
+        label: input.label ?? null,
+        expiresAt,
+        ...(providerScopes ? { providerScopes } : {}),
+        ...(modelScopes ? { modelScopes } : {}),
+        ...(accountScopes ? { accountScopes } : {}),
+      },
+      now
+    );
     return context.json(
       {
         key: toApiKeyView(resolveExternalRequestUrl(context.req.raw), key),
@@ -251,25 +200,20 @@ export const adminKeysRoutes = new Hono()
       }
 
       const now = Date.now();
-      const label = resolvePatchedValue(
-        existing.label,
-        normalizeEditableText(body.label)
+      const providerScopes = normalizeProviderScopeList(
+        resolvePatchedValue(existing.providerScopes, body.providerScopes)
       );
-      const providerScopes = resolvePatchedValue(
-        existing.providerScopes,
-        body.providerScopes
+      const modelScopes = normalizeStringList(
+        resolvePatchedValue(existing.modelScopes, body.modelScopes)
       );
-      const modelScopes = resolvePatchedValue(
-        existing.modelScopes,
-        body.modelScopes
+      const accountScopes = normalizeStringList(
+        resolvePatchedValue(existing.accountScopes, body.accountScopes)
       );
-      const accountScopes = resolvePatchedValue(
-        existing.accountScopes,
-        body.accountScopes
-      );
-      const expiresAt = resolvePatchedExpiresAt(
+      const expiresAt = resolvePatchedValue(
         existing.expiresAt,
-        body.expiresAt
+        body.expiresAt == null
+          ? body.expiresAt
+          : toMillisecondsTimestamp(body.expiresAt)
       );
 
       if (
@@ -280,27 +224,24 @@ export const adminKeysRoutes = new Hono()
         return context.json(expiresAtInvalidBody, 400);
       }
 
-      const normalizedProviderScopes =
-        normalizeProviderScopeList(providerScopes);
-      const normalizedModelScopes = normalizeStringScopeList(modelScopes);
-      const normalizedAccountScopes = normalizeStringScopeList(accountScopes);
       const accountScopeError = await validateAccountScopes({
-        providerScopes: normalizedProviderScopes,
-        accountScopes: normalizedAccountScopes,
+        providerScopes,
+        accountScopes,
       });
       if (accountScopeError) {
         return context.json(accountScopeError, 400);
       }
 
-      const payload: UpdateApiKeyInput = {
-        label,
-        providerScopes: normalizedProviderScopes,
-        modelScopes: normalizedModelScopes,
-        accountScopes: normalizedAccountScopes,
+      const updated = await updateApiKey(db, id, {
+        label: resolvePatchedValue(
+          existing.label,
+          normalizeEditableText(body.label)
+        ),
+        providerScopes,
+        modelScopes,
+        accountScopes,
         expiresAt,
-      };
-
-      const updated = await updateApiKey(db, id, payload);
+      });
       if (!updated) {
         return context.json(apiKeyNotFoundBody, 404);
       }
@@ -335,13 +276,7 @@ export const adminKeysRoutes = new Hono()
     const result = await deleteRevokedApiKey(db, id);
 
     if (result === "not_found") {
-      return context.json(
-        {
-          error: "not_found",
-          message: "API key was not found",
-        },
-        404
-      );
+      return context.json(apiKeyNotFoundBody, 404);
     }
 
     if (result === "not_revoked") {
