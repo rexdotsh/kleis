@@ -10,24 +10,6 @@ export type TokenUsage = {
   totalTokens?: number;
 };
 
-const fromUsage = (
-  inputTokens: unknown,
-  outputTokens: unknown,
-  cacheReadTokens: unknown,
-  cacheWriteTokens: unknown
-): TokenUsage => ({
-  inputTokens: toNonNegativeInteger(inputTokens),
-  outputTokens: toNonNegativeInteger(outputTokens),
-  cacheReadTokens: toNonNegativeInteger(cacheReadTokens),
-  cacheWriteTokens: toNonNegativeInteger(cacheWriteTokens),
-});
-
-const subtractCachedTokens = (
-  inputTokens: number,
-  cachedTokens: number,
-  cacheWriteTokens = 0
-): number => Math.max(0, inputTokens - cachedTokens - cacheWriteTokens);
-
 export const isTokenUsagePopulated = (
   usage: TokenUsage | null
 ): usage is TokenUsage =>
@@ -44,12 +26,12 @@ export const readAnthropicUsageObject = (usage: unknown): TokenUsage | null => {
     return null;
   }
 
-  return fromUsage(
-    usage.input_tokens,
-    usage.output_tokens,
-    usage.cache_read_input_tokens,
-    usage.cache_creation_input_tokens
-  );
+  return {
+    inputTokens: toNonNegativeInteger(usage.input_tokens),
+    outputTokens: toNonNegativeInteger(usage.output_tokens),
+    cacheReadTokens: toNonNegativeInteger(usage.cache_read_input_tokens),
+    cacheWriteTokens: toNonNegativeInteger(usage.cache_creation_input_tokens),
+  };
 };
 
 export const readAnthropicUsageFromResponse = (
@@ -78,10 +60,9 @@ const readOpenAiResponsesUsageObject = (usage: unknown): TokenUsage | null => {
     : null;
 
   return {
-    inputTokens: subtractCachedTokens(
-      totalInputTokens,
-      cachedTokens,
-      cacheWriteTokens
+    inputTokens: Math.max(
+      0,
+      totalInputTokens - cachedTokens - cacheWriteTokens
     ),
     outputTokens: toNonNegativeInteger(usage.output_tokens),
     cacheReadTokens: cachedTokens,
@@ -125,51 +106,5 @@ export const readOpenAiResponsesUsageFromSseEvent = (
     return null;
   }
 
-  const responseBody = isObjectRecord(payload.response)
-    ? payload.response
-    : null;
-  if (!responseBody) {
-    return null;
-  }
-
-  return readOpenAiResponsesUsageObject(responseBody.usage);
-};
-
-const readOpenAiChatUsageObject = (usage: unknown): TokenUsage | null => {
-  if (!isObjectRecord(usage)) {
-    return null;
-  }
-
-  const promptDetails = isObjectRecord(usage.prompt_tokens_details)
-    ? usage.prompt_tokens_details
-    : null;
-  const cachedTokens = toNonNegativeInteger(promptDetails?.cached_tokens);
-  const totalPromptTokens = toNonNegativeInteger(usage.prompt_tokens);
-
-  return {
-    inputTokens: subtractCachedTokens(totalPromptTokens, cachedTokens),
-    outputTokens: toNonNegativeInteger(usage.completion_tokens),
-    cacheReadTokens: cachedTokens,
-    cacheWriteTokens: 0,
-  };
-};
-
-export const readOpenAiChatUsageFromResponse = (
-  responseBody: unknown
-): TokenUsage | null => {
-  if (!isObjectRecord(responseBody)) {
-    return null;
-  }
-
-  return readOpenAiChatUsageObject(responseBody.usage);
-};
-
-export const readOpenAiChatUsageFromSseEvent = (
-  payload: unknown
-): TokenUsage | null => {
-  if (!isObjectRecord(payload)) {
-    return null;
-  }
-
-  return readOpenAiChatUsageObject(payload.usage);
+  return readOpenAiResponsesUsageFromResponse(payload.response);
 };

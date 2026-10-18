@@ -1,4 +1,7 @@
-import type { TokenUsage } from "../../usage/token-usage";
+import {
+  readOpenAiResponsesUsageFromSseEvent,
+  type TokenUsage,
+} from "../../usage/token-usage";
 import { errorLogFields, hashLogId, logError, logWarn } from "../../utils/log";
 import { isObjectRecord } from "../../utils/object";
 import { createCodexStreamDiagnostics } from "./codex-stream-diagnostics";
@@ -16,12 +19,9 @@ import {
 } from "./sse-events";
 import { createSseKeepAlive, createSseResponseHeaders } from "./sse-keepalive";
 
-type SseUsageExtractor = (payload: unknown) => TokenUsage | null;
-
 type OpenAiSsePassthroughInput = {
   response: Response;
   providerAccountId?: string | undefined;
-  extractUsage: SseUsageExtractor;
   onTokenUsage?: ((usage: TokenUsage) => void) | null | undefined;
   keepAliveIntervalMs?: number;
 };
@@ -79,7 +79,6 @@ const transformSseEvent = (
     terminalAnomaly: SseTerminalAnomaly | null;
     sawTerminal: boolean;
   },
-  extractUsage: SseUsageExtractor,
   onInvalidJson: (input: { bytes: number; lines: number }) => void,
   onInvalidShape: (issue: OpenAiResponsesEventShapeIssue) => void,
   trackDiagnostics: (payload: Record<string, unknown>) => void
@@ -116,7 +115,7 @@ const transformSseEvent = (
   }
   state.terminalAnomaly =
     readSseTerminalAnomaly(normalized) ?? state.terminalAnomaly;
-  const usage = extractUsage(normalized);
+  const usage = readOpenAiResponsesUsageFromSseEvent(normalized);
   if (usage) {
     state.latestUsage = usage;
   }
@@ -230,7 +229,6 @@ export const createOpenAiSseUsagePassthrough = (
     transformSseEvent(
       event,
       usageState,
-      input.extractUsage,
       reportInvalidJson,
       reportInvalidShape,
       trackDiagnostics
