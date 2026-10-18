@@ -27,9 +27,14 @@ import {
   listProviderAccountQuotas,
   peekProviderAccountProfiles,
   peekProviderAccountQuotas,
+  recordProviderAccountLiveLimits,
   restoreProviderAccountSnapshots,
   setAccountSnapshotStore,
 } from "../../src/domain/providers/provider-account-tracking";
+import {
+  readClaudeLiveLimits,
+  readCodexLiveLimits,
+} from "../../src/providers/account-tracking/live-limits";
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -166,6 +171,310 @@ describe("account snapshots", () => {
       { status: { usedPercent: 5 } }
     );
   });
+
+  type PollRaceScenario = {
+    name: string;
+    poll: number;
+    traffic: number | null;
+    pollReset: number | null;
+    trafficReset: number | null;
+    pollRelativeReset?: number;
+    windowSeconds?: number;
+    completeAfterMs?: number;
+    expectedReset?: number;
+    expected: number;
+    source: "poll" | "traffic";
+  };
+
+  test.each(
+    (["codex", "claude"] as const).flatMap((provider) =>
+      (
+        [
+          {
+            name: "higher traffic in the same window",
+            poll: 10,
+            traffic: 70,
+            pollReset: 18_000,
+            trafficReset: 18_000,
+            expected: 70,
+            source: "traffic",
+          },
+          {
+            name: "delayed traffic below an exhausted poll",
+            poll: 100,
+            traffic: 20,
+            pollReset: 18_000,
+            trafficReset: 18_000,
+            expected: 100,
+            source: "poll",
+          },
+          {
+            name: "expired traffic before a rolled-over poll",
+            poll: 5,
+            traffic: 100,
+            pollReset: 18_000,
+            trafficReset: -3600,
+            expected: 5,
+            source: "poll",
+          },
+          {
+            name: "rolled-over traffic after an exhausted poll",
+            poll: 100,
+            traffic: 5,
+            pollReset: -3600,
+            trafficReset: 18_000,
+            expected: 5,
+            source: "traffic",
+          },
+          {
+            name: "jittered traffic for an expired poll window",
+            poll: 100,
+            traffic: 100,
+            pollReset: -10,
+            trafficReset: 30,
+            expected: 100,
+            source: "poll",
+          },
+          {
+            name: "unplaceable traffic",
+            poll: 10,
+            traffic: 70,
+            pollReset: 18_000,
+            trafficReset: null,
+            expected: 10,
+            source: "poll",
+          },
+          {
+            name: "later reset jitter below an exhausted poll",
+            poll: 100,
+            traffic: 20,
+            pollReset: 18_000,
+            trafficReset: 18_003,
+            expected: 100,
+            source: "poll",
+          },
+          {
+            name: "exhausted traffic with earlier reset jitter",
+            poll: 20,
+            traffic: 100,
+            pollReset: 18_000,
+            trafficReset: 17_997,
+            expectedReset: 18_000,
+            expected: 100,
+            source: "traffic",
+          },
+          {
+            name: "expired traffic against a poll without a reset",
+            poll: 5,
+            traffic: 100,
+            pollReset: null,
+            trafficReset: -1,
+            expected: 5,
+            source: "poll",
+          },
+          {
+            name: "traffic expiring before the poll completes",
+            poll: 5,
+            traffic: 100,
+            pollReset: null,
+            trafficReset: 2,
+            completeAfterMs: 3000,
+            expected: 5,
+            source: "poll",
+          },
+          ...(provider === "claude"
+            ? [
+                {
+                  name: "reset-only jitter below an exhausted poll",
+                  poll: 100,
+                  traffic: null,
+                  pollReset: 18_000,
+                  trafficReset: 18_003,
+                  expected: 100,
+                  source: "poll" as const,
+                },
+              ]
+            : [
+                {
+                  name: "expired traffic against a relative-reset poll",
+                  poll: 5,
+                  traffic: 100,
+                  pollReset: null,
+                  pollRelativeReset: 18_000,
+                  trafficReset: -1,
+                  expectedReset: 18_000,
+                  expected: 5,
+                  source: "poll" as const,
+                },
+                {
+                  name: "reset jitter below an exhausted relative-reset poll",
+                  poll: 100,
+                  traffic: 20,
+                  pollReset: null,
+                  pollRelativeReset: 18_000,
+                  trafficReset: 18_003,
+                  expectedReset: 18_000,
+                  expected: 100,
+                  source: "poll" as const,
+                },
+                {
+                  name: "a distinct reset for a short known window",
+                  poll: 100,
+                  traffic: 5,
+                  pollReset: 30,
+                  trafficReset: 33,
+                  windowSeconds: 60,
+                  expected: 5,
+                  source: "traffic" as const,
+                },
+              ]),
+        ] satisfies PollRaceScenario[]
+      ).map((scenario: PollRaceScenario) => ({ provider, ...scenario }))
+    )
+  )(
+    "$provider publishes and persists $name",
+    async ({
+      provider,
+      poll,
+      traffic,
+      pollReset,
+      trafficReset,
+      pollRelativeReset,
+      windowSeconds,
+      completeAfterMs = 1000,
+      expectedReset: expectedResetOffset,
+      expected: percent,
+      source,
+    }) => {
+      const id = await insertAccount(provider);
+      const accounts = await accountsById(id);
+      const account = accounts[0];
+      if (!account) throw new Error("account missing");
+      const store = createAccountSnapshotStore(database);
+      setAccountSnapshotStore(store);
+      const startedAt = Date.now();
+      setSystemTime(startedAt);
+      const resetAt = (seconds: number) =>
+        Math.floor(startedAt / 1000) + seconds;
+      const trafficResetHeaders: Record<string, string> =
+        trafficReset === null
+          ? {}
+          : provider === "codex"
+            ? { "x-codex-primary-reset-at": String(resetAt(trafficReset)) }
+            : {
+                "anthropic-ratelimit-unified-5h-reset": String(
+                  resetAt(trafficReset)
+                ),
+              };
+      let finish: (response: Response) => void = () => undefined;
+      globalThis.fetch = ((input: string | URL | Request) => {
+        const path = new URL(String(input)).pathname;
+        if (path.endsWith("/usage")) {
+          return new Promise<Response>((resolve) => {
+            finish = resolve;
+          });
+        }
+        return Promise.resolve(Response.json({}));
+      }) as typeof fetch;
+      const polling = listProviderAccountQuotas(database, accounts);
+      await Bun.sleep(0);
+      setSystemTime(startedAt + 1000);
+      recordProviderAccountLiveLimits(
+        account,
+        provider === "codex"
+          ? readCodexLiveLimits(
+              new Headers({
+                ...(traffic === null
+                  ? {}
+                  : { "x-codex-primary-used-percent": String(traffic) }),
+                ...trafficResetHeaders,
+              })
+            )
+          : readClaudeLiveLimits(
+              new Headers({
+                ...(traffic === null
+                  ? {}
+                  : {
+                      "anthropic-ratelimit-unified-5h-utilization": String(
+                        traffic / 100
+                      ),
+                    }),
+                ...trafficResetHeaders,
+              })
+            )
+      );
+      setSystemTime(startedAt + completeAfterMs);
+      finish(
+        Response.json(
+          provider === "codex"
+            ? {
+                rate_limit: {
+                  primary_window: {
+                    used_percent: poll,
+                    reset_at: pollReset === null ? null : resetAt(pollReset),
+                    reset_after_seconds: pollRelativeReset,
+                    limit_window_seconds: windowSeconds,
+                  },
+                  secondary_window: { used_percent: 20 },
+                },
+              }
+            : {
+                five_hour: {
+                  utilization: poll,
+                  resets_at:
+                    pollReset === null
+                      ? null
+                      : new Date(resetAt(pollReset) * 1000).toISOString(),
+                },
+                seven_day: { utilization: 20 },
+              }
+        )
+      );
+      const winningReset =
+        expectedResetOffset ??
+        (source === "traffic" && trafficReset !== null
+          ? trafficReset
+          : pollReset);
+      const expectedReset =
+        winningReset === null
+          ? null
+          : expectedResetOffset !== undefined && pollRelativeReset !== undefined
+            ? (startedAt + expectedResetOffset * 1000) / 1000
+            : resetAt(winningReset);
+      const expected =
+        provider === "codex"
+          ? {
+              status: {
+                primaryWindow: { usedPercent: percent, resetAt: expectedReset },
+                secondaryWindow: { usedPercent: 20 },
+              },
+            }
+          : {
+              subscription: {
+                fiveHour: {
+                  utilization: percent,
+                  resetsAt:
+                    expectedReset === null
+                      ? null
+                      : new Date(expectedReset * 1000).toISOString(),
+                },
+                sevenDay: { utilization: 20 },
+              },
+            };
+      expect((await polling).get(id)).toMatchObject({
+        source,
+        fetchedAt: startedAt + (source === "traffic" ? 1000 : 0),
+        data: expected,
+      });
+      expect(
+        (await listProviderAccountQuotas(database, accounts)).get(id)?.data
+      ).toMatchObject(expected);
+      await store.flush();
+      expect(
+        JSON.parse((await readSnapshot(id))?.quotaJson ?? "")
+      ).toMatchObject(expected);
+    }
+  );
 
   test("profile and quota writes keep each other, and a removed account does not block the rest", async () => {
     const store = createAccountSnapshotStore(database);
