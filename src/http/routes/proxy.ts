@@ -473,6 +473,11 @@ const proxyRequest = async (
         liveLimits,
         errorPayload,
         now: respondedAt,
+        mode:
+          context.req.header("x-kleis-on-limit")?.trim().toLowerCase() ===
+          "fail"
+            ? "fail"
+            : "wait",
       })
     : null;
   if (usageLimitResponse) {
