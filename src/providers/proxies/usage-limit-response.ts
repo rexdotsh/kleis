@@ -7,6 +7,8 @@ import {
 import { createProxyResponseHeaders } from "./response";
 import { readUpstreamErrorFields } from "./upstream-error";
 
+export type LimitResponseMode = "wait" | "fail";
+
 const nonnegativeNumber = (value: unknown): number | null => {
   if (typeof value !== "number" && typeof value !== "string") return null;
   if (typeof value === "string" && !value.trim()) return null;
@@ -125,6 +127,19 @@ const withoutRetryHeaders = (source: HeadersInit): Headers => {
   return headers;
 };
 
+const formatResetTime = (reset: number, now: number): string => {
+  const iso = new Date(reset).toISOString();
+  const time = `${iso.slice(11, 16)} UTC`;
+  if (iso.slice(0, 10) === new Date(now).toISOString().slice(0, 10))
+    return time;
+  const date = new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(reset);
+  return `${date} ${time}`;
+};
+
 export const createUsageLimitResponse = (input: {
   provider: Provider;
   accountLabel: string | null;
@@ -133,6 +148,7 @@ export const createUsageLimitResponse = (input: {
   headers?: HeadersInit;
   errorType?: string | null;
   errorCode?: string | null;
+  mode?: LimitResponseMode;
 }): Response => {
   const provider = input.provider === "claude" ? "Claude" : "Codex";
   const account = input.accountLabel;
@@ -146,18 +162,28 @@ export const createUsageLimitResponse = (input: {
     minutes >= 60
       ? `${Math.floor(minutes / 60)}h ${minutes % 60}m`
       : `${minutes}m`;
+  const fail = input.mode === "fail";
   const resetMessage = resetsAt
     ? `Resets at ${resetsAt} (in ${duration}).`
     : "Reset time unknown.";
-  const message = `${provider} usage limit reached${account === null ? "" : ` for account ${JSON.stringify(account)}`}. ${resetMessage}`;
+  const limit = `${provider} limit${account === null ? "" : ` for ${JSON.stringify(account)}`}`;
+  const message = fail
+    ? `${provider} usage limit reached${account === null ? "" : ` for account ${JSON.stringify(account)}`}. ${resetMessage}`
+    : reset === null
+      ? `${limit} reached. Reset time unknown.`
+      : `${limit} resets at ${formatResetTime(reset, input.now)} (in ${duration})`;
   const fields = { message, resets_at: resetsAt, account };
   const body =
     input.provider === "claude"
       ? { type: "error", error: { type: "rate_limit_error", ...fields } }
       : {
           error: {
-            type: input.errorType ?? "usage_limit_reached",
-            code: input.errorCode ?? "usage_limit_reached",
+            type: fail
+              ? (input.errorType ?? "usage_limit_reached")
+              : "rate_limit_error",
+            code: fail
+              ? (input.errorCode ?? "usage_limit_reached")
+              : "rate_limit_exceeded",
             ...fields,
           },
         };
@@ -166,6 +192,9 @@ export const createUsageLimitResponse = (input: {
     name.includes("retry")
   );
   for (const name of retryHeaders) headers.delete(name);
+  if (!fail && reset !== null) {
+    headers.set("retry-after", String(Math.ceil((reset - input.now) / 1000)));
+  }
   headers.set("content-type", "application/json");
   return Response.json(body, { status: 429, headers });
 };
@@ -177,6 +206,7 @@ export const rewriteUsageLimitResponse = (input: {
   liveLimits: LiveLimits | null;
   errorPayload: unknown;
   now: number;
+  mode?: LimitResponseMode;
 }): Response | null => {
   if (input.response.status !== 429) return null;
   const payload = isObjectRecord(input.errorPayload)
@@ -210,6 +240,7 @@ export const rewriteUsageLimitResponse = (input: {
     input.response.headers.get("anthropic-ratelimit-unified-status") ===
       "rejected";
   if (!resets.length && !bodyLimited && !rejected) {
+    if (input.mode !== "fail") return null;
     const retryAt = retryReset(input.response.headers, input.now);
     if (retryAt === null || retryAt - input.now <= 60_000) return null;
     return new Response(input.response.body, {
@@ -228,6 +259,7 @@ export const rewriteUsageLimitResponse = (input: {
     headers: input.response.headers,
     errorType,
     errorCode,
+    mode: input.mode ?? "wait",
   });
   input.response.body?.cancel().catch(() => undefined);
   return response;

@@ -715,7 +715,11 @@ test("exhausted 429s expose only the blocking window's reset and account", async
         entry.provider === "claude"
           ? "/anthropic/v1/messages"
           : "/openai/v1/responses",
-        { method: "POST", body: '{"stream":true}' }
+        {
+          method: "POST",
+          headers: { "x-kleis-on-limit": "fail" },
+          body: '{"stream":true}',
+        }
       );
       expect(response.status).toBe(429);
       for (const header of [
@@ -866,6 +870,7 @@ test("short or missing retry hints preserve non-exhausted 429 bytes and headers"
         new Response(body, { status: 429, headers })) as typeof fetch;
       const response = await app.request(entry.path, {
         method: "POST",
+        headers: { "x-kleis-on-limit": "fail" },
         body: '{"stream":true}',
       });
       expect(response.status).toBe(429);
@@ -954,6 +959,7 @@ test("explicitly exhausted 429s never borrow retry hints, expired or allowed res
         )) as typeof fetch;
       const response = await app.request(entry.path, {
         method: "POST",
+        headers: { "x-kleis-on-limit": "fail" },
         body: "{}",
       });
       expect(response.status).toBe(429);
@@ -976,46 +982,51 @@ test("explicitly exhausted 429s never borrow retry hints, expired or allowed res
   }
 });
 
-test("long ordinary throttles retain their retryable upstream error body", async () => {
+test("ordinary throttle retry hints are preserved by default and capped only in fail mode", async () => {
   const originalFetch = globalThis.fetch;
   const warn = spyOn(console, "warn").mockImplementation(() => undefined);
   const body =
     '{ "error": { "type": "rate_limit_error", "message": "Rate limit exceeded. Try again later." } }';
   try {
-    for (const entry of [
-      { path: "/anthropic/v1/messages", headers: { "retry-after": "61" } },
-      { path: "/openai/v1/responses", headers: { "retry-after": "61" } },
-      {
-        path: "/anthropic/v1/messages",
-        headers: { "retry-after-ms": "61000" },
-      },
-      {
-        path: "/openai/v1/responses",
-        headers: {
-          "retry-after": new Date(Date.now() + 120000).toUTCString(),
-          "retry-after-ms": "invalid",
+    for (const mode of ["wait", "fail"] as const) {
+      for (const entry of [
+        { path: "/anthropic/v1/messages", headers: { "retry-after": "61" } },
+        { path: "/openai/v1/responses", headers: { "retry-after": "61" } },
+        {
+          path: "/anthropic/v1/messages",
+          headers: { "retry-after-ms": "61000" },
         },
-      },
-    ]) {
-      const headers = new Headers({
-        ...entry.headers,
-        "content-type": "application/json",
-        "x-request-id": "fake-throttle",
-        "x-should-retry": "true",
-      });
-      globalThis.fetch = (async () =>
-        new Response(body, { status: 429, headers })) as typeof fetch;
-      const response = await app.request(entry.path, {
-        method: "POST",
-        body: '{"stream":true}',
-      });
-      expect(response.status).toBe(429);
-      expect(response.headers.has("retry-after")).toBe(false);
-      expect(response.headers.has("retry-after-ms")).toBe(false);
-      headers.delete("retry-after");
-      headers.delete("retry-after-ms");
-      expect([...response.headers]).toEqual([...headers]);
-      expect(await response.text()).toBe(body);
+        {
+          path: "/openai/v1/responses",
+          headers: {
+            "retry-after": new Date(Date.now() + 120000).toUTCString(),
+            "retry-after-ms": "invalid",
+          },
+        },
+      ]) {
+        const headers = new Headers({
+          ...entry.headers,
+          "content-type": "application/json",
+          "x-request-id": "fake-throttle",
+          "x-should-retry": "true",
+        });
+        globalThis.fetch = (async () =>
+          new Response(body, { status: 429, headers })) as typeof fetch;
+        const response = await app.request(entry.path, {
+          method: "POST",
+          ...(mode === "fail"
+            ? { headers: { "x-kleis-on-limit": "fail" } }
+            : {}),
+          body: '{"stream":true}',
+        });
+        expect(response.status).toBe(429);
+        if (mode === "fail") {
+          headers.delete("retry-after");
+          headers.delete("retry-after-ms");
+        }
+        expect([...response.headers]).toEqual([...headers]);
+        expect(await response.text()).toBe(body);
+      }
     }
   } finally {
     warn.mockRestore();
@@ -1083,6 +1094,7 @@ test("synthesized quota errors discard upstream retry overrides and hints", asyn
         )) as typeof fetch;
       const response = await app.request(entry.path, {
         method: "POST",
+        headers: { "x-kleis-on-limit": "fail" },
         body: "{}",
       });
       expect(response.status).toBe(429);
@@ -1104,6 +1116,204 @@ test("synthesized quota errors discard upstream retry overrides and hints", asyn
       });
     }
   } finally {
+    warn.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("default mode waits for known exhausted resets and retries unknown resets without leaking its option", async () => {
+  const originalFetch = globalThis.fetch;
+  const now = Date.parse("2026-10-19T00:00:00Z");
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    for (const provider of ["claude", "codex"] as const) {
+      const selected = provider === "claude" ? account : codexAccount;
+      for (const entry of [
+        {
+          reset: now + 4080_500,
+          retryAfter: "4081",
+          when: "01:08 UTC",
+          duration: "1h 9m",
+          option: undefined,
+        },
+        {
+          reset: now + 2 * 86400_000 + 4080_000,
+          retryAfter: "176880",
+          when: "Oct 21 01:08 UTC",
+          duration: "49h 8m",
+          option: "wait",
+        },
+        {
+          reset: null,
+          retryAfter: null,
+          when: null,
+          duration: null,
+          option: undefined,
+        },
+      ]) {
+        let forwarded = new Headers();
+        globalThis.fetch = (async (_url, init) => {
+          forwarded = new Headers(init?.headers);
+          return Response.json(
+            {
+              error: {
+                type:
+                  provider === "claude"
+                    ? "rate_limit_error"
+                    : "usage_limit_reached",
+                code: "insufficient_quota",
+                message: "PRIVATESECRETTOKEN usage limit quota exceeded",
+                ...(entry.reset === null
+                  ? {}
+                  : { resets_at: entry.reset / 1000 }),
+              },
+            },
+            {
+              status: 429,
+              headers: {
+                ...(provider === "claude"
+                  ? {
+                      "anthropic-ratelimit-unified-status": "rejected",
+                      ...(entry.reset === null
+                        ? {}
+                        : {
+                            "anthropic-ratelimit-unified-reset": String(
+                              entry.reset / 1000
+                            ),
+                          }),
+                    }
+                  : {}),
+                "retry-after": "61",
+                "retry-after-ms": "61000",
+                "x-should-retry": "false",
+                "x-ms-retry-after-ms": "61000",
+              },
+            }
+          );
+        }) as typeof fetch;
+        const response = await app.request(
+          provider === "claude"
+            ? "/anthropic/v1/messages"
+            : "/openai/v1/responses",
+          {
+            method: "POST",
+            headers: entry.option ? { "x-kleis-on-limit": entry.option } : {},
+            body: "{}",
+          }
+        );
+        expect(forwarded.has("x-kleis-on-limit")).toBe(false);
+        expect(response.status).toBe(429);
+        expect(response.headers.get("retry-after")).toBe(entry.retryAfter);
+        for (const header of [
+          "retry-after-ms",
+          "x-should-retry",
+          "x-ms-retry-after-ms",
+        ]) {
+          expect(response.headers.has(header)).toBe(false);
+        }
+        const prefix = `${provider === "claude" ? "Claude" : "Codex"} limit for "${selected.label}"`;
+        expect(await response.json()).toEqual({
+          ...(provider === "claude" ? { type: "error" } : {}),
+          error: {
+            type: "rate_limit_error",
+            ...(provider === "codex" ? { code: "rate_limit_exceeded" } : {}),
+            message:
+              entry.reset === null
+                ? `${prefix} reached. Reset time unknown.`
+                : `${prefix} resets at ${entry.when} (in ${entry.duration})`,
+            resets_at:
+              entry.reset === null ? null : new Date(entry.reset).toISOString(),
+            account: selected.label,
+          },
+        });
+      }
+    }
+  } finally {
+    clock.mockRestore();
+    warn.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fail mode preserves terminal exhausted-limit errors without forwarding its option", async () => {
+  const originalFetch = globalThis.fetch;
+  const now = Date.parse("2026-10-19T00:00:00Z");
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    for (const provider of ["claude", "codex"] as const) {
+      const selected = provider === "claude" ? account : codexAccount;
+      for (const reset of [now + 4080_000, null]) {
+        let forwarded = new Headers();
+        globalThis.fetch = (async (_url, init) => {
+          forwarded = new Headers(init?.headers);
+          return Response.json(
+            {
+              error: {
+                type:
+                  provider === "claude"
+                    ? "rate_limit_error"
+                    : "usage_limit_reached",
+                code: "usage_limit_reached",
+                message: "PRIVATESECRETTOKEN",
+                ...(reset === null ? {} : { resets_at: reset / 1000 }),
+              },
+            },
+            {
+              status: 429,
+              headers: {
+                ...(provider === "claude"
+                  ? {
+                      "anthropic-ratelimit-unified-status": "rejected",
+                      ...(reset === null
+                        ? {}
+                        : {
+                            "anthropic-ratelimit-unified-reset": String(
+                              reset / 1000
+                            ),
+                          }),
+                    }
+                  : {}),
+                "retry-after": "61",
+                "x-should-retry": "true",
+              },
+            }
+          );
+        }) as typeof fetch;
+        const response = await app.request(
+          provider === "claude"
+            ? "/anthropic/v1/messages"
+            : "/openai/v1/responses",
+          {
+            method: "POST",
+            headers: { "x-kleis-on-limit": "fail" },
+            body: "{}",
+          }
+        );
+        expect(forwarded.has("x-kleis-on-limit")).toBe(false);
+        expect(response.status).toBe(429);
+        expect(
+          [...response.headers.keys()].filter((name) => name.includes("retry"))
+        ).toEqual([]);
+        const resetsAt = reset === null ? null : new Date(reset).toISOString();
+        expect(await response.json()).toEqual({
+          ...(provider === "claude" ? { type: "error" } : {}),
+          error: {
+            type:
+              provider === "claude"
+                ? "rate_limit_error"
+                : "usage_limit_reached",
+            ...(provider === "codex" ? { code: "usage_limit_reached" } : {}),
+            message: `${provider === "claude" ? "Claude" : "Codex"} usage limit reached for account "${selected.label}". ${resetsAt === null ? "Reset time unknown." : `Resets at ${resetsAt} (in 1h 8m).`}`,
+            resets_at: resetsAt,
+            account: selected.label,
+          },
+        });
+      }
+    }
+  } finally {
+    clock.mockRestore();
     warn.mockRestore();
     globalThis.fetch = originalFetch;
   }

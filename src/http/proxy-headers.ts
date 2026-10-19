@@ -3,6 +3,7 @@ import { CODEX_ACCOUNT_ID_HEADER } from "../providers/constants";
 const PROXY_ONLY_HEADERS = new Set([
   "authorization",
   "x-api-key",
+  "x-kleis-on-limit",
   CODEX_ACCOUNT_ID_HEADER.toLowerCase(),
   "host",
   "content-length",
