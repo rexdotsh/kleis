@@ -145,7 +145,7 @@ function claimToast(claim) {
   if (claim.result === "unavailable") {
     return {
       message:
-        "Couldn't confirm the reset \u00b7 try again in a few minutes, a retry can't spend it twice",
+        "Couldn't confirm the reset \u00b7 the next limits check will show whether it was used",
       type: "error",
     };
   }

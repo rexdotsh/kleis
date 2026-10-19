@@ -64,7 +64,8 @@ export type TrackingAccount = ProviderAccountRecord & {
 type CodexTrackingData = {
   provider: "codex";
   status?: Awaited<ReturnType<typeof fetchCodexUsageStatus>>;
-  resetCredits?: Awaited<ReturnType<typeof fetchCodexResetCredits>>;
+  // When the credits were read; unknown reads count as older than any spend.
+  resetCredits?: CodexResetCredits & { observedAt?: number };
   profile?: Awaited<ReturnType<typeof fetchCodexUsageProfile>>;
 };
 
@@ -246,6 +247,7 @@ const fetchCodexData = async (account: TrackingAccount) => {
   }
   if (data.status)
     data.status = normalizeCodexPollResets(data.status, observedAt);
+  if (data.resetCredits) data.resetCredits.observedAt = observedAt;
   return { data, errors };
 };
 
@@ -535,21 +537,14 @@ const nextGeneration = (key: string): number => {
   return generation;
 };
 
-const invalidateProviderAccountQuota = (account: TrackingAccount): void => {
-  const key = quotaKey(account);
-  cache.delete(key);
-  inFlight.delete(key);
-  nextGeneration(key);
-};
-
 const dropCachedResetCredits = (key: string): void => {
   const entry = cache.get(key);
-  if (
-    entry?.quota.data.provider === "claude" &&
-    entry.quota.data.resetCredits
-  ) {
+  if (entry?.quota.data.resetCredits) {
     const { resetCredits: _dropped, ...data } = entry.quota.data;
-    cache.set(key, { ...entry, quota: { ...entry.quota, data } });
+    cache.set(key, {
+      ...entry,
+      quota: { ...entry.quota, data: data as TrackingData },
+    });
   }
 };
 
@@ -1022,18 +1017,9 @@ export const queryCodexThreadUsage = async (
   );
 };
 
-// Reloads limits right after a Codex reset, so the admin sees its effect.
-export const reloadCodexQuota = async (
-  database: Database,
-  account: TrackingAccount
-): Promise<void> => {
-  invalidateProviderAccountQuota(account);
-  await getProviderAccountQuota(database, account, true);
-};
-
 export const peekCodexResetCredits = (
   account: TrackingAccount
-): CodexResetCredits | null => {
+): CodexTrackingData["resetCredits"] | null => {
   const data = cache.get(quotaKey(account))?.quota.data;
   return data?.provider === "codex" ? (data.resetCredits ?? null) : null;
 };
@@ -1079,11 +1065,9 @@ export const claudeResetLimitUsage = (
   return used;
 };
 
-// A settled claim invalidates saved resets and earlier reads without moving
-// the next scheduled poll or the shared rate-limit pause.
-export const invalidateClaudeResetCredits = (
-  account: TrackingAccount
-): void => {
+// A spend invalidates reset credits and earlier reads without moving the next
+// scheduled poll or the shared Claude rate-limit pause.
+export const invalidateResetCredits = (account: TrackingAccount): void => {
   const key = quotaKey(account);
   dropCachedResetCredits(key);
   const entry = cache.get(key);
@@ -1091,7 +1075,8 @@ export const invalidateClaudeResetCredits = (
   if (entry && poll) {
     entry.expiresAt = Math.max(
       entry.expiresAt,
-      poll.startedAt + CLAUDE_CACHE_MS
+      poll.startedAt +
+        (account.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS)
     );
   }
   inFlight.delete(key);

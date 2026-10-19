@@ -1,43 +1,54 @@
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq, lt, sql } from "drizzle-orm";
 
 import type { Database } from "../index";
 import { type Provider, resetSpends } from "../schema";
 
-// A pending spend older than this stops blocking its account. The next spend
-// resends its request ID, which the upstream answers as a replay.
+// A pending spend older than this stops blocking its account.
 const PENDING_EXPIRES_MS = 3 * 60_000;
 
-// Returns the request ID to send, or null while another spend is pending.
+// Records a pending spend with a new request ID. Refused while the account
+// has a pending spend, or any spend made since `observedAt`, the time the
+// discovery data the spend was checked against was read.
 export const startResetSpend = async (
   database: Database,
   spend: { provider: Provider; providerAccountId: string; itemId: string },
+  observedAt: number,
   now = Date.now()
-): Promise<string | null> => {
-  const [expired] = await database
-    .update(resetSpends)
-    .set({ itemId: spend.itemId, updatedAt: now })
-    .where(
-      and(
-        eq(resetSpends.providerAccountId, spend.providerAccountId),
-        eq(resetSpends.status, "pending"),
-        lt(resetSpends.updatedAt, now - PENDING_EXPIRES_MS)
-      )
-    )
-    .returning({ requestId: resetSpends.requestId });
-  if (expired) return expired.requestId;
+): Promise<{ requestId: string } | { blocked: "in_progress" | "stale" }> => {
   const requestId = crypto.randomUUID();
-  const inserted = await database
-    .insert(resetSpends)
-    .values({
-      ...spend,
-      requestId,
-      status: "pending",
-      createdAt: now,
-      updatedAt: now,
-    })
-    .onConflictDoNothing()
-    .returning({ requestId: resetSpends.requestId });
-  return inserted.length ? requestId : null;
+  const account = spend.providerAccountId;
+  const [, inserted, pending] = await database.batch([
+    database
+      .update(resetSpends)
+      .set({ status: "expired", updatedAt: now })
+      .where(
+        and(
+          eq(resetSpends.providerAccountId, account),
+          eq(resetSpends.status, "pending"),
+          lt(resetSpends.createdAt, now - PENDING_EXPIRES_MS)
+        )
+      ),
+    database.run(sql`
+      insert into reset_spends (request_id, provider, provider_account_id,
+        item_id, status, created_at, updated_at)
+      select ${requestId}, ${spend.provider}, ${account}, ${spend.itemId},
+        'pending', ${now}, ${now}
+      where not exists (
+        select 1 from reset_spends where provider_account_id = ${account}
+          and (status = 'pending' or created_at >= ${observedAt})
+      )`),
+    database
+      .select({ requestId: resetSpends.requestId })
+      .from(resetSpends)
+      .where(
+        and(
+          eq(resetSpends.providerAccountId, account),
+          eq(resetSpends.status, "pending")
+        )
+      ),
+  ]);
+  if (inserted.rowsAffected) return { requestId };
+  return { blocked: pending.length ? "in_progress" : "stale" };
 };
 
 export const settleResetSpend = async (

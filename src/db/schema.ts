@@ -157,7 +157,12 @@ export const requestUsageBuckets = sqliteTable(
   ]
 );
 
-const resetSpendStatuses = ["pending", "completed", "failed"] as const;
+const resetSpendStatuses = [
+  "pending",
+  "completed",
+  "failed",
+  "expired",
+] as const;
 
 // One row per reset spend, written before the request is sent. At most one
 // spend per account is pending, across every process sharing the database.

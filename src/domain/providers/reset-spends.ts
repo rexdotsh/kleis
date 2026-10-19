@@ -17,11 +17,10 @@ import { AccountTrackingHttpError } from "../../providers/account-tracking/http"
 import { errorLogFields, logWarn } from "../../utils/log";
 import {
   claudeResetLimitUsage,
-  invalidateClaudeResetCredits,
+  invalidateResetCredits,
   isTrackingAccount,
   peekClaudeResetCredits,
   peekCodexResetCredits,
-  reloadCodexQuota,
   resolveAccount,
   retryAfter401,
   type TrackingAccount,
@@ -44,60 +43,66 @@ export class ResetSpendError extends Error {
   }
 }
 
-const notCurrent = () =>
-  new ResetSpendConflict(
-    "That reset is no longer available. Wait for the next sync and try again."
-  );
+const conflictMessages = {
+  in_progress: "A reset is already in progress for this account.",
+  stale: "Waiting for the next limits check before another reset can be used.",
+  not_current: "That reset is no longer available.",
+} as const;
 
-// A 4xx other than 429 is answered before anything is spent.
+const conflict = (reason: keyof typeof conflictMessages) =>
+  new ResetSpendConflict(conflictMessages[reason]);
+
+// Answered before anything is spent. A 409 or 429 may mean another request
+// with this reset is still being processed.
 const isRefusal = (error: unknown): boolean =>
   error instanceof AccountTrackingHttpError &&
   error.status >= 400 &&
   error.status < 500 &&
+  error.status !== 409 &&
   error.status !== 429;
 
-// Records the spend before sending it. An answer that `settles` rejects
-// leaves the spend pending, like a timeout.
+// Sends one spend, checked against discovery data read at `observedAt`. An
+// unknown outcome, or an answer `settles` rejects, stays pending until it
+// expires; the next limits check then shows what happened.
 const spendReset = async <T>(
   database: Database,
   account: TrackingAccount,
   itemId: string,
+  observedAt: number,
   send: (requestId: string) => Promise<T>,
   settles: (result: T) => boolean
 ): Promise<T> => {
-  const requestId = await startResetSpend(database, {
-    provider: account.provider,
-    providerAccountId: account.id,
-    itemId,
-  });
-  if (!requestId) {
-    throw new ResetSpendConflict(
-      "A reset is already in progress for this account."
-    );
-  }
+  const started = await startResetSpend(
+    database,
+    { provider: account.provider, providerAccountId: account.id, itemId },
+    observedAt
+  );
+  if ("blocked" in started) throw conflict(started.blocked);
   const settle = (status: "completed" | "failed") =>
-    settleResetSpend(database, requestId, status).catch((error: unknown) =>
-      logWarn("reset_spend_record_failed", {
-        providerAccountId: account.id,
-        ...errorLogFields(error),
-      })
+    settleResetSpend(database, started.requestId, status).catch(
+      (error: unknown) =>
+        logWarn("reset_spend_record_failed", {
+          providerAccountId: account.id,
+          ...errorLogFields(error),
+        })
     );
-  let result: T;
   try {
-    result = await send(requestId);
+    const result = await send(started.requestId);
+    if (settles(result)) await settle("completed");
+    return result;
   } catch (error) {
     if (!isRefusal(error)) {
       throw new ResetSpendError(
-        "Couldn't confirm the reset. Try again in a few minutes; a retry can't spend it twice."
+        "Couldn't confirm the reset. It may have been used; the next limits check will show it."
       );
     }
     await settle("failed");
     throw new ResetSpendError(
       `${error instanceof Error ? error.message : "Reset refused"}. Nothing was used.`
     );
+  } finally {
+    invalidateResetCredits(account);
   }
-  if (settles(result)) await settle("completed");
-  return result;
 };
 
 const loadAccount = async (
@@ -118,33 +123,31 @@ export const redeemCodexResetCredit = async (
 ) => {
   const account = await loadAccount(database, providerAccountId, "codex");
   if (!account) return null;
-  const listed = peekCodexResetCredits(account)?.credits ?? [];
+  const credits = peekCodexResetCredits(account);
+  if (!credits) throw conflict("stale");
   if (
-    !listed.some(
+    !credits.credits.some(
       (credit) => credit.id === creditId && credit.status === "available"
     )
   ) {
-    throw notCurrent();
+    throw conflict("not_current");
   }
-  try {
-    return await spendReset(
-      database,
-      account,
-      creditId,
-      (redeemRequestId) =>
-        retryAfter401(database, account, (current) =>
-          consumeCodexResetCredit({
-            accessToken: current.accessToken,
-            accountId: current.accountId,
-            redeemRequestId,
-            creditId,
-          })
-        ),
-      () => true
-    );
-  } finally {
-    await reloadCodexQuota(database, account);
-  }
+  return spendReset(
+    database,
+    account,
+    creditId,
+    credits.observedAt ?? 0,
+    (redeemRequestId) =>
+      retryAfter401(database, account, (current) =>
+        consumeCodexResetCredit({
+          accessToken: current.accessToken,
+          accountId: current.accountId,
+          redeemRequestId,
+          creditId,
+        })
+      ),
+    () => true
+  );
 };
 
 const claudeSummary = (
@@ -204,28 +207,25 @@ export const claimClaudeReset = async (
       "This account's Claude organization isn't known. Reconnect the account."
     );
   }
+  const credits = peekClaudeResetCredits(account);
   const summary = claudeSummary(account);
-  if (summary === "checking" || summary?.offer?.grantId !== grantId) {
-    throw notCurrent();
-  }
-  try {
-    return await spendReset(
-      database,
-      account,
-      grantId,
-      (requestId) =>
-        retryAfter401(database, account, (current) =>
-          claimClaudeResetCredit({
-            accessToken: current.accessToken,
-            organizationUuid,
-            grantId,
-            requestId,
-          })
-        ),
-      ({ result, reason }) =>
-        result !== "unavailable" && !UNCONFIRMED_REASONS.has(reason ?? "")
-    );
-  } finally {
-    invalidateClaudeResetCredits(account);
-  }
+  if (!credits || summary === "checking") throw conflict("stale");
+  if (summary?.offer?.grantId !== grantId) throw conflict("not_current");
+  return spendReset(
+    database,
+    account,
+    grantId,
+    credits.observedAt,
+    (requestId) =>
+      retryAfter401(database, account, (current) =>
+        claimClaudeResetCredit({
+          accessToken: current.accessToken,
+          organizationUuid,
+          grantId,
+          requestId,
+        })
+      ),
+    ({ result, reason }) =>
+      result !== "unavailable" && !UNCONFIRMED_REASONS.has(reason ?? "")
+  );
 };
