@@ -1,0 +1,106 @@
+name: Build images
+
+on:
+  workflow_call:
+    inputs:
+      architecture:
+        required: true
+        type: string
+      rebuild_migrate:
+        default: false
+        type: boolean
+    outputs:
+      app_image:
+        value: ${{ jobs.build.outputs.app_image }}
+      migrate_image:
+        value: ${{ jobs.build.outputs.migrate_image }}
+
+env:
+  REGISTRY: ghcr.io
+  APP_IMAGE_NAME: ${{ github.repository }}
+  MIGRATE_IMAGE_NAME: ${{ github.repository }}-migrate
+
+jobs:
+  build:
+    runs-on: ${{ inputs.architecture == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      app_image: ${{ env.REGISTRY }}/${{ env.APP_IMAGE_NAME }}@${{ steps.app.outputs.digest }}
+      migrate_image: ${{ steps.images.outputs.cache_image }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image tags and migrate cache
+        id: images
+        env:
+          ARCHITECTURE: ${{ inputs.architecture }}
+          FORCE_REBUILD_MIGRATE: ${{ inputs.rebuild_migrate }}
+          MIGRATE_INPUTS: ${{ hashFiles('Dockerfile', 'package.json', 'bun.lock', 'drizzle.config.ts', 'drizzle/**', 'src/db/**') }}
+        run: |
+          set -euo pipefail
+
+          cache_tag="inputs-$MIGRATE_INPUTS"
+          if [ "$ARCHITECTURE" != "arm64" ]; then
+            cache_tag="$cache_tag-$ARCHITECTURE"
+          fi
+          if [[ "$GITHUB_REF" != refs/heads/main && "$GITHUB_REF" != refs/tags/v* ]]; then
+            cache_tag="ci-$cache_tag"
+          fi
+
+          build_tag="build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCHITECTURE"
+          if [ "$GITHUB_REF" = "refs/heads/main" ] && [ "$ARCHITECTURE" = "arm64" ]; then
+            build_tag="sha-$GITHUB_SHA"
+          fi
+
+          cache_image="$REGISTRY/$MIGRATE_IMAGE_NAME:$cache_tag"
+          build_migrate=false
+          if [ "$FORCE_REBUILD_MIGRATE" = "true" ]; then
+            build_migrate=true
+          elif ! docker buildx imagetools inspect "$cache_image" >/dev/null 2>&1; then
+            build_migrate=true
+          fi
+
+          echo "build_migrate=$build_migrate" >> "$GITHUB_OUTPUT"
+          echo "build_tag=$build_tag" >> "$GITHUB_OUTPUT"
+          echo "cache_image=$cache_image" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push app image
+        id: app
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          pull: true
+          platforms: linux/${{ inputs.architecture }}
+          push: true
+          target: release
+          tags: ${{ env.REGISTRY }}/${{ env.APP_IMAGE_NAME }}:${{ steps.images.outputs.build_tag }}
+          cache-from: type=gha,scope=release-${{ inputs.architecture }}
+          cache-to: type=gha,scope=release-${{ inputs.architecture }},mode=max
+
+      - name: Build and push migrate image
+        if: steps.images.outputs.build_migrate == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          pull: true
+          platforms: linux/${{ inputs.architecture }}
+          push: true
+          target: migrate
+          tags: |
+            ${{ steps.images.outputs.cache_image }}
+            ${{ env.REGISTRY }}/${{ env.MIGRATE_IMAGE_NAME }}:${{ steps.images.outputs.build_tag }}
+          cache-from: type=gha,scope=migrate-${{ inputs.architecture }}
+          cache-to: type=gha,scope=migrate-${{ inputs.architecture }},mode=max
