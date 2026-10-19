@@ -39,20 +39,23 @@ app.use("*", async (context, next) => {
 app.route("/", proxyRoutes);
 
 let account: Awaited<ReturnType<typeof upsertProviderAccount>>;
+let codexAccount: typeof account;
 beforeAll(async () => {
   await migrate(db, { migrationsFolder: "./drizzle/migrations" });
   account = await upsertProviderAccount(db, {
     provider: "claude",
     accountId: "fake-account",
+    label: "Fake Claude",
     accessToken: "fake-token-1",
     refreshToken: "fake-refresh-1",
     expiresAt: Date.now() + 3_600_000,
     metadata: null,
     now: Date.now(),
   });
-  await upsertProviderAccount(db, {
+  codexAccount = await upsertProviderAccount(db, {
     provider: "codex",
     accountId: "fake-codex-account",
+    label: "Fake Codex",
     accessToken: "fake-codex-token",
     refreshToken: "fake-codex-refresh",
     expiresAt: Date.now() + 3_600_000,
@@ -538,6 +541,259 @@ test("100 identical Claude 429s do not flood the logs or change client responses
     expect(log).toHaveBeenCalledTimes(2);
   } finally {
     log.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("far-reset 429s expose the selected account and reset without long retry hints", async () => {
+  const originalFetch = globalThis.fetch;
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const seconds = 3 * 3600 + 12 * 60;
+  const reset = now + seconds * 1000;
+  const resetsAt = new Date(reset).toISOString();
+  const cases = [
+    {
+      provider: "claude",
+      headers: { "retry-after": String(seconds), "retry-after-ms": "1000" },
+    },
+    {
+      provider: "claude",
+      headers: { "retry-after-ms": String(seconds * 1000) },
+    },
+    {
+      provider: "claude",
+      headers: { "retry-after": new Date(reset).toUTCString() },
+    },
+    {
+      provider: "claude",
+      headers: { "anthropic-ratelimit-unified-reset": String(reset / 1000) },
+    },
+    {
+      provider: "claude",
+      headers: {
+        "retry-after": "invalid",
+        "anthropic-ratelimit-unified-status": "rejected",
+        "anthropic-ratelimit-unified-representative-claim": "five_hour",
+        "anthropic-ratelimit-unified-5h-reset": String(reset / 1000),
+        "anthropic-ratelimit-unified-7d-utilization": "0.2",
+        "anthropic-ratelimit-unified-7d-reset": String(reset / 1000 + 86400),
+      },
+    },
+    {
+      provider: "codex",
+      headers: { "retry-after": String(seconds) },
+    },
+    {
+      provider: "codex",
+      headers: {
+        "x-codex-primary-used-percent": "100",
+        "x-codex-primary-reset-at": String(reset / 1000),
+        "x-codex-secondary-used-percent": "20",
+        "x-codex-secondary-reset-at": String(reset / 1000 + 86400),
+      },
+      error: { resets_in_seconds: seconds * 2 },
+    },
+    {
+      provider: "codex",
+      headers: { "x-codex-primary-reset-after-seconds": String(seconds) },
+    },
+    {
+      provider: "codex",
+      error: { resets_in_seconds: seconds },
+    },
+    {
+      provider: "codex",
+      error: { resets_at: reset / 1000 },
+    },
+  ] as const;
+  try {
+    for (const entry of cases) {
+      const selected = entry.provider === "claude" ? account : codexAccount;
+      globalThis.fetch = (async () =>
+        Response.json(
+          {
+            error: {
+              type:
+                entry.provider === "claude"
+                  ? "rate_limit_error"
+                  : "usage_limit_reached",
+              code: "usage_limit_reached",
+              message: "PRIVATESECRETTOKEN",
+              ...("error" in entry ? entry.error : {}),
+            },
+          },
+          {
+            status: 429,
+            headers: {
+              ...("headers" in entry ? entry.headers : {}),
+              "x-request-id": "fake-request",
+              "content-encoding": "gzip",
+              "content-length": "999",
+            },
+          }
+        )) as typeof fetch;
+      const response = await app.request(
+        entry.provider === "claude"
+          ? "/anthropic/v1/messages"
+          : "/openai/v1/responses",
+        { method: "POST", body: '{"stream":true}' }
+      );
+      expect(response.status).toBe(429);
+      for (const header of [
+        "retry-after",
+        "retry-after-ms",
+        "content-encoding",
+        "content-length",
+      ]) {
+        expect(response.headers.has(header)).toBe(false);
+      }
+      expect(response.headers.get("content-type")).toContain(
+        "application/json"
+      );
+      expect(response.headers.get("x-request-id")).toBe("fake-request");
+      const body = await response.json();
+      expect(body).toEqual({
+        ...(entry.provider === "claude" ? { type: "error" } : {}),
+        error: {
+          type:
+            entry.provider === "claude"
+              ? "rate_limit_error"
+              : "usage_limit_reached",
+          ...(entry.provider === "codex"
+            ? { code: "usage_limit_reached" }
+            : {}),
+          message: `${entry.provider === "claude" ? "Claude" : "Codex"} usage limit reached for account "${selected.label}". Resets at ${resetsAt} (in 3h 12m).`,
+          resets_at: resetsAt,
+          account: selected.label,
+        },
+      });
+      expect(JSON.stringify(body)).not.toContain("PRIVATESECRETTOKEN");
+    }
+    await flushProxyUsage();
+    const rows = await db.select().from(requestUsageBuckets);
+    for (const provider of ["claude", "codex"] as const) {
+      const count = cases.filter((entry) => entry.provider === provider).length;
+      expect(rows.find((row) => row.provider === provider)).toMatchObject({
+        requestCount: count,
+        rateLimitCount: count,
+        successCount: 0,
+      });
+    }
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATESECRETTOKEN");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("Fake Claude");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("Fake Codex");
+  } finally {
+    clock.mockRestore();
+    warn.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("short 429 throttles preserve upstream bytes and headers ahead of later reset hints", async () => {
+  const originalFetch = globalThis.fetch;
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  const clock = spyOn(Date, "now").mockReturnValue(now);
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const body =
+    '{ "error": { "type": "usage_limit_reached", "message": "Try later", "resets_in_seconds": 7200 } }';
+  try {
+    for (const entry of [
+      {
+        path: "/anthropic/v1/messages",
+        headers: { "retry-after": "60", "retry-after-ms": "60000" },
+      },
+      { path: "/openai/v1/responses", headers: { "retry-after-ms": "60000" } },
+      {
+        path: "/anthropic/v1/messages",
+        headers: {
+          "anthropic-ratelimit-unified-5h-reset": String(now / 1000 + 60),
+        },
+      },
+      {
+        path: "/openai/v1/responses",
+        headers: { "x-codex-primary-reset-at": String(now / 1000 + 60) },
+      },
+    ]) {
+      const headers = new Headers({
+        ...entry.headers,
+        "content-type": "application/json",
+        "x-request-id": "fake-short-throttle",
+      });
+      globalThis.fetch = (async () =>
+        new Response(body, { status: 429, headers })) as typeof fetch;
+      const response = await app.request(entry.path, {
+        method: "POST",
+        body: '{"stream":true}',
+      });
+      expect(response.status).toBe(429);
+      expect([...response.headers]).toEqual([...headers]);
+      expect(await response.text()).toBe(body);
+    }
+  } finally {
+    clock.mockRestore();
+    warn.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("usage-limit 429s with unknown resets return native account errors", async () => {
+  const originalFetch = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    for (const entry of [
+      {
+        provider: "claude",
+        path: "/anthropic/v1/messages",
+        selected: account,
+        type: "rate_limit_error",
+        code: null,
+        message: "Your subscription usage limit has been reached",
+      },
+      {
+        provider: "codex",
+        path: "/openai/v1/responses",
+        selected: codexAccount,
+        type: "insufficient_quota",
+        code: "insufficient_quota",
+        message: "PRIVATESECRETTOKEN",
+      },
+    ]) {
+      globalThis.fetch = (async () =>
+        Response.json(
+          {
+            error: {
+              type: entry.type,
+              code: entry.code,
+              message: entry.message,
+            },
+          },
+          {
+            status: 429,
+            headers: { "retry-after": "invalid", "retry-after-ms": "invalid" },
+          }
+        )) as typeof fetch;
+      const response = await app.request(entry.path, {
+        method: "POST",
+        body: "{}",
+      });
+      expect(response.status).toBe(429);
+      expect(response.headers.has("retry-after")).toBe(false);
+      expect(response.headers.has("retry-after-ms")).toBe(false);
+      expect(await response.json()).toEqual({
+        ...(entry.provider === "claude" ? { type: "error" } : {}),
+        error: {
+          type: entry.type,
+          ...(entry.provider === "codex" ? { code: entry.code } : {}),
+          message: `${entry.provider === "claude" ? "Claude" : "Codex"} usage limit reached for account "${entry.selected.label}". Reset time unknown.`,
+          resets_at: null,
+          account: entry.selected.label,
+        },
+      });
+    }
+  } finally {
+    warn.mockRestore();
     globalThis.fetch = originalFetch;
   }
 });

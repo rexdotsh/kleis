@@ -25,7 +25,11 @@ import {
   readCodexSessionId,
 } from "../../providers/proxies/codex-proxy";
 import { tryProxyCodexWebSocket } from "../../providers/proxies/codex-websocket";
-import { readUpstreamResponseError } from "../../providers/proxies/upstream-error";
+import {
+  readUpstreamErrorFields,
+  readUpstreamErrorPayload,
+} from "../../providers/proxies/upstream-error";
+import { rewriteUsageLimitResponse } from "../../providers/proxies/usage-limit-response";
 import type { UsageRequestSource } from "../../usage/request-outcome";
 import { createUsageBuffer } from "../../usage/usage-buffer";
 import {
@@ -85,11 +89,11 @@ const logUpstreamResponse = async (
   route: ProxyRoute,
   providerAccountId: string,
   startedAt: number
-): Promise<void> => {
+): Promise<unknown> => {
   if (response.ok) {
-    return;
+    return null;
   }
-  const fields = await readUpstreamResponseError(response);
+  const payload = await readUpstreamErrorPayload(response);
   upstreamFailureLogger.log({
     provider: route.provider,
     providerAccountId,
@@ -99,8 +103,9 @@ const logUpstreamResponse = async (
     requestIdHash: hashLogId(
       response.headers.get("x-request-id") ?? response.headers.get("request-id")
     ),
-    ...fields,
+    ...readUpstreamErrorFields(payload),
   });
+  return payload;
 };
 
 export const flushProxyUsage = (): Promise<void> => usageBuffer.flush();
@@ -448,13 +453,33 @@ const proxyRequest = async (
   account = result.account;
   respondedAt = Date.now();
   const { attempt } = result;
-  await logUpstreamResponse(attempt.response, route, account.id, startedAt);
-  recordProviderAccountLiveLimits(
-    account,
+  const errorPayload = await logUpstreamResponse(
+    attempt.response,
+    route,
+    account.id,
+    startedAt
+  );
+  const liveLimits =
     route.provider === "codex"
       ? readCodexLiveLimits(attempt.response.headers)
-      : readClaudeLiveLimits(attempt.response.headers)
-  );
+      : readClaudeLiveLimits(attempt.response.headers);
+  recordProviderAccountLiveLimits(account, liveLimits);
+
+  const usageLimitResponse = attempt.transformResponse
+    ? rewriteUsageLimitResponse({
+        response: attempt.response,
+        provider: route.provider,
+        accountLabel: account.label,
+        liveLimits,
+        errorPayload,
+        now: respondedAt,
+      })
+    : null;
+  if (usageLimitResponse) {
+    attempt.response.body?.cancel().catch(() => undefined);
+    usageRecorder.recordFinal(attempt.response.status);
+    return usageLimitResponse;
+  }
 
   let responseToClient = attempt.response;
   if (attempt.transformResponse) {
