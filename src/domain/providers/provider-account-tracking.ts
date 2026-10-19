@@ -1017,6 +1017,15 @@ export const queryCodexThreadUsage = async (
   );
 };
 
+// Proxied traffic keeps postponing Codex polls, so a spend reloads the limits
+// and credits at once; the read starts after the spend settled.
+export const reloadCodexQuota = async (
+  database: Database,
+  account: TrackingAccount
+): Promise<void> => {
+  await loadProviderAccountQuota(database, account, true);
+};
+
 export const peekCodexResetCredits = (
   account: TrackingAccount
 ): CodexTrackingData["resetCredits"] | null => {

@@ -17,8 +17,10 @@ import { providerAccounts, resetSpends } from "../../src/db/schema";
 import {
   expireProviderAccountTracking,
   listProviderAccountQuotas,
+  recordProviderAccountLiveLimits,
   setAccountSnapshotStore,
 } from "../../src/domain/providers/provider-account-tracking";
+import { readCodexLiveLimits } from "../../src/providers/account-tracking/live-limits";
 import {
   claimClaudeReset,
   redeemCodexResetCredit,
@@ -225,7 +227,7 @@ describe.each(Object.keys(providers) as Provider[])(
       }
     );
 
-    test("a spend another process made after this process's last limits check blocks a spend", async () => {
+    test("a spend another process settled after this process's last limits check blocks a spend, even if it started before", async () => {
       const account = await addAccount();
       await database.insert(resetSpends).values({
         requestId: "other-process-request",
@@ -233,8 +235,8 @@ describe.each(Object.keys(providers) as Provider[])(
         providerAccountId: account.id,
         itemId: provider.items[0],
         status: "completed",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdAt: Date.now() - 1000,
+        updatedAt: Date.now() + 1000,
       });
       expect((await failure(spend(account))).message).toBe(WAITING);
       expect(sent).toHaveLength(0);
@@ -256,7 +258,7 @@ describe.each(Object.keys(providers) as Provider[])(
       expect(sent[1]?.item).toBe(provider.items[1]);
     });
 
-    test.each([
+    test.skipIf(name === "codex").each([
       ["completed", () => Response.json(provider.spent)],
       ["refused", () => Response.json({}, { status: 422 })],
     ])(
@@ -272,6 +274,34 @@ describe.each(Object.keys(providers) as Provider[])(
         await spend(account);
         expect(sent).toHaveLength(2);
         expect(sent[1]?.requestId).not.toBe(sent[0]?.requestId);
+      }
+    );
+
+    test.skipIf(name !== "codex")(
+      "under steady traffic, a remaining credit can be spent right after a spend",
+      async () => {
+        const account = await addAccount();
+        answer = () => {
+          available = available.slice(1);
+          return Response.json(provider.spent);
+        };
+        await spend(account);
+        for (let index = 0; index < 3; index++) {
+          at(clock + 30_000);
+          recordProviderAccountLiveLimits(
+            account,
+            readCodexLiveLimits(
+              new Headers({
+                "x-codex-primary-used-percent": "50",
+                "x-codex-primary-window-minutes": "300",
+              })
+            )
+          );
+          await listProviderAccountQuotas(database, [account]);
+          await settleBackground();
+        }
+        await spend(account, provider.items[1]);
+        expect(sent.map((call) => call.item)).toEqual([...provider.items]);
       }
     );
 

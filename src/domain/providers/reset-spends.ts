@@ -21,6 +21,7 @@ import {
   isTrackingAccount,
   peekClaudeResetCredits,
   peekCodexResetCredits,
+  reloadCodexQuota,
   resolveAccount,
   retryAfter401,
   type TrackingAccount,
@@ -132,22 +133,26 @@ export const redeemCodexResetCredit = async (
   ) {
     throw conflict("not_current");
   }
-  return spendReset(
-    database,
-    account,
-    creditId,
-    credits.observedAt ?? 0,
-    (redeemRequestId) =>
-      retryAfter401(database, account, (current) =>
-        consumeCodexResetCredit({
-          accessToken: current.accessToken,
-          accountId: current.accountId,
-          redeemRequestId,
-          creditId,
-        })
-      ),
-    () => true
-  );
+  try {
+    return await spendReset(
+      database,
+      account,
+      creditId,
+      credits.observedAt ?? 0,
+      (redeemRequestId) =>
+        retryAfter401(database, account, (current) =>
+          consumeCodexResetCredit({
+            accessToken: current.accessToken,
+            accountId: current.accountId,
+            redeemRequestId,
+            creditId,
+          })
+        ),
+      () => true
+    );
+  } finally {
+    await reloadCodexQuota(database, account);
+  }
 };
 
 const claudeSummary = (

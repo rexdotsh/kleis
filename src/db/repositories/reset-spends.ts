@@ -7,8 +7,10 @@ import { type Provider, resetSpends } from "../schema";
 const PENDING_EXPIRES_MS = 3 * 60_000;
 
 // Records a pending spend with a new request ID. Refused while the account
-// has a pending spend, or any spend made since `observedAt`, the time the
-// discovery data the spend was checked against was read.
+// has a pending spend, or one that settled or expired after `observedAt`, the
+// time the discovery data the spend was checked against was read. Settle
+// times are taken after the upstream answered, so a read started at that
+// time already shows the outcome.
 export const startResetSpend = async (
   database: Database,
   spend: { provider: Provider; providerAccountId: string; itemId: string },
@@ -35,7 +37,7 @@ export const startResetSpend = async (
         'pending', ${now}, ${now}
       where not exists (
         select 1 from reset_spends where provider_account_id = ${account}
-          and (status = 'pending' or created_at >= ${observedAt})
+          and (status = 'pending' or updated_at > ${observedAt})
       )`),
     database
       .select({ requestId: resetSpends.requestId })
