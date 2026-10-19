@@ -952,6 +952,24 @@ button.row {
   border: 1px solid var(--line-strong);
   border-radius: 99px;
 }
+
+.failover-settings {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 14px 12px;
+  margin-bottom: 20px;
+  border-block: 1px solid var(--line);
+}
+.failover-settings p {
+  margin: 4px 0 0;
+  max-width: 60ch;
+}
+.failover-settings .switch {
+  flex-shrink: 0;
+}
+
 .row.open,
 .detail {
   background: var(--surface);

@@ -10,9 +10,14 @@ import type { ProviderAccountRecord } from "../../db/repositories/provider-accou
 import { recordProviderAccountLiveLimits } from "../../domain/providers/provider-account-tracking";
 import {
   findPinnedProviderAccounts,
-  getRoutableProviderAccount,
+  refreshProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../domain/providers/provider-service";
+import {
+  availableFailoverAccounts,
+  getProviderAccountRouting,
+} from "../../domain/providers/rate-limit-failover";
+import { accountCooldowns } from "../../providers/account-tracking/rate-limit-cooldowns";
 import {
   readClaudeLiveLimits,
   readCodexLiveLimits,
@@ -29,7 +34,11 @@ import {
   readUpstreamErrorFields,
   readUpstreamErrorPayload,
 } from "../../providers/proxies/upstream-error";
-import { rewriteUsageLimitResponse } from "../../providers/proxies/usage-limit-response";
+import {
+  classifyUsageLimitResponse,
+  createUsageLimitResponse,
+  rewriteUsageLimitResponse,
+} from "../../providers/proxies/usage-limit-response";
 import type { UsageRequestSource } from "../../usage/request-outcome";
 import { createUsageBuffer } from "../../usage/usage-buffer";
 import {
@@ -37,7 +46,7 @@ import {
   type TokenUsage,
 } from "../../usage/token-usage";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
-import { hashLogId } from "../../utils/log";
+import { hashLogId, logInfo } from "../../utils/log";
 import { sendWithAuthReplay } from "../auth-replay";
 import { createUpstreamProxyHeaders } from "../proxy-headers";
 import { createUpstreamFailureLogger } from "../upstream-failure-log";
@@ -88,12 +97,17 @@ const logUpstreamResponse = async (
   response: Response,
   route: ProxyRoute,
   providerAccountId: string,
-  startedAt: number
+  startedAt: number,
+  signal: AbortSignal,
+  timeoutMs?: number
 ): Promise<unknown> => {
   if (response.ok) {
     return null;
   }
-  const payload = await readUpstreamErrorPayload(response);
+  const payload = await readUpstreamErrorPayload(response, {
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    signal,
+  });
   upstreamFailureLogger.log({
     provider: route.provider,
     providerAccountId,
@@ -282,12 +296,35 @@ const proxyRequest = async (
     requestBody = JSON.stringify(requestBodyJson);
   }
 
-  const now = Date.now();
-  let account: Awaited<ReturnType<typeof getRoutableProviderAccount>>;
-  try {
-    account = await getRoutableProviderAccount(db, route.provider, now, {
-      allowedAccountIds: accountScopeIds,
+  const routing = await getProviderAccountRouting(
+    db,
+    route.provider,
+    accountScopeIds
+  );
+  const candidates = routing.enabled
+    ? availableFailoverAccounts(routing.candidates)
+    : routing.candidates;
+  if (routing.preferred && !candidates.length) {
+    const next = routing.candidates.reduce((left, right) =>
+      (accountCooldowns.get(left)?.until ?? Infinity) <=
+      (accountCooldowns.get(right)?.until ?? Infinity)
+        ? left
+        : right
+    );
+    providerAccountId = next.id;
+    usageRecorder.recordImmediate(429);
+    return createUsageLimitResponse({
+      provider: route.provider,
+      accountLabel: next.label,
+      resetsAt: accountCooldowns.get(next)?.resetsAt ?? null,
+      now: Date.now(),
     });
+  }
+  let account = candidates[0] ?? null;
+  try {
+    if (account && account.expiresAt <= Date.now()) {
+      account = await refreshProviderAccount(db, account.id, Date.now());
+    }
   } catch {
     usageRecorder.recordImmediate(502);
     return context.json(
@@ -331,13 +368,13 @@ const proxyRequest = async (
   switch (route.provider) {
     case "codex": {
       const codexSessionId = readCodexSessionId(requestBodyJson, headers);
-      const codexUpstreamSessionId = codexSessionId
-        ? await deriveCodexSessionId(
-            `${apiKeyId}:${account.id}`,
-            codexSessionId
-          )
-        : null;
       sendAttempt = async (attemptAccount) => {
+        const codexUpstreamSessionId = codexSessionId
+          ? await deriveCodexSessionId(
+              `${apiKeyId}:${attemptAccount.id}`,
+              codexSessionId
+            )
+          : null;
         const attemptHeaders = new Headers(headers);
         const codexProxy = prepareCodexProxyRequest({
           ...(route.operation ? { operation: route.operation } : {}),
@@ -431,39 +468,104 @@ const proxyRequest = async (
   }
 
   let result: { account: ProviderAccountRecord; attempt: ProxyAttempt };
+  let errorPayload: unknown;
+  let liveLimits:
+    | ReturnType<typeof readCodexLiveLimits>
+    | ReturnType<typeof readClaudeLiveLimits> = null;
   try {
-    result = await sendWithAuthReplay({
-      account,
-      signal: context.req.raw.signal,
-      send: sendAttempt,
-      refresh: (accountId, failedAccessToken) =>
-        refreshProviderAccountAfterAuthFailure(
-          db,
-          accountId,
-          failedAccessToken,
-          context.req.raw.signal
-        ),
-    });
+    const remaining = candidates.slice(1);
+    while (true) {
+      context.req.raw.signal.throwIfAborted();
+      providerAccountId = account.id;
+      context.set("proxyLogContext", {
+        provider: route.provider,
+        endpoint: route.endpoint,
+        providerAccountId,
+      });
+      result = await sendWithAuthReplay({
+        account,
+        signal: context.req.raw.signal,
+        send: sendAttempt,
+        refresh: (accountId, failedAccessToken) =>
+          refreshProviderAccountAfterAuthFailure(
+            db,
+            accountId,
+            failedAccessToken,
+            context.req.raw.signal
+          ),
+      });
+      account = result.account;
+      respondedAt = Date.now();
+      const response = result.attempt.response;
+      liveLimits =
+        route.provider === "codex"
+          ? readCodexLiveLimits(response.headers)
+          : readClaudeLiveLimits(response.headers);
+      const headerLimit = classifyUsageLimitResponse({
+        response,
+        provider: route.provider,
+        accountLabel: account.label,
+        liveLimits,
+        errorPayload: null,
+        now: respondedAt,
+      });
+      errorPayload = await logUpstreamResponse(
+        response,
+        route,
+        account.id,
+        startedAt,
+        context.req.raw.signal,
+        routing.enabled &&
+          route.provider === "codex" &&
+          response.status === 429 &&
+          !headerLimit
+          ? 3000
+          : undefined
+      );
+      if (context.req.raw.signal.aborted) {
+        response.body?.cancel().catch(() => undefined);
+        context.req.raw.signal.throwIfAborted();
+      }
+      recordProviderAccountLiveLimits(account, liveLimits);
+      // The relay starts only after this loop; stream errors are never replayed.
+      const limit =
+        routing.enabled && result.attempt.transformResponse
+          ? (headerLimit ??
+            classifyUsageLimitResponse({
+              response,
+              provider: route.provider,
+              accountLabel: account.label,
+              liveLimits,
+              errorPayload,
+              now: respondedAt,
+            }))
+          : null;
+      if (!limit) break;
+      accountCooldowns.mark(account, limit.resetsAt, liveLimits);
+      const next = availableFailoverAccounts(remaining)[0];
+      if (!next) break;
+      remaining.splice(0, remaining.indexOf(next) + 1);
+      response.body?.cancel().catch(() => undefined);
+      context.req.raw.signal.throwIfAborted();
+      const ready =
+        next.expiresAt > Date.now()
+          ? next
+          : await refreshProviderAccount(db, next.id, Date.now());
+      if (!ready) throw new Error("Failover account is unavailable");
+      logInfo("proxy_rate_limit_failover", {
+        provider: route.provider,
+        fromAccountId: account.id,
+        toAccountId: ready.id,
+      });
+      account = ready;
+    }
   } catch (error) {
     if (!context.req.raw.signal.aborted) {
       usageRecorder.recordImmediate(500);
     }
     throw error;
   }
-  account = result.account;
-  respondedAt = Date.now();
   const { attempt } = result;
-  const errorPayload = await logUpstreamResponse(
-    attempt.response,
-    route,
-    account.id,
-    startedAt
-  );
-  const liveLimits =
-    route.provider === "codex"
-      ? readCodexLiveLimits(attempt.response.headers)
-      : readClaudeLiveLimits(attempt.response.headers);
-  recordProviderAccountLiveLimits(account, liveLimits);
 
   const usageLimitResponse = attempt.transformResponse
     ? rewriteUsageLimitResponse({

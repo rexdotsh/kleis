@@ -88,6 +88,7 @@ const JAVASCRIPT_FILES = [
   "app-claude-resets.js",
   "app-codex-resets.js",
   "app-core.js",
+  "app-failover.js",
   "app-input.js",
   "app-keys.js",
   "app-keys-render.js",

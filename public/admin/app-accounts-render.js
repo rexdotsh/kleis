@@ -336,6 +336,12 @@ function accountEditHtml(account) {
         "edit-account-account-id"
       )}
       ${formRow(
+        "Exclude from failover",
+        "Never receive fallback traffic. Primary or pinned requests still use this account.",
+        `<input id="edit-account-exclude-failover" class="toggle" type="checkbox" role="switch" aria-label="Exclude from failover" ${account.excludeFromFailover ? "checked" : ""}>`,
+        "edit-account-exclude-failover"
+      )}
+      ${formRow(
         "Metadata",
         "Provider settings stored with the account.",
         `<details class="json-edit"><summary>Show JSON</summary><textarea id="edit-account-metadata" class="field-input" rows="7" aria-label="Metadata JSON" placeholder='{"chatgptAccountId":"org_123"}'>${escapeHtml(formatMetadataForInput(account.metadata))}</textarea><p class="field-hint">Must be a JSON object. Leave empty to clear.</p></details>`

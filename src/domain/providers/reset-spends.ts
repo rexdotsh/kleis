@@ -14,6 +14,7 @@ import {
 } from "../../providers/account-tracking/claude-resets";
 import { consumeCodexResetCredit } from "../../providers/account-tracking/codex";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
+import { accountCooldowns } from "../../providers/account-tracking/rate-limit-cooldowns";
 import { errorLogFields, logWarn } from "../../utils/log";
 import {
   claudeResetLimitUsage,
@@ -89,7 +90,10 @@ const spendReset = async <T>(
     );
   try {
     const result = await send(started.requestId);
-    if (settles(result)) await settle("completed");
+    if (settles(result)) {
+      await settle("completed");
+      accountCooldowns.clear(account.id);
+    }
     return result;
   } catch (error) {
     if (!isRefusal(error)) {
