@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
       rebuild_migrate:
@@ -48,13 +50,31 @@ jobs:
         run: bun run build
 
   publish:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04-arm
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/build-images.yml
     permissions:
       contents: read
       packages: write
-    outputs:
-      migrate_image: ${{ steps.migrate-image.outputs.cache_image }}
+    with:
+      architecture: arm64
+      rebuild_migrate: ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild_migrate || false }}
+
+  publish-amd64:
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/build-images.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      architecture: amd64
+      rebuild_migrate: ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild_migrate || false }}
+
+  publish-manifests:
+    needs: [verify, publish, publish-amd64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -69,52 +89,60 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve migrate image
-        id: migrate-image
+      - name: Check current main revision
+        id: revision
+        run: |
+          set -euo pipefail
+          current=false
+          if [ "$GITHUB_REF" = "refs/heads/main" ] && [ "$(git ls-remote origin refs/heads/main | cut -f1)" = "$GITHUB_SHA" ]; then
+            current=true
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+
+      - name: Image metadata
+        id: metadata
+        uses: docker/metadata-action@v6
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.APP_IMAGE_NAME }}
+            ${{ env.REGISTRY }}/${{ env.MIGRATE_IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=sha,format=long,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ steps.revision.outputs.current == 'true' }}
+            type=semver,pattern=v{{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=stable,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=ci-${{ github.run_id }}-${{ github.run_attempt }},enable=${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Publish and verify multi-arch manifests
         env:
-          FORCE_REBUILD_MIGRATE: ${{ github.event_name == 'workflow_dispatch' && inputs.rebuild_migrate || 'false' }}
-          MIGRATE_IMAGE_TAG: inputs-${{ hashFiles('Dockerfile', 'package.json', 'bun.lock', 'drizzle.config.ts', 'drizzle/**', 'src/db/**') }}
+          METADATA_JSON: ${{ steps.metadata.outputs.json }}
+          ARM_APP_IMAGE: ${{ needs.publish.outputs.app_image }}
+          AMD_APP_IMAGE: ${{ needs.publish-amd64.outputs.app_image }}
+          ARM_MIGRATE_IMAGE: ${{ needs.publish.outputs.migrate_image }}
+          AMD_MIGRATE_IMAGE: ${{ needs.publish-amd64.outputs.migrate_image }}
         run: |
           set -euo pipefail
 
-          cache_image="$REGISTRY/$MIGRATE_IMAGE_NAME:$MIGRATE_IMAGE_TAG"
-          build_migrate=false
+          publish_manifest() {
+            local image="$1" arm_image="$2" amd_image="$3" tag
+            local -a tags=()
+            while IFS= read -r tag; do
+              tags+=(--tag "$tag")
+            done < <(jq -r --arg image "$image" '.tags[] | select(startswith($image + ":"))' <<< "$METADATA_JSON")
 
-          if [ "$FORCE_REBUILD_MIGRATE" = "true" ]; then
-            build_migrate=true
-          elif ! docker buildx imagetools inspect "$cache_image" >/dev/null 2>&1; then
-            build_migrate=true
-          fi
+            docker buildx imagetools create "${tags[@]}" "$arm_image" "$amd_image"
+            for ((i=1; i<${#tags[@]}; i+=2)); do
+              tag="${tags[$i]}"
+              docker buildx imagetools inspect --raw "$tag" |
+                jq -e '[.manifests[].platform | select(.os != "unknown") | .os + "/" + .architecture] | sort == ["linux/amd64", "linux/arm64"]'
+              echo "- \`$tag\`: linux/amd64, linux/arm64" >> "$GITHUB_STEP_SUMMARY"
+            done
+          }
 
-          echo "build=$build_migrate" >> "$GITHUB_OUTPUT"
-          echo "cache_image=$cache_image" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push app image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          pull: true
-          platforms: linux/arm64
-          push: true
-          target: release
-          tags: ${{ env.REGISTRY }}/${{ env.APP_IMAGE_NAME }}:sha-${{ github.sha }}
-          cache-from: type=gha,scope=release-arm64
-          cache-to: type=gha,scope=release-arm64,mode=max
-
-      - name: Build and push migrate image
-        if: steps.migrate-image.outputs.build == 'true'
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          pull: true
-          platforms: linux/arm64
-          push: true
-          target: migrate
-          tags: |
-            ${{ steps.migrate-image.outputs.cache_image }}
-            ${{ env.REGISTRY }}/${{ env.MIGRATE_IMAGE_NAME }}:sha-${{ github.sha }}
-          cache-from: type=gha,scope=migrate-arm64
-          cache-to: type=gha,scope=migrate-arm64,mode=max
+          publish_manifest "$REGISTRY/$APP_IMAGE_NAME" "$ARM_APP_IMAGE" "$AMD_APP_IMAGE"
+          publish_manifest "$REGISTRY/$MIGRATE_IMAGE_NAME" "$ARM_MIGRATE_IMAGE" "$AMD_MIGRATE_IMAGE"
 
   deploy:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
