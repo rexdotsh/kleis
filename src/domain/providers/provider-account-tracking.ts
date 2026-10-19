@@ -883,6 +883,10 @@ export const peekProviderAccountProfiles = (
     })
   );
 
+export const getCachedProviderAccountQuota = (
+  account: ProviderAccountRecord
+): AccountQuota | null => cache.get(quotaKey(account))?.quota ?? null;
+
 // Returns whatever snapshot is cached, without waiting on providers, and
 // starts a lookup for accounts that have none or whose snapshot is stale.
 export const peekProviderAccountQuotas = (
