@@ -64,10 +64,9 @@ export const readStreamErrorStatus = (payload: unknown): number => {
 const MAX_ERROR_BYTES = 8192;
 const ERROR_READ_TIMEOUT_MS = 100;
 
-export const readUpstreamResponseError = async (
+export const readUpstreamErrorPayload = async (
   response: Response
-): Promise<ReturnType<typeof readUpstreamErrorFields>> => {
-  const empty = readUpstreamErrorFields(null);
+): Promise<unknown> => {
   const contentType = (
     response.headers.get("content-type") ?? ""
   ).toLowerCase();
@@ -75,11 +74,11 @@ export const readUpstreamResponseError = async (
     !response.body ||
     (contentType && !contentType.includes("application/json"))
   ) {
-    return empty;
+    return null;
   }
   const reader = response.clone().body?.getReader();
   if (!reader) {
-    return empty;
+    return null;
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((resolve) => {
@@ -92,22 +91,27 @@ export const readUpstreamResponseError = async (
     while (true) {
       const result = await Promise.race([reader.read(), timeout]);
       if (!result) {
-        return empty;
+        return null;
       }
       if (result.done) {
-        return readUpstreamErrorFields(JSON.parse(text + decoder.decode()));
+        return JSON.parse(text + decoder.decode()) as unknown;
       }
       bytes += result.value.byteLength;
       if (bytes > MAX_ERROR_BYTES) {
-        return empty;
+        return null;
       }
       text += decoder.decode(result.value, { stream: true });
     }
   } catch {
-    return empty;
+    return null;
   } finally {
     clearTimeout(timer);
     // Cancelling one tee branch waits for the other branch to finish.
     reader.cancel().catch(() => undefined);
   }
 };
+
+export const readUpstreamResponseError = async (
+  response: Response
+): Promise<ReturnType<typeof readUpstreamErrorFields>> =>
+  readUpstreamErrorFields(await readUpstreamErrorPayload(response));
