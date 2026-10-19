@@ -616,15 +616,19 @@ test("exhausted 429s expose only the blocking window's reset and account", async
     {
       provider: "codex",
       headers: {
+        "x-codex-active-limit": "bengalfox",
         "x-codex-bengalfox-primary-used-percent": "100",
         "x-codex-bengalfox-primary-reset-at": String(reset / 1000),
         "x-codex-bengalfox-secondary-used-percent": "20",
         "x-codex-bengalfox-secondary-reset-at": String(reset / 1000 + 86400),
+        "x-codex-primary-used-percent": "100",
+        "x-codex-primary-reset-at": String(reset / 1000 + 86400),
       },
     },
     {
       provider: "codex",
       headers: {
+        "x-codex-active-limit": " CODEX_BENGALFOX ",
         "x-codex-bengalfox-secondary-used-percent": "100",
         "x-codex-bengalfox-secondary-reset-after-seconds": String(seconds),
       },
@@ -635,6 +639,26 @@ test("exhausted 429s expose only the blocking window's reset and account", async
       headers: {
         "x-codex-primary-used-percent": "100",
         "x-codex-primary-reset-at": String(now / 1000 - 30),
+      },
+      error: { resets_at: reset / 1000 },
+    },
+    {
+      provider: "codex",
+      headers: {
+        "x-codex-active-limit": "premium",
+        "x-codex-premium-primary-used-percent": "20",
+        "x-codex-premium-primary-reset-at": String(reset / 1000 + 86400),
+        "x-codex-bengalfox-primary-used-percent": "100",
+        "x-codex-bengalfox-primary-reset-at": String(reset / 1000 + 86400),
+      },
+      error: { resets_at: reset / 1000 },
+    },
+    {
+      provider: "codex",
+      headers: {
+        "x-codex-primary-used-percent": "20",
+        "x-codex-bengalfox-primary-used-percent": "100",
+        "x-codex-bengalfox-primary-reset-at": String(reset / 1000 + 86400),
       },
       error: { resets_at: reset / 1000 },
     },
@@ -762,6 +786,28 @@ test("short or missing retry hints preserve non-exhausted 429 bytes and headers"
         path: "/openai/v1/responses",
         headers: {
           "retry-after": "3",
+          "x-codex-active-limit": "premium",
+          "x-codex-premium-primary-used-percent": "20",
+          "x-codex-premium-primary-reset-at": String(now / 1000 + 10800),
+          "x-codex-primary-used-percent": "100",
+          "x-codex-primary-reset-at": String(now / 1000 + 10800),
+          "x-codex-bengalfox-primary-used-percent": "100",
+          "x-codex-bengalfox-primary-reset-at": String(now / 1000 + 10800),
+        },
+      },
+      {
+        path: "/openai/v1/responses",
+        headers: {
+          "retry-after": "3",
+          "x-codex-primary-used-percent": "20",
+          "x-codex-bengalfox-primary-used-percent": "100",
+          "x-codex-bengalfox-primary-reset-at": String(now / 1000 + 10800),
+        },
+      },
+      {
+        path: "/openai/v1/responses",
+        headers: {
+          "retry-after": "3",
           "x-codex-primary-used-percent": "100",
           "x-codex-primary-reset-at": String(now / 1000 - 30),
         },
@@ -852,6 +898,21 @@ test("explicitly exhausted 429s never borrow retry hints, expired or allowed res
           "x-codex-primary-reset-at": String(Date.now() / 1000 - 30),
           "x-codex-secondary-used-percent": "20",
           "x-codex-secondary-reset-at": String(Date.now() / 1000 + 10800),
+        },
+      },
+      {
+        provider: "codex",
+        path: "/openai/v1/responses",
+        selected: codexAccount,
+        type: "usage_limit_reached",
+        code: "usage_limit_reached",
+        headers: {
+          "x-codex-active-limit": "premium",
+          "x-codex-premium-primary-used-percent": "20",
+          "x-codex-bengalfox-primary-used-percent": "100",
+          "x-codex-bengalfox-primary-reset-at": String(
+            Date.now() / 1000 + 10800
+          ),
         },
       },
     ]) {

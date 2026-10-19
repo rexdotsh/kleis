@@ -79,10 +79,22 @@ const exhaustedResets = (
     return resets.length || unifiedFuture === null ? resets : [unifiedFuture];
   }
   if (provider !== "codex") return [];
+  const activeLimit =
+    headers
+      .get("x-codex-active-limit")
+      ?.trim()
+      .toLowerCase()
+      .replaceAll("_", "-") || "codex";
+  const family =
+    activeLimit === "codex" || activeLimit.startsWith("codex-")
+      ? activeLimit
+      : `codex-${activeLimit}`;
   const resets: number[] = [];
   for (const [name, value] of headers) {
-    if (!/^x-codex-(?:.+-)?(?:primary|secondary)-used-percent$/.test(name))
-      continue;
+    const windowFamily = /^x-(.+)-(?:primary|secondary)-used-percent$/.exec(
+      name
+    )?.[1];
+    if (windowFamily !== family) continue;
     const prefix = name.slice(0, -"-used-percent".length);
     const used = nonnegativeNumber(value);
     if (used === null || used < 100) continue;
