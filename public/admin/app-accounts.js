@@ -1,4 +1,5 @@
 import { renderAccounts } from "./app-accounts-render.js";
+import { loadFailover } from "./app-failover.js";
 import {
   $,
   accountById,
@@ -42,6 +43,7 @@ async function loadAccounts() {
     const [accountsResult, usageResult] = await Promise.allSettled([
       api("/admin/accounts"),
       api(`/admin/accounts/usage?windowMs=${state.accountUsageWindowMs}`),
+      loadFailover(),
     ]);
 
     if (accountsResult.status !== "fulfilled") {
@@ -346,7 +348,12 @@ async function saveAccountEditsAction(request) {
 
   await request(`/admin/accounts/${accountId}`, {
     method: "PATCH",
-    body: JSON.stringify({ label, accountId: editableAccountId, metadata }),
+    body: JSON.stringify({
+      label,
+      accountId: editableAccountId,
+      metadata,
+      excludeFromFailover: $("#edit-account-exclude-failover").checked,
+    }),
   });
   state.editingAccountId = null;
   toast("Account updated");

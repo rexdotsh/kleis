@@ -8,6 +8,7 @@ import {
   type ProviderAccountMetadata,
 } from "../../providers/metadata";
 import { invalidateLookupCaches } from "../lookup-cache";
+import { accountCooldowns } from "../../providers/account-tracking/rate-limit-cooldowns";
 
 // Every write clears the proxy's routing lookups once it completes.
 const withInvalidation =
@@ -196,6 +197,7 @@ export const upsertProviderAccount = withInvalidation(
       if (!updated) {
         throw new Error("Failed to load updated provider account");
       }
+      accountCooldowns.clear(updated.id);
       return updated;
     };
     if (existing) {
@@ -371,6 +373,7 @@ export const replaceProviderAccountCredentials = withInvalidation(
         "Provider account changed during reauthorization"
       );
     }
+    accountCooldowns.clear(id);
     return findProviderAccountById(database, id);
   }
 );
@@ -569,6 +572,7 @@ export const updateProviderAccountProfile = withInvalidation(
       label: string | null;
       accountId: string | null;
       metadata: ProviderAccountMetadata | null;
+      excludeFromFailover?: boolean;
       now: number;
     }
   ): Promise<ProviderAccountRecord | "account_id_conflict" | null> => {
@@ -579,6 +583,7 @@ export const updateProviderAccountProfile = withInvalidation(
           label: input.label,
           accountId: input.accountId,
           metadataJson: serializeProviderAccountMetadata(input.metadata),
+          excludeFromFailover: input.excludeFromFailover,
           updatedAt: input.now,
         })
         .where(eq(providerAccounts.id, id));
@@ -615,6 +620,7 @@ export const deleteProviderAccount = withInvalidation(
       return false;
     }
 
+    accountCooldowns.clear(id);
     if (account.isPrimary) {
       const currentPrimary = await findPrimaryProviderAccount(
         database,
@@ -744,6 +750,7 @@ export const setProviderAccountsEnabled = withInvalidation(
       .set({ enabled, updatedAt: now })
       .where(eq(providerAccounts.provider, provider));
 
+    if (enabled) accountCooldowns.clearProvider(provider);
     const statuses = await listProviderStatuses(database);
     const status = statuses.find((item) => item.provider === provider);
     if (!status) {

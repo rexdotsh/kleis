@@ -654,13 +654,10 @@ export const findPinnedProviderAccounts = (
 
 // Requests use the key's pinned account for the provider when it has one, and
 // the provider's primary account otherwise.
-export const getRoutableProviderAccount = async (
+export const getPreferredProviderAccount = async (
   database: Database,
   provider: Provider,
-  now: number,
-  input?: {
-    allowedAccountIds?: readonly string[] | null;
-  }
+  input?: { allowedAccountIds?: readonly string[] | null }
 ): Promise<ProviderAccountRecord | null> => {
   const pinned = await findPinnedProviderAccounts(
     database,
@@ -672,13 +669,5 @@ export const getRoutableProviderAccount = async (
     : await routableAccountCache.get(database, `primary:${provider}`, () =>
         findPrimaryProviderAccount(database, provider)
       );
-  if (!account) {
-    return null;
-  }
-
-  if (account.expiresAt > now) {
-    return account;
-  }
-
-  return refreshProviderAccount(database, account.id, now);
+  return account ?? null;
 };

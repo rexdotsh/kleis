@@ -30,6 +30,7 @@ import {
   claudeResetLimitTypes,
 } from "../../providers/account-tracking/claude-resets";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
+import { accountCooldowns } from "../../providers/account-tracking/rate-limit-cooldowns";
 import {
   type LiveLimits,
   mergeClaudeLiveLimits,
@@ -969,6 +970,7 @@ export const recordProviderAccountLiveLimits = (
           : (entry?.expiresAt ?? now),
     });
     snapshots?.recordQuota(account, quota, quotaSignature(quota.data));
+    accountCooldowns.observe(account, limits);
   } catch (error) {
     logWarn("provider_account_live_limits_failed", {
       provider: account.provider,

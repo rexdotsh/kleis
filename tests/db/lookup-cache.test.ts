@@ -19,7 +19,7 @@ import {
   upsertProviderAccount,
 } from "../../src/db/repositories/provider-accounts";
 import * as schema from "../../src/db/schema";
-import { getRoutableProviderAccount } from "../../src/domain/providers/provider-service";
+import { getPreferredProviderAccount } from "../../src/domain/providers/provider-service";
 
 describe("proxy lookup caches", () => {
   let client: ReturnType<typeof createClient> | undefined;
@@ -92,17 +92,17 @@ describe("proxy lookup caches", () => {
     const second = await addAccount("second", now);
     await setPrimaryProviderAccount(database, first.id);
 
-    expect((await getRoutableProviderAccount(database, "codex", now))?.id).toBe(
+    expect((await getPreferredProviderAccount(database, "codex"))?.id).toBe(
       first.id
     );
 
     await setPrimaryProviderAccount(database, second.id);
-    expect((await getRoutableProviderAccount(database, "codex", now))?.id).toBe(
+    expect((await getPreferredProviderAccount(database, "codex"))?.id).toBe(
       second.id
     );
 
     await setProviderAccountsEnabled(database, "codex", false, now);
-    expect(await getRoutableProviderAccount(database, "codex", now)).toBeNull();
+    expect(await getPreferredProviderAccount(database, "codex")).toBeNull();
   });
 
   test("does not cache a lookup that finished after a write", async () => {

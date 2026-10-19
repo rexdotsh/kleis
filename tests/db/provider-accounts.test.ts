@@ -17,7 +17,7 @@ import {
 import { providerAccounts } from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
 import {
-  getRoutableProviderAccount,
+  getPreferredProviderAccount,
   refreshProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../src/domain/providers/provider-service";
@@ -493,11 +493,9 @@ describe("provider account enablement", () => {
     ).toBe(true);
     expect(await listConfiguredProviders(database)).toEqual(["codex"]);
     expect(await findPrimaryProviderAccount(database, "claude")).toBeNull();
+    expect(await getPreferredProviderAccount(database, "claude")).toBeNull();
     expect(
-      await getRoutableProviderAccount(database, "claude", now)
-    ).toBeNull();
-    expect(
-      await getRoutableProviderAccount(database, "claude", now, {
+      await getPreferredProviderAccount(database, "claude", {
         allowedAccountIds: ["claude-secondary"],
       })
     ).toBeNull();
@@ -526,9 +524,9 @@ describe("provider account enablement", () => {
     );
     expect(status.enabledAccountCount).toBe(3);
     expect(await listConfiguredProviders(database)).toContain("claude");
-    expect(
-      (await getRoutableProviderAccount(database, "claude", now + 1))?.id
-    ).toBe("claude-primary");
+    expect((await getPreferredProviderAccount(database, "claude"))?.id).toBe(
+      "claude-primary"
+    );
     expect(await listProviderStatuses(database)).toContainEqual(status);
   });
 
@@ -536,40 +534,34 @@ describe("provider account enablement", () => {
     const now = Date.now();
     const codexPinned = { allowedAccountIds: ["codex-primary"] };
     expect(
-      (await getRoutableProviderAccount(database, "claude", now, codexPinned))
-        ?.id
+      (await getPreferredProviderAccount(database, "claude", codexPinned))?.id
     ).toBe("claude-primary");
     expect(
-      (await getRoutableProviderAccount(database, "codex", now, codexPinned))
-        ?.id
+      (await getPreferredProviderAccount(database, "codex", codexPinned))?.id
     ).toBe("codex-primary");
 
     await setPrimaryProviderAccount(database, "claude-secondary", now);
     expect(
-      (await getRoutableProviderAccount(database, "claude", now, codexPinned))
-        ?.id
+      (await getPreferredProviderAccount(database, "claude", codexPinned))?.id
     ).toBe("claude-secondary");
 
     const claudePinned = { allowedAccountIds: ["claude-primary"] };
     expect(
-      (await getRoutableProviderAccount(database, "claude", now, claudePinned))
-        ?.id
+      (await getPreferredProviderAccount(database, "claude", claudePinned))?.id
     ).toBe("claude-primary");
     expect(
-      (await getRoutableProviderAccount(database, "codex", now, claudePinned))
-        ?.id
+      (await getPreferredProviderAccount(database, "codex", claudePinned))?.id
     ).toBe("codex-primary");
   });
 
   test("does not fall back to the primary when the pinned account is disabled", async () => {
-    const now = Date.now();
     await database
       .update(providerAccounts)
       .set({ enabled: false })
       .where(eq(providerAccounts.id, "claude-secondary"));
 
     expect(
-      await getRoutableProviderAccount(database, "claude", now, {
+      await getPreferredProviderAccount(database, "claude", {
         allowedAccountIds: ["claude-secondary"],
       })
     ).toBeNull();

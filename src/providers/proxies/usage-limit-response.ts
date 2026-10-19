@@ -170,14 +170,22 @@ export const createUsageLimitResponse = (input: {
   return Response.json(body, { status: 429, headers });
 };
 
-export const rewriteUsageLimitResponse = (input: {
+type UsageLimitInput = {
   response: Response;
   provider: Provider;
   accountLabel: string | null;
   liveLimits: LiveLimits | null;
   errorPayload: unknown;
   now: number;
-}): Response | null => {
+};
+
+export const classifyUsageLimitResponse = (
+  input: UsageLimitInput
+): {
+  resetsAt: number | null;
+  errorType: string | null;
+  errorCode: string | null;
+} | null => {
   if (input.response.status !== 429) return null;
   const payload = isObjectRecord(input.errorPayload)
     ? input.errorPayload
@@ -210,6 +218,19 @@ export const rewriteUsageLimitResponse = (input: {
     input.response.headers.get("anthropic-ratelimit-unified-status") ===
       "rejected";
   if (!resets.length && !bodyLimited && !rejected) {
+    return null;
+  }
+  // Retry hints can describe throttling rather than the exhausted usage window.
+  const resetsAt = latestReset(resets) ?? (bodyLimited ? bodyReset : null);
+  return { resetsAt, errorType, errorCode };
+};
+
+export const rewriteUsageLimitResponse = (
+  input: UsageLimitInput
+): Response | null => {
+  if (input.response.status !== 429) return null;
+  const limit = classifyUsageLimitResponse(input);
+  if (!limit) {
     const retryAt = retryReset(input.response.headers, input.now);
     if (retryAt === null || retryAt - input.now <= 60_000) return null;
     return new Response(input.response.body, {
@@ -218,16 +239,12 @@ export const rewriteUsageLimitResponse = (input: {
       headers: withoutRetryHeaders(input.response.headers),
     });
   }
-  // Retry hints can describe throttling rather than the exhausted usage window.
-  const resetsAt = latestReset(resets) ?? (bodyLimited ? bodyReset : null);
   const response = createUsageLimitResponse({
     provider: input.provider,
     accountLabel: input.accountLabel,
-    resetsAt,
+    ...limit,
     now: input.now,
     headers: input.response.headers,
-    errorType,
-    errorCode,
   });
   input.response.body?.cancel().catch(() => undefined);
   return response;

@@ -65,7 +65,8 @@ const MAX_ERROR_BYTES = 8192;
 const ERROR_READ_TIMEOUT_MS = 100;
 
 export const readUpstreamErrorPayload = async (
-  response: Response
+  response: Response,
+  options: { timeoutMs?: number; signal?: AbortSignal } = {}
 ): Promise<unknown> => {
   const contentType = (
     response.headers.get("content-type") ?? ""
@@ -82,14 +83,23 @@ export const readUpstreamErrorPayload = async (
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), ERROR_READ_TIMEOUT_MS);
+    timer = setTimeout(
+      () => resolve(null),
+      options.timeoutMs ?? ERROR_READ_TIMEOUT_MS
+    );
+  });
+  let onAbort: () => void = () => undefined;
+  const aborted = new Promise<null>((resolve) => {
+    onAbort = () => resolve(null);
+    if (options.signal?.aborted) resolve(null);
+    else options.signal?.addEventListener("abort", onAbort, { once: true });
   });
   const decoder = new TextDecoder();
   let bytes = 0;
   let text = "";
   try {
     while (true) {
-      const result = await Promise.race([reader.read(), timeout]);
+      const result = await Promise.race([reader.read(), timeout, aborted]);
       if (!result) {
         return null;
       }
@@ -106,6 +116,7 @@ export const readUpstreamErrorPayload = async (
     return null;
   } finally {
     clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
     // Cancelling one tee branch waits for the other branch to finish.
     reader.cancel().catch(() => undefined);
   }

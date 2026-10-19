@@ -1,4 +1,5 @@
 import { importAccount, loadAccounts, toggleProvider } from "./app-accounts.js";
+import { toggleFailover } from "./app-failover.js";
 import { accountMenuItems, renderAccounts } from "./app-accounts-render.js";
 import {
   $,
@@ -230,6 +231,11 @@ $("#accounts-list").addEventListener("click", (event) => {
   if (event.target.closest(".detail")) return;
   const row = event.target.closest(".row[data-account-id]");
   if (row) runAction(toggleAccount(row.dataset.accountId));
+});
+
+$("#failover-settings").addEventListener("click", (event) => {
+  if (event.target.closest('[data-action="toggle-failover"]'))
+    runAction(toggleFailover());
 });
 
 // Mouse hover and touch taps both point at a day in the daily tokens chart.
