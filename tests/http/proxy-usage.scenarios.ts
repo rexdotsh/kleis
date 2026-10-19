@@ -613,6 +613,31 @@ test("exhausted 429s expose only the blocking window's reset and account", async
       provider: "codex",
       error: { resets_at: reset / 1000 },
     },
+    {
+      provider: "codex",
+      headers: {
+        "x-codex-bengalfox-primary-used-percent": "100",
+        "x-codex-bengalfox-primary-reset-at": String(reset / 1000),
+        "x-codex-bengalfox-secondary-used-percent": "20",
+        "x-codex-bengalfox-secondary-reset-at": String(reset / 1000 + 86400),
+      },
+    },
+    {
+      provider: "codex",
+      headers: {
+        "x-codex-bengalfox-secondary-used-percent": "100",
+        "x-codex-bengalfox-secondary-reset-after-seconds": String(seconds),
+      },
+      type: "rate_limit_error",
+    },
+    {
+      provider: "codex",
+      headers: {
+        "x-codex-primary-used-percent": "100",
+        "x-codex-primary-reset-at": String(now / 1000 - 30),
+      },
+      error: { resets_at: reset / 1000 },
+    },
   ] as const;
   try {
     for (const entry of cases) {
@@ -733,6 +758,41 @@ test("short or missing retry hints preserve non-exhausted 429 bytes and headers"
         path: "/openai/v1/responses",
         headers: { "x-codex-primary-reset-at": String(now / 1000 + 10800) },
       },
+      {
+        path: "/openai/v1/responses",
+        headers: {
+          "retry-after": "3",
+          "x-codex-primary-used-percent": "100",
+          "x-codex-primary-reset-at": String(now / 1000 - 30),
+        },
+      },
+      {
+        path: "/anthropic/v1/messages",
+        headers: {
+          "retry-after": "3",
+          "anthropic-ratelimit-unified-status": "allowed",
+          "anthropic-ratelimit-unified-representative-claim": "five_hour",
+          "anthropic-ratelimit-unified-5h-utilization": "1",
+          "anthropic-ratelimit-unified-5h-reset": String(now / 1000 - 30),
+          "anthropic-ratelimit-unified-reset": String(now / 1000 + 10800),
+        },
+      },
+      {
+        path: "/openai/v1/responses",
+        headers: {
+          "retry-after": "3",
+          "x-codex-primary-used-percent": "100",
+        },
+      },
+      {
+        path: "/anthropic/v1/messages",
+        headers: {
+          "retry-after": "3",
+          "anthropic-ratelimit-unified-status": "allowed",
+          "anthropic-ratelimit-unified-representative-claim": "five_hour",
+          "anthropic-ratelimit-unified-5h-utilization": "1",
+        },
+      },
     ]) {
       const headers = new Headers({
         ...entry.headers,
@@ -756,7 +816,7 @@ test("short or missing retry hints preserve non-exhausted 429 bytes and headers"
   }
 });
 
-test("exhausted 429s with unknown resets never borrow retry hints or allowed windows", async () => {
+test("explicitly exhausted 429s never borrow retry hints, expired or allowed resets", async () => {
   const originalFetch = globalThis.fetch;
   const warn = spyOn(console, "warn").mockImplementation(() => undefined);
   try {
@@ -770,6 +830,10 @@ test("exhausted 429s with unknown resets never borrow retry hints or allowed win
         headers: {
           "anthropic-ratelimit-unified-status": "rejected",
           "anthropic-ratelimit-unified-representative-claim": "five_hour",
+          "anthropic-ratelimit-unified-5h-utilization": "1",
+          "anthropic-ratelimit-unified-5h-reset": String(
+            Date.now() / 1000 - 30
+          ),
           "anthropic-ratelimit-unified-7d-utilization": "0.2",
           "anthropic-ratelimit-unified-7d-reset": String(
             Date.now() / 1000 + 10800
@@ -782,9 +846,12 @@ test("exhausted 429s with unknown resets never borrow retry hints or allowed win
         selected: codexAccount,
         type: "usage_limit_reached",
         code: "usage_limit_reached",
+        resets_at: Date.now() / 1000 - 30,
         headers: {
-          "x-codex-primary-used-percent": "20",
-          "x-codex-primary-reset-at": String(Date.now() / 1000 + 10800),
+          "x-codex-primary-used-percent": "100",
+          "x-codex-primary-reset-at": String(Date.now() / 1000 - 30),
+          "x-codex-secondary-used-percent": "20",
+          "x-codex-secondary-reset-at": String(Date.now() / 1000 + 10800),
         },
       },
     ]) {
@@ -795,6 +862,7 @@ test("exhausted 429s with unknown resets never borrow retry hints or allowed win
               type: entry.type,
               code: entry.code,
               message: "PRIVATESECRETTOKEN",
+              ...("resets_at" in entry ? { resets_at: entry.resets_at } : {}),
             },
           },
           {
@@ -855,6 +923,7 @@ test("long ordinary throttles retain their retryable upstream error body", async
         ...entry.headers,
         "content-type": "application/json",
         "x-request-id": "fake-throttle",
+        "x-should-retry": "true",
       });
       globalThis.fetch = (async () =>
         new Response(body, { status: 429, headers })) as typeof fetch;
@@ -896,6 +965,65 @@ test("allowed Claude quota resets cannot turn a throttle into subscription exhau
       expect(response.status).toBe(429);
       expect([...response.headers]).toEqual([...headers]);
       expect(await response.text()).toBe(body);
+    }
+  } finally {
+    warn.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("synthesized quota errors discard upstream retry overrides and hints", async () => {
+  const originalFetch = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    for (const entry of [
+      {
+        path: "/anthropic/v1/messages",
+        type: "rate_limit_error",
+        headers: { "anthropic-ratelimit-unified-status": "rejected" },
+      },
+      {
+        path: "/openai/v1/responses",
+        type: "usage_limit_reached",
+        headers: {},
+      },
+    ]) {
+      globalThis.fetch = (async () =>
+        Response.json(
+          { error: { type: entry.type, message: "Limit reached" } },
+          {
+            status: 429,
+            headers: {
+              ...entry.headers,
+              "retry-after": "61",
+              "retry-after-ms": "61000",
+              "x-should-retry": "true",
+              "x-ms-retry-after-ms": "61000",
+              "x-request-id": "fake-quota",
+            },
+          }
+        )) as typeof fetch;
+      const response = await app.request(entry.path, {
+        method: "POST",
+        body: "{}",
+      });
+      expect(response.status).toBe(429);
+      expect(response.headers.get("x-request-id")).toBe("fake-quota");
+      for (const header of [
+        "retry-after",
+        "retry-after-ms",
+        "x-should-retry",
+        "x-ms-retry-after-ms",
+      ]) {
+        expect(response.headers.has(header)).toBe(false);
+      }
+      expect(await response.json()).toMatchObject({
+        error: {
+          type: entry.type,
+          resets_at: null,
+          account: expect.any(String),
+        },
+      });
     }
   } finally {
     warn.mockRestore();
