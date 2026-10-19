@@ -511,7 +511,7 @@ function accountMenuItems(account) {
     account.provider === "codex" || account.provider === "claude";
   return [
     reset?.canUse && {
-      label: reset.retry ? "Retry reset" : `Use ${reset.noun}`,
+      label: `Use ${reset.noun}`,
       action: "redeem-reset-credit",
       shortcut: "U",
     },

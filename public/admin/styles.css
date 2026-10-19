@@ -1050,10 +1050,6 @@ button.row {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.reset-line.warn,
-.reset-line.warn .link {
-  color: var(--warn);
-}
 .fact .bar {
   display: block;
   max-width: 160px;

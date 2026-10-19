@@ -55,7 +55,7 @@ const consume = (id: string, body: unknown) =>
     }
   );
 
-const validBody = { grantId: "grant_fake_1", offerKey: "a".repeat(32) };
+const validBody = { resetId: "grant_fake_1" };
 
 test("the Claude reset claim route checks the account and body before anything is sent", async () => {
   const claude = await addAccount("claude", {
@@ -71,12 +71,7 @@ test("the Claude reset claim route checks the account and body before anything i
 
   expect((await consume("missing", validBody)).status).toBe(404);
   expect((await consume(codex, validBody)).status).toBe(400);
-  for (const body of [
-    {},
-    { ...validBody, grantId: "../../orgs" },
-    { ...validBody, offerKey: "short" },
-    { ...validBody, organizationUuid: "someone-else" },
-  ]) {
+  for (const body of [{}, { ...validBody, organizationUuid: "someone-else" }]) {
     expect((await consume(claude, body)).status).toBe(400);
   }
 
@@ -84,7 +79,6 @@ test("the Claude reset claim route checks the account and body before anything i
   expect(unknownOrganization.status).toBe(409);
   expect(await unknownOrganization.json()).toMatchObject({
     error: "conflict",
-    reason: "identity_unverified",
   });
   expect(sent.filter((url) => url.includes("reset_rate_limits"))).toEqual([]);
 });

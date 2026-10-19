@@ -157,72 +157,32 @@ export const requestUsageBuckets = sqliteTable(
   ]
 );
 
-export const codexResetCreditRedemptions = sqliteTable(
-  "codex_reset_credit_redemptions",
+const resetSpendStatuses = [
+  "pending",
+  "completed",
+  "failed",
+  "expired",
+] as const;
+
+// One row per reset spend, written before the request is sent. At most one
+// spend per account is pending, across every process sharing the database.
+export const resetSpends = sqliteTable(
+  "reset_spends",
   {
-    redeemRequestId: text("redeem_request_id").primaryKey(),
+    requestId: text("request_id").primaryKey(),
+    provider: text("provider", { enum: providers }).notNull(),
     providerAccountId: text("provider_account_id")
       .notNull()
       .references(() => providerAccounts.id, { onDelete: "cascade" }),
-    creditId: text("credit_id"),
-    status: text("status").notNull(),
-    resultCode: text("result_code"),
-    windowsReset: integer("windows_reset", { mode: "number" }),
-    lastError: text("last_error"),
+    itemId: text("item_id").notNull(),
+    status: text("status", { enum: resetSpendStatuses }).notNull(),
     createdAt: integer("created_at", { mode: "number" }).notNull(),
     updatedAt: integer("updated_at", { mode: "number" }).notNull(),
   },
   (table) => [
-    index("codex_reset_redemptions_account_idx").on(table.providerAccountId),
-  ]
-);
-
-const claudeResetClaimStatuses = [
-  "pending",
-  "ambiguous",
-  "completed",
-  "failed",
-  "reconciled",
-] as const;
-
-export const claudeResetClaimFences = sqliteTable(
-  "claude_reset_claim_fences",
-  {
-    accountIdentity: text("account_identity").notNull(),
-    organizationUuid: text("organization_uuid").notNull(),
-    version: integer("version").notNull().default(0),
-  },
-  (table) => [
-    primaryKey({ columns: [table.accountIdentity, table.organizationUuid] }),
-  ]
-);
-
-// Claims and fences belong to the canonical OAuth user + organization, not a
-// local account row. A claim is recorded before sending, across every process.
-export const claudeResetClaims = sqliteTable(
-  "claude_reset_claims",
-  {
-    requestId: text("request_id").primaryKey(),
-    accountIdentity: text("account_identity").notNull(),
-    organizationUuid: text("organization_uuid").notNull(),
-    grantId: text("grant_id").notNull(),
-    status: text("status", { enum: claudeResetClaimStatuses }).notNull(),
-    // Anthropic's answer, kept so an unconfirmed claim can be looked into later.
-    result: text("result"),
-    reason: text("reason"),
-    httpStatus: integer("http_status", { mode: "number" }),
-    createdAt: integer("created_at", { mode: "number" }).notNull(),
-    updatedAt: integer("updated_at", { mode: "number" }).notNull(),
-  },
-  (table) => [
-    index("claude_reset_claims_account_idx").on(
-      table.accountIdentity,
-      table.organizationUuid,
-      table.updatedAt
-    ),
-    uniqueIndex("claude_reset_claims_active_unique")
-      .on(table.accountIdentity, table.organizationUuid)
-      .where(sql`${table.status} in ('pending', 'ambiguous')`),
+    uniqueIndex("reset_spends_pending_unique")
+      .on(table.providerAccountId)
+      .where(sql`${table.status} = 'pending'`),
   ]
 );
 

@@ -30,9 +30,9 @@ type ApiKeyRecord = {
 
 export type CreateApiKeyInput = {
   label?: string | null;
-  providerScopes?: Provider[];
-  modelScopes?: string[];
-  accountScopes?: string[];
+  providerScopes?: Provider[] | null;
+  modelScopes?: string[] | null;
+  accountScopes?: string[] | null;
   expiresAt?: number | null;
 };
 
@@ -125,26 +125,70 @@ export const findApiKeyById = async (
   return row ? toRecord(row) : null;
 };
 
+const newApiKeyRow = (
+  input: CreateApiKeyInput,
+  now: number
+): typeof apiKeys.$inferSelect => ({
+  id: crypto.randomUUID(),
+  key: `kleis_${crypto.randomUUID().replaceAll("-", "")}`,
+  modelsDiscoveryToken: `kmd_${crypto.randomUUID().replaceAll("-", "")}`,
+  label: input.label?.trim() || null,
+  providerScopeJson: serializeScopeList(input.providerScopes),
+  modelScopeJson: serializeScopeList(input.modelScopes),
+  accountScopeJson: serializeScopeList(input.accountScopes),
+  expiresAt: input.expiresAt ?? null,
+  revokedAt: null,
+  createdAt: now,
+});
+
 export const createApiKey = async (
   database: Database,
   input: CreateApiKeyInput,
   now: number
 ): Promise<ApiKeyRecord> => {
-  const row: typeof apiKeys.$inferSelect = {
-    id: crypto.randomUUID(),
-    key: `kleis_${crypto.randomUUID().replaceAll("-", "")}`,
-    modelsDiscoveryToken: `kmd_${crypto.randomUUID().replaceAll("-", "")}`,
-    label: input.label?.trim() || null,
-    providerScopeJson: serializeScopeList(input.providerScopes),
-    modelScopeJson: serializeScopeList(input.modelScopes),
-    accountScopeJson: serializeScopeList(input.accountScopes),
-    expiresAt: input.expiresAt ?? null,
-    revokedAt: null,
-    createdAt: now,
-  };
-
+  const row = newApiKeyRow(input, now);
   await database.insert(apiKeys).values(row);
   invalidateLookupCaches();
+  return toRecord(row);
+};
+
+// Creates a key with the same settings; revoking the old one happens in the
+// same batch, so a failure leaves neither change.
+export const rotateApiKey = async (
+  database: Database,
+  existing: ApiKeyRecord,
+  revokeOld: boolean,
+  now: number
+): Promise<ApiKeyRecord> => {
+  const row = newApiKeyRow(
+    {
+      label: existing.label,
+      providerScopes: existing.providerScopes,
+      modelScopes: existing.modelScopes,
+      accountScopes: existing.accountScopes,
+      expiresAt:
+        existing.expiresAt !== null && existing.expiresAt > now
+          ? existing.expiresAt
+          : null,
+    },
+    now
+  );
+  const insert = database.insert(apiKeys).values(row);
+  try {
+    if (revokeOld) {
+      await database.batch([
+        database
+          .update(apiKeys)
+          .set({ revokedAt: now })
+          .where(and(eq(apiKeys.id, existing.id), isNull(apiKeys.revokedAt))),
+        insert,
+      ]);
+    } else {
+      await insert;
+    }
+  } finally {
+    invalidateLookupCaches();
+  }
   return toRecord(row);
 };
 

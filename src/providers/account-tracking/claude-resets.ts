@@ -32,9 +32,7 @@ const claimResults = [
   "unavailable",
 ] as const;
 
-export type ClaudeResetClaimResultCode = (typeof claimResults)[number];
-
-export const isClaudeResetGrantId = (value: string): boolean =>
+const isClaudeResetGrantId = (value: string): boolean =>
   /^[a-z0-9_-]{1,40}$/.test(value);
 
 const isLimitType = (value: unknown): value is ClaudeResetLimitType =>
@@ -153,8 +151,6 @@ export type ClaudeResetUnavailableReason =
   | "not_usable";
 
 export type ClaudeResetOffer = {
-  // Binds an admin's confirmation to exactly what it showed.
-  key: string;
   grantId: string;
   label: string;
   clears: ClaudeResetLimitType[];
@@ -207,7 +203,6 @@ const selectOffer = (
   status: ClaudeResetStatus,
   live: ClaudeResetGrant[],
   usage: ClaudeResetLimitUsage,
-  binding: readonly unknown[],
   now: number
 ): ClaudeResetOffer | ClaudeResetUnavailableReason => {
   if (!status.eligible) {
@@ -238,7 +233,7 @@ const selectOffer = (
   if (grant.useRequiresLimit && early) {
     return "requires_limit";
   }
-  const offer = {
+  return {
     grantId: grant.id,
     label: grant.label,
     clears: grant.clears,
@@ -246,24 +241,11 @@ const selectOffer = (
     weeklyResetsAt: status.weeklyResetsAt,
     earlyUse: early,
   };
-  const saved = live.reduce((total, entry) => total + entry.resetsLeft, 0);
-  const material = [offer, grant.resetsLeft, grant.useRequiresLimit, saved];
-  return {
-    key: Bun.CryptoHasher.hash(
-      "sha256",
-      JSON.stringify([...material, ...binding]),
-      "hex"
-    ).slice(0, 32),
-    ...offer,
-  };
 };
 
-// `binding` is folded into the offer key, so a confirmation only matches
-// while it is unchanged.
 export const summarizeClaudeResets = (
   status: ClaudeResetStatus,
   usage: ClaudeResetLimitUsage,
-  binding: readonly unknown[],
   now: number
 ): ClaudeResetSummary => {
   const live = status.eligible
@@ -276,7 +258,7 @@ export const summarizeClaudeResets = (
   const next =
     live.find((grant) => grant.id === status.nextGrantId) ??
     [...live].sort((a, b) => expiry(a) - expiry(b))[0];
-  const offer = selectOffer(status, live, usage, binding, now);
+  const offer = selectOffer(status, live, usage, now);
   return {
     saved: live.reduce((total, grant) => total + grant.resetsLeft, 0),
     nextEndsAt: next?.endsAt ?? null,

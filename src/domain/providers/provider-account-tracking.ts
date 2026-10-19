@@ -1,9 +1,4 @@
 import type { Database } from "../../db";
-import type { ClaudeResetClaimIdentity } from "../../db/repositories/claude-reset-claims";
-import {
-  findCodexResetCreditRedemption,
-  saveCodexResetCreditRedemption,
-} from "../../db/repositories/codex-reset-redemptions";
 import {
   listProviderAccountsWithSnapshots,
   type ProviderAccountSnapshotRow,
@@ -15,7 +10,7 @@ import {
 } from "../../db/repositories/provider-accounts";
 import {
   type CodexAccounts,
-  consumeCodexResetCredit,
+  type CodexResetCredits,
   fetchCodexAccounts,
   fetchCodexResetCredits,
   fetchCodexThreadUsage,
@@ -69,7 +64,8 @@ export type TrackingAccount = ProviderAccountRecord & {
 type CodexTrackingData = {
   provider: "codex";
   status?: Awaited<ReturnType<typeof fetchCodexUsageStatus>>;
-  resetCredits?: Awaited<ReturnType<typeof fetchCodexResetCredits>>;
+  // When the credits were read; unknown reads count as older than any spend.
+  resetCredits?: CodexResetCredits & { observedAt?: number };
   profile?: Awaited<ReturnType<typeof fetchCodexUsageProfile>>;
 };
 
@@ -251,6 +247,7 @@ const fetchCodexData = async (account: TrackingAccount) => {
   }
   if (data.status)
     data.status = normalizeCodexPollResets(data.status, observedAt);
+  if (data.resetCredits) data.resetCredits.observedAt = observedAt;
   return { data, errors };
 };
 
@@ -277,8 +274,6 @@ type ProfileEntry = {
   // different one means the account moved and the profile is out of date.
   organizationKey: string | null;
   lookupCredential: string | null;
-  // Display data can survive a failed lookup; identity proof cannot change hands.
-  identityCredential: string | null;
 };
 
 // Plans and profiles rarely change, so they are looked up once a day (spread
@@ -337,7 +332,6 @@ const getClaudeProfile = async (
       expiresAt: profileExpiry(fetchedAt),
       organizationKey: organizationKey ?? profileOrganizationKey(profile),
       lookupCredential: credential,
-      identityCredential: credential,
     });
     snapshots?.recordProfile(account, profile, fetchedAt);
     return profile;
@@ -356,7 +350,6 @@ const getClaudeProfile = async (
         Date.now() + Math.max(PROFILE_RETRY_MS, cacheDuration([error])),
       organizationKey: organizationKey ?? cached?.organizationKey ?? null,
       lookupCredential: credential,
-      identityCredential: cached?.identityCredential ?? null,
     });
     return previous;
   }
@@ -443,7 +436,6 @@ const updateCodexProfile = async (
     expiresAt,
     organizationKey: null,
     lookupCredential: null,
-    identityCredential: null,
   });
   if (
     fetchedAt !== (cached?.fetchedAt ?? null) ||
@@ -545,21 +537,14 @@ const nextGeneration = (key: string): number => {
   return generation;
 };
 
-const invalidateProviderAccountQuota = (account: TrackingAccount): void => {
-  const key = quotaKey(account);
-  cache.delete(key);
-  inFlight.delete(key);
-  nextGeneration(key);
-};
-
 const dropCachedResetCredits = (key: string): void => {
   const entry = cache.get(key);
-  if (
-    entry?.quota.data.provider === "claude" &&
-    entry.quota.data.resetCredits
-  ) {
+  if (entry?.quota.data.resetCredits) {
     const { resetCredits: _dropped, ...data } = entry.quota.data;
-    cache.set(key, { ...entry, quota: { ...entry.quota, data } });
+    cache.set(key, {
+      ...entry,
+      quota: { ...entry.quota, data: data as TrackingData },
+    });
   }
 };
 
@@ -772,7 +757,6 @@ const restoreSnapshot = (
       expiresAt: row.profileFetchedAt ? profileExpiry(row.profileFetchedAt) : 0,
       organizationKey: profileOrganizationKey(restoredProfile),
       lookupCredential: credentialBinding(account),
-      identityCredential: null,
     });
   }
 
@@ -860,7 +844,6 @@ export const expireProviderAccountTracking = (
   for (const [key, entry] of profiles) {
     if (key.startsWith(prefix)) {
       entry.expiresAt = 0;
-      entry.identityCredential = null;
       entry.lookupCredential = null;
     }
   }
@@ -1034,125 +1017,20 @@ export const queryCodexThreadUsage = async (
   );
 };
 
-export class CodexResetCreditConsumeError extends Error {
-  readonly redeemRequestId: string;
-
-  constructor(message: string, redeemRequestId: string) {
-    super(message);
-    this.name = "CodexResetCreditConsumeError";
-    this.redeemRequestId = redeemRequestId;
-  }
-}
-
-export const redeemCodexResetCredit = async (
+// Proxied traffic keeps postponing Codex polls, so a spend reloads the limits
+// and credits at once; the read starts after the spend settled.
+export const reloadCodexQuota = async (
   database: Database,
-  providerAccountId: string,
-  input: {
-    creditId?: string | null | undefined;
-    redeemRequestId?: string | null | undefined;
-  }
-) => {
-  const stored = await findProviderAccountById(database, providerAccountId);
-  if (!stored || !isTrackingAccount(stored) || stored.provider !== "codex") {
-    return null;
-  }
-  const account = await resolveAccount(database, stored);
-  if (!account) {
-    return null;
-  }
-  const redeemRequestId = input.redeemRequestId ?? crypto.randomUUID();
-  const existing = await findCodexResetCreditRedemption(
-    database,
-    redeemRequestId
-  );
-  if (existing && existing.providerAccountId !== providerAccountId) {
-    throw new Error("Reset-credit redemption belongs to another account");
-  }
-  if (existing?.status === "completed" && existing.resultCode) {
-    return {
-      redeemRequestId,
-      code: existing.resultCode,
-      windowsReset: existing.windowsReset,
-    };
-  }
-
-  const now = Date.now();
-  const creditId = input.creditId ?? existing?.creditId ?? null;
-  const save = (
-    status: string,
-    resultCode: string | null,
-    windowsReset: number | null,
-    lastError: string | null
-  ) =>
-    saveCodexResetCreditRedemption(database, {
-      redeemRequestId,
-      providerAccountId,
-      creditId,
-      status,
-      resultCode,
-      windowsReset,
-      lastError,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: Date.now(),
-    });
-  await save("pending", null, null, null);
-
-  try {
-    const result = await retryAfter401(database, account, (current) =>
-      consumeCodexResetCredit({
-        accessToken: current.accessToken,
-        accountId: current.accountId,
-        redeemRequestId,
-        creditId,
-      })
-    );
-    await save("completed", result.code, result.windowsReset, null);
-    invalidateProviderAccountQuota(account);
-    if (result.code === "reset" || result.code === "already_redeemed") {
-      await getProviderAccountQuota(database, account, true);
-    }
-    return { redeemRequestId, ...result };
-  } catch (error) {
-    const message = errorMessage(error);
-    await save("retryable", null, null, message);
-    throw new CodexResetCreditConsumeError(message, redeemRequestId);
-  }
-};
-
-const agreedUuid = (
-  stored: string | null | undefined,
-  lookedUp: string | null | undefined
-): string | null => {
-  const [a, b] = [stored, lookedUp].map(
-    (value) => value?.trim().toLowerCase() || null
-  );
-  return a && b && a !== b ? null : (b ?? a ?? null);
-};
-
-// Reset claims use the OAuth user and organization of the current credential,
-// from its token response or a profile looked up with it; both must agree.
-export const claudeResetIdentity = (
   account: TrackingAccount
-): ClaudeResetClaimIdentity | null => {
-  const metadata =
-    account.metadata?.provider === "claude" ? account.metadata : null;
-  const entry = profiles.get(quotaKey(account));
-  const profile =
-    entry?.identityCredential === credentialBinding(account) &&
-    entry.profile?.provider === "claude"
-      ? entry.profile
-      : null;
-  const organizationUuid = agreedUuid(
-    metadata?.organizationUuid,
-    profile?.organizationUuid
-  );
-  const accountIdentity = agreedUuid(
-    metadata?.accountUuid,
-    profile?.accountUuid
-  );
-  return organizationUuid && accountIdentity
-    ? { accountIdentity, organizationUuid }
-    : null;
+): Promise<void> => {
+  await loadProviderAccountQuota(database, account, true);
+};
+
+export const peekCodexResetCredits = (
+  account: TrackingAccount
+): CodexTrackingData["resetCredits"] | null => {
+  const data = cache.get(quotaKey(account))?.quota.data;
+  return data?.provider === "codex" ? (data.resetCredits ?? null) : null;
 };
 
 export const peekClaudeResetCredits = (
@@ -1196,11 +1074,9 @@ export const claudeResetLimitUsage = (
   return used;
 };
 
-// A settled claim invalidates saved resets and earlier reads without moving
-// the next scheduled poll or the shared rate-limit pause.
-export const invalidateClaudeResetCredits = (
-  account: TrackingAccount
-): void => {
+// A spend invalidates reset credits and earlier reads without moving the next
+// scheduled poll or the shared Claude rate-limit pause.
+export const invalidateResetCredits = (account: TrackingAccount): void => {
   const key = quotaKey(account);
   dropCachedResetCredits(key);
   const entry = cache.get(key);
@@ -1208,7 +1084,8 @@ export const invalidateClaudeResetCredits = (
   if (entry && poll) {
     entry.expiresAt = Math.max(
       entry.expiresAt,
-      poll.startedAt + CLAUDE_CACHE_MS
+      poll.startedAt +
+        (account.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS)
     );
   }
   inFlight.delete(key);
