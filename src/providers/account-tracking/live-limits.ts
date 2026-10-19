@@ -36,7 +36,7 @@ export type CodexLiveLimits = {
 export type LiveLimits = ClaudeLiveLimits | CodexLiveLimits;
 
 // Claude Code's header names for the usage endpoint's windows.
-const CLAUDE_WINDOW_HEADERS = {
+export const CLAUDE_WINDOW_HEADERS = {
   five_hour: "5h",
   seven_day: "7d",
   seven_day_overage_included: "7d_oi",

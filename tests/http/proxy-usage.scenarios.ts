@@ -545,7 +545,7 @@ test("100 identical Claude 429s do not flood the logs or change client responses
   }
 });
 
-test("far-reset 429s expose the selected account and reset without long retry hints", async () => {
+test("exhausted 429s expose only the blocking window's reset and account", async () => {
   const originalFetch = globalThis.fetch;
   const now = Math.floor(Date.now() / 1000) * 1000;
   const clock = spyOn(Date, "now").mockReturnValue(now);
@@ -556,34 +556,32 @@ test("far-reset 429s expose the selected account and reset without long retry hi
   const cases = [
     {
       provider: "claude",
-      headers: { "retry-after": String(seconds), "retry-after-ms": "1000" },
-    },
-    {
-      provider: "claude",
-      headers: { "retry-after-ms": String(seconds * 1000) },
-    },
-    {
-      provider: "claude",
-      headers: { "retry-after": new Date(reset).toUTCString() },
-    },
-    {
-      provider: "claude",
-      headers: { "anthropic-ratelimit-unified-reset": String(reset / 1000) },
+      headers: {
+        "anthropic-ratelimit-unified-status": "rejected",
+        "anthropic-ratelimit-unified-reset": String(reset / 1000),
+      },
     },
     {
       provider: "claude",
       headers: {
-        "retry-after": "invalid",
         "anthropic-ratelimit-unified-status": "rejected",
         "anthropic-ratelimit-unified-representative-claim": "five_hour",
         "anthropic-ratelimit-unified-5h-reset": String(reset / 1000),
         "anthropic-ratelimit-unified-7d-utilization": "0.2",
         "anthropic-ratelimit-unified-7d-reset": String(reset / 1000 + 86400),
+        "anthropic-ratelimit-unified-reset": String(reset / 1000 + 86400),
       },
     },
     {
-      provider: "codex",
-      headers: { "retry-after": String(seconds) },
+      provider: "claude",
+      headers: {
+        "anthropic-ratelimit-unified-status": "allowed",
+        "anthropic-ratelimit-unified-representative-claim": "five_hour",
+        "anthropic-ratelimit-unified-5h-utilization": "1",
+        "anthropic-ratelimit-unified-5h-reset": String(reset / 1000),
+        "anthropic-ratelimit-unified-7d-utilization": "0.2",
+        "anthropic-ratelimit-unified-7d-reset": String(reset / 1000 + 86400),
+      },
     },
     {
       provider: "codex",
@@ -593,14 +591,22 @@ test("far-reset 429s expose the selected account and reset without long retry hi
         "x-codex-secondary-used-percent": "20",
         "x-codex-secondary-reset-at": String(reset / 1000 + 86400),
       },
+      type: "rate_limit_error",
       error: { resets_in_seconds: seconds * 2 },
     },
     {
       provider: "codex",
-      headers: { "x-codex-primary-reset-after-seconds": String(seconds) },
+      headers: {
+        "x-codex-primary-used-percent": "100",
+        "x-codex-primary-reset-after-seconds": String(seconds),
+      },
     },
     {
       provider: "codex",
+      headers: {
+        "x-codex-primary-used-percent": "20",
+        "x-codex-primary-reset-at": String(reset / 1000 + 86400),
+      },
       error: { resets_in_seconds: seconds },
     },
     {
@@ -618,8 +624,11 @@ test("far-reset 429s expose the selected account and reset without long retry hi
               type:
                 entry.provider === "claude"
                   ? "rate_limit_error"
-                  : "usage_limit_reached",
-              code: "usage_limit_reached",
+                  : "type" in entry
+                    ? entry.type
+                    : "usage_limit_reached",
+              code:
+                "type" in entry ? "rate_limit_exceeded" : "usage_limit_reached",
               message: "PRIVATESECRETTOKEN",
               ...("error" in entry ? entry.error : {}),
             },
@@ -628,6 +637,8 @@ test("far-reset 429s expose the selected account and reset without long retry hi
             status: 429,
             headers: {
               ...("headers" in entry ? entry.headers : {}),
+              "retry-after": "61",
+              "retry-after-ms": "61000",
               "x-request-id": "fake-request",
               "content-encoding": "gzip",
               "content-length": "999",
@@ -660,9 +671,16 @@ test("far-reset 429s expose the selected account and reset without long retry hi
           type:
             entry.provider === "claude"
               ? "rate_limit_error"
-              : "usage_limit_reached",
+              : "type" in entry
+                ? entry.type
+                : "usage_limit_reached",
           ...(entry.provider === "codex"
-            ? { code: "usage_limit_reached" }
+            ? {
+                code:
+                  "type" in entry
+                    ? "rate_limit_exceeded"
+                    : "usage_limit_reached",
+              }
             : {}),
           message: `${entry.provider === "claude" ? "Claude" : "Codex"} usage limit reached for account "${selected.label}". Resets at ${resetsAt} (in 3h 12m).`,
           resets_at: resetsAt,
@@ -691,13 +709,13 @@ test("far-reset 429s expose the selected account and reset without long retry hi
   }
 });
 
-test("short 429 throttles preserve upstream bytes and headers ahead of later reset hints", async () => {
+test("short or missing retry hints preserve non-exhausted 429 bytes and headers", async () => {
   const originalFetch = globalThis.fetch;
   const now = Math.floor(Date.now() / 1000) * 1000;
   const clock = spyOn(Date, "now").mockReturnValue(now);
   const warn = spyOn(console, "warn").mockImplementation(() => undefined);
   const body =
-    '{ "error": { "type": "usage_limit_reached", "message": "Try later", "resets_in_seconds": 7200 } }';
+    '{ "error": { "type": "rate_limit_error", "message": "Try later", "resets_in_seconds": 7200 } }';
   try {
     for (const entry of [
       {
@@ -713,7 +731,7 @@ test("short 429 throttles preserve upstream bytes and headers ahead of later res
       },
       {
         path: "/openai/v1/responses",
-        headers: { "x-codex-primary-reset-at": String(now / 1000 + 60) },
+        headers: { "x-codex-primary-reset-at": String(now / 1000 + 10800) },
       },
     ]) {
       const headers = new Headers({
@@ -738,7 +756,7 @@ test("short 429 throttles preserve upstream bytes and headers ahead of later res
   }
 });
 
-test("usage-limit 429s with unknown resets return native account errors", async () => {
+test("exhausted 429s with unknown resets never borrow retry hints or allowed windows", async () => {
   const originalFetch = globalThis.fetch;
   const warn = spyOn(console, "warn").mockImplementation(() => undefined);
   try {
@@ -749,15 +767,25 @@ test("usage-limit 429s with unknown resets return native account errors", async 
         selected: account,
         type: "rate_limit_error",
         code: null,
-        message: "Your subscription usage limit has been reached",
+        headers: {
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-representative-claim": "five_hour",
+          "anthropic-ratelimit-unified-7d-utilization": "0.2",
+          "anthropic-ratelimit-unified-7d-reset": String(
+            Date.now() / 1000 + 10800
+          ),
+        },
       },
       {
         provider: "codex",
         path: "/openai/v1/responses",
         selected: codexAccount,
-        type: "insufficient_quota",
-        code: "insufficient_quota",
-        message: "PRIVATESECRETTOKEN",
+        type: "usage_limit_reached",
+        code: "usage_limit_reached",
+        headers: {
+          "x-codex-primary-used-percent": "20",
+          "x-codex-primary-reset-at": String(Date.now() / 1000 + 10800),
+        },
       },
     ]) {
       globalThis.fetch = (async () =>
@@ -766,12 +794,16 @@ test("usage-limit 429s with unknown resets return native account errors", async 
             error: {
               type: entry.type,
               code: entry.code,
-              message: entry.message,
+              message: "PRIVATESECRETTOKEN",
             },
           },
           {
             status: 429,
-            headers: { "retry-after": "invalid", "retry-after-ms": "invalid" },
+            headers: {
+              ...entry.headers,
+              "retry-after": "61",
+              "retry-after-ms": "61000",
+            },
           }
         )) as typeof fetch;
       const response = await app.request(entry.path, {
@@ -791,6 +823,79 @@ test("usage-limit 429s with unknown resets return native account errors", async 
           account: entry.selected.label,
         },
       });
+    }
+  } finally {
+    warn.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("long ordinary throttles retain their retryable upstream error body", async () => {
+  const originalFetch = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const body =
+    '{ "error": { "type": "rate_limit_error", "message": "Rate limit exceeded. Try again later." } }';
+  try {
+    for (const entry of [
+      { path: "/anthropic/v1/messages", headers: { "retry-after": "61" } },
+      { path: "/openai/v1/responses", headers: { "retry-after": "61" } },
+      {
+        path: "/anthropic/v1/messages",
+        headers: { "retry-after-ms": "61000" },
+      },
+      {
+        path: "/openai/v1/responses",
+        headers: {
+          "retry-after": new Date(Date.now() + 120000).toUTCString(),
+          "retry-after-ms": "invalid",
+        },
+      },
+    ]) {
+      const headers = new Headers({
+        ...entry.headers,
+        "content-type": "application/json",
+        "x-request-id": "fake-throttle",
+      });
+      globalThis.fetch = (async () =>
+        new Response(body, { status: 429, headers })) as typeof fetch;
+      const response = await app.request(entry.path, {
+        method: "POST",
+        body: '{"stream":true}',
+      });
+      expect(response.status).toBe(429);
+      expect(response.headers.has("retry-after")).toBe(false);
+      expect(response.headers.has("retry-after-ms")).toBe(false);
+      headers.delete("retry-after");
+      headers.delete("retry-after-ms");
+      expect([...response.headers]).toEqual([...headers]);
+      expect(await response.text()).toBe(body);
+    }
+  } finally {
+    warn.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("allowed Claude quota resets cannot turn a throttle into subscription exhaustion", async () => {
+  const originalFetch = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const body =
+    '{ "type": "error", "error": { "type": "rate_limit_error", "message": "Rate limit exceeded" } }';
+  try {
+    for (const utilization of ["0.2", "0.99999"]) {
+      const headers = new Headers({
+        "content-type": "application/json",
+        "anthropic-ratelimit-unified-status": "allowed",
+        "anthropic-ratelimit-unified-representative-claim": "five_hour",
+        "anthropic-ratelimit-unified-5h-utilization": utilization,
+        "anthropic-ratelimit-unified-reset": String(Date.now() / 1000 + 10800),
+      });
+      globalThis.fetch = (async () =>
+        new Response(body, { status: 429, headers })) as typeof fetch;
+      const response = await request();
+      expect(response.status).toBe(429);
+      expect([...response.headers]).toEqual([...headers]);
+      expect(await response.text()).toBe(body);
     }
   } finally {
     warn.mockRestore();

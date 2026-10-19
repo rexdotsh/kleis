@@ -1,6 +1,9 @@
 import type { Provider } from "../../db/schema";
 import { isObjectRecord } from "../../utils/object";
-import type { LiveLimits } from "../account-tracking/live-limits";
+import {
+  CLAUDE_WINDOW_HEADERS,
+  type LiveLimits,
+} from "../account-tracking/live-limits";
 import { createProxyResponseHeaders } from "./response";
 import { readUpstreamErrorFields } from "./upstream-error";
 
@@ -31,38 +34,60 @@ const retryReset = (headers: Headers, now: number): number | null => {
   ]);
 };
 
-const limitResets = (
+const exhaustedResets = (
   limits: LiveLimits | null,
   headers: Headers,
   provider: Provider,
   now: number
 ): (number | null)[] => {
   if (provider === "claude") {
-    const reset = nonnegativeNumber(
-      headers.get("anthropic-ratelimit-unified-reset")
-    );
-    if (reset !== null) return [timestamp(reset * 1000)];
-    if (limits?.provider !== "claude") return [];
-    // Unexhausted windows can reset days after the window blocking this request.
-    return Object.values(limits.windows)
-      .filter((window) => (window.utilization ?? 100) >= 100)
-      .map((window) => timestamp(Date.parse(window.resetsAt ?? "")));
+    const header = (name: string) =>
+      headers.get(`anthropic-ratelimit-unified-${name}`);
+    const rejected = header("status") === "rejected";
+    const claim = header("representative-claim")?.trim();
+    const windowHeaders = Object.entries(CLAUDE_WINDOW_HEADERS);
+    const claimedHeader = windowHeaders.find(([key]) => key === claim)?.[1];
+    const utilization = claimedHeader
+      ? nonnegativeNumber(header(`${claimedHeader}-utilization`))
+      : null;
+    if (!rejected && (utilization ?? 0) < 1) return [];
+    const windows = limits?.provider === "claude" ? limits.windows : {};
+    const reset = nonnegativeNumber(header("reset"));
+    const unifiedReset = timestamp(reset === null ? null : reset * 1000);
+    if (claim) {
+      return [
+        timestamp(Date.parse(windows[claim]?.resetsAt ?? "")) ?? unifiedReset,
+      ];
+    }
+    const resets = windowHeaders
+      .filter(
+        ([, name]) =>
+          (nonnegativeNumber(header(`${name}-utilization`)) ?? 0) >= 1
+      )
+      .map(([key]) => timestamp(Date.parse(windows[key]?.resetsAt ?? "")));
+    return resets.length ? resets : [unifiedReset];
   }
   if (provider !== "codex") return [];
   return ["primary", "secondary"].flatMap((name) => {
     const prefix = `x-codex-${name}`;
     const used = nonnegativeNumber(headers.get(`${prefix}-used-percent`));
-    if (used !== null && used < 100) return [];
+    if (used === null || used < 100) return [];
     const absolute = nonnegativeNumber(headers.get(`${prefix}-reset-at`));
     const relative = nonnegativeNumber(
       headers.get(`${prefix}-reset-after-seconds`)
     );
-    if (used === null && absolute === null && relative === null) return [];
     return [
       timestamp(absolute === null ? null : absolute * 1000) ??
         timestamp(relative === null ? null : now + relative * 1000),
     ];
   });
+};
+
+const withoutRetryHeaders = (source: HeadersInit): Headers => {
+  const headers = createProxyResponseHeaders(source);
+  headers.delete("retry-after");
+  headers.delete("retry-after-ms");
+  return headers;
 };
 
 export const createUsageLimitResponse = (input: {
@@ -101,9 +126,7 @@ export const createUsageLimitResponse = (input: {
             ...fields,
           },
         };
-  const headers = createProxyResponseHeaders(input.headers ?? {});
-  headers.delete("retry-after");
-  headers.delete("retry-after-ms");
+  const headers = withoutRetryHeaders(input.headers ?? {});
   headers.set("content-type", "application/json");
   return Response.json(body, { status: 429, headers });
 };
@@ -130,33 +153,27 @@ export const rewriteUsageLimitResponse = (input: {
     timestamp(
       typeof error?.resets_at === "string" ? Date.parse(error.resets_at) : null
     );
-  const resets = limitResets(
+  const resets = exhaustedResets(
     input.liveLimits,
     input.response.headers,
     input.provider,
     input.now
   );
-  const resetsAt =
-    retryReset(input.response.headers, input.now) ??
-    latestReset(resets) ??
-    (input.provider === "codex" ? bodyReset : null);
-  const usageLimited =
-    [errorType, errorCode].some(
-      (code) =>
-        code === "usage_limit_reached" ||
-        code === "insufficient_quota" ||
-        code === "usage_not_included"
-    ) ||
-    resets.length > 0 ||
-    (input.provider === "claude" &&
-      input.response.headers.get("anthropic-ratelimit-unified-status") ===
-        "rejected") ||
-    (typeof error?.message === "string" &&
-      /\b(?:usage|subscription) limit\b/i.test(error.message));
-  if (resetsAt === null ? !usageLimited : resetsAt - input.now <= 60_000) {
-    return null;
+  const bodyLimited =
+    input.provider === "codex" &&
+    [errorType, errorCode].includes("usage_limit_reached");
+  if (!resets.length && !bodyLimited) {
+    const retryAt = retryReset(input.response.headers, input.now);
+    if (retryAt === null || retryAt - input.now <= 60_000) return null;
+    return new Response(input.response.body, {
+      status: input.response.status,
+      statusText: input.response.statusText,
+      headers: withoutRetryHeaders(input.response.headers),
+    });
   }
-  return createUsageLimitResponse({
+  // Retry hints can describe throttling rather than the exhausted usage window.
+  const resetsAt = latestReset(resets) ?? (bodyLimited ? bodyReset : null);
+  const response = createUsageLimitResponse({
     provider: input.provider,
     accountLabel: input.accountLabel,
     resetsAt,
@@ -165,4 +182,6 @@ export const rewriteUsageLimitResponse = (input: {
     errorType,
     errorCode,
   });
+  input.response.body?.cancel().catch(() => undefined);
+  return response;
 };

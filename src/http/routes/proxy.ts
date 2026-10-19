@@ -476,7 +476,6 @@ const proxyRequest = async (
       })
     : null;
   if (usageLimitResponse) {
-    attempt.response.body?.cancel().catch(() => undefined);
     usageRecorder.recordFinal(attempt.response.status);
     return usageLimitResponse;
   }
