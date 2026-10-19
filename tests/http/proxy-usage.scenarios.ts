@@ -646,6 +646,23 @@ test("exhausted 429s expose only the blocking window's reset and account", async
       provider: "codex",
       headers: {
         "x-codex-active-limit": "premium",
+        "x-codex-primary-used-percent": "100",
+        "x-codex-primary-reset-at": String(reset / 1000),
+      },
+    },
+    {
+      provider: "codex",
+      headers: {
+        "x-codex-active-limit": "premium",
+        "x-codex-primary-used-percent": "100",
+        "x-codex-primary-reset-at": String(reset / 1000),
+      },
+      type: "rate_limit_error",
+    },
+    {
+      provider: "codex",
+      headers: {
+        "x-codex-active-limit": "premium",
         "x-codex-premium-primary-used-percent": "20",
         "x-codex-premium-primary-reset-at": String(reset / 1000 + 86400),
         "x-codex-bengalfox-primary-used-percent": "100",

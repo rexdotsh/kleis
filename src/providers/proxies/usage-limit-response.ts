@@ -85,16 +85,22 @@ const exhaustedResets = (
       ?.trim()
       .toLowerCase()
       .replaceAll("_", "-") || "codex";
-  const family =
+  const named =
     activeLimit === "codex" || activeLimit.startsWith("codex-")
       ? activeLimit
       : `codex-${activeLimit}`;
+  const windowFamily = (name: string) =>
+    /^x-(.+)-(?:primary|secondary)-used-percent$/.exec(name)?.[1];
+  // Limits without their own headers (e.g. premium) report on the default
+  // x-codex-primary/secondary windows.
+  const family = [...headers.keys()].some(
+    (name) => windowFamily(name) === named
+  )
+    ? named
+    : "codex";
   const resets: number[] = [];
   for (const [name, value] of headers) {
-    const windowFamily = /^x-(.+)-(?:primary|secondary)-used-percent$/.exec(
-      name
-    )?.[1];
-    if (windowFamily !== family) continue;
+    if (windowFamily(name) !== family) continue;
     const prefix = name.slice(0, -"-used-percent".length);
     const used = nonnegativeNumber(value);
     if (used === null || used < 100) continue;
