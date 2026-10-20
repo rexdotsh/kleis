@@ -15,9 +15,11 @@ export const createLimitsRoutes = (database: Database) =>
     const accounts = [];
     for (const provider of apiKey.providerScopes ?? providers) {
       accounts.push(
-        ...(await findRoutingCandidates(database, provider, {
-          allowedAccountIds: apiKey.accountScopes,
-        }))
+        ...(await findRoutingCandidates(
+          database,
+          provider,
+          apiKey.accountScopes
+        ))
       );
     }
     return context.json({ accounts: accounts.map(describeAccountLimits) });

@@ -562,7 +562,7 @@ describe("provider account enablement", () => {
     ).toBe("codex-primary");
   });
 
-  test("an owned account serves only callers that ask for its owner and is never primary", async () => {
+  test("an owned account is never primary and never routed to by plain requests", async () => {
     const now = Date.now();
     const routes = async () => {
       const results = [];
@@ -614,17 +614,13 @@ describe("provider account enablement", () => {
     expect(await setPrimaryProviderAccount(database, owned.id, now)).toBe(
       "owned"
     );
-    for (const [input, expected] of [
-      [{ allowedAccountIds: [owned.id] }, "codex-primary"],
-      [{ ownerId: "alice" }, owned.id],
-      [{ ownerId: "bob" }, null],
-      [{ ownerId: "alice", allowedAccountIds: ["codex-primary"] }, owned.id],
-    ] as const) {
-      expect(
-        (await getRoutableProviderAccount(database, "codex", now, input))?.id ??
-          null
-      ).toBe(expected);
-    }
+    expect(
+      (
+        await getRoutableProviderAccount(database, "codex", now, {
+          allowedAccountIds: [owned.id],
+        })
+      )?.id
+    ).toBe("codex-primary");
 
     await deleteProviderAccount(database, "codex-primary");
     expect(await getRoutableProviderAccount(database, "codex", now)).toBeNull();

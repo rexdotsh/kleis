@@ -4,7 +4,6 @@ import {
   findProviderAccountById,
   findProviderAccountsByIds,
   findPrimaryProviderAccount,
-  listOwnedProviderAccounts,
   hasActiveProviderAccountRefreshLock,
   recordProviderAccountRefreshFailure,
   replaceProviderAccountCredentials,
@@ -654,36 +653,17 @@ export const findPinnedProviderAccounts = (
   );
 };
 
-const ownedAccountCache = createLookupCache<ProviderAccountRecord[]>(
-  ROUTABLE_ACCOUNT_CACHE_TTL_MS
-);
-
-type RoutingInput = {
-  allowedAccountIds?: readonly string[] | null;
-  ownerId?: string | null;
-};
-
-// Requests made for an owner use only that owner's accounts. Others use the
-// key's pinned accounts for the provider when it has any, and the provider's
-// primary account otherwise.
+// Requests use the key's pinned accounts for the provider when it has any,
+// and the provider's primary account otherwise.
 export const findRoutingCandidates = async (
   database: Database,
   provider: Provider,
-  input?: RoutingInput
+  allowedAccountIds: readonly string[] | null | undefined
 ): Promise<ProviderAccountRecord[]> => {
-  const ownerId = input?.ownerId;
-  if (ownerId) {
-    const owned = await ownedAccountCache.get(
-      database,
-      `owned:${ownerId}`,
-      () => listOwnedProviderAccounts(database, ownerId)
-    );
-    return owned.filter((account) => account.provider === provider);
-  }
   const pinned = await findPinnedProviderAccounts(
     database,
     provider,
-    input?.allowedAccountIds
+    allowedAccountIds
   );
   if (pinned.length) {
     return pinned;
@@ -700,11 +680,13 @@ export const getRoutableProviderAccount = async (
   database: Database,
   provider: Provider,
   now: number,
-  input?: RoutingInput
+  input?: {
+    allowedAccountIds?: readonly string[] | null;
+  }
 ): Promise<ProviderAccountRecord | null> => {
-  const account = (await findRoutingCandidates(database, provider, input)).find(
-    (candidate) => candidate.enabled
-  );
+  const account = (
+    await findRoutingCandidates(database, provider, input?.allowedAccountIds)
+  ).find((candidate) => candidate.enabled);
   if (!account) {
     return null;
   }

@@ -104,18 +104,6 @@ export const findProviderAccountsByIds = async (
     );
 };
 
-export const listOwnedProviderAccounts = async (
-  database: Database,
-  ownerId: string
-): Promise<ProviderAccountRecord[]> => {
-  const rows = await database
-    .select()
-    .from(providerAccounts)
-    .where(eq(providerAccounts.ownerId, ownerId))
-    .orderBy(desc(providerAccounts.createdAt));
-  return rows.map(toProviderAccountRecord);
-};
-
 export const findPrimaryProviderAccount = async (
   database: Database,
   provider: Provider
