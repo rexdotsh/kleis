@@ -652,8 +652,29 @@ export const findPinnedProviderAccounts = (
   );
 };
 
-// Requests use the key's pinned account for the provider when it has one, and
-// the provider's primary account otherwise.
+// Requests use the key's pinned accounts for the provider when it has any,
+// and the provider's primary account otherwise.
+export const findRoutingCandidates = async (
+  database: Database,
+  provider: Provider,
+  allowedAccountIds: readonly string[] | null | undefined
+): Promise<ProviderAccountRecord[]> => {
+  const pinned = await findPinnedProviderAccounts(
+    database,
+    provider,
+    allowedAccountIds
+  );
+  if (pinned.length) {
+    return pinned;
+  }
+  const primary = await routableAccountCache.get(
+    database,
+    `primary:${provider}`,
+    () => findPrimaryProviderAccount(database, provider)
+  );
+  return primary ? [primary] : [];
+};
+
 export const getRoutableProviderAccount = async (
   database: Database,
   provider: Provider,
@@ -662,16 +683,9 @@ export const getRoutableProviderAccount = async (
     allowedAccountIds?: readonly string[] | null;
   }
 ): Promise<ProviderAccountRecord | null> => {
-  const pinned = await findPinnedProviderAccounts(
-    database,
-    provider,
-    input?.allowedAccountIds
-  );
-  const account = pinned.length
-    ? pinned.find((candidate) => candidate.enabled)
-    : await routableAccountCache.get(database, `primary:${provider}`, () =>
-        findPrimaryProviderAccount(database, provider)
-      );
+  const account = (
+    await findRoutingCandidates(database, provider, input?.allowedAccountIds)
+  ).find((candidate) => candidate.enabled);
   if (!account) {
     return null;
   }
