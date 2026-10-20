@@ -142,8 +142,8 @@ const serveAdminIndex = serveAsset(
   }
 );
 
-// Public: the page holds only the consent text; the token is spent by the
-// script. No referrer, so the token never reaches the provider's sign-in.
+// Public and static: its script shows the consent and spends the token on
+// Continue. No referrer, so the token never reaches the provider's sign-in.
 const serveLinkPage = serveAsset(
   "link.html",
   "text/html; charset=utf-8",
