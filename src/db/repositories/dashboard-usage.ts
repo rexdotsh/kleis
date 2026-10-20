@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, lt, sql } from "drizzle-orm";
 
 import { toNonNegativeInteger } from "../../utils/number";
 import type { Database } from "../index";
@@ -70,6 +70,7 @@ export const getDashboardUsage = async (
     keyRows,
     bucketRows,
     previousBucketRows,
+    ownerRows,
   ] = await database.batch([
     database.select(fullSelect).from(requestUsageBuckets).where(currentFilter),
     database.select(fullSelect).from(requestUsageBuckets).where(previousFilter),
@@ -154,6 +155,14 @@ export const getDashboardUsage = async (
       .groupBy(aggregatedBucket)
       .orderBy(desc(aggregatedBucket))
       .limit(DASHBOARD_BUCKET_LIMIT),
+    // Unlinked accounts stay listed so their usage can still be filtered.
+    database
+      .selectDistinct({
+        id: providerAccounts.ownerId,
+        label: providerAccounts.ownerLabel,
+      })
+      .from(providerAccounts)
+      .where(isNotNull(providerAccounts.ownerId)),
   ]);
 
   const byProvider = providerRows
@@ -183,5 +192,6 @@ export const getDashboardUsage = async (
       }))
       .reverse(),
     bucketSizeMs,
+    owners: ownerRows,
   };
 };

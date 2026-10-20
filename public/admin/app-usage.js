@@ -17,6 +17,7 @@ import {
   formatCompact,
   formatCount,
   normalizeUsage,
+  renderOwnerSelect,
 } from "./app-render-shared.js";
 import {
   DASHBOARD_LOADING_HTML,
@@ -186,24 +187,19 @@ async function loadDashboard() {
   }
 }
 
-// Shown once someone has linked their own account.
 function renderDashboardOwnerFilter() {
-  const select = $("#dash-owner");
-  const owners = new Map();
-  for (const account of state.accounts) {
-    if (account.ownerId)
-      owners.set(account.ownerId, account.ownerLabel || account.ownerId);
-  }
-  select.hidden = owners.size === 0;
-  select.innerHTML = [
-    ["", "All usage"],
-    ...[...owners].sort((a, b) => a[1].localeCompare(b[1])),
-  ]
-    .map(
-      ([value, label]) =>
-        `<option value="${escapeHtml(value)}"${value === state.dashboardOwner ? " selected" : ""}>${escapeHtml(label)}</option>`
-    )
-    .join("");
+  const owners = new Map(
+    (state.dashboardData?.owners || []).map((owner) => [
+      owner.id,
+      owner.label || owner.id,
+    ])
+  );
+  renderOwnerSelect(
+    $("#dash-owner"),
+    owners,
+    [["", "All usage"]],
+    state.dashboardOwner
+  );
 }
 
 function renderOverviewWhenReady() {

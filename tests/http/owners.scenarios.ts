@@ -662,4 +662,5 @@ test("usage stays attributed to an owner after they unlink", async () => {
     "quinn"
   );
   expect(usage.totals.requestCount).toBe(1);
+  expect(usage.owners).toContainEqual({ id: "quinn", label: "quinn label" });
 });
