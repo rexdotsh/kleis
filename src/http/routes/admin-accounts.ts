@@ -40,6 +40,7 @@ import {
   setPrimaryProviderAccount,
   type ProviderAccountRecord,
   updateProviderAccountProfile,
+  ProviderAccountOwnerConflict,
   ProviderAccountReauthorizationConflict,
 } from "../../db/repositories/provider-accounts";
 import { providers } from "../../db/schema";
@@ -582,7 +583,10 @@ export const adminAccountsRoutes = new Hono()
 
         return context.json({ account: toAdminAccountView(account) });
       } catch (error) {
-        if (error instanceof ProviderAccountReauthorizationConflict) {
+        if (
+          error instanceof ProviderAccountReauthorizationConflict ||
+          error instanceof ProviderAccountOwnerConflict
+        ) {
           return context.json(
             { error: "conflict", message: error.message },
             409
@@ -637,19 +641,30 @@ export const adminAccountsRoutes = new Hono()
         );
       }
 
-      const account = await importProviderAccount(
-        db,
-        provider,
-        {
-          accessToken: body.accessToken,
-          refreshToken: body.refreshToken,
-          expiresAt,
-          accountId,
-          label: body.label ?? null,
-          metadata,
-        },
-        now
-      );
+      let account: Awaited<ReturnType<typeof importProviderAccount>>;
+      try {
+        account = await importProviderAccount(
+          db,
+          provider,
+          {
+            accessToken: body.accessToken,
+            refreshToken: body.refreshToken,
+            expiresAt,
+            accountId,
+            label: body.label ?? null,
+            metadata,
+          },
+          now
+        );
+      } catch (error) {
+        if (error instanceof ProviderAccountOwnerConflict) {
+          return context.json(
+            { error: "conflict", message: error.message },
+            409
+          );
+        }
+        throw error;
+      }
 
       return context.json({
         account: toAdminAccountView(account),

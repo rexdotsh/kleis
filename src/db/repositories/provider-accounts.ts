@@ -43,10 +43,32 @@ export const listProviderAccounts = async (
   const rows = await database
     .select()
     .from(providerAccounts)
+    .where(isNull(providerAccounts.unlinkedAt))
     .orderBy(
       desc(providerAccounts.isPrimary),
       desc(providerAccounts.createdAt)
     );
+  return rows.map(toProviderAccountRecord);
+};
+
+export const listOwnedProviderAccounts = async (
+  database: Database,
+  ownerId: string,
+  providerScopes: readonly Provider[] | null
+): Promise<ProviderAccountRecord[]> => {
+  const rows = await database
+    .select()
+    .from(providerAccounts)
+    .where(
+      and(
+        eq(providerAccounts.ownerId, ownerId),
+        isNull(providerAccounts.unlinkedAt),
+        providerScopes
+          ? inArray(providerAccounts.provider, providerScopes)
+          : undefined
+      )
+    )
+    .orderBy(desc(providerAccounts.createdAt));
   return rows.map(toProviderAccountRecord);
 };
 
@@ -120,15 +142,36 @@ export const findPrimaryProviderAccount = async (
   return row ? toProviderAccountRecord(row) : null;
 };
 
-const findProviderAccountByProviderAndAccountId = async (
+// Mirrors the generated identity column.
+const credentialIdentity = (input: {
+  provider: Provider;
+  accountId: string | null;
+  metadata: ProviderAccountMetadata | null;
+}): string | null => {
+  const { metadata } = input;
+  if (input.provider === "codex") {
+    const user = metadata?.provider === "codex" ? metadata.chatgptUserId : null;
+    return input.accountId === null ? null : `${input.accountId}:${user ?? ""}`;
+  }
+  if (input.accountId !== null) {
+    return input.accountId;
+  }
+  return metadata?.provider === "claude" &&
+    metadata.accountUuid &&
+    metadata.organizationUuid
+    ? `${metadata.accountUuid}:${metadata.organizationUuid}:${metadata.oauthMode}`
+    : null;
+};
+
+const findProviderAccountByIdentity = async (
   database: Database,
   provider: Provider,
-  accountId: string
+  identity: string
 ): Promise<ProviderAccountRecord | null> => {
   const row = await database.query.providerAccounts.findFirst({
     where: and(
       eq(providerAccounts.provider, provider),
-      eq(providerAccounts.accountId, accountId)
+      eq(providerAccounts.identity, identity)
     ),
   });
 
@@ -162,8 +205,6 @@ type UpsertProviderAccountInput = {
   provider: Provider;
   accountId: string | null;
   label?: string | null;
-  // Set when an owner links the account; the account must not belong to
-  // anyone else.
   owner?: ProviderAccountOwner;
   accessToken: string;
   refreshToken: string;
@@ -177,18 +218,16 @@ export const upsertProviderAccount = withInvalidation(
     database: Database,
     input: UpsertProviderAccountInput
   ): Promise<ProviderAccountRecord> => {
-    const existing = input.accountId
-      ? await findProviderAccountByProviderAndAccountId(
-          database,
-          input.provider,
-          input.accountId
-        )
+    const identity = credentialIdentity(input);
+    const existing = identity
+      ? await findProviderAccountByIdentity(database, input.provider, identity)
       : null;
 
+    // A subscription belongs to one owner, or is shared.
     const updateExisting = async (
       account: ProviderAccountRecord
     ): Promise<ProviderAccountRecord> => {
-      if (input.owner && account.ownerId !== input.owner.id) {
+      if (account.ownerId !== (input.owner?.id ?? null)) {
         throw new ProviderAccountOwnerConflict();
       }
       await database
@@ -225,7 +264,10 @@ export const upsertProviderAccount = withInvalidation(
         ),
       }),
       database.query.providerAccounts.findFirst({
-        where: eq(providerAccounts.provider, input.provider),
+        where: and(
+          eq(providerAccounts.provider, input.provider),
+          isNull(providerAccounts.unlinkedAt)
+        ),
       }),
     ]);
     const insertValues: typeof providerAccounts.$inferInsert = {
@@ -269,11 +311,11 @@ export const upsertProviderAccount = withInvalidation(
       }
     }
 
-    if (input.accountId) {
-      const concurrent = await findProviderAccountByProviderAndAccountId(
+    if (identity) {
+      const concurrent = await findProviderAccountByIdentity(
         database,
         input.provider,
-        input.accountId
+        identity
       );
       if (concurrent) {
         return updateExisting(concurrent);
@@ -341,6 +383,10 @@ export const replaceProviderAccountCredentials = withInvalidation(
                   : null),
               input.accountId,
             ],
+            [
+              previous?.provider === "codex" ? previous.chatgptUserId : null,
+              incoming?.provider === "codex" ? incoming.chatgptUserId : null,
+            ],
           ];
     if (identities.some(([known, received]) => known && known !== received)) {
       throw new ProviderAccountReauthorizationConflict(
@@ -368,7 +414,8 @@ export const replaceProviderAccountCredentials = withInvalidation(
           and(
             eq(providerAccounts.id, id),
             eq(providerAccounts.provider, input.provider),
-            eq(providerAccounts.updatedAt, existing.updatedAt)
+            eq(providerAccounts.updatedAt, existing.updatedAt),
+            isNull(providerAccounts.unlinkedAt)
           )
         );
     } catch (error) {
@@ -431,6 +478,7 @@ export const updateProviderAccountTokens = withInvalidation(
 
     const whereClause = and(
       eq(providerAccounts.id, id),
+      isNull(providerAccounts.unlinkedAt),
       ...(input.refreshLockToken
         ? [
             eq(providerAccounts.refreshLockToken, input.refreshLockToken),
@@ -655,6 +703,46 @@ export const deleteProviderAccount = withInvalidation(
   }
 );
 
+// Wipes the credentials and leaves a disabled row that past usage still
+// points to. One statement, so nothing can use the account once it returns.
+export const unlinkOwnedProviderAccount = withInvalidation(
+  async (
+    database: Database,
+    input: {
+      id: string;
+      ownerId: string;
+      providerScopes: readonly Provider[] | null;
+    },
+    now: number
+  ): Promise<boolean> => {
+    const result = await database
+      .update(providerAccounts)
+      .set({
+        accountId: null,
+        metadataJson: null,
+        enabled: false,
+        accessToken: "",
+        refreshToken: "",
+        expiresAt: 0,
+        refreshLockToken: null,
+        refreshLockExpiresAt: null,
+        unlinkedAt: now,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(providerAccounts.id, input.id),
+          eq(providerAccounts.ownerId, input.ownerId),
+          isNull(providerAccounts.unlinkedAt),
+          input.providerScopes
+            ? inArray(providerAccounts.provider, input.providerScopes)
+            : undefined
+        )
+      );
+    return result.rowsAffected > 0;
+  }
+);
+
 export const setPrimaryProviderAccount = withInvalidation(
   async (
     database: Database,
@@ -754,6 +842,7 @@ export const listProviderStatuses = async (
         enabled: providerAccounts.enabled,
       })
       .from(providerAccounts)
+      .where(isNull(providerAccounts.unlinkedAt))
   );
 
 export const setProviderAccountsEnabled = withInvalidation(
@@ -766,7 +855,12 @@ export const setProviderAccountsEnabled = withInvalidation(
     await database
       .update(providerAccounts)
       .set({ enabled, updatedAt: now })
-      .where(eq(providerAccounts.provider, provider));
+      .where(
+        and(
+          eq(providerAccounts.provider, provider),
+          isNull(providerAccounts.unlinkedAt)
+        )
+      );
 
     const statuses = await listProviderStatuses(database);
     const status = statuses.find((item) => item.provider === provider);

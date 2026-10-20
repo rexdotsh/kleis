@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e9d3e3cd-c858-4866-823c-42a0547d8d6a",
+  "id": "3d383826-1b7e-4436-b3c1-48e5061e9cd8",
   "prevId": "0d44d767-aa8e-4e2e-84ad-cf02c5589817",
   "tables": {
     "api_keys": {
@@ -349,6 +349,24 @@
           "notNull": false,
           "autoincrement": false
         },
+        "unlinked_at": {
+          "name": "unlinked_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "identity": {
+          "name": "identity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false,
+          "generated": {
+            "as": "(case when provider = 'codex' then account_id || ':' || coalesce(json_extract(metadata_json, '$.chatgptUserId'), '') else coalesce(account_id, json_extract(metadata_json, '$.accountUuid') || ':' || json_extract(metadata_json, '$.organizationUuid') || ':' || json_extract(metadata_json, '$.oauthMode')) end)",
+            "type": "virtual"
+          }
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -391,11 +409,11 @@
           "isUnique": true,
           "where": "\"provider_accounts\".\"is_primary\" = 1"
         },
-        "provider_accounts_provider_account_unique": {
-          "name": "provider_accounts_provider_account_unique",
-          "columns": ["provider", "account_id"],
+        "provider_accounts_identity_unique": {
+          "name": "provider_accounts_identity_unique",
+          "columns": ["provider", "identity"],
           "isUnique": true,
-          "where": "\"provider_accounts\".\"account_id\" is not null"
+          "where": "\"provider_accounts\".\"account_id\" is not null or \"provider_accounts\".\"owner_id\" is not null"
         }
       },
       "foreignKeys": {},

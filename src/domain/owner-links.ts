@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import type { Database } from "../db";
 import {
-  consumeOAuthStateByValue,
+  consumeOAuthState,
   createOAuthState,
   findOAuthState,
 } from "../db/repositories/oauth-states";
@@ -19,10 +19,13 @@ import {
 
 const LINK_TTL_MS = 15 * 60_000;
 
-const linkMetadataSchema = z.strictObject({ link: oauthOwnerSchema });
+const linkMetadataSchema = z.strictObject({
+  link: oauthOwnerSchema,
+  app: z.string().nullable(),
+});
 const ownedStateMetadataSchema = z.object({ owner: oauthOwnerSchema });
 
-const readJson = (text: string | null): unknown => {
+const readJson = (text: string | null | undefined): unknown => {
   try {
     return JSON.parse(text ?? "");
   } catch {
@@ -30,50 +33,73 @@ const readJson = (text: string | null): unknown => {
   }
 };
 
-// The owner is stored with the link, so whoever opens it can only link an
-// account for that owner.
+const readLink = (row: { metadataJson: string | null } | null) => {
+  const parsed = linkMetadataSchema.safeParse(readJson(row?.metadataJson));
+  return parsed.success ? parsed.data : null;
+};
+
+// The owner and the delegated app are stored with the link, so whoever opens
+// it can only link an account for that owner.
 export const createOwnerLink = async (
   database: Database,
-  provider: Provider,
-  owner: ProviderAccountOwner,
+  input: {
+    provider: Provider;
+    owner: ProviderAccountOwner;
+    app: string | null;
+  },
   now: number
 ): Promise<{ token: string; expiresAt: number }> => {
   const token = `kln_${crypto.randomUUID().replaceAll("-", "")}`;
   const expiresAt = now + LINK_TTL_MS;
   await createOAuthState(database, {
     state: token,
-    provider,
+    provider: input.provider,
     pkceVerifier: null,
-    metadataJson: JSON.stringify({ link: owner }),
+    metadataJson: JSON.stringify({ link: input.owner, app: input.app }),
     expiresAt,
   });
   return { token, expiresAt };
 };
 
-// Opening a link spends it and starts one sign-in bound to its owner.
+// What the consent page names, without spending the link.
+export const describeOwnerLink = async (
+  database: Database,
+  token: string,
+  now: number
+) => {
+  const row = await findOAuthState(database, token, null, now);
+  const link = readLink(row);
+  return row && link
+    ? {
+        provider: row.provider,
+        owner: link.link.label ?? link.link.id,
+        app: link.app,
+      }
+    : null;
+};
+
+// Continuing spends the link and starts one sign-in bound to its owner.
 export const startOwnerLink = async (
   database: Database,
   token: string,
   now: number
 ) => {
-  const link = await consumeOAuthStateByValue(database, token, now);
-  const metadata = linkMetadataSchema.safeParse(
-    readJson(link?.metadataJson ?? null)
-  );
-  if (!link || !metadata.success) {
+  const row = await consumeOAuthState(database, token, null, now);
+  const link = readLink(row);
+  if (!row || !link) {
     return null;
   }
   const started = await startProviderOAuth(
     database,
-    link.provider,
+    row.provider,
     {
-      options: { mode: link.provider === "claude" ? "max" : "browser" },
-      owner: metadata.data.link,
+      options: { mode: row.provider === "claude" ? "max" : "browser" },
+      owner: link.link,
     },
     now
   );
   return {
-    provider: link.provider,
+    provider: row.provider,
     authorizationUrl: started.authorizationUrl,
     state: started.state,
   };

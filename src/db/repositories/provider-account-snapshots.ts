@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { isNull, sql } from "drizzle-orm";
 
 import type { Database } from "../index";
 import { providerAccounts, providerAccountSnapshots } from "../schema";
@@ -103,7 +103,10 @@ export const listProviderAccountsWithSnapshots = async (
   snapshots: ProviderAccountSnapshotRow[];
 }> => {
   const [accountRows, snapshots] = await database.batch([
-    database.select().from(providerAccounts),
+    database
+      .select()
+      .from(providerAccounts)
+      .where(isNull(providerAccounts.unlinkedAt)),
     database.select().from(providerAccountSnapshots),
   ]);
   return { accounts: accountRows.map(toProviderAccountRecord), snapshots };

@@ -421,6 +421,9 @@ export class ProviderReauthorizationTargetError extends Error {
 }
 
 const assertProviderRefreshAllowed = (account: ProviderAccountRecord): void => {
+  if (account.unlinkedAt !== null) {
+    throw new Error("Provider account was unlinked by its owner");
+  }
   if (account.lastRefreshStatus === "reauthorize") {
     throw new Error(
       `${account.provider === "claude" ? "Claude" : "Codex"} account needs reauthorization`

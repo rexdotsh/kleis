@@ -30,10 +30,16 @@
           kleis
         </div>
         <div class="login-sub">Link your subscription</div>
-        <div id="link-consent">
+        <div id="link-consent" hidden>
           <p class="link-text">
-            Your subscription will be used through this Kleis server for
-            requests you grant. The server's admin operates it.
+            Linking <strong id="link-provider"></strong> for
+            <strong id="link-owner"></strong>.
+          </p>
+          <p class="link-text">
+            Its OAuth credentials will be stored on this Kleis server. The
+            server's admin and <strong id="link-app"></strong> can use it for
+            work done on your behalf, under time-limited grants. You can unlink
+            it at any time.
           </p>
           <button id="link-continue" class="btn btn-primary" type="button">
             Continue

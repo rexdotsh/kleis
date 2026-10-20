@@ -5,7 +5,11 @@ import { z } from "zod";
 import type { Database } from "../../db";
 import { ProviderAccountOwnerConflict } from "../../db/repositories/provider-accounts";
 import { providers } from "../../db/schema";
-import { completeOwnerLink, startOwnerLink } from "../../domain/owner-links";
+import {
+  completeOwnerLink,
+  describeOwnerLink,
+  startOwnerLink,
+} from "../../domain/owner-links";
 import { expireProviderAccountTracking } from "../../domain/providers/provider-account-tracking";
 import { errorLogFields, logWarn } from "../../utils/log";
 
@@ -25,22 +29,27 @@ const expiredBody = {
 } as const;
 
 // Public: the link token or the sign-in it started is the only credential.
-export const createLinkRoutes = (database: Database) =>
-  new Hono()
-    .post(
-      "/link/:token/start",
-      zValidator("param", linkParamsSchema, (result, context) =>
-        result.success ? undefined : context.json(expiredBody, 404)
-      ),
-      async (context) => {
-        const started = await startOwnerLink(
-          database,
-          context.req.valid("param").token,
-          Date.now()
-        );
-        return started ? context.json(started) : context.json(expiredBody, 404);
-      }
-    )
+export const createLinkRoutes = (database: Database) => {
+  const tokenParam = zValidator("param", linkParamsSchema, (result, context) =>
+    result.success ? undefined : context.json(expiredBody, 404)
+  );
+  return new Hono()
+    .get("/link/:token/details", tokenParam, async (context) => {
+      const link = await describeOwnerLink(
+        database,
+        context.req.valid("param").token,
+        Date.now()
+      );
+      return link ? context.json(link) : context.json(expiredBody, 404);
+    })
+    .post("/link/:token/start", tokenParam, async (context) => {
+      const started = await startOwnerLink(
+        database,
+        context.req.valid("param").token,
+        Date.now()
+      );
+      return started ? context.json(started) : context.json(expiredBody, 404);
+    })
     .post(
       "/link/complete",
       zValidator("json", completeBodySchema),
@@ -75,3 +84,4 @@ export const createLinkRoutes = (database: Database) =>
         }
       }
     );
+};

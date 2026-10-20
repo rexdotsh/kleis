@@ -15,13 +15,14 @@ export const createOAuthState = async (
 export const findOAuthState = async (
   database: Database,
   state: string,
-  provider: Provider,
+  // Null matches any provider, for links that don't name one.
+  provider: Provider | null,
   now: number
 ): Promise<OAuthStateRecord | null> => {
   const row = await database.query.oauthStates.findFirst({
     where: and(
       eq(oauthStates.state, state),
-      eq(oauthStates.provider, provider)
+      provider ? eq(oauthStates.provider, provider) : undefined
     ),
   });
 
@@ -35,7 +36,7 @@ export const findOAuthState = async (
 export const consumeOAuthState = async (
   database: Database,
   state: string,
-  provider: Provider,
+  provider: Provider | null,
   now: number
 ): Promise<OAuthStateRecord | null> => {
   const [row] = await database
@@ -43,25 +44,10 @@ export const consumeOAuthState = async (
     .where(
       and(
         eq(oauthStates.state, state),
-        eq(oauthStates.provider, provider),
+        provider ? eq(oauthStates.provider, provider) : undefined,
         gt(oauthStates.expiresAt, now)
       )
     )
-    .returning();
-
-  return row ?? null;
-};
-
-// Spends a state whatever its provider, for flows whose links carry no
-// provider.
-export const consumeOAuthStateByValue = async (
-  database: Database,
-  state: string,
-  now: number
-): Promise<OAuthStateRecord | null> => {
-  const [row] = await database
-    .delete(oauthStates)
-    .where(and(eq(oauthStates.state, state), gt(oauthStates.expiresAt, now)))
     .returning();
 
   return row ?? null;

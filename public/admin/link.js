@@ -1,5 +1,9 @@
 const $ = (selector) => document.querySelector(selector);
 const token = location.pathname.split("/").pop();
+const PROVIDER_NAMES = {
+  claude: "your Claude subscription",
+  codex: "your ChatGPT subscription",
+};
 const SIGN_IN = {
   claude: ["Sign in to Claude", "the code it shows"],
   codex: [
@@ -9,12 +13,17 @@ const SIGN_IN = {
 };
 let flow = null;
 
-async function post(path, body) {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body ?? {}),
-  });
+async function request(path, body) {
+  const response = await fetch(
+    path,
+    body === undefined
+      ? {}
+      : {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }
+  );
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.message || "Something went wrong");
   return data;
@@ -34,7 +43,7 @@ function run(button, action) {
 
 $("#link-continue").addEventListener("click", (event) => {
   run(event.currentTarget, async () => {
-    flow = await post(`/link/${encodeURIComponent(token)}/start`);
+    flow = await request(`/link/${encodeURIComponent(token)}/start`, {});
     const [signIn, paste] = SIGN_IN[flow.provider];
     const link = $("#link-sign-in");
     link.href = flow.authorizationUrl;
@@ -49,7 +58,7 @@ $("#link-continue").addEventListener("click", (event) => {
 $("#link-form").addEventListener("submit", (event) => {
   event.preventDefault();
   run(event.submitter, async () => {
-    await post("/link/complete", {
+    await request("/link/complete", {
       provider: flow.provider,
       state: flow.state,
       code: $("#link-code").value.trim(),
@@ -58,3 +67,14 @@ $("#link-form").addEventListener("submit", (event) => {
     $("#link-done").hidden = false;
   });
 });
+
+request(`/link/${encodeURIComponent(token)}/details`)
+  .then((link) => {
+    $("#link-provider").textContent = PROVIDER_NAMES[link.provider];
+    $("#link-owner").textContent = link.owner;
+    $("#link-app").textContent = link.app || "the delegated app";
+    $("#link-consent").hidden = false;
+  })
+  .catch((error) => {
+    $("#link-error").textContent = error.message;
+  });

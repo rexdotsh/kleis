@@ -1,0 +1,5 @@
+DROP INDEX `provider_accounts_provider_account_unique`;--> statement-breakpoint
+ALTER TABLE `provider_accounts` ADD `unlinked_at` integer;--> statement-breakpoint
+ALTER TABLE `provider_accounts` ADD `identity` text GENERATED ALWAYS AS (case when provider = 'codex' then account_id || ':' || coalesce(json_extract(metadata_json, '$.chatgptUserId'), '') else coalesce(account_id, json_extract(metadata_json, '$.accountUuid') || ':' || json_extract(metadata_json, '$.organizationUuid') || ':' || json_extract(metadata_json, '$.oauthMode')) end) VIRTUAL;--> statement-breakpoint
+CREATE UNIQUE INDEX `provider_accounts_identity_unique` ON `provider_accounts` (`provider`,`identity`) WHERE "provider_accounts"."account_id" is not null or "provider_accounts"."owner_id" is not null;--> statement-breakpoint
+ALTER TABLE `api_keys` ADD `delegate` integer DEFAULT false NOT NULL;

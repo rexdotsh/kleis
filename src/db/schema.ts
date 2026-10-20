@@ -36,6 +36,16 @@ export const providerAccounts = sqliteTable(
     // never primary and serve only requests made for their owner.
     ownerId: text("owner_id"),
     ownerLabel: text("owner_label"),
+    // An unlinked owned account keeps its row, without credentials, so past
+    // usage stays attributed to its owner.
+    unlinkedAt: integer("unlinked_at", { mode: "number" }),
+    // Who the credential belongs to: a Codex workspace holds many users, and
+    // Claude OAuth leaves account_id empty, so the subscription is the user,
+    // the organization and the OAuth mode.
+    identity: text("identity").generatedAlwaysAs(
+      sql`case when provider = 'codex' then account_id || ':' || coalesce(json_extract(metadata_json, '$.chatgptUserId'), '') else coalesce(account_id, json_extract(metadata_json, '$.accountUuid') || ':' || json_extract(metadata_json, '$.organizationUuid') || ':' || json_extract(metadata_json, '$.oauthMode')) end`,
+      { mode: "virtual" }
+    ),
     createdAt: integer("created_at", { mode: "number" }).notNull(),
     updatedAt: integer("updated_at", { mode: "number" }).notNull(),
   },
@@ -47,9 +57,12 @@ export const providerAccounts = sqliteTable(
     uniqueIndex("provider_accounts_primary_unique")
       .on(table.provider)
       .where(sql`${table.isPrimary} = 1`),
-    uniqueIndex("provider_accounts_provider_account_unique")
-      .on(table.provider, table.accountId)
-      .where(sql`${table.accountId} is not null`),
+    // Shared Claude rows without an account_id may already repeat.
+    uniqueIndex("provider_accounts_identity_unique")
+      .on(table.provider, table.identity)
+      .where(
+        sql`${table.accountId} is not null or ${table.ownerId} is not null`
+      ),
   ]
 );
 

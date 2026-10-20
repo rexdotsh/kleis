@@ -4,10 +4,10 @@ import { z } from "zod";
 
 import type { Database } from "../../db";
 import {
-  deleteProviderAccount,
   listOwnedProviderAccounts,
+  unlinkOwnedProviderAccount,
 } from "../../db/repositories/provider-accounts";
-import { providers } from "../../db/schema";
+import { providers, type Provider } from "../../db/schema";
 import { createOwnerLink } from "../../domain/owner-links";
 import { ownerIdSchema, ownerLabelSchema } from "../../domain/owners";
 import { describeAccountLimits } from "../../domain/providers/account-limits";
@@ -27,18 +27,41 @@ const ownedAccountParamsSchema = ownerParamsSchema.extend({
   id: z.string().trim().min(1).max(120),
 });
 
-// Called with delegate keys only.
-export const createOwnerRoutes = (database: Database) =>
-  new Hono()
+// Called with delegate keys only; each key sees only its providers.
+export const createOwnerRoutes = (database: Database) => {
+  const ownedAccounts = async (
+    owner: string,
+    providerScopes: readonly Provider[] | null
+  ) => {
+    const [accounts] = await Promise.all([
+      listOwnedProviderAccounts(database, owner, providerScopes),
+      providerAccountSnapshotsRestored(),
+    ]);
+    return accounts;
+  };
+
+  return new Hono()
     .post(
       "/links",
       zValidator("json", createLinkBodySchema),
       async (context) => {
         const { owner, label, provider } = context.req.valid("json");
+        const apiKey = context.get("apiKey");
+        if (
+          apiKey.providerScopes &&
+          !apiKey.providerScopes.includes(provider)
+        ) {
+          return context.json(
+            {
+              error: "forbidden",
+              message: `API key is not allowed to access provider: ${provider}`,
+            },
+            403
+          );
+        }
         const link = await createOwnerLink(
           database,
-          provider,
-          { id: owner, label },
+          { provider, owner: { id: owner, label }, app: apiKey.label },
           Date.now()
         );
         const origin = resolveExternalRequestUrl(context.req.raw).origin;
@@ -53,11 +76,11 @@ export const createOwnerRoutes = (database: Database) =>
       zValidator("param", ownerParamsSchema),
       async (context) => {
         const { owner } = context.req.valid("param");
-        const [accounts] = await Promise.all([
-          listOwnedProviderAccounts(database, owner),
-          providerAccountSnapshotsRestored(),
-        ]);
         const now = Date.now();
+        const accounts = await ownedAccounts(
+          owner,
+          context.get("apiKey").providerScopes
+        );
         return context.json({
           owner,
           accounts: accounts.map((account) => ({
@@ -76,10 +99,10 @@ export const createOwnerRoutes = (database: Database) =>
       zValidator("param", ownerParamsSchema),
       async (context) => {
         const { owner } = context.req.valid("param");
-        const [accounts] = await Promise.all([
-          listOwnedProviderAccounts(database, owner),
-          providerAccountSnapshotsRestored(),
-        ]);
+        const accounts = await ownedAccounts(
+          owner,
+          context.get("apiKey").providerScopes
+        );
         return context.json({
           owner,
           accounts: accounts.map(describeAccountLimits),
@@ -91,16 +114,21 @@ export const createOwnerRoutes = (database: Database) =>
       zValidator("param", ownedAccountParamsSchema),
       async (context) => {
         const { owner, id } = context.req.valid("param");
-        const owned = await listOwnedProviderAccounts(database, owner);
-        if (
-          !owned.some((account) => account.id === id) ||
-          !(await deleteProviderAccount(database, id))
-        ) {
-          return context.json(
-            { error: "not_found", message: "Linked account not found" },
-            404
-          );
-        }
-        return context.json({ unlinked: true });
+        const unlinked = await unlinkOwnedProviderAccount(
+          database,
+          {
+            id,
+            ownerId: owner,
+            providerScopes: context.get("apiKey").providerScopes,
+          },
+          Date.now()
+        );
+        return unlinked
+          ? context.json({ unlinked: true })
+          : context.json(
+              { error: "not_found", message: "Linked account not found" },
+              404
+            );
       }
     );
+};
