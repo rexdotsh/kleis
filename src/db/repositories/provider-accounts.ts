@@ -104,6 +104,18 @@ export const findProviderAccountsByIds = async (
     );
 };
 
+export const listOwnedProviderAccounts = async (
+  database: Database,
+  ownerId: string
+): Promise<ProviderAccountRecord[]> => {
+  const rows = await database
+    .select()
+    .from(providerAccounts)
+    .where(eq(providerAccounts.ownerId, ownerId))
+    .orderBy(desc(providerAccounts.createdAt));
+  return rows.map(toProviderAccountRecord);
+};
+
 export const findPrimaryProviderAccount = async (
   database: Database,
   provider: Provider
@@ -149,10 +161,13 @@ const isUniqueConstraintError = (error: unknown): boolean => {
   return false;
 };
 
+export type ProviderAccountOwner = { id: string; label: string | null };
+
 type UpsertProviderAccountInput = {
   provider: Provider;
   accountId: string | null;
   label?: string | null;
+  owner?: ProviderAccountOwner | null;
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
@@ -218,7 +233,7 @@ export const upsertProviderAccount = withInvalidation(
       provider: input.provider,
       label: input.label ?? null,
       accountId: input.accountId,
-      isPrimary: !primary,
+      isPrimary: !primary && !input.owner,
       enabled: providerAccount?.enabled ?? true,
       accessToken: input.accessToken,
       refreshToken: input.refreshToken,
@@ -228,6 +243,8 @@ export const upsertProviderAccount = withInvalidation(
       metadataJson: serializeProviderAccountMetadata(input.metadata),
       lastRefreshAt: null,
       lastRefreshStatus: null,
+      ownerId: input.owner?.id ?? null,
+      ownerLabel: input.owner?.label ?? null,
       createdAt: input.now,
       updatedAt: input.now,
     };
@@ -622,7 +639,10 @@ export const deleteProviderAccount = withInvalidation(
       );
       if (!currentPrimary) {
         const next = await database.query.providerAccounts.findFirst({
-          where: eq(providerAccounts.provider, account.provider),
+          where: and(
+            eq(providerAccounts.provider, account.provider),
+            isNull(providerAccounts.ownerId)
+          ),
           orderBy: desc(providerAccounts.createdAt),
         });
         if (next) {
@@ -640,7 +660,7 @@ export const setPrimaryProviderAccount = withInvalidation(
     database: Database,
     id: string,
     now: number
-  ): Promise<ProviderAccountRecord | null> => {
+  ): Promise<ProviderAccountRecord | "owned" | null> => {
     const accountChangedMessage =
       "Provider account changed while setting primary";
 
@@ -651,6 +671,9 @@ export const setPrimaryProviderAccount = withInvalidation(
         });
         if (!account) {
           return null;
+        }
+        if (account.ownerId !== null) {
+          return "owned";
         }
 
         await tx
@@ -669,7 +692,8 @@ export const setPrimaryProviderAccount = withInvalidation(
           .where(
             and(
               eq(providerAccounts.id, id),
-              eq(providerAccounts.provider, account.provider)
+              eq(providerAccounts.provider, account.provider),
+              isNull(providerAccounts.ownerId)
             )
           );
 

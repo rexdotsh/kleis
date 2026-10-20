@@ -401,6 +401,11 @@ for (const [inputId, field, render] of [
   });
 }
 
+$("#accounts-owner").addEventListener("change", (event) => {
+  state.accountOwner = event.target.value;
+  renderAccounts();
+});
+
 $("#login-form").addEventListener("submit", (event) => {
   event.preventDefault();
   runAction(handleLogin());

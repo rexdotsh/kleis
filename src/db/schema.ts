@@ -32,11 +32,16 @@ export const providerAccounts = sqliteTable(
     metadataJson: text("metadata_json"),
     lastRefreshAt: integer("last_refresh_at", { mode: "number" }),
     lastRefreshStatus: text("last_refresh_status"),
+    // Set when a person linked their own subscription. Owned accounts are
+    // never primary and serve only requests made for their owner.
+    ownerId: text("owner_id"),
+    ownerLabel: text("owner_label"),
     createdAt: integer("created_at", { mode: "number" }).notNull(),
     updatedAt: integer("updated_at", { mode: "number" }).notNull(),
   },
   (table) => [
     index("provider_accounts_provider_idx").on(table.provider),
+    index("provider_accounts_owner_idx").on(table.ownerId, table.provider),
     index("provider_accounts_enabled_idx").on(table.provider, table.enabled),
     index("provider_accounts_primary_idx").on(table.provider, table.isPrimary),
     uniqueIndex("provider_accounts_primary_unique")

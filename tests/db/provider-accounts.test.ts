@@ -6,6 +6,7 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 
 import type { Database } from "../../src/db";
 import {
+  deleteProviderAccount,
   findPrimaryProviderAccount,
   listConfiguredProviders,
   listProviderAccounts,
@@ -559,6 +560,75 @@ describe("provider account enablement", () => {
       (await getRoutableProviderAccount(database, "codex", now, claudePinned))
         ?.id
     ).toBe("codex-primary");
+  });
+
+  test("an owned account serves only callers that ask for its owner and is never primary", async () => {
+    const now = Date.now();
+    const routes = async () => {
+      const results = [];
+      for (const provider of ["claude", "codex"] as const) {
+        for (const allowedAccountIds of [
+          null,
+          ["claude-secondary"],
+          ["codex-primary"],
+        ]) {
+          results.push(
+            (
+              await getRoutableProviderAccount(database, provider, now, {
+                allowedAccountIds,
+              })
+            )?.id ?? null
+          );
+        }
+      }
+      return [...results, ...(await listConfiguredProviders(database))];
+    };
+    const before = await routes();
+
+    await database
+      .delete(providerAccounts)
+      .where(eq(providerAccounts.id, "codex-primary"));
+    const owned = await upsertProviderAccount(database, {
+      provider: "codex",
+      accountId: "owned-codex",
+      accessToken: "access-owned",
+      refreshToken: "refresh-owned",
+      expiresAt: now + 60_000,
+      metadata: null,
+      owner: { id: "alice", label: "Alice" },
+      now,
+    });
+    await database.insert(providerAccounts).values({
+      id: "codex-primary",
+      provider: "codex",
+      isPrimary: true,
+      accessToken: "access-codex",
+      refreshToken: "refresh-codex",
+      expiresAt: now + 60_000,
+      createdAt: now - 1,
+      updatedAt: now,
+    });
+    expect(await routes()).toEqual(before);
+
+    expect(owned.isPrimary).toBe(false);
+    expect(await setPrimaryProviderAccount(database, owned.id, now)).toBe(
+      "owned"
+    );
+    for (const [input, expected] of [
+      [{ allowedAccountIds: [owned.id] }, "codex-primary"],
+      [{ ownerId: "alice" }, owned.id],
+      [{ ownerId: "bob" }, null],
+      [{ ownerId: "alice", allowedAccountIds: ["codex-primary"] }, owned.id],
+    ] as const) {
+      expect(
+        (await getRoutableProviderAccount(database, "codex", now, input))?.id ??
+          null
+      ).toBe(expected);
+    }
+
+    await deleteProviderAccount(database, "codex-primary");
+    expect(await getRoutableProviderAccount(database, "codex", now)).toBeNull();
+    expect(await listConfiguredProviders(database)).not.toContain("codex");
   });
 
   test("does not fall back to the primary when the pinned account is disabled", async () => {

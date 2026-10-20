@@ -33,6 +33,7 @@ const sessionState = () => ({
   keysLoaded: false,
   keyFilter: "",
   accountFilter: "",
+  accountOwner: "",
   expandedAccountId: null,
   pendingExpandedAccountId: null,
   showAllReauthorize: false,

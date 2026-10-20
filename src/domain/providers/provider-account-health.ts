@@ -91,6 +91,7 @@ export const summarizeProviderAccountHealth = async (database: Database) => {
   const summary = { codex: emptyCounts(), claude: emptyCounts() };
   const now = Date.now();
   for (const account of accounts) {
+    if (account.ownerId !== null) continue;
     const counts = summary[account.provider];
     const quota = getCachedProviderAccountQuota(account);
     const deadline =

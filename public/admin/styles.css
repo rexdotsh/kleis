@@ -662,6 +662,11 @@ a.link {
 .sh ~ .list {
   margin-top: 8px;
 }
+.owner-filter {
+  width: auto;
+  max-width: 200px;
+  height: 28px;
+}
 
 /* Lists */
 

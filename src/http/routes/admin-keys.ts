@@ -76,6 +76,11 @@ const invalidScopedAccountProvidersBody = {
   message: "accountScopes must belong to providers allowed by providerScopes",
 } as const;
 
+const ownedScopedAccountBody = {
+  error: "bad_request",
+  message: "accountScopes can't include accounts linked by an owner",
+} as const;
+
 const duplicateScopedAccountProvidersBody = {
   error: "bad_request",
   message: "accountScopes can include at most one account per provider",
@@ -96,6 +101,9 @@ const validateAccountScopes = async (input: {
   const accounts = await findProviderAccountsByIds(db, input.accountScopes);
   if (accounts.length !== input.accountScopes.length) {
     return invalidAccountScopesBody;
+  }
+  if (accounts.some((account) => account.ownerId !== null)) {
+    return ownedScopedAccountBody;
   }
 
   const seenProviders = new Set<Provider>();

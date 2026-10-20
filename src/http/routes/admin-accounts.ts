@@ -189,6 +189,8 @@ const toAdminAccountView = (account: ProviderAccountRecord) => ({
   expiresAt: account.expiresAt,
   lastRefreshAt: account.lastRefreshAt,
   lastRefreshStatus: account.lastRefreshStatus,
+  ownerId: account.ownerId,
+  ownerLabel: account.ownerLabel,
   createdAt: account.createdAt,
   updatedAt: account.updatedAt,
 });
@@ -471,6 +473,15 @@ export const adminAccountsRoutes = new Hono()
 
       if (!updated) {
         return context.json(accountNotFoundBody, 404);
+      }
+      if (updated === "owned") {
+        return context.json(
+          {
+            error: "conflict",
+            message: "An account linked by its owner can't be primary",
+          },
+          409
+        );
       }
 
       return context.json({ account: toAdminAccountView(updated) });

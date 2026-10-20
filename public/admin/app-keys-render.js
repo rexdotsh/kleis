@@ -106,7 +106,7 @@ function keyAccessHtml(mode, key = null) {
   const rows = PROVIDERS.map((provider) => {
     const on = !allowed || allowed.has(provider);
     const connected = state.accounts.filter(
-      (account) => account.provider === provider
+      (account) => account.provider === provider && !account.ownerId
     );
     const accounts = connected
       .filter((account) =>

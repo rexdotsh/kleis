@@ -4,6 +4,7 @@ import {
   findProviderAccountById,
   findProviderAccountsByIds,
   findPrimaryProviderAccount,
+  listOwnedProviderAccounts,
   hasActiveProviderAccountRefreshLock,
   recordProviderAccountRefreshFailure,
   replaceProviderAccountCredentials,
@@ -632,7 +633,7 @@ const normalizeAccountIds = (
   ).sort();
 
 // A key's account pins are per provider: only pins for this provider count,
-// enabled or not.
+// enabled or not. Owned accounts are never pinned.
 export const findPinnedProviderAccounts = (
   database: Database,
   provider: Provider,
@@ -647,22 +648,42 @@ export const findPinnedProviderAccounts = (
     `pinned:${provider}:${ids.join(",")}`,
     async () =>
       (await findProviderAccountsByIds(database, ids)).filter(
-        (candidate) => candidate.provider === provider
+        (candidate) =>
+          candidate.provider === provider && candidate.ownerId === null
       )
   );
 };
 
-// Requests use the key's pinned accounts for the provider when it has any,
-// and the provider's primary account otherwise.
+const ownedAccountCache = createLookupCache<ProviderAccountRecord[]>(
+  ROUTABLE_ACCOUNT_CACHE_TTL_MS
+);
+
+type RoutingInput = {
+  allowedAccountIds?: readonly string[] | null;
+  ownerId?: string | null;
+};
+
+// Requests made for an owner use only that owner's accounts. Others use the
+// key's pinned accounts for the provider when it has any, and the provider's
+// primary account otherwise.
 export const findRoutingCandidates = async (
   database: Database,
   provider: Provider,
-  allowedAccountIds: readonly string[] | null | undefined
+  input?: RoutingInput
 ): Promise<ProviderAccountRecord[]> => {
+  const ownerId = input?.ownerId;
+  if (ownerId) {
+    const owned = await ownedAccountCache.get(
+      database,
+      `owned:${ownerId}`,
+      () => listOwnedProviderAccounts(database, ownerId)
+    );
+    return owned.filter((account) => account.provider === provider);
+  }
   const pinned = await findPinnedProviderAccounts(
     database,
     provider,
-    allowedAccountIds
+    input?.allowedAccountIds
   );
   if (pinned.length) {
     return pinned;
@@ -679,13 +700,11 @@ export const getRoutableProviderAccount = async (
   database: Database,
   provider: Provider,
   now: number,
-  input?: {
-    allowedAccountIds?: readonly string[] | null;
-  }
+  input?: RoutingInput
 ): Promise<ProviderAccountRecord | null> => {
-  const account = (
-    await findRoutingCandidates(database, provider, input?.allowedAccountIds)
-  ).find((candidate) => candidate.enabled);
+  const account = (await findRoutingCandidates(database, provider, input)).find(
+    (candidate) => candidate.enabled
+  );
   if (!account) {
     return null;
   }

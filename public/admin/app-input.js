@@ -65,8 +65,10 @@ const accountActions = {
   "redeem-reset-credit": (id) => redeemResetCredit(id),
   "delete-account": (id) => deleteAccount(id),
   "toggle-free-tier": (_id, button) => toggleFreeTier(button),
-  "clear-filter": () =>
-    clearFilter("#accounts-filter", "accountFilter", renderAccounts),
+  "clear-filter": () => {
+    state.accountOwner = "";
+    clearFilter("#accounts-filter", "accountFilter", renderAccounts);
+  },
 };
 
 const keyActions = {
@@ -335,6 +337,7 @@ async function showAccount(id) {
     state.accountFilter = "";
     $("#accounts-filter").value = "";
   }
+  state.accountOwner = "";
   switchToTab("accounts");
   if (await setExpanded("accounts", id)) reveal(accountRow(id));
 }
