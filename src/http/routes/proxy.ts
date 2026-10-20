@@ -248,6 +248,7 @@ const proxyRequest = async (
   });
   const apiKeyId = context.get("proxyApiKeyId");
   const accountScopeIds = context.get("proxyApiKeyAccountScopeIds");
+  const ownerId = context.get("proxyOwnerId") ?? null;
   let providerAccountId = MISSING_PROVIDER_ACCOUNT_ID;
 
   const requestUrl = new URL(context.req.url);
@@ -287,6 +288,7 @@ const proxyRequest = async (
   try {
     account = await getRoutableProviderAccount(db, route.provider, now, {
       allowedAccountIds: accountScopeIds,
+      ownerId,
     });
   } catch {
     usageRecorder.recordImmediate(502);
@@ -296,6 +298,17 @@ const proxyRequest = async (
         "token_refresh_failed"
       ),
       502
+    );
+  }
+
+  if (!account && ownerId) {
+    usageRecorder.recordImmediate(400);
+    return context.json(
+      proxyErrorResponse(
+        `No ${route.provider} account is linked for ${ownerId}`,
+        "account_missing"
+      ),
+      400
     );
   }
 

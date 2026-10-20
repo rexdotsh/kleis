@@ -11,6 +11,7 @@ declare module "hono" {
     proxyApiKeyAccountScopeIds: string[] | null;
     proxyApiKeyId: string;
     proxyLogContext: LogFields | undefined;
+    proxyOwnerId: string | null;
     proxyRequestBody: ProxyRequestBody;
     requestStartedAt: number;
   }

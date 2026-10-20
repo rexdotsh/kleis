@@ -1,8 +1,8 @@
-import { and, desc, gte, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 
 import { toNonNegativeInteger } from "../../utils/number";
 import type { Database } from "../index";
-import { requestUsageBuckets } from "../schema";
+import { providerAccounts, requestUsageBuckets } from "../schema";
 import {
   averageUsageRow,
   mapEndpointUsageRows,
@@ -28,7 +28,8 @@ const DASHBOARD_BREAKDOWN_LIMIT = 120;
 export const getDashboardUsage = async (
   database: Database,
   sinceMs: number,
-  windowMs: number
+  windowMs: number,
+  ownerId?: string
 ) => {
   const sinceBucket = toUsageBucketStart(toNonNegativeInteger(sinceMs));
   const previousSinceBucket = toUsageBucketStart(
@@ -39,10 +40,23 @@ export const getDashboardUsage = async (
   // integer truncation before multiplying back to a bucket boundary.
   const aggregatedBucket = sql<number>`cast(${requestUsageBuckets.bucketStart} / ${bucketSizeMs} as integer) * ${bucketSizeMs}`;
 
-  const currentFilter = gte(requestUsageBuckets.bucketStart, sinceBucket);
+  const ownerFilter = ownerId
+    ? inArray(
+        requestUsageBuckets.providerAccountId,
+        database
+          .select({ id: providerAccounts.id })
+          .from(providerAccounts)
+          .where(eq(providerAccounts.ownerId, ownerId))
+      )
+    : undefined;
+  const currentFilter = and(
+    gte(requestUsageBuckets.bucketStart, sinceBucket),
+    ownerFilter
+  );
   const previousFilter = and(
     gte(requestUsageBuckets.bucketStart, previousSinceBucket),
-    lt(requestUsageBuckets.bucketStart, sinceBucket)
+    lt(requestUsageBuckets.bucketStart, sinceBucket),
+    ownerFilter
   );
 
   const fullSelect = selectUsageTotals(requestUsageBuckets);

@@ -6,6 +6,8 @@ import {
   findActiveApiKeyByValue,
   type ApiKeyRecord,
 } from "../../db/repositories/api-keys";
+import { hasLiveGrant } from "../../db/repositories/grants";
+import { splitOwnerSuffix } from "../../domain/owners";
 import { parseBearerToken } from "../utils/bearer";
 import {
   isModelInScope,
@@ -117,7 +119,28 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
     }
   }
 
+  const owner = requestedModel ? splitOwnerSuffix(requestedModel).owner : null;
+  if (owner && !apiKey.delegate) {
+    return context.json(
+      {
+        error: "forbidden",
+        message: "Only delegate API keys can use per-owner model names",
+      },
+      403
+    );
+  }
+  if (owner && !(await hasLiveGrant(db, apiKey.id, owner, Date.now()))) {
+    return context.json(
+      {
+        error: "grant_missing",
+        message: `This API key has no live grant for ${owner}. Ask for a grant before using their model names.`,
+      },
+      403
+    );
+  }
+
   context.set("proxyApiKeyId", apiKey.id);
   context.set("proxyApiKeyAccountScopeIds", apiKey.accountScopes);
+  context.set("proxyOwnerId", owner);
   await next();
 });

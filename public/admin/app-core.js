@@ -50,6 +50,7 @@ const sessionState = () => ({
   activeOAuth: null,
   reauthorizeAccountId: null,
   dashboardWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
+  dashboardOwner: "",
   dashboardData: null,
   dashboardError: null,
   dashboardLoading: false,

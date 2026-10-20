@@ -2,7 +2,10 @@ import { Hono, type Context } from "hono";
 
 import { db } from "../../db";
 import { findActiveApiKeyByModelsDiscoveryToken } from "../../db/repositories/api-keys";
-import { listConfiguredProviders } from "../../db/repositories/provider-accounts";
+import {
+  listConfiguredProviders,
+  listConfiguredProvidersAndOwners,
+} from "../../db/repositories/provider-accounts";
 import {
   buildProxyModelsRegistry,
   fetchModelsDevRegistry,
@@ -23,6 +26,7 @@ const SCOPED_MODELS_NOT_FOUND = {
 type ApiKeyScopes = {
   providerScopes: readonly string[] | null;
   modelScopes: readonly string[] | null;
+  delegate: boolean;
 };
 
 const rejectUnauthorizedRefresh = (context: Context): Response | null => {
@@ -70,21 +74,27 @@ const parseModelsTokenParam = (value: string | undefined): string | null => {
   return token;
 };
 
+// Delegate keys also discover per-owner model names.
+const loadModelRoutes = async (apiKeyScopes: ApiKeyScopes | undefined) =>
+  apiKeyScopes?.delegate
+    ? listConfiguredProvidersAndOwners(db)
+    : { configuredProviders: await listConfiguredProviders(db), owners: [] };
+
 const buildRegistryForRequest = async (
   context: Context,
   apiKeyScopes?: ApiKeyScopes
 ) => {
   const requestUrl = resolveExternalRequestUrl(context.req.raw);
   const forceRefresh = shouldForceRefreshModelsRegistry(requestUrl);
-  const [upstreamRegistry, configuredProviders] = await Promise.all([
-    fetchModelsDevRegistry({ forceRefresh }),
-    listConfiguredProviders(db),
-  ]);
+  const [upstreamRegistry, { configuredProviders, owners }] = await Promise.all(
+    [fetchModelsDevRegistry({ forceRefresh }), loadModelRoutes(apiKeyScopes)]
+  );
 
   const registry = buildProxyModelsRegistry({
     upstreamRegistry,
     baseOrigin: resolveBaseOriginWithPath(requestUrl),
     configuredProviders,
+    owners,
     ...(apiKeyScopes ? { apiKeyScopes } : {}),
   });
   return context.json(registry, {

@@ -11,7 +11,8 @@ if (
   throw new Error("owner scenarios need a throwaway database");
 }
 const { db } = await import("../../src/db");
-const { createApiKey } = await import("../../src/db/repositories/api-keys");
+const { createApiKey, listApiKeys } =
+  await import("../../src/db/repositories/api-keys");
 const { findOAuthState } =
   await import("../../src/db/repositories/oauth-states");
 const { listProviderAccounts, upsertProviderAccount } =
@@ -24,6 +25,13 @@ const { requireDelegateApiKey } =
   await import("../../src/http/middleware/api-key-auth");
 const { createLinkRoutes } = await import("../../src/http/routes/link");
 const { createOwnerRoutes } = await import("../../src/http/routes/owners");
+const { requireProxyApiKey } =
+  await import("../../src/http/middleware/api-key-auth");
+const { proxyRoutes, flushProxyUsage } =
+  await import("../../src/http/routes/proxy");
+const { modelsRoutes } = await import("../../src/http/routes/models");
+const { upsertProviderAccount } =
+  await import("../../src/db/repositories/provider-accounts");
 
 const app = new Hono();
 app.use("/api/links", requireDelegateApiKey);
@@ -32,6 +40,9 @@ app.use("/api/grants", requireDelegateApiKey);
 app.use("/api/grants/*", requireDelegateApiKey);
 app.route("/api", createOwnerRoutes(db));
 app.route("/", createLinkRoutes(db));
+app.use("/anthropic/v1/*", requireProxyApiKey);
+app.route("/", proxyRoutes);
+app.route("/", modelsRoutes);
 
 let delegateKey: string;
 let otherDelegateKey: string;
@@ -50,6 +61,15 @@ beforeAll(async () => {
     )
   ).key;
   plainKey = (await createApiKey(db, {}, Date.now())).key;
+  await upsertProviderAccount(db, {
+    provider: "claude",
+    accountId: "shared-claude",
+    accessToken: "shared-access",
+    refreshToken: "shared-refresh",
+    expiresAt: Date.now() + 3_600_000,
+    metadata: null,
+    now: Date.now(),
+  });
 });
 
 const call = (
@@ -432,4 +452,124 @@ test("a key can't read or revoke another key's grants", async () => {
   expect(await liveGrantIds()).not.toContain(theirs.id);
   expect((await call("DELETE", `/api/grants/${theirs.id}`)).status).toBe(404);
   expect(await liveGrantIds(otherDelegateKey)).toContain(theirs.id);
+});
+
+// Sends a Claude request and returns its status, error type and the access
+// token the upstream saw, if it was called at all.
+const proxy = async (model: string, key = delegateKey) => {
+  const seen: { authorization: string | null; model: unknown }[] = [];
+  const upstream = spyOn(globalThis, "fetch").mockImplementation((async (
+    _url: unknown,
+    init?: RequestInit
+  ) => {
+    seen.push({
+      authorization: new Headers(init?.headers).get("authorization"),
+      model: (JSON.parse(String(init?.body)) as { model: unknown }).model,
+    });
+    return Response.json({
+      type: "message",
+      content: [],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    });
+  }) as typeof fetch);
+  try {
+    const response = await call(
+      "POST",
+      "/anthropic/v1/messages",
+      { model, max_tokens: 1, messages: [] },
+      key
+    );
+    const body = (await response.json()) as { error?: unknown };
+    return { status: response.status, error: body.error, upstream: seen };
+  } finally {
+    upstream.mockRestore();
+    await flushProxyUsage();
+  }
+};
+
+test("plain model names keep routing to the shared account for every key", async () => {
+  expect((await link(await createLink("ivy"), "ivy-access")).status).toBe(200);
+  for (const key of [delegateKey, plainKey]) {
+    expect((await proxy("claude-fake", key)).upstream).toEqual([
+      { authorization: "Bearer shared-access", model: "claude-fake" },
+    ]);
+  }
+});
+
+test("a per-owner model name reaches only that owner's account and only under a grant", async () => {
+  expect((await link(await createLink("ivan"), "ivan-access")).status).toBe(
+    200
+  );
+  const denied = await proxy("claude-fake@ivan", plainKey);
+  expect(denied).toMatchObject({ status: 403, upstream: [] });
+
+  expect(await proxy("claude-fake@ivan")).toMatchObject({
+    status: 403,
+    error: "grant_missing",
+    upstream: [],
+  });
+
+  const { grant: live } = (await (await grant("ivan", 600)).json()) as {
+    grant: { id: string };
+  };
+  expect(await proxy("anthropic/claude-fake@ivan")).toMatchObject({
+    status: 200,
+    upstream: [{ authorization: "Bearer ivan-access", model: "claude-fake" }],
+  });
+  expect(await proxy("claude-fake@ivan", otherDelegateKey)).toMatchObject({
+    status: 403,
+    error: "grant_missing",
+    upstream: [],
+  });
+
+  const [account] = (
+    (await (await call("GET", "/api/owners/ivan")).json()) as {
+      accounts: { id: string }[];
+    }
+  ).accounts;
+  await call("DELETE", `/api/owners/ivan/accounts/${account?.id}`);
+  expect(await proxy("claude-fake@ivan")).toMatchObject({
+    status: 400,
+    upstream: [],
+  });
+
+  await call("DELETE", `/api/grants/${live.id}`);
+  expect(await proxy("claude-fake@ivan")).toMatchObject({
+    status: 403,
+    error: "grant_missing",
+    upstream: [],
+  });
+});
+
+test("only delegate keys discover per-owner model names", async () => {
+  expect((await link(await createLink("judy"), "judy-access")).status).toBe(
+    200
+  );
+  const discover = async (key: string) => {
+    const [apiKey] = (await listApiKeys(db)).filter((row) => row.key === key);
+    const upstream = spyOn(globalThis, "fetch").mockResolvedValue(
+      Response.json({
+        anthropic: { models: { "claude-fake": { name: "Claude Fake" } } },
+      })
+    );
+    try {
+      const response = await app.request(
+        `/api/${apiKey?.modelsDiscoveryToken}/api.json`
+      );
+      const registry = (await response.json()) as {
+        kleis: { models: Record<string, { name: string }> };
+      };
+      return Object.keys(registry.kleis.models).sort();
+    } finally {
+      upstream.mockRestore();
+    }
+  };
+  expect(await discover(plainKey)).toEqual(["anthropic/claude-fake"]);
+  const delegated = await discover(delegateKey);
+  expect(delegated).toEqual(
+    expect.arrayContaining([
+      "anthropic/claude-fake",
+      "anthropic/claude-fake@judy",
+    ])
+  );
 });

@@ -406,6 +406,11 @@ $("#grants-list").addEventListener("click", (event) => {
   if (button) runAction(revokeGrant(button.dataset.grantId));
 });
 
+$("#dash-owner").addEventListener("change", (event) => {
+  state.dashboardOwner = event.target.value;
+  runAction(loadDashboard());
+});
+
 $("#accounts-owner").addEventListener("change", (event) => {
   state.accountOwner = event.target.value;
   renderAccounts();

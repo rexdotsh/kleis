@@ -1,6 +1,7 @@
 import { and, desc, eq, gt, isNull } from "drizzle-orm";
 
 import type { Database } from "../index";
+import { createLookupCache, invalidateLookupCaches } from "../lookup-cache";
 import { grants } from "../schema";
 
 export type GrantRecord = typeof grants.$inferSelect;
@@ -24,7 +25,11 @@ export const createGrant = async (
     revokedAt: null,
     createdAt: now,
   };
-  await database.insert(grants).values(row);
+  try {
+    await database.insert(grants).values(row);
+  } finally {
+    invalidateLookupCaches();
+  }
   return row;
 };
 
@@ -48,15 +53,50 @@ export const revokeGrant = async (
   now: number,
   apiKeyId?: string
 ): Promise<boolean> => {
-  const result = await database
-    .update(grants)
-    .set({ revokedAt: now })
-    .where(
-      and(
-        eq(grants.id, id),
-        isLive(now),
-        apiKeyId ? eq(grants.apiKeyId, apiKeyId) : undefined
-      )
-    );
-  return result.rowsAffected > 0;
+  try {
+    const result = await database
+      .update(grants)
+      .set({ revokedAt: now })
+      .where(
+        and(
+          eq(grants.id, id),
+          isLive(now),
+          apiKeyId ? eq(grants.apiKeyId, apiKeyId) : undefined
+        )
+      );
+    return result.rowsAffected > 0;
+  } finally {
+    invalidateLookupCaches();
+  }
+};
+
+const GRANT_CACHE_TTL_MS = 15_000;
+const grantExpiryCache = createLookupCache<number | null>(GRANT_CACHE_TTL_MS);
+
+export const hasLiveGrant = async (
+  database: Database,
+  apiKeyId: string,
+  ownerId: string,
+  now: number
+): Promise<boolean> => {
+  const expiresAt = await grantExpiryCache.get(
+    database,
+    `${apiKeyId}:${ownerId}`,
+    async () => {
+      const [grant] = await database
+        .select({ expiresAt: grants.expiresAt })
+        .from(grants)
+        .where(
+          and(
+            eq(grants.apiKeyId, apiKeyId),
+            eq(grants.ownerId, ownerId),
+            isLive(now)
+          )
+        )
+        .orderBy(desc(grants.expiresAt))
+        .limit(1);
+      return grant?.expiresAt ?? null;
+    }
+  );
+  return expiresAt !== null && expiresAt > now;
 };

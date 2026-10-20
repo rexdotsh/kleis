@@ -1,4 +1,5 @@
 import type { Provider } from "../db/schema";
+import { splitOwnerSuffix } from "../domain/owners";
 import {
   buildProxyRoutePath,
   requireProxyProviderByCanonical,
@@ -24,6 +25,7 @@ export type ModelScopeRoute = Pick<ProxyRoute, "publicProvider" | "provider">;
 type ParsedModelRoute = {
   rawModel: string | null;
   upstreamModel: string | null;
+  owner: string | null;
 };
 
 export const proxyRouteTable: readonly ProxyRoute[] = proxyEndpointRoutes.map(
@@ -84,10 +86,12 @@ export const parseModelForProxyRoute = (
     return {
       rawModel: null,
       upstreamModel: null,
+      owner: null,
     };
   }
 
-  const [prefix, ...rest] = rawModel.split("/");
+  const { model: baseModel, owner } = splitOwnerSuffix(rawModel);
+  const [prefix, ...rest] = baseModel.split("/");
   if (
     rest.length > 0 &&
     (prefix === route.publicProvider || prefix === route.provider)
@@ -96,19 +100,22 @@ export const parseModelForProxyRoute = (
     if (!upstreamModel) {
       return {
         rawModel,
-        upstreamModel: rawModel,
+        upstreamModel: baseModel,
+        owner,
       };
     }
 
     return {
       rawModel,
       upstreamModel,
+      owner,
     };
   }
 
   return {
     rawModel,
-    upstreamModel: rawModel,
+    upstreamModel: baseModel,
+    owner,
   };
 };
 

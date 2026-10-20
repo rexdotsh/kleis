@@ -154,8 +154,11 @@ async function loadDashboard() {
   }
 
   try {
+    const owner = state.dashboardOwner
+      ? `&owner=${encodeURIComponent(state.dashboardOwner)}`
+      : "";
     const data = await api(
-      `/admin/usage/dashboard?windowMs=${state.dashboardWindowMs}`,
+      `/admin/usage/dashboard?windowMs=${state.dashboardWindowMs}${owner}`,
       { signal: controller.signal }
     );
 
@@ -183,8 +186,29 @@ async function loadDashboard() {
   }
 }
 
+// Shown once someone has linked their own account.
+function renderDashboardOwnerFilter() {
+  const select = $("#dash-owner");
+  const owners = new Map();
+  for (const account of state.accounts) {
+    if (account.ownerId)
+      owners.set(account.ownerId, account.ownerLabel || account.ownerId);
+  }
+  select.hidden = owners.size === 0;
+  select.innerHTML = [
+    ["", "All usage"],
+    ...[...owners].sort((a, b) => a[1].localeCompare(b[1])),
+  ]
+    .map(
+      ([value, label]) =>
+        `<option value="${escapeHtml(value)}"${value === state.dashboardOwner ? " selected" : ""}>${escapeHtml(label)}</option>`
+    )
+    .join("");
+}
+
 function renderOverviewWhenReady() {
   if (!state.accountsLoaded || state.dashboardLoading) return;
+  renderDashboardOwnerFilter();
   if (!(state.dashboardData || state.dashboardError)) return;
   renderDashboard(state.dashboardData || {});
   if (state.dashboardError) {

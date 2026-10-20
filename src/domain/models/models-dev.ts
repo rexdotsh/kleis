@@ -1,3 +1,4 @@
+import type { ModelOwner } from "../../db/repositories/provider-accounts";
 import type { Provider } from "../../db/schema";
 import { isModelInScope } from "../../http/proxy-routing";
 import { proxyProviderMappings } from "../../providers/proxy-provider";
@@ -20,6 +21,7 @@ type BuildProxyModelsRegistryInput = {
   upstreamRegistry: ModelsDevRegistry;
   baseOrigin: string;
   configuredProviders: readonly Provider[];
+  owners?: readonly ModelOwner[];
   apiKeyScopes?: ApiKeyScopes;
 };
 
@@ -182,11 +184,17 @@ const mergeKleisProviderModels = (input: {
   upstreamRegistry: ModelsDevRegistry;
   baseOrigin: string;
   mappings: readonly ProxyMapping[];
+  configuredProviders: readonly Provider[];
+  owners: readonly ModelOwner[];
   modelScopes: readonly string[] | null;
 }): JsonObject => {
   const models: JsonObject = {};
 
   for (const mapping of input.mappings) {
+    const shared = input.configuredProviders.includes(mapping.internalProvider);
+    const owners = input.owners.filter(
+      (owner) => owner.provider === mapping.internalProvider
+    );
     const sourceProvider = getObjectProperty(
       input.upstreamRegistry,
       mapping.canonicalProvider
@@ -220,7 +228,9 @@ const mergeKleisProviderModels = (input: {
           ? modelId
           : `${mapping.canonicalProvider}/${modelId}`;
       if (!isObjectRecord(modelValue)) {
-        models[proxyModelId] = modelValue;
+        if (shared) {
+          models[proxyModelId] = modelValue;
+        }
         continue;
       }
 
@@ -243,7 +253,17 @@ const mergeKleisProviderModels = (input: {
         api: `${input.baseOrigin}${mapping.routeBasePath}`,
         npm: mapping.npm,
       };
-      models[proxyModelId] = model;
+      if (shared) {
+        models[proxyModelId] = model;
+      }
+      for (const owner of owners) {
+        const ownerModelId = `${proxyModelId}@${owner.id}`;
+        models[ownerModelId] = {
+          ...cloneJsonValue(model),
+          id: ownerModelId,
+          name: `${String(model.name)} (${owner.label ?? owner.id})`,
+        };
+      }
     }
   }
 
@@ -257,9 +277,11 @@ export const buildProxyModelsRegistry = (
     input.apiKeyScopes?.providerScopes
   );
   const modelScopes = normalizeStringList(input.apiKeyScopes?.modelScopes);
+  const owners = input.owners ?? [];
   const mappings = proxyProviderMappings.filter(
     (mapping) =>
-      input.configuredProviders.includes(mapping.internalProvider) &&
+      (input.configuredProviders.includes(mapping.internalProvider) ||
+        owners.some((owner) => owner.provider === mapping.internalProvider)) &&
       (!providerScopes || providerScopes.includes(mapping.internalProvider))
   );
   const registry = cloneJsonValue(input.upstreamRegistry);
@@ -267,6 +289,8 @@ export const buildProxyModelsRegistry = (
     upstreamRegistry: input.upstreamRegistry,
     baseOrigin: normalizeOrigin(input.baseOrigin),
     mappings,
+    configuredProviders: input.configuredProviders,
+    owners,
     modelScopes,
   });
   const generatedProvider = {

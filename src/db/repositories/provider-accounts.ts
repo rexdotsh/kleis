@@ -1,4 +1,14 @@
-import { and, desc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  or,
+} from "drizzle-orm";
 
 import type { Database } from "../index";
 import { providerAccounts, providers, type Provider } from "../schema";
@@ -88,6 +98,52 @@ export const listConfiguredProviders = async (
     );
 
   return rows.map((row) => row.provider);
+};
+
+export type ModelOwner = {
+  provider: Provider;
+  id: string;
+  label: string | null;
+};
+
+// For delegate keys' model discovery: providers with a primary account, and
+// owners with an enabled account per provider, in one round trip.
+export const listConfiguredProvidersAndOwners = async (
+  database: Database
+): Promise<{ configuredProviders: Provider[]; owners: ModelOwner[] }> => {
+  const rows = await database
+    .selectDistinct({
+      provider: providerAccounts.provider,
+      isPrimary: providerAccounts.isPrimary,
+      ownerId: providerAccounts.ownerId,
+      ownerLabel: providerAccounts.ownerLabel,
+    })
+    .from(providerAccounts)
+    .where(
+      and(
+        eq(providerAccounts.enabled, true),
+        or(
+          eq(providerAccounts.isPrimary, true),
+          isNotNull(providerAccounts.ownerId)
+        )
+      )
+    );
+  const owners = new Map<string, ModelOwner>();
+  for (const row of rows) {
+    if (row.ownerId) {
+      owners.set(`${row.provider}:${row.ownerId}`, {
+        provider: row.provider,
+        id: row.ownerId,
+        label: row.ownerLabel,
+      });
+    }
+  }
+  return {
+    configuredProviders: rows
+      .filter((row) => row.isPrimary)
+      .map((row) => row.provider),
+    owners: [...owners.values()],
+  };
 };
 
 export const findProviderAccountById = async (
