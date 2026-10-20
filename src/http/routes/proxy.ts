@@ -404,7 +404,12 @@ const proxyRequest = async (
           onStreamEnd,
         });
 
-        if (CODEX_WEBSOCKET_ENABLED && route.operation !== "compact") {
+        // Owner requests stay on HTTP, where every send is checked first.
+        if (
+          CODEX_WEBSOCKET_ENABLED &&
+          route.operation !== "compact" &&
+          !ownerId
+        ) {
           const webSocketResponse = await tryProxyCodexWebSocket({
             headers: attemptHeaders,
             bodyJson: codexProxy.bodyJson,

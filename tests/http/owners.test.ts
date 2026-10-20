@@ -13,6 +13,7 @@ test("owner APIs stay limited to delegate keys and to each owner", () => {
         ...process.env,
         TURSO_CONNECTION_URL: database.url,
         TURSO_AUTH_TOKEN: "",
+        CODEX_WEBSOCKET_ENABLED: "true",
       },
       stdout: "pipe",
       stderr: "pipe",

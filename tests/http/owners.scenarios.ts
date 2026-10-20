@@ -32,6 +32,8 @@ const { proxyRoutes, flushProxyUsage } =
   await import("../../src/http/routes/proxy");
 const { modelsRoutes } = await import("../../src/http/routes/models");
 const { grants } = await import("../../src/db/schema");
+const { setCodexWebSocketConstructorForTests } =
+  await import("../../src/providers/proxies/codex-websocket");
 const { getDashboardUsage } =
   await import("../../src/db/repositories/dashboard-usage");
 
@@ -43,6 +45,7 @@ app.use("/api/grants/*", requireDelegateApiKey);
 app.route("/api", createOwnerRoutes(db));
 app.route("/", createLinkRoutes(db));
 app.use("/anthropic/v1/*", requireProxyApiKey);
+app.use("/openai/v1/*", requireProxyApiKey);
 app.route("/", proxyRoutes);
 app.route("/", modelsRoutes);
 
@@ -663,4 +666,123 @@ test("usage stays attributed to an owner after they unlink", async () => {
   );
   expect(usage.totals.requestCount).toBe(1);
   expect(usage.owners).toContainEqual({ id: "quinn", label: "quinn label" });
+});
+
+test("owner Codex requests never use the WebSocket, so the last check covers every send", async () => {
+  expect(
+    (
+      await link(
+        await createLink("rosa", "codex"),
+        codexToken("rosa-workspace", "rosa")
+      )
+    ).status
+  ).toBe(200);
+  expect((await grant("rosa", 600)).status).toBe(201);
+  let sockets = 0;
+  // A handshake that fails after the grant was revoked falls back to HTTP.
+  class FailingWebSocket {
+    private readonly listeners = new Map<string, (event: unknown) => void>();
+    constructor() {
+      sockets++;
+      db.update(grants)
+        .set({ revokedAt: Date.now() })
+        .then(() => this.listeners.get("error")?.({ message: "handshake" }))
+        .catch(() => undefined);
+    }
+    addEventListener(type: string, listener: (event: unknown) => void) {
+      this.listeners.set(type, listener);
+    }
+    removeEventListener(type: string) {
+      this.listeners.delete(type);
+    }
+    send() {}
+    close() {}
+  }
+  setCodexWebSocketConstructorForTests(FailingWebSocket);
+  const upstream = spyOn(globalThis, "fetch").mockImplementation(
+    async () =>
+      new Response(
+        `data: ${JSON.stringify({ type: "response.completed", response: { id: "fake", output: [] } })}\n\n`,
+        { headers: { "content-type": "text/event-stream" } }
+      )
+  );
+  try {
+    const response = await call("POST", "/openai/v1/responses", {
+      model: "gpt-5.5@rosa",
+      input: [],
+      stream: true,
+    });
+    await response.text();
+    expect(sockets).toBe(0);
+    expect(upstream).toHaveBeenCalledTimes(1);
+  } finally {
+    upstream.mockRestore();
+    setCodexWebSocketConstructorForTests(null);
+    await flushProxyUsage();
+  }
+});
+
+// The first upstream reply is a 401; the revoke or unlink lands while it is
+// in flight, before the retry with a refreshed token.
+const retryAfterRevoking = async (
+  owner: string,
+  revoke: () => Promise<unknown>
+) => {
+  expect((await link(await createLink(owner), `${owner}-access`)).status).toBe(
+    200
+  );
+  expect((await grant(owner, 600)).status).toBe(201);
+  const original = claudeAdapter.refreshAccount;
+  claudeAdapter.refreshAccount = async () => ({
+    accessToken: `${owner}-refreshed`,
+    refreshToken: `${owner}-refreshed-refresh`,
+    expiresAt: Date.now() + 3_600_000,
+    accountId: null,
+    metadata: null,
+  });
+  // The token must be old enough to be refreshed after a 401.
+  await db
+    .update(providerAccounts)
+    .set({ lastRefreshAt: Date.now() - 3_600_000 })
+    .where(eq(providerAccounts.id, await ownedAccountId(owner)));
+  const sent: (string | null)[] = [];
+  const upstream = spyOn(globalThis, "fetch").mockImplementation((async (
+    _url: unknown,
+    init?: RequestInit
+  ) => {
+    sent.push(new Headers(init?.headers).get("authorization"));
+    if (sent.length === 1) {
+      await revoke();
+      return new Response("{}", { status: 401 });
+    }
+    return Response.json({ type: "message", content: [] });
+  }) as typeof fetch);
+  try {
+    const response = await call("POST", "/anthropic/v1/messages", {
+      model: `claude-fake@${owner}`,
+      max_tokens: 1,
+      messages: [],
+    });
+    await response.text();
+    return { status: response.status, sent };
+  } finally {
+    upstream.mockRestore();
+    claudeAdapter.refreshAccount = original;
+    await flushProxyUsage();
+  }
+};
+
+test("a grant revoked during a 401 retry stops the retry", async () => {
+  const result = await retryAfterRevoking("sam", () =>
+    db.update(grants).set({ revokedAt: Date.now() })
+  );
+  expect(result.sent).toEqual(["Bearer sam-access"]);
+  expect(result.status).toBe(403);
+});
+
+test("an account unlinked during a 401 retry is never retried", async () => {
+  const result = await retryAfterRevoking("tara", async () =>
+    call("DELETE", `/api/owners/tara/accounts/${await ownedAccountId("tara")}`)
+  );
+  expect(result.sent).toEqual(["Bearer tara-access"]);
 });
