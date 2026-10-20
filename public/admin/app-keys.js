@@ -62,9 +62,10 @@ async function loadKeys() {
   invalidateUsageDetails("key");
   if (!state.keysLoaded) showLoading("keys-list");
   try {
-    const [keysResult, usageResult] = await Promise.allSettled([
+    const [keysResult, usageResult, grantsResult] = await Promise.allSettled([
       api("/admin/keys"),
       api(`/admin/keys/usage?windowMs=${state.keyUsageWindowMs}`),
+      api("/admin/grants"),
     ]);
 
     if (keysResult.status !== "fulfilled") {
@@ -74,6 +75,9 @@ async function loadKeys() {
     if (requestSeq !== state.keysRequestSeq) return;
 
     state.keys = keysResult.value.keys || [];
+    if (grantsResult.status === "fulfilled") {
+      state.grants = grantsResult.value.grants || [];
+    }
     state.keysById = usageMapFromList(state.keys, "id");
     pruneUsageDetails("key", state.keysById);
     state.keysLoaded = true;
@@ -106,6 +110,13 @@ async function loadKeys() {
     toast(e.message, "error");
   }
 }
+
+const revokeGrant = mutation("revoke-grant", async (request, grantId) => {
+  await request(`/admin/grants/${grantId}`, { method: "DELETE" });
+  toast("Grant revoked");
+  state.grants = state.grants.filter((grant) => grant.id !== grantId);
+  renderKeys();
+});
 
 function startCreateKey() {
   state.creatingKey = true;
@@ -302,6 +313,7 @@ const revokeKey = mutation("revoke-key", revokeKeyAction);
 const deleteKey = mutation("delete-key", deleteKeyAction);
 
 export {
+  revokeGrant,
   loadKeyUsage,
   loadKeys,
   startCreateKey,

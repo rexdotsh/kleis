@@ -28,15 +28,20 @@ const { createOwnerRoutes } = await import("../../src/http/routes/owners");
 const app = new Hono();
 app.use("/api/links", requireDelegateApiKey);
 app.use("/api/owners/*", requireDelegateApiKey);
+app.use("/api/grants", requireDelegateApiKey);
+app.use("/api/grants/*", requireDelegateApiKey);
 app.route("/api", createOwnerRoutes(db));
 app.route("/", createLinkRoutes(db));
 
 let delegateKey: string;
+let otherDelegateKey: string;
 let claudeOnlyKey: string;
 let plainKey: string;
 beforeAll(async () => {
   await migrate(db, { migrationsFolder: "./drizzle/migrations" });
   delegateKey = (await createApiKey(db, { delegate: true }, Date.now())).key;
+  otherDelegateKey = (await createApiKey(db, { delegate: true }, Date.now()))
+    .key;
   claudeOnlyKey = (
     await createApiKey(
       db,
@@ -129,10 +134,15 @@ test("only delegate keys can create links or read and unlink owners", async () =
     ["GET", "/api/owners/alice"],
     ["GET", "/api/owners/alice/limits"],
     ["DELETE", "/api/owners/alice/accounts/any"],
+    ["POST", "/api/grants"],
+    ["GET", "/api/grants"],
+    ["DELETE", `/api/grants/${crypto.randomUUID()}`],
   ] as const) {
     const body =
       method === "POST"
-        ? { owner: "alice", label: "Alice", provider: "claude" }
+        ? path === "/api/links"
+          ? { owner: "alice", label: "Alice", provider: "claude" }
+          : { owner: "alice", ttl: 60 }
         : undefined;
     expect((await call(method, path, body, plainKey)).status).toBe(403);
   }
@@ -373,4 +383,53 @@ test("a refresh racing an unlink can't write the credentials back", async () => 
     false
   );
   expect(await ownerIds("claude")).not.toContain("nora");
+});
+const liveGrantIds = async (key = delegateKey) =>
+  (
+    (await (await call("GET", "/api/grants", undefined, key)).json()) as {
+      grants: { id: string }[];
+    }
+  ).grants.map((grant) => grant.id);
+
+const grant = async (owner: string, ttl: number, key = delegateKey) =>
+  call("POST", "/api/grants", { owner, ttl, purpose: "review" }, key);
+
+test("a grant is live only from creation until it expires or is revoked", async () => {
+  expect((await grant("nobody", 60)).status).toBe(404);
+  expect((await grant("grace", 8 * 60 * 60 + 1)).status).toBe(400);
+  expect((await link(await createLink("grace"), "grace-access")).status).toBe(
+    200
+  );
+
+  const created = await grant("grace", 60);
+  expect(created.status).toBe(201);
+  const { grant: live } = (await created.json()) as { grant: { id: string } };
+  const expiring = (
+    (await (await grant("grace", 60)).json()) as { grant: { id: string } }
+  ).grant;
+  expect(await liveGrantIds()).toEqual(
+    expect.arrayContaining([live.id, expiring.id])
+  );
+
+  expect((await call("DELETE", `/api/grants/${live.id}`)).status).toBe(200);
+  expect(await liveGrantIds()).not.toContain(live.id);
+  setSystemTime(Date.now() + 61_000);
+  try {
+    expect(await liveGrantIds()).not.toContain(expiring.id);
+  } finally {
+    setSystemTime();
+  }
+});
+
+test("a key can't read or revoke another key's grants", async () => {
+  expect((await link(await createLink("heidi"), "heidi-access")).status).toBe(
+    200
+  );
+  const { grant: theirs } = (await (
+    await grant("heidi", 600, otherDelegateKey)
+  ).json()) as { grant: { id: string } };
+
+  expect(await liveGrantIds()).not.toContain(theirs.id);
+  expect((await call("DELETE", `/api/grants/${theirs.id}`)).status).toBe(404);
+  expect(await liveGrantIds(otherDelegateKey)).toContain(theirs.id);
 });

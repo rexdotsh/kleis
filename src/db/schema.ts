@@ -90,6 +90,23 @@ export const apiKeys = sqliteTable(
   ]
 );
 
+// A delegate key may act for an owner only while it holds a live grant.
+export const grants = sqliteTable(
+  "grants",
+  {
+    id: text("id").primaryKey(),
+    apiKeyId: text("api_key_id")
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: "cascade" }),
+    ownerId: text("owner_id").notNull(),
+    purpose: text("purpose"),
+    expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+    revokedAt: integer("revoked_at", { mode: "number" }),
+    createdAt: integer("created_at", { mode: "number" }).notNull(),
+  },
+  (table) => [index("grants_key_owner_idx").on(table.apiKeyId, table.ownerId)]
+);
+
 export const oauthStates = sqliteTable("oauth_states", {
   state: text("state").primaryKey(),
   provider: text("provider", { enum: providers }).notNull(),

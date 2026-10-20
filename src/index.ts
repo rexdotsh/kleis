@@ -8,6 +8,7 @@ import {
   requireProxyApiKey,
 } from "./http/middleware/api-key-auth";
 import { adminAccountsRoutes } from "./http/routes/admin-accounts";
+import { adminGrantsRoutes } from "./http/routes/admin-grants";
 import { adminKeysRoutes } from "./http/routes/admin-keys";
 import { adminUiRoutes } from "./http/routes/admin-ui";
 import { adminUsageRoutes } from "./http/routes/admin-usage";
@@ -50,6 +51,7 @@ adminApi.use("/*", requireAdminAuth);
 adminApi.get("/session", (context) => context.body(null, 204));
 adminApi.route("/accounts", adminAccountsRoutes);
 adminApi.route("/keys", adminKeysRoutes);
+adminApi.route("/grants", adminGrantsRoutes);
 adminApi.route("/usage", adminUsageRoutes);
 app.route("/admin", adminApi);
 
@@ -57,6 +59,8 @@ app.use("/api/limits", requireApiKey);
 app.route("/api/limits", createLimitsRoutes(db));
 app.use("/api/links", requireDelegateApiKey);
 app.use("/api/owners/*", requireDelegateApiKey);
+app.use("/api/grants", requireDelegateApiKey);
+app.use("/api/grants/*", requireDelegateApiKey);
 app.route("/api", createOwnerRoutes(db));
 app.route("/", createLinkRoutes(db));
 

@@ -9,6 +9,7 @@ import {
   checkedValues,
   escapeHtml,
   isKeyActive,
+  keyById,
   modelsUrlForKey,
   mutationAttributes,
   state,
@@ -441,6 +442,34 @@ function keyRowHtml(key) {
   </div>${open ? keyDetailHtml(key) : ""}`;
 }
 
+// Live grants: a delegate key may act for these owners until they expire.
+function renderGrants() {
+  const { grants } = state;
+  $("#grants-section").hidden = grants.length === 0;
+  $("#grants-count").textContent = grants.length ? String(grants.length) : "";
+  const owners = new Map(
+    state.accounts
+      .filter((account) => account.ownerId)
+      .map((account) => [account.ownerId, account.ownerLabel])
+  );
+  $("#grants-list").innerHTML = grants
+    .map((grant) => {
+      const owner = owners.get(grant.ownerId) || grant.ownerId;
+      const holder = keyById(grant.apiKeyId);
+      const key = holder ? keyName(holder) : "a deleted key";
+      const expires = `expires ${untilText(grant.expiresAt)}`;
+      return `<div class="row t-grant" data-grant-id="${grant.id}">
+        <span class="name ellipsis">${escapeHtml(owner)}</span>
+        <span class="ellipsis d">via ${escapeHtml(key)}</span>
+        <span class="ellipsis muted d">${escapeHtml(grant.purpose || "")}</span>
+        <span class="muted d">${escapeHtml(expires)}</span>
+        <button class="btn btn-ghost btn-sm" type="button" data-action="revoke-grant" data-grant-id="${grant.id}" ${mutationAttributes("revoke-grant", grant.id)}>Revoke</button>
+        <span class="l2">${escapeHtml([`via ${key}`, grant.purpose, expires].filter(Boolean).join(" \u00b7 "))}</span>
+      </div>`;
+    })
+    .join("");
+}
+
 function compareKeys(a, b) {
   const rank = (key) => {
     if (key.revokedAt) return 2;
@@ -457,6 +486,7 @@ function compareKeys(a, b) {
 }
 
 function renderKeys() {
+  renderGrants();
   const { keys, showRevokedKeys } = state;
   const activeCount = keys.filter(isKeyActive).length;
   const filter = state.keyFilter.trim().toLowerCase();

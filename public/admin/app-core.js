@@ -28,6 +28,7 @@ const sessionState = () => ({
   accountUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   keys: [],
   keysById: new Map(),
+  grants: [],
   keyUsageById: new Map(),
   keyUsageWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   keysLoaded: false,

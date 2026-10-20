@@ -37,7 +37,7 @@ import {
   toggleKey,
   toggleShortcuts,
 } from "./app-input.js";
-import { loadKeys, startCreateKey } from "./app-keys.js";
+import { loadKeys, revokeGrant, startCreateKey } from "./app-keys.js";
 import {
   keyMenuItems,
   renderKeys,
@@ -400,6 +400,11 @@ for (const [inputId, field, render] of [
     }
   });
 }
+
+$("#grants-list").addEventListener("click", (event) => {
+  const button = event.target.closest('button[data-action="revoke-grant"]');
+  if (button) runAction(revokeGrant(button.dataset.grantId));
+});
 
 $("#accounts-owner").addEventListener("change", (event) => {
   state.accountOwner = event.target.value;

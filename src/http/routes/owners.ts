@@ -4,6 +4,12 @@ import { z } from "zod";
 
 import type { Database } from "../../db";
 import {
+  createGrant,
+  listLiveGrants,
+  revokeGrant,
+  type GrantRecord,
+} from "../../db/repositories/grants";
+import {
   listOwnedProviderAccounts,
   unlinkOwnedProviderAccount,
 } from "../../db/repositories/provider-accounts";
@@ -25,6 +31,24 @@ const ownerParamsSchema = z.strictObject({ owner: ownerIdSchema });
 
 const ownedAccountParamsSchema = ownerParamsSchema.extend({
   id: z.string().trim().min(1).max(120),
+});
+
+const MAX_GRANT_TTL_SECONDS = 8 * 60 * 60;
+
+const createGrantBodySchema = z.strictObject({
+  owner: ownerIdSchema,
+  ttl: z.int().positive().max(MAX_GRANT_TTL_SECONDS),
+  purpose: z.string().trim().min(1).max(200).optional(),
+});
+
+const grantParamsSchema = z.strictObject({ id: z.uuid() });
+
+const toGrantView = (grant: GrantRecord) => ({
+  id: grant.id,
+  owner: grant.ownerId,
+  purpose: grant.purpose,
+  expiresAt: grant.expiresAt,
+  createdAt: grant.createdAt,
 });
 
 // Called with delegate keys only; each key sees only its providers.
@@ -127,6 +151,63 @@ export const createOwnerRoutes = (database: Database) => {
           ? context.json({ unlinked: true })
           : context.json(
               { error: "not_found", message: "Linked account not found" },
+              404
+            );
+      }
+    )
+    .post(
+      "/grants",
+      zValidator("json", createGrantBodySchema),
+      async (context) => {
+        const { owner, ttl, purpose } = context.req.valid("json");
+        const apiKey = context.get("apiKey");
+        const linked = await listOwnedProviderAccounts(
+          database,
+          owner,
+          apiKey.providerScopes
+        );
+        if (!linked.length) {
+          return context.json(
+            { error: "not_found", message: "Owner has no linked account" },
+            404
+          );
+        }
+        const now = Date.now();
+        const grant = await createGrant(
+          database,
+          {
+            apiKeyId: apiKey.id,
+            ownerId: owner,
+            purpose: purpose ?? null,
+            expiresAt: now + ttl * 1000,
+          },
+          now
+        );
+        return context.json({ grant: toGrantView(grant) }, 201);
+      }
+    )
+    .get("/grants", async (context) => {
+      const grants = await listLiveGrants(
+        database,
+        Date.now(),
+        context.get("apiKey").id
+      );
+      return context.json({ grants: grants.map(toGrantView) });
+    })
+    .delete(
+      "/grants/:id",
+      zValidator("param", grantParamsSchema),
+      async (context) => {
+        const revoked = await revokeGrant(
+          database,
+          context.req.valid("param").id,
+          Date.now(),
+          context.get("apiKey").id
+        );
+        return revoked
+          ? context.json({ revoked: true })
+          : context.json(
+              { error: "not_found", message: "Grant not found" },
               404
             );
       }
