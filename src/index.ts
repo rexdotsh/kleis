@@ -2,13 +2,17 @@ import { Hono } from "hono";
 import { installErrorHandler } from "./http/error-handler";
 
 import { requireAdminAuth } from "./http/middleware/bearer-env-auth";
-import { requireProxyApiKey } from "./http/middleware/api-key-auth";
+import {
+  requireApiKey,
+  requireProxyApiKey,
+} from "./http/middleware/api-key-auth";
 import { adminAccountsRoutes } from "./http/routes/admin-accounts";
 import { adminKeysRoutes } from "./http/routes/admin-keys";
 import { adminUiRoutes } from "./http/routes/admin-ui";
 import { adminUsageRoutes } from "./http/routes/admin-usage";
 import { cronRoutes } from "./http/routes/cron";
 import { healthRoutes } from "./http/routes/health";
+import { createLimitsRoutes } from "./http/routes/limits";
 import { modelsRoutes } from "./http/routes/models";
 import {
   flushProxyFailureLogs,
@@ -45,6 +49,9 @@ adminApi.route("/accounts", adminAccountsRoutes);
 adminApi.route("/keys", adminKeysRoutes);
 adminApi.route("/usage", adminUsageRoutes);
 app.route("/admin", adminApi);
+
+app.use("/api/limits", requireApiKey);
+app.route("/api/limits", createLimitsRoutes(db));
 
 app.use("/openai/v1/*", requireProxyApiKey);
 app.use("/anthropic/v1/*", requireProxyApiKey);

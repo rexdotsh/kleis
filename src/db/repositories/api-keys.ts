@@ -15,7 +15,7 @@ type ProviderScopeList = Provider[] | null;
 const isProvider = (value: string): value is Provider =>
   providers.some((provider) => provider === value);
 
-type ApiKeyRecord = {
+export type ApiKeyRecord = {
   id: string;
   key: string;
   modelsDiscoveryToken: string | null;

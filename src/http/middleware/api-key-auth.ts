@@ -1,7 +1,11 @@
+import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 
 import { db } from "../../db";
-import { findActiveApiKeyByValue } from "../../db/repositories/api-keys";
+import {
+  findActiveApiKeyByValue,
+  type ApiKeyRecord,
+} from "../../db/repositories/api-keys";
 import { parseBearerToken } from "../utils/bearer";
 import {
   isModelInScope,
@@ -9,7 +13,9 @@ import {
   resolveProxyRoute,
 } from "../proxy-routing";
 
-export const requireProxyApiKey = createMiddleware(async (context, next) => {
+const authenticateApiKey = async (
+  context: Context
+): Promise<ApiKeyRecord | Response> => {
   const token =
     parseBearerToken(context.req.header("authorization")) ??
     context.req.header("x-api-key")?.trim() ??
@@ -25,14 +31,31 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
   }
 
   const apiKey = await findActiveApiKeyByValue(db, token, Date.now());
-  if (!apiKey) {
-    return context.json(
+  return (
+    apiKey ??
+    context.json(
       {
         error: "unauthorized",
         message: "Invalid or expired API key",
       },
       401
-    );
+    )
+  );
+};
+
+export const requireApiKey = createMiddleware(async (context, next) => {
+  const apiKey = await authenticateApiKey(context);
+  if (apiKey instanceof Response) {
+    return apiKey;
+  }
+  context.set("apiKey", apiKey);
+  await next();
+});
+
+export const requireProxyApiKey = createMiddleware(async (context, next) => {
+  const apiKey = await authenticateApiKey(context);
+  if (apiKey instanceof Response) {
+    return apiKey;
   }
 
   const route = resolveProxyRoute(context.req.path);
