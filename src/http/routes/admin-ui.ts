@@ -142,7 +142,22 @@ const serveAdminIndex = serveAsset(
   }
 );
 
+// Public: the page holds only the consent text; the token is spent by the
+// script. No referrer, so the token never reaches the provider's sign-in.
+const serveLinkPage = serveAsset(
+  "link.html",
+  "text/html; charset=utf-8",
+  "no-store",
+  {
+    "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+  }
+);
+
 export const adminUiRoutes = new Hono()
+  .get("/link/:token", serveLinkPage)
+  .get("/admin/link.js", serveAsset("link.js", JAVASCRIPT, REVALIDATE))
   .get("/admin", serveAdminIndex)
   .get("/admin/", serveAdminIndex)
   .get("/admin/index.html", serveAdminIndex)

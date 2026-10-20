@@ -52,6 +52,21 @@ export const requireApiKey = createMiddleware(async (context, next) => {
   await next();
 });
 
+export const requireDelegateApiKey = createMiddleware(async (context, next) => {
+  const apiKey = await authenticateApiKey(context);
+  if (apiKey instanceof Response) {
+    return apiKey;
+  }
+  if (!apiKey.delegate) {
+    return context.json(
+      { error: "forbidden", message: "API key is not a delegate key" },
+      403
+    );
+  }
+  context.set("apiKey", apiKey);
+  await next();
+});
+
 export const requireProxyApiKey = createMiddleware(async (context, next) => {
   const apiKey = await authenticateApiKey(context);
   if (apiKey instanceof Response) {

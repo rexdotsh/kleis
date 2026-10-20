@@ -1,11 +1,15 @@
 import type { Database } from "../db";
-import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
+import type {
+  ProviderAccountOwner,
+  ProviderAccountRecord,
+} from "../db/repositories/provider-accounts";
 import type { Provider } from "../db/schema";
 import type { ProviderAccountMetadata } from "./metadata";
 
 export type ProviderOAuthStartInput = {
   database: Database;
   options?: Record<string, unknown>;
+  owner?: ProviderAccountOwner;
   now: number;
 };
 
@@ -29,6 +33,7 @@ export type ProviderTokenResult = {
   expiresAt: number;
   accountId: string | null;
   replaceAccountId?: string;
+  owner?: ProviderAccountOwner;
   metadata: ProviderAccountMetadata | null;
   label?: string | null;
 };

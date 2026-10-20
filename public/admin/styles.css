@@ -260,6 +260,12 @@ code,
 .login-error:empty {
   display: none;
 }
+.link-text {
+  margin-bottom: 16px;
+}
+.link-text a {
+  color: var(--accent);
+}
 
 /* Buttons */
 

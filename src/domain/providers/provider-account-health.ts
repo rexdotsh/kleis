@@ -84,6 +84,29 @@ const hasExhaustedLimits = (
   return false;
 };
 
+export const describeAccountHealth = (
+  account: ProviderAccountRecord,
+  now: number
+) => {
+  const quota = getCachedProviderAccountQuota(account);
+  const deadline =
+    account.metadata?.provider === "claude"
+      ? account.metadata.refreshTokenExpiresAt
+      : null;
+  return {
+    needsReauth:
+      !(account.expiresAt > now) ||
+      Boolean(
+        account.lastRefreshStatus && account.lastRefreshStatus !== "success"
+      ) ||
+      quota?.errorStatus === 401 ||
+      quota?.errorStatus === 403 ||
+      (typeof deadline === "number" && deadline - now < REAUTHORIZE_WARNING_MS),
+    onHold: account.lastRefreshStatus === CLAUDE_ACCOUNT_ON_HOLD,
+    limited: hasExhaustedLimits(quota, now),
+  };
+};
+
 export const summarizeProviderAccountHealth = async (database: Database) => {
   const accounts = await accountCache.get(database, "all", () =>
     listProviderAccounts(database)
@@ -93,21 +116,10 @@ export const summarizeProviderAccountHealth = async (database: Database) => {
   for (const account of accounts) {
     if (account.ownerId !== null) continue;
     const counts = summary[account.provider];
-    const quota = getCachedProviderAccountQuota(account);
-    const deadline =
-      account.metadata?.provider === "claude"
-        ? account.metadata.refreshTokenExpiresAt
-        : null;
-    const needsReauth =
-      !(account.expiresAt > now) ||
-      Boolean(
-        account.lastRefreshStatus && account.lastRefreshStatus !== "success"
-      ) ||
-      quota?.errorStatus === 401 ||
-      quota?.errorStatus === 403 ||
-      (typeof deadline === "number" && deadline - now < REAUTHORIZE_WARNING_MS);
-    const onHold = account.lastRefreshStatus === CLAUDE_ACCOUNT_ON_HOLD;
-    const limited = hasExhaustedLimits(quota, now);
+    const { needsReauth, onHold, limited } = describeAccountHealth(
+      account,
+      now
+    );
     counts.total++;
     counts.enabled += Number(account.enabled);
     counts.needsReauth += Number(needsReauth);

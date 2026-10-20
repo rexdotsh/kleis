@@ -17,6 +17,7 @@ import {
   readOAuthCallbackCode,
 } from "./oauth-utils";
 import { parseOAuthStateMetadata } from "./oauth-state";
+import { oauthOwnerSchema } from "../domain/owners";
 import {
   buildOAuthTokenFields,
   readOAuthText,
@@ -54,6 +55,7 @@ const codexOAuthStateMetadataSchema = z.discriminatedUnion("mode", [
     mode: z.literal("browser"),
     redirectUri: z.url(),
     replaceAccountId: z.string().uuid().optional(),
+    owner: oauthOwnerSchema.optional(),
   }),
   z.strictObject({
     mode: z.literal("headless"),
@@ -61,6 +63,7 @@ const codexOAuthStateMetadataSchema = z.discriminatedUnion("mode", [
     userCode: z.string().min(1),
     intervalMs: z.number().int().positive(),
     replaceAccountId: z.string().uuid().optional(),
+    owner: oauthOwnerSchema.optional(),
   }),
 ]);
 
@@ -386,8 +389,10 @@ export const codexAdapter: ProviderAdapter = {
     const mode = resolveCodexOAuthMode(input.options);
     const state = generateState();
     const replaceAccountId = input.options?.replaceAccountId;
-    const replacement =
-      typeof replaceAccountId === "string" ? { replaceAccountId } : {};
+    const target = {
+      ...(typeof replaceAccountId === "string" ? { replaceAccountId } : {}),
+      ...(input.owner ? { owner: input.owner } : {}),
+    };
 
     if (mode === "headless") {
       const deviceAuth = await requestDeviceAuthorization();
@@ -400,7 +405,7 @@ export const codexAdapter: ProviderAdapter = {
           deviceAuthId: deviceAuth.deviceAuthId,
           userCode: deviceAuth.userCode,
           intervalMs: deviceAuth.intervalMs,
-          ...replacement,
+          ...target,
         }),
         expiresAt: input.now + CODEX_OAUTH_STATE_TTL_MS,
       });
@@ -422,7 +427,7 @@ export const codexAdapter: ProviderAdapter = {
       metadataJson: JSON.stringify({
         mode,
         redirectUri,
-        ...replacement,
+        ...target,
       }),
       expiresAt: input.now + CODEX_OAUTH_STATE_TTL_MS,
     });
@@ -504,6 +509,7 @@ export const codexAdapter: ProviderAdapter = {
       ...(metadata.replaceAccountId
         ? { replaceAccountId: metadata.replaceAccountId }
         : {}),
+      ...(metadata.owner ? { owner: metadata.owner } : {}),
     };
   },
   async refreshAccount(

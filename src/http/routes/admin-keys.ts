@@ -37,6 +37,7 @@ const createApiKeyBodySchema = z.strictObject({
   providerScopes: providerScopeListSchema.min(1).optional(),
   modelScopes: modelScopeListSchema.min(1).optional(),
   accountScopes: accountScopeListSchema.min(1).optional(),
+  delegate: z.boolean().optional(),
   expiresAt: z.int().positive().nullable().optional(),
 });
 
@@ -45,6 +46,7 @@ const updateApiKeyBodySchema = z.strictObject({
   providerScopes: providerScopeListSchema.nullable().optional(),
   modelScopes: modelScopeListSchema.nullable().optional(),
   accountScopes: accountScopeListSchema.nullable().optional(),
+  delegate: z.boolean().optional(),
   expiresAt: z.int().positive().nullable().optional(),
 });
 
@@ -185,6 +187,7 @@ export const adminKeysRoutes = new Hono()
       db,
       {
         label: input.label ?? null,
+        delegate: input.delegate ?? false,
         expiresAt,
         ...(providerScopes ? { providerScopes } : {}),
         ...(modelScopes ? { modelScopes } : {}),
@@ -253,6 +256,7 @@ export const adminKeysRoutes = new Hono()
         providerScopes,
         modelScopes,
         accountScopes,
+        delegate: body.delegate ?? existing.delegate,
         expiresAt,
       });
       if (!updated) {

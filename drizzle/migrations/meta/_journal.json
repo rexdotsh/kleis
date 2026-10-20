@@ -127,6 +127,13 @@
       "when": 1792474663372,
       "tag": "0017_elite_dark_phoenix",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1792474843776,
+      "tag": "0018_parallel_joshua_kane",
+      "breakpoints": true
     }
   ]
 }

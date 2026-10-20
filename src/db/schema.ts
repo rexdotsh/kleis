@@ -63,6 +63,8 @@ export const apiKeys = sqliteTable(
     providerScopeJson: text("provider_scope_json"),
     modelScopeJson: text("model_scope_json"),
     accountScopeJson: text("account_scope_json"),
+    // Delegate keys may link owners' accounts and act for them under a grant.
+    delegate: integer("delegate", { mode: "boolean" }).notNull().default(false),
     expiresAt: integer("expires_at", { mode: "number" }),
     revokedAt: integer("revoked_at", { mode: "number" }),
     createdAt: integer("created_at", { mode: "number" }).notNull(),

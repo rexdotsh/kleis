@@ -219,6 +219,13 @@ function keyFormHtml(mode, key = null) {
     create
       ? ""
       : formRow(
+          "Delegate",
+          "Lets this key link people's own subscriptions and use them while they grant it.",
+          `<label class="access-provider"><input id="edit-key-delegate" type="checkbox" role="switch" class="toggle"${key.delegate ? " checked" : ""}><span>Delegate key</span></label>`
+        ),
+    create
+      ? ""
+      : formRow(
           "Expires",
           "Leave empty for a key that never expires.",
           `<input id="edit-key-expires-at" class="field-input field-date" type="date" value="${key.expiresAt ? dateInputValue(key.expiresAt) : ""}">`,
@@ -415,6 +422,8 @@ function keyRowHtml(key) {
   if (revoked) tag = "Revoked";
   else if (!active) tag = "Expired";
   else if (key.expiresAt) tag = `Expires ${untilText(key.expiresAt)}`;
+  const delegate =
+    key.delegate && !revoked ? '<span class="tag">Delegate</span>' : "";
   const lastUsed = metrics.lastRequestAt
     ? relativeTime(metrics.lastRequestAt)
     : "\u2014";
@@ -422,7 +431,7 @@ function keyRowHtml(key) {
   const cursor = state.cursorKeyId === key.id ? " cursor" : "";
 
   return `<div class="row t-key${open ? " open" : ""}${active || open ? "" : " dim"}${revoked ? " revoked" : ""}${cursor}" data-key-id="${key.id}" data-flip="key:${key.id}" tabindex="0" role="button" aria-expanded="${open}">
-    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${tag ? `<span class="tag${expiringSoon ? " warn" : ""}">${escapeHtml(tag)}</span>` : ""}</span>
+    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${delegate}${tag ? `<span class="tag${expiringSoon ? " warn" : ""}">${escapeHtml(tag)}</span>` : ""}</span>
     <span class="key-mask mono muted ellipsis d">${escapeHtml(maskKey(key.key))}</span>
     <span class="ellipsis d">${keyScopeHtml(key)}</span>
     <span class="num">${revoked && !metrics.requestCount ? '<span class="muted">\u2014</span>' : requestsCellHtml(usage)}</span>

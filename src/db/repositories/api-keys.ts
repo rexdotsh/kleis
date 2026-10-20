@@ -23,6 +23,7 @@ export type ApiKeyRecord = {
   providerScopes: ProviderScopeList;
   modelScopes: ScopeList;
   accountScopes: ScopeList;
+  delegate: boolean;
   expiresAt: number | null;
   revokedAt: number | null;
   createdAt: number;
@@ -33,6 +34,7 @@ export type CreateApiKeyInput = {
   providerScopes?: Provider[] | null;
   modelScopes?: string[] | null;
   accountScopes?: string[] | null;
+  delegate?: boolean;
   expiresAt?: number | null;
 };
 
@@ -41,6 +43,7 @@ export type UpdateApiKeyInput = {
   providerScopes: Provider[] | null;
   modelScopes: string[] | null;
   accountScopes: string[] | null;
+  delegate: boolean;
   expiresAt: number | null;
 };
 
@@ -99,6 +102,7 @@ const toRecord = (row: typeof apiKeys.$inferSelect): ApiKeyRecord => ({
   providerScopes: parseProviderScopeList(row.providerScopeJson),
   modelScopes: parseScopeList(row.modelScopeJson),
   accountScopes: parseScopeList(row.accountScopeJson),
+  delegate: row.delegate,
   expiresAt: row.expiresAt,
   revokedAt: row.revokedAt,
   createdAt: row.createdAt,
@@ -136,6 +140,7 @@ const newApiKeyRow = (
   providerScopeJson: serializeScopeList(input.providerScopes),
   modelScopeJson: serializeScopeList(input.modelScopes),
   accountScopeJson: serializeScopeList(input.accountScopes),
+  delegate: input.delegate ?? false,
   expiresAt: input.expiresAt ?? null,
   revokedAt: null,
   createdAt: now,
@@ -166,6 +171,7 @@ export const rotateApiKey = async (
       providerScopes: existing.providerScopes,
       modelScopes: existing.modelScopes,
       accountScopes: existing.accountScopes,
+      delegate: existing.delegate,
       expiresAt:
         existing.expiresAt !== null && existing.expiresAt > now
           ? existing.expiresAt
@@ -218,6 +224,7 @@ export const updateApiKey = async (
       providerScopeJson: serializeScopeList(input.providerScopes),
       modelScopeJson: serializeScopeList(input.modelScopes),
       accountScopeJson: serializeScopeList(input.accountScopes),
+      delegate: input.delegate,
       expiresAt: input.expiresAt,
     })
     .where(eq(apiKeys.id, id));

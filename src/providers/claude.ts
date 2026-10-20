@@ -12,6 +12,7 @@ import {
   readOAuthCallbackCode,
 } from "./oauth-utils";
 import { parseOAuthStateMetadata } from "./oauth-state";
+import { oauthOwnerSchema } from "../domain/owners";
 import { requireOkResponse } from "./http";
 import {
   buildOAuthTokenFields,
@@ -40,6 +41,7 @@ const claudeStateMetadataSchema = z.strictObject({
   mode: z.enum(["max", "console"]),
   host: z.enum(["claude.ai", "console.anthropic.com", "platform.claude.com"]),
   replaceAccountId: z.string().uuid().optional(),
+  owner: oauthOwnerSchema.optional(),
 });
 
 type ClaudeTokenResponse = OAuthTokenResponse & {
@@ -160,6 +162,7 @@ export const claudeAdapter: ProviderAdapter = {
         ...(typeof input.options?.replaceAccountId === "string"
           ? { replaceAccountId: input.options.replaceAccountId }
           : {}),
+        ...(input.owner ? { owner: input.owner } : {}),
       }),
       expiresAt: input.now + CLAUDE_STATE_TTL_MS,
     });
@@ -224,6 +227,7 @@ export const claudeAdapter: ProviderAdapter = {
       ...(stateMetadata.replaceAccountId
         ? { replaceAccountId: stateMetadata.replaceAccountId }
         : {}),
+      ...(stateMetadata.owner ? { owner: stateMetadata.owner } : {}),
     };
   },
   async refreshAccount(

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="robots" content="noindex" />
+    <title>Link a subscription · kleis</title>
+    <link rel="icon" href="/admin/icons/favicon.svg" type="image/svg+xml" />
+    <link
+      rel="preload"
+      href="/admin/fonts/geist-latin.v1.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="/admin/styles.css" />
+  </head>
+  <body>
+    <div id="login-gate">
+      <div class="login-box">
+        <div class="login-logo">
+          <img
+            class="brand-mark"
+            src="/admin/icons/favicon.svg"
+            width="28"
+            height="28"
+            alt=""
+          />
+          kleis
+        </div>
+        <div class="login-sub">Link your subscription</div>
+        <div id="link-consent">
+          <p class="link-text">
+            Your subscription will be used through this Kleis server for
+            requests you grant. The server's admin operates it.
+          </p>
+          <button id="link-continue" class="btn btn-primary" type="button">
+            Continue
+          </button>
+        </div>
+        <form id="link-form" hidden>
+          <p class="link-text">
+            <a id="link-sign-in" target="_blank" rel="noopener noreferrer"></a>,
+            then paste <span id="link-paste"></span> here.
+          </p>
+          <div class="login-form">
+            <input
+              id="link-code"
+              type="text"
+              aria-label="Code"
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              required
+            />
+            <button class="btn btn-primary" type="submit">Link</button>
+          </div>
+        </form>
+        <p id="link-done" class="link-text" hidden>
+          Linked. You can close this page.
+        </p>
+        <div id="link-error" class="login-error" role="alert"></div>
+      </div>
+    </div>
+    <script type="module" src="/admin/link.js"></script>
+  </body>
+</html>

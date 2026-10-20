@@ -4,6 +4,7 @@ import { installErrorHandler } from "./http/error-handler";
 import { requireAdminAuth } from "./http/middleware/bearer-env-auth";
 import {
   requireApiKey,
+  requireDelegateApiKey,
   requireProxyApiKey,
 } from "./http/middleware/api-key-auth";
 import { adminAccountsRoutes } from "./http/routes/admin-accounts";
@@ -13,7 +14,9 @@ import { adminUsageRoutes } from "./http/routes/admin-usage";
 import { cronRoutes } from "./http/routes/cron";
 import { healthRoutes } from "./http/routes/health";
 import { createLimitsRoutes } from "./http/routes/limits";
+import { createLinkRoutes } from "./http/routes/link";
 import { modelsRoutes } from "./http/routes/models";
+import { createOwnerRoutes } from "./http/routes/owners";
 import {
   flushProxyFailureLogs,
   flushProxyUsage,
@@ -52,6 +55,10 @@ app.route("/admin", adminApi);
 
 app.use("/api/limits", requireApiKey);
 app.route("/api/limits", createLimitsRoutes(db));
+app.use("/api/links", requireDelegateApiKey);
+app.use("/api/owners/*", requireDelegateApiKey);
+app.route("/api", createOwnerRoutes(db));
+app.route("/", createLinkRoutes(db));
 
 app.use("/openai/v1/*", requireProxyApiKey);
 app.use("/anthropic/v1/*", requireProxyApiKey);

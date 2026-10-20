@@ -11,6 +11,7 @@ import {
   tryAcquireProviderAccountRefreshLock,
   updateProviderAccountTokens,
   upsertProviderAccount,
+  type ProviderAccountOwner,
   type ProviderAccountRecord,
 } from "../../db/repositories/provider-accounts";
 import type { Provider } from "../../db/schema";
@@ -371,6 +372,7 @@ export const startProviderOAuth = async (
   provider: Provider,
   input: {
     options?: Record<string, unknown>;
+    owner?: ProviderAccountOwner;
   },
   now: number
 ): Promise<ProviderOAuthStartResult> => {
@@ -406,6 +408,7 @@ export const startProviderOAuth = async (
   return await adapter.startOAuth({
     database,
     ...(input.options ? { options: input.options } : {}),
+    ...(input.owner ? { owner: input.owner } : {}),
     now,
   });
 };
@@ -498,6 +501,7 @@ export const completeProviderOAuth = async (
     refreshToken,
     expiresAt: assertExpiresAt(tokens.expiresAt, now),
     metadata: tokens.metadata,
+    ...(tokens.owner ? { owner: tokens.owner } : {}),
     now,
   });
 };

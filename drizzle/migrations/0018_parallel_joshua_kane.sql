@@ -1,0 +1,1 @@
+ALTER TABLE `api_keys` ADD `delegate` integer DEFAULT false NOT NULL;

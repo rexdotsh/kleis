@@ -51,3 +51,18 @@ export const consumeOAuthState = async (
 
   return row ?? null;
 };
+
+// Spends a state whatever its provider, for flows whose links carry no
+// provider.
+export const consumeOAuthStateByValue = async (
+  database: Database,
+  state: string,
+  now: number
+): Promise<OAuthStateRecord | null> => {
+  const [row] = await database
+    .delete(oauthStates)
+    .where(and(eq(oauthStates.state, state), gt(oauthStates.expiresAt, now)))
+    .returning();
+
+  return row ?? null;
+};

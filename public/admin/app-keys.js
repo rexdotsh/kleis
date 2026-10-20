@@ -188,6 +188,7 @@ async function saveKeyEditsAction(request) {
     providerScopes,
     accountScopes: accountScopes.length ? accountScopes : null,
     modelScopes: modelScopes.length ? modelScopes : null,
+    delegate: $("#edit-key-delegate").checked,
   };
 
   const expiresDate = $("#edit-key-expires-at").value.trim();

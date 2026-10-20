@@ -149,13 +149,22 @@ const isUniqueConstraintError = (error: unknown): boolean => {
   return false;
 };
 
+export class ProviderAccountOwnerConflict extends Error {
+  constructor() {
+    super("This subscription is already connected to this server");
+    this.name = "ProviderAccountOwnerConflict";
+  }
+}
+
 export type ProviderAccountOwner = { id: string; label: string | null };
 
 type UpsertProviderAccountInput = {
   provider: Provider;
   accountId: string | null;
   label?: string | null;
-  owner?: ProviderAccountOwner | null;
+  // Set when an owner links the account; the account must not belong to
+  // anyone else.
+  owner?: ProviderAccountOwner;
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
@@ -179,6 +188,9 @@ export const upsertProviderAccount = withInvalidation(
     const updateExisting = async (
       account: ProviderAccountRecord
     ): Promise<ProviderAccountRecord> => {
+      if (input.owner && account.ownerId !== input.owner.id) {
+        throw new ProviderAccountOwnerConflict();
+      }
       await database
         .update(providerAccounts)
         .set({
