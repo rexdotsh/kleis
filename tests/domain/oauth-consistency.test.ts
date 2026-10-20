@@ -13,13 +13,16 @@ import {
   refreshProviderAccountAfterAuthFailure,
   startProviderOAuth,
 } from "../../src/domain/providers/provider-service";
+import { createTempDatabaseUrl } from "../helpers/temp-database";
 
 const originalFetch = globalThis.fetch;
 let client: ReturnType<typeof createClient>;
+let temp: ReturnType<typeof createTempDatabaseUrl>;
 let database: Database;
 
 beforeEach(async () => {
-  client = createClient({ url: ":memory:" });
+  temp = createTempDatabaseUrl();
+  client = createClient({ url: temp.url });
   database = drizzle(client, { schema });
   await migrate(database, { migrationsFolder: "./drizzle/migrations" });
 });
@@ -27,6 +30,7 @@ beforeEach(async () => {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   client.close();
+  temp.remove();
 });
 
 test("Claude reauthorization rejects a different or unverified known user/organization", async () => {

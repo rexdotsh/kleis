@@ -16,16 +16,19 @@ import {
   completeProviderOAuth,
   startProviderOAuth,
 } from "../../src/domain/providers/provider-service";
+import { createTempDatabaseUrl } from "../helpers/temp-database";
 
 describe("OAuth account reauthorization", () => {
   const originalFetch = globalThis.fetch;
   const codexId = "e402c63b-3916-40ed-8d56-7258ccfd0631";
   const claudeId = "9a249097-40c4-4e8d-895a-251f45494c2a";
   let client: ReturnType<typeof createClient>;
+  let temp: ReturnType<typeof createTempDatabaseUrl>;
   let database: Database;
 
   beforeEach(async () => {
-    client = createClient({ url: ":memory:" });
+    temp = createTempDatabaseUrl();
+    client = createClient({ url: temp.url });
     database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
     const now = Date.now();
@@ -60,6 +63,7 @@ describe("OAuth account reauthorization", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     client.close();
+    temp.remove();
   });
 
   test("replaces selected Claude credentials without changing the account or its status", async () => {

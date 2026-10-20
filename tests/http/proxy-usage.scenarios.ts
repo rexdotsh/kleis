@@ -4,13 +4,13 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 import { installErrorHandler } from "../../src/http/error-handler";
 
 // Run through proxy-usage.test.ts, which starts this file in its own process
-// with an in-memory database.
+// with a throwaway database.
 if (
-  process.env.TURSO_CONNECTION_URL !== ":memory:" ||
+  !process.env.TURSO_CONNECTION_URL?.startsWith("file:") ||
   process.env.TURSO_AUTH_TOKEN
 ) {
   throw new Error(
-    "proxy usage scenarios need an unauthenticated in-memory database"
+    "proxy usage scenarios need an unauthenticated throwaway database"
   );
 }
 const { db } = await import("../../src/db");

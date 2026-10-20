@@ -163,21 +163,6 @@ const credentialIdentity = (input: {
     : null;
 };
 
-const findProviderAccountByIdentity = async (
-  database: Database,
-  provider: Provider,
-  identity: string
-): Promise<ProviderAccountRecord | null> => {
-  const row = await database.query.providerAccounts.findFirst({
-    where: and(
-      eq(providerAccounts.provider, provider),
-      eq(providerAccounts.identity, identity)
-    ),
-  });
-
-  return row ? toProviderAccountRecord(row) : null;
-};
-
 const isUniqueConstraintError = (error: unknown): boolean => {
   let current = error;
   for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
@@ -219,114 +204,77 @@ export const upsertProviderAccount = withInvalidation(
     input: UpsertProviderAccountInput
   ): Promise<ProviderAccountRecord> => {
     const identity = credentialIdentity(input);
-    const existing = identity
-      ? await findProviderAccountByIdentity(database, input.provider, identity)
-      : null;
-
-    // A subscription belongs to one owner, or is shared.
-    const updateExisting = async (
-      account: ProviderAccountRecord
-    ): Promise<ProviderAccountRecord> => {
-      if (account.ownerId !== (input.owner?.id ?? null)) {
-        throw new ProviderAccountOwnerConflict();
+    // One write transaction, so concurrent links and adds of a subscription
+    // are serialized: it belongs to one owner, or is shared.
+    const row = await database.transaction(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(providerAccounts)
+        .where(
+          and(
+            eq(providerAccounts.provider, input.provider),
+            isNull(providerAccounts.unlinkedAt)
+          )
+        );
+      const existing = identity
+        ? rows.find((candidate) => candidate.identity === identity)
+        : undefined;
+      if (existing) {
+        if (existing.ownerId !== (input.owner?.id ?? null)) {
+          throw new ProviderAccountOwnerConflict();
+        }
+        const [updated] = await tx
+          .update(providerAccounts)
+          .set({
+            label: input.label === undefined ? existing.label : input.label,
+            accessToken: input.accessToken,
+            refreshToken: input.refreshToken,
+            refreshLockToken: null,
+            refreshLockExpiresAt: null,
+            lastRefreshAt: input.now,
+            lastRefreshStatus: "success",
+            expiresAt: input.expiresAt,
+            metadataJson: serializeProviderAccountMetadata(input.metadata),
+            updatedAt: input.now,
+          })
+          .where(
+            and(
+              eq(providerAccounts.id, existing.id),
+              isNull(providerAccounts.unlinkedAt)
+            )
+          )
+          .returning();
+        if (!updated) {
+          throw new ProviderAccountOwnerConflict();
+        }
+        return updated;
       }
-      await database
-        .update(providerAccounts)
-        .set({
-          label: input.label === undefined ? account.label : input.label,
+
+      const [created] = await tx
+        .insert(providerAccounts)
+        .values({
+          id: crypto.randomUUID(),
+          provider: input.provider,
+          label: input.label ?? null,
+          accountId: input.accountId,
+          isPrimary: !input.owner && !rows.some((other) => other.isPrimary),
+          enabled: rows[0]?.enabled ?? true,
           accessToken: input.accessToken,
           refreshToken: input.refreshToken,
-          refreshLockToken: null,
-          refreshLockExpiresAt: null,
-          lastRefreshAt: input.now,
-          lastRefreshStatus: "success",
           expiresAt: input.expiresAt,
           metadataJson: serializeProviderAccountMetadata(input.metadata),
+          ownerId: input.owner?.id ?? null,
+          ownerLabel: input.owner?.label ?? null,
+          createdAt: input.now,
           updatedAt: input.now,
         })
-        .where(eq(providerAccounts.id, account.id));
-
-      const updated = await findProviderAccountById(database, account.id);
-      if (!updated) {
-        throw new Error("Failed to load updated provider account");
-      }
-      return updated;
-    };
-    if (existing) {
-      return updateExisting(existing);
-    }
-
-    const [primary, providerAccount] = await database.batch([
-      database.query.providerAccounts.findFirst({
-        where: and(
-          eq(providerAccounts.provider, input.provider),
-          eq(providerAccounts.isPrimary, true)
-        ),
-      }),
-      database.query.providerAccounts.findFirst({
-        where: and(
-          eq(providerAccounts.provider, input.provider),
-          isNull(providerAccounts.unlinkedAt)
-        ),
-      }),
-    ]);
-    const insertValues: typeof providerAccounts.$inferInsert = {
-      id: crypto.randomUUID(),
-      provider: input.provider,
-      label: input.label ?? null,
-      accountId: input.accountId,
-      isPrimary: !primary && !input.owner,
-      enabled: providerAccount?.enabled ?? true,
-      accessToken: input.accessToken,
-      refreshToken: input.refreshToken,
-      refreshLockToken: null,
-      refreshLockExpiresAt: null,
-      expiresAt: input.expiresAt,
-      metadataJson: serializeProviderAccountMetadata(input.metadata),
-      lastRefreshAt: null,
-      lastRefreshStatus: null,
-      ownerId: input.owner?.id ?? null,
-      ownerLabel: input.owner?.label ?? null,
-      createdAt: input.now,
-      updatedAt: input.now,
-    };
-
-    const attemptInsert = async (
-      values: typeof providerAccounts.$inferInsert
-    ): Promise<ProviderAccountRecord> => {
-      await database.insert(providerAccounts).values(values);
-      const created = await findProviderAccountById(database, values.id);
+        .returning();
       if (!created) {
-        throw new Error("Failed to load created provider account");
+        throw new Error("Failed to create provider account");
       }
-
       return created;
-    };
-
-    try {
-      return await attemptInsert(insertValues);
-    } catch (error) {
-      if (!isUniqueConstraintError(error)) {
-        throw error;
-      }
-    }
-
-    if (identity) {
-      const concurrent = await findProviderAccountByIdentity(
-        database,
-        input.provider,
-        identity
-      );
-      if (concurrent) {
-        return updateExisting(concurrent);
-      }
-    }
-
-    return attemptInsert({
-      ...insertValues,
-      id: crypto.randomUUID(),
-      isPrimary: false,
     });
+    return toProviderAccountRecord(row);
   }
 );
 

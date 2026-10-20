@@ -3,12 +3,12 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 import { Hono } from "hono";
 
 // Run through owners.test.ts, which starts this file in its own process
-// with an in-memory database.
+// with a throwaway database.
 if (
-  process.env.TURSO_CONNECTION_URL !== ":memory:" ||
+  !process.env.TURSO_CONNECTION_URL?.startsWith("file:") ||
   process.env.TURSO_AUTH_TOKEN
 ) {
-  throw new Error("owner scenarios need an in-memory database");
+  throw new Error("owner scenarios need a throwaway database");
 }
 const { db } = await import("../../src/db");
 const { createApiKey } = await import("../../src/db/repositories/api-keys");
