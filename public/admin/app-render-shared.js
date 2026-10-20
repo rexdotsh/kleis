@@ -739,7 +739,35 @@ function isAccountServing(account, statuses = providerStatusMap()) {
   );
 }
 
+// Owner ID to label, for accounts linked by their owners.
+function ownerLabels(accounts = state.accounts) {
+  return new Map(
+    accounts
+      .filter((account) => account.ownerId)
+      .map((account) => [
+        account.ownerId,
+        account.ownerLabel || account.ownerId,
+      ])
+  );
+}
+
+// Owner selects stay hidden until someone links an account.
+function renderOwnerSelect(select, owners, fixedOptions, selected) {
+  select.hidden = owners.size === 0;
+  select.innerHTML = [
+    ...fixedOptions,
+    ...[...owners].sort((a, b) => a[1].localeCompare(b[1])),
+  ]
+    .map(
+      ([value, label]) =>
+        `<option value="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(label)}</option>`
+    )
+    .join("");
+}
+
 export {
+  ownerLabels,
+  renderOwnerSelect,
   CLAUDE_LIMIT_NAMES,
   claudeWindowLabel,
   relativeTime,

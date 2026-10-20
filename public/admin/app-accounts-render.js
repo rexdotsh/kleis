@@ -35,10 +35,12 @@ import {
   kbd,
   limitSeverity,
   needsReauthorization,
+  ownerLabels,
   providerName,
   providerStatusMap,
   reauthorizeDeadline,
   relativeTime,
+  renderOwnerSelect,
   renderPreservingForm,
   renderWithMotion,
   requestsCellHtml,
@@ -161,7 +163,7 @@ function accountRowHtml(account, serving, grouped = false) {
       : "";
 
   return `<div class="row t-acc${open ? " open" : ""}${serving ? "" : " dim"}${cursor}" data-account-id="${account.id}" data-flip="account:${account.id}" tabindex="0" role="button" aria-expanded="${open}">
-    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag tag-primary">Primary</span>' : ""}${account.ownerId ? `<span class="tag" title="Linked by its owner">${escapeHtml(ownerName(account))}</span>` : ""}${isFreeTierAccount(account) ? `<span class="tag">${grouped ? escapeHtml(providerName(account.provider)) : "Free"}</span>` : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}${creditHint}${tokenNote ? `<span class="token-note err small d">${tokenNote}</span>` : ""}</span>
+    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag tag-primary">Primary</span>' : ""}${account.ownerId ? `<span class="tag" title="Linked by its owner">${escapeHtml(account.ownerLabel || account.ownerId)}</span>` : ""}${isFreeTierAccount(account) ? `<span class="tag">${grouped ? escapeHtml(providerName(account.provider)) : "Free"}</span>` : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}${creditHint}${tokenNote ? `<span class="token-note err small d">${tokenNote}</span>` : ""}</span>
     <span class="meters d">${limitMetersHtml(account, windows)}</span>
     <span class="num d reset ${resetSeverity || "muted"}">${reset ? `<small>${escapeHtml(reset.label)}</small> ` : ""}${escapeHtml(countdown)}</span>
     <span class="num">${requestsCellHtml(usage)}</span>
@@ -384,31 +386,23 @@ function accountDetailHtml(account) {
   </div>`;
 }
 
-const ownerName = (account) => account.ownerLabel || account.ownerId;
-
 function renderOwnerFilter() {
-  const select = $("#accounts-owner");
-  const owners = new Map();
-  for (const account of state.accounts) {
-    if (account.ownerId) owners.set(account.ownerId, ownerName(account));
-  }
+  const owners = ownerLabels();
   if (
     !owners.size ||
     (state.accountOwner !== "shared" && !owners.has(state.accountOwner))
   ) {
     state.accountOwner = "";
   }
-  select.hidden = owners.size === 0;
-  select.innerHTML = [
-    ["", "All owners"],
-    ["shared", "Shared"],
-    ...[...owners].sort((a, b) => a[1].localeCompare(b[1])),
-  ]
-    .map(
-      ([value, label]) =>
-        `<option value="${escapeHtml(value)}"${value === state.accountOwner ? " selected" : ""}>${escapeHtml(label)}</option>`
-    )
-    .join("");
+  renderOwnerSelect(
+    $("#accounts-owner"),
+    owners,
+    [
+      ["", "All owners"],
+      ["shared", "Shared"],
+    ],
+    state.accountOwner
+  );
 }
 
 function matchesOwner(account) {
