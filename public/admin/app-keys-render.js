@@ -43,6 +43,7 @@ import {
   requestsCellHtml,
   shortDate,
   shortId,
+  ownerLabels,
   untilText,
   usageFact,
   usageWindowLabel,
@@ -447,11 +448,7 @@ function renderGrants() {
   const { grants } = state;
   $("#grants-section").hidden = grants.length === 0;
   $("#grants-count").textContent = grants.length ? String(grants.length) : "";
-  const owners = new Map(
-    state.accounts
-      .filter((account) => account.ownerId)
-      .map((account) => [account.ownerId, account.ownerLabel])
-  );
+  const owners = ownerLabels();
   $("#grants-list").innerHTML = grants
     .map((grant) => {
       const owner = owners.get(grant.ownerId) || grant.ownerId;
