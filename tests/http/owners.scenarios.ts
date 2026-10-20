@@ -1,4 +1,5 @@
 import { beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
+import { eq } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { Hono } from "hono";
 
@@ -30,8 +31,9 @@ const { requireProxyApiKey } =
 const { proxyRoutes, flushProxyUsage } =
   await import("../../src/http/routes/proxy");
 const { modelsRoutes } = await import("../../src/http/routes/models");
-const { upsertProviderAccount } =
-  await import("../../src/db/repositories/provider-accounts");
+const { grants } = await import("../../src/db/schema");
+const { getDashboardUsage } =
+  await import("../../src/db/repositories/dashboard-usage");
 
 const app = new Hono();
 app.use("/api/links", requireDelegateApiKey);
@@ -479,8 +481,14 @@ const proxy = async (model: string, key = delegateKey) => {
       { model, max_tokens: 1, messages: [] },
       key
     );
-    const body = (await response.json()) as { error?: unknown };
-    return { status: response.status, error: body.error, upstream: seen };
+    const body = (await response.json()) as {
+      error?: string | { type: string };
+    };
+    return {
+      status: response.status,
+      error: typeof body.error === "object" ? body.error.type : body.error,
+      upstream: seen,
+    };
   } finally {
     upstream.mockRestore();
     await flushProxyUsage();
@@ -494,15 +502,15 @@ test("plain model names keep routing to the shared account for every key", async
       { authorization: "Bearer shared-access", model: "claude-fake" },
     ]);
   }
+  expect((await proxy("claude-fake@ivy", plainKey)).upstream).toEqual([
+    { authorization: "Bearer shared-access", model: "claude-fake@ivy" },
+  ]);
 });
 
 test("a per-owner model name reaches only that owner's account and only under a grant", async () => {
   expect((await link(await createLink("ivan"), "ivan-access")).status).toBe(
     200
   );
-  const denied = await proxy("claude-fake@ivan", plainKey);
-  expect(denied).toMatchObject({ status: 403, upstream: [] });
-
   expect(await proxy("claude-fake@ivan")).toMatchObject({
     status: 403,
     error: "grant_missing",
@@ -572,4 +580,86 @@ test("only delegate keys discover per-owner model names", async () => {
       "anthropic/claude-fake@judy",
     ])
   );
+});
+
+const ownedAccountId = async (owner: string) => {
+  const [account] = (await listProviderAccounts(db)).filter(
+    (row) => row.ownerId === owner
+  );
+  if (!account) throw new Error("Linked account missing");
+  return account.id;
+};
+
+test("a revoke or an unlink made by another process applies to the next owner request", async () => {
+  expect((await link(await createLink("omar"), "omar-access")).status).toBe(
+    200
+  );
+  expect((await grant("omar", 600)).status).toBe(201);
+  expect((await proxy("claude-fake@omar")).status).toBe(200);
+
+  // Writes from another process don't clear this process's lookups.
+  await db.update(grants).set({ revokedAt: Date.now() });
+  expect(await proxy("claude-fake@omar")).toMatchObject({
+    status: 403,
+    error: "grant_missing",
+    upstream: [],
+  });
+
+  expect((await grant("omar", 600)).status).toBe(201);
+  expect((await proxy("claude-fake@omar")).status).toBe(200);
+  await db
+    .update(providerAccounts)
+    .set({ accessToken: "", enabled: false, unlinkedAt: Date.now() })
+    .where(eq(providerAccounts.id, await ownedAccountId("omar")));
+  expect(await proxy("claude-fake@omar")).toMatchObject({
+    status: 400,
+    upstream: [],
+  });
+});
+
+test("an owner request checks its grant again right before it goes upstream", async () => {
+  expect((await link(await createLink("pia"), "pia-access")).status).toBe(200);
+  expect((await grant("pia", 600)).status).toBe(201);
+  await db
+    .update(providerAccounts)
+    .set({ expiresAt: Date.now() - 1000 })
+    .where(eq(providerAccounts.id, await ownedAccountId("pia")));
+  const original = claudeAdapter.refreshAccount;
+  claudeAdapter.refreshAccount = async () => {
+    await db.update(grants).set({ revokedAt: Date.now() });
+    return {
+      accessToken: "pia-refreshed",
+      refreshToken: "pia-refreshed-refresh",
+      expiresAt: Date.now() + 3_600_000,
+      accountId: null,
+      metadata: null,
+    };
+  };
+  try {
+    expect(await proxy("claude-fake@pia")).toMatchObject({
+      status: 403,
+      upstream: [],
+    });
+  } finally {
+    claudeAdapter.refreshAccount = original;
+  }
+});
+
+test("usage stays attributed to an owner after they unlink", async () => {
+  expect((await link(await createLink("quinn"), "quinn-access")).status).toBe(
+    200
+  );
+  expect((await grant("quinn", 600)).status).toBe(201);
+  expect((await proxy("claude-fake@quinn")).status).toBe(200);
+  const accountId = await ownedAccountId("quinn");
+  expect(
+    (await call("DELETE", `/api/owners/quinn/accounts/${accountId}`)).status
+  ).toBe(200);
+  const usage = await getDashboardUsage(
+    db,
+    Date.now() - 3_600_000,
+    3_600_000,
+    "quinn"
+  );
+  expect(usage.totals.requestCount).toBe(1);
 });

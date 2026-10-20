@@ -689,10 +689,13 @@ export const getRoutableProviderAccount = async (
   now: number,
   input?: {
     allowedAccountIds?: readonly string[] | null;
+    // Accounts chosen by the caller, such as an owner's own.
+    candidates?: readonly ProviderAccountRecord[];
   }
 ): Promise<ProviderAccountRecord | null> => {
   const account = (
-    await findRoutingCandidates(database, provider, input?.allowedAccountIds)
+    input?.candidates ??
+    (await findRoutingCandidates(database, provider, input?.allowedAccountIds))
   ).find((candidate) => candidate.enabled);
   if (!account) {
     return null;

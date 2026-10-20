@@ -6,7 +6,12 @@ import {
   buildTokenUsageRow,
   MISSING_PROVIDER_ACCOUNT_ID,
 } from "../../db/repositories/request-usage";
+import {
+  findGrantedOwnedAccounts,
+  isOwnedCredentialLive,
+} from "../../db/repositories/grants";
 import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
+import { splitOwnerSuffix } from "../../domain/owners";
 import { recordProviderAccountLiveLimits } from "../../domain/providers/provider-account-tracking";
 import {
   findPinnedProviderAccounts,
@@ -46,6 +51,13 @@ import {
   proxyRouteTable,
   type ProxyRoute,
 } from "../proxy-routing";
+
+class OwnerAccessRevoked extends Error {
+  constructor() {
+    super("The owner's grant or linked account was revoked");
+    this.name = "OwnerAccessRevoked";
+  }
+}
 
 const proxyErrorResponse = (message: string, type = "proxy_error") => ({
   error: {
@@ -257,7 +269,12 @@ const proxyRequest = async (
     parsed: parsedRequestBody,
     model: requestedModel,
   } = context.get("proxyRequestBody");
-  const parsedModel = parseModelForProxyRoute(requestedModel, route);
+  const parsedModel = parseModelForProxyRoute(
+    ownerId && requestedModel
+      ? splitOwnerSuffix(requestedModel).model
+      : requestedModel,
+    route
+  );
   const usageModel = parsedModel.upstreamModel ?? "";
 
   const usageRecorder = createUsageRecorder({
@@ -271,9 +288,8 @@ const proxyRequest = async (
   let requestBodyJson = parsedRequestBody;
   let requestBody = requestBodyText;
   if (
-    parsedModel.rawModel &&
     parsedModel.upstreamModel &&
-    parsedModel.rawModel !== parsedModel.upstreamModel &&
+    parsedModel.upstreamModel !== requestedModel &&
     isObjectRecord(parsedRequestBody)
   ) {
     requestBodyJson = {
@@ -284,11 +300,30 @@ const proxyRequest = async (
   }
 
   const now = Date.now();
+  const owned = ownerId
+    ? await findGrantedOwnedAccounts(db, {
+        apiKeyId,
+        ownerId,
+        provider: route.provider,
+        now,
+      })
+    : undefined;
+  if (owned === null) {
+    usageRecorder.recordImmediate(403);
+    return context.json(
+      proxyErrorResponse(
+        `This API key has no live grant for ${ownerId}. Ask for a grant before using their model names.`,
+        "grant_missing"
+      ),
+      403
+    );
+  }
+
   let account: Awaited<ReturnType<typeof getRoutableProviderAccount>>;
   try {
     account = await getRoutableProviderAccount(db, route.provider, now, {
       allowedAccountIds: accountScopeIds,
-      ownerId,
+      ...(owned ? { candidates: owned } : {}),
     });
   } catch {
     usageRecorder.recordImmediate(502);
@@ -448,7 +483,21 @@ const proxyRequest = async (
     result = await sendWithAuthReplay({
       account,
       signal: context.req.raw.signal,
-      send: sendAttempt,
+      send: ownerId
+        ? async (attemptAccount) => {
+            const live = await isOwnedCredentialLive(db, {
+              apiKeyId,
+              ownerId,
+              accountId: attemptAccount.id,
+              accessToken: attemptAccount.accessToken,
+              now: Date.now(),
+            });
+            if (!live) {
+              throw new OwnerAccessRevoked();
+            }
+            return sendAttempt(attemptAccount);
+          }
+        : sendAttempt,
       refresh: (accountId, failedAccessToken) =>
         refreshProviderAccountAfterAuthFailure(
           db,
@@ -458,6 +507,13 @@ const proxyRequest = async (
         ),
     });
   } catch (error) {
+    if (error instanceof OwnerAccessRevoked) {
+      usageRecorder.recordImmediate(403);
+      return context.json(
+        proxyErrorResponse(error.message, "grant_missing"),
+        403
+      );
+    }
     if (!context.req.raw.signal.aborted) {
       usageRecorder.recordImmediate(500);
     }
