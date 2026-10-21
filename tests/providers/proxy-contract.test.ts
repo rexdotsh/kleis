@@ -379,37 +379,6 @@ describe("proxy contract: codex", () => {
     });
   });
 
-  test("does not use x-client-request-id as codex session affinity", () => {
-    const headers = new Headers({
-      "x-client-request-id": "raw-request-id",
-    });
-    const bodyJson = {
-      model: "gpt-5-codex",
-      input: [
-        {
-          role: "user",
-          content: [{ type: "input_text", text: "hello" }],
-        },
-      ],
-    };
-
-    const result = prepareCodexProxyRequest({
-      headers,
-      accessToken: "codex-access",
-      accountId: "acct-fallback",
-      metadata: null,
-      bodyText: JSON.stringify(bodyJson),
-      bodyJson,
-    });
-
-    const transformed = JSON.parse(result.bodyText) as {
-      prompt_cache_key?: string;
-    };
-    expect(transformed.prompt_cache_key).toBeUndefined();
-    expect(headers.get("session-id")).toBeNull();
-    expect(headers.get("x-client-request-id")).toBeNull();
-  });
-
   test("removes output and completion limits the ChatGPT backend rejects", () => {
     const bodyJson = {
       model: "gpt-5-codex",
@@ -1819,6 +1788,31 @@ describe("proxy contract: codex", () => {
     );
     expect(responseText).not.toContain('"type":"response.done"');
     expect(responseText?.match(/data: \[DONE\]/gu)).toHaveLength(1);
+  });
+
+  test("websocket handshake keeps client request, thread, user-agent and beta headers", async () => {
+    const constructorHeaders: Record<string, string>[] = [];
+    installCodexWebSocketMock([{ id: "resp_1" }], [], constructorHeaders);
+    const response = await tryProxyCodexWebSocket({
+      headers: new Headers({
+        "x-client-request-id": "fake-request",
+        "thread-id": "fake-thread",
+        "user-agent": "fake-client/1.2.3",
+        "OpenAI-Beta": "fake_beta=1",
+      }),
+      bodyJson: { model: "gpt-5-codex", stream: true, input: [] },
+      accountKey: "key-1:account-1",
+    });
+    await response?.text();
+
+    expect(
+      Object.fromEntries(new Headers(constructorHeaders[0]))
+    ).toMatchObject({
+      "x-client-request-id": "fake-request",
+      "thread-id": "fake-thread",
+      "user-agent": "fake-client/1.2.3",
+      "openai-beta": "fake_beta=1,responses_websockets=2026-02-06",
+    });
   });
 
   test("uses websocket cached delta transport for streaming requests", async () => {

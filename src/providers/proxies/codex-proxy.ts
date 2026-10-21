@@ -23,7 +23,7 @@ import {
   CODEX_COMPACTION_ENDPOINT,
   CODEX_ORIGINATOR,
   CODEX_RESPONSE_ENDPOINT,
-  CODEX_USER_AGENT,
+  KLEIS_USER_AGENT,
 } from "../constants";
 import type { ProxyOperation } from "../proxy-endpoints";
 
@@ -69,7 +69,21 @@ export const clearCodexSessionHeaders = (headers: Headers): void => {
   headers.delete("session-id");
   headers.delete("x-session-affinity");
   headers.delete("x-session-id");
-  headers.delete("x-client-request-id");
+};
+
+export const mergeHeaderValue = (
+  headers: Headers,
+  name: string,
+  value: string
+): void => {
+  const values = (headers.get(name) ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!values.includes(value)) {
+    values.push(value);
+  }
+  headers.set(name, values.join(","));
 };
 
 export const transformCodexBodyJson = (
@@ -233,8 +247,14 @@ export const prepareCodexProxyRequest = (
 
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("content-type", "application/json");
-  input.headers.set("User-Agent", CODEX_USER_AGENT);
-  input.headers.set(CODEX_BETA_FEATURES_HEADER, CODEX_BETA_FEATURES);
+  if (!input.headers.get("user-agent")) {
+    input.headers.set("user-agent", KLEIS_USER_AGENT);
+  }
+  mergeHeaderValue(
+    input.headers,
+    CODEX_BETA_FEATURES_HEADER,
+    CODEX_BETA_FEATURES
+  );
   if (isStreamingRequest) {
     input.headers.set("accept", "text/event-stream");
   } else if (input.operation === "compact") {

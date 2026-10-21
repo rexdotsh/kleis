@@ -449,6 +449,64 @@ test("Codex session headers and prompt cache keys are namespaced independently a
   }
 });
 
+test("Codex keeps client request, thread, user-agent and beta headers", async () => {
+  const original = globalThis.fetch;
+  let upstream = new Headers();
+  globalThis.fetch = (async (_input, init) => {
+    upstream = new Headers(init?.headers);
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  try {
+    for (const entry of [
+      {
+        sent: {
+          "x-client-request-id": "fake-request",
+          "thread-id": "fake-thread",
+          "user-agent": "fake-client/1.2.3",
+          "openai-beta": "fake_beta=1",
+          "x-codex-beta-features": "fake_feature",
+          originator: "fake-originator",
+        },
+        expected: {
+          "x-client-request-id": "fake-request",
+          "thread-id": "fake-thread",
+          "user-agent": "fake-client/1.2.3",
+          "openai-beta": "fake_beta=1",
+          "x-codex-beta-features": "fake_feature,remote_compaction_v2",
+          originator: "fake-originator",
+          "session-id": null,
+        },
+      },
+      {
+        sent: {},
+        expected: {
+          "user-agent": expect.stringMatching(/^kleis\/\d+\.\d+\.\d+$/),
+          "x-codex-beta-features": "remote_compaction_v2",
+          "openai-beta": null,
+        },
+      },
+    ]) {
+      const response = await app.request("/openai/v1/responses", {
+        method: "POST",
+        headers: entry.sent,
+        body: "{}",
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(
+        Object.fromEntries(
+          Object.keys(entry.expected).map((name) => [name, upstream.get(name)])
+        )
+      ).toEqual(entry.expected);
+      expect(upstream.get("authorization")).toBe("Bearer fake-codex-token");
+      expect(upstream.get("ChatGPT-Account-Id")).toBe("fake-codex-account");
+    }
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("route records one successful SSE request including latest tokens", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = (async () =>

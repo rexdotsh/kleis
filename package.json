@@ -1,5 +1,6 @@
 {
   "name": "kleis",
+  "version": "0.1.0",
   "type": "module",
   "packageManager": "bun@1.4.3",
   "scripts": {

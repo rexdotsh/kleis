@@ -1,3 +1,5 @@
+import { version } from "../../package.json";
+
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/plugin/codex.ts#L475-L477
 // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/openai-codex-responses.ts#L844-L847
 export const CODEX_ACCOUNT_ID_HEADER = "ChatGPT-Account-Id";
@@ -9,7 +11,7 @@ export const CODEX_COMPACTION_ENDPOINT = `${CODEX_RESPONSE_ENDPOINT}/compact`;
 export const CODEX_WEBSOCKET_BETA_HEADER = "responses_websockets=2026-02-06";
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/plugin/codex.ts#L619
 export const CODEX_ORIGINATOR = "opencode";
-export const CODEX_USER_AGENT = "opencode";
+export const KLEIS_USER_AGENT = `kleis/${version}`;
 
 export const ANTHROPIC_API_BASE_URL = "https://api.anthropic.com";
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/provider/provider.ts#L124-L127
