@@ -21,13 +21,11 @@ import {
   accountLabel,
   accountName,
   actionMutationAttributes,
-  cacheReadRate,
   dateInputValue,
   disclosureHeadingHtml,
   fact,
   formFoot,
   formRow,
-  formatCompact,
   hasTraffic,
   icon,
   kbd,
@@ -43,6 +41,7 @@ import {
   shortDate,
   shortId,
   untilText,
+  tokensFact,
   usageFact,
   usageWindowLabel,
 } from "./app-render-shared.js";
@@ -318,8 +317,6 @@ function keyMatches(key, filter) {
 }
 
 function keyFacts(key) {
-  const usage = normalizeUsage(usageForKey(key.id));
-  const cached = cacheReadRate(usage.inputTotalTokens, usage.cacheReadTokens);
   const access = keyAccess(key);
   let expiry;
   if (key.revokedAt) {
@@ -340,10 +337,7 @@ function keyFacts(key) {
   }
   return [
     usageFact(usageForKey(key.id), state.keyUsageWindowMs),
-    fact("Tokens", formatCompact(usage.totalTokens), [
-      cached === null ? "" : `${cached}% cached input`,
-      usage.outputTokens ? `${formatCompact(usage.outputTokens)} output` : "",
-    ]),
+    tokensFact(usageForKey(key.id)),
     fact(
       "Access",
       escapeHtml(

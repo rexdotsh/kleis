@@ -46,6 +46,7 @@ import {
   syncFailureText,
   tokenStatus,
   untilText,
+  tokensFact,
   usageFact,
   usageWindowLabel,
 } from "./app-render-shared.js";
@@ -369,6 +370,7 @@ function accountDetailHtml(account) {
       ...limitFacts(account),
       tokenFact(account),
       usageFact(accountUsageForId(account.id), state.accountUsageWindowMs),
+      tokensFact(accountUsageForId(account.id)),
       accountFact(account),
     ].join("")}</div>
     ${hasDailyTokens(account.id) ? `<div class="daily-tokens" data-daily-for="${account.id}">${dailyTokensBodyHtml(account.id)}</div>` : ""}

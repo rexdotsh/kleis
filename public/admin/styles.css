@@ -1298,7 +1298,15 @@ button.row {
   grid-template-columns: minmax(0, 1fr) 88px 56px 72px 64px;
 }
 .t-keys {
-  grid-template-columns: minmax(0, 1fr) 88px 64px;
+  grid-template-columns: minmax(0, 1fr) 88px 64px 64px;
+}
+.misses {
+  margin-top: 32px;
+}
+.t-miss {
+  grid-template-columns:
+    72px minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1fr)
+    minmax(0, 1.4fr) 72px;
 }
 .model {
   padding-left: 16px;
@@ -1784,9 +1792,11 @@ input[type="checkbox"].toggle:checked::after {
 .usage-grid .thead {
   height: 28px;
 }
-.t-model,
-.t-bykey {
+.t-model {
   grid-template-columns: minmax(0, 1fr) 96px 56px 56px 64px;
+}
+.t-bykey {
+  grid-template-columns: minmax(0, 1fr) 96px 56px 56px 56px 64px;
 }
 .usage-slot:empty {
   display: none;
@@ -2242,6 +2252,20 @@ input[type="checkbox"].toggle:checked::after {
   }
   .attn .l2 {
     grid-column: 2 / -1;
+    padding-left: 0;
+  }
+  .t-keys {
+    grid-template-columns: minmax(0, 1fr) 88px 64px;
+  }
+  .t-miss:not(.thead) {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 2px;
+    height: auto;
+    min-height: 56px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .t-miss .l2 {
     padding-left: 0;
   }
   .detail {

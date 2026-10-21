@@ -13,6 +13,7 @@ import {
   accountIssues,
   accountName,
   cacheReadRate,
+  cachedRateText,
   formatCompact,
   formatCount,
   icon,
@@ -21,6 +22,7 @@ import {
   normalizeUsage,
   providerName,
   providerStatusMap,
+  relativeTime,
   renderWithMotion,
   requestsCellHtml,
   shortDate,
@@ -44,7 +46,7 @@ function usagePanelHtml({ title, columns, head, body }, message, loading) {
   return `<div class="usage-panel"><div class="list usage-table"><div class="row thead ${columns}"><span>${title}${status}</span>${head}</div>${body || placeholder}</div></div>`;
 }
 
-const DASHBOARD_LOADING_HTML = `<div class="kpis">${["Requests", "Success", "Tokens", "Cached input", "Avg latency"].map((label) => `<div class="kpi"><div class="kpi-label">${label}</div><div class="val"><span class="bone"></span></div><div class="sub">&nbsp;</div></div>`).join("")}</div><div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><span class="bone chart-bone"></span></div></div><div class="tables">${["By provider", "Top keys"].map((label) => `<div><div class="sh"><h2>${label}</h2></div><div class="list dashboard-table">${SKELETON_HTML}</div></div>`).join("")}</div>`;
+const DASHBOARD_LOADING_HTML = `<div class="kpis">${["Requests", "Success", "Tokens", "Cache hit rate", "Avg latency"].map((label) => `<div class="kpi"><div class="kpi-label">${label}</div><div class="val"><span class="bone"></span></div><div class="sub">&nbsp;</div></div>`).join("")}</div><div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><span class="bone chart-bone"></span></div></div><div class="tables">${["By provider", "Top keys"].map((label) => `<div><div class="sh"><h2>${label}</h2></div><div class="list dashboard-table">${SKELETON_HTML}</div></div>`).join("")}</div>`;
 
 function usageSlotHtml(kind, id) {
   const windowMs =
@@ -78,11 +80,7 @@ function modelListHtml(rows, message, loading) {
     .sort((a, b) => (b.requestCount ?? 0) - (a.requestCount ?? 0))
     .map((row) => {
       const usage = normalizeUsage(row);
-      const cached = cacheReadRate(
-        usage.inputTotalTokens,
-        usage.cacheReadTokens
-      );
-      return `<div class="row t-model"><span class="name"><span class="mono ellipsis">${escapeHtml(row.model?.trim() || "(unknown)")}</span><span class="tag d">${escapeHtml(`${providerName(row.provider)} \u00b7 ${row.endpoint}`)}</span></span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cached === null ? "\u2014" : `${cached}%`}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
+      return `<div class="row t-model"><span class="name"><span class="mono ellipsis">${escapeHtml(row.model?.trim() || "(unknown)")}</span><span class="tag d">${escapeHtml(`${providerName(row.provider)} \u00b7 ${row.endpoint}`)}</span></span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cachedRateText(usage)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
     })
     .join("");
   return usagePanelHtml(
@@ -131,14 +129,14 @@ function peersListHtml(kind, data, message, loading) {
       const name = byKey
         ? `<span class="ellipsis">${apiKeyDisplayHtml(id)}</span>`
         : `<span class="name"><span class="ellipsis">${accountDisplayHtml(id)}</span><span class="tag d">${escapeHtml(providerName(row.provider))}</span></span>`;
-      return `<div class="row t-bykey"${link}>${name}<span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
+      return `<div class="row t-bykey"${link}>${name}<span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cachedRateText(usage)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
     })
     .join("");
   return usagePanelHtml(
     {
       title: byKey ? "Key" : "Account",
       columns: "t-bykey",
-      head: '<span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
+      head: '<span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Cached</span><span class="num d">Latency</span>',
       body,
     },
     message,
@@ -252,7 +250,7 @@ function kpisHtml(metrics, previous, windowLabel) {
       deltaText(metrics.totalTokens, previous.totalTokens),
     ],
     [
-      "Cached input",
+      "Cache hit rate",
       cached === null ? "\u2014" : `${cached}%`,
       cached === null ? "" : "of input tokens",
     ],
@@ -290,11 +288,6 @@ function providerTableHtml(data, metrics) {
     group.set(name, entry);
     models.set(row.provider, group);
   }
-  const cachedText = (usage) => {
-    const rate = cacheReadRate(usage.inputTotalTokens, usage.cacheReadTokens);
-    return rate === null ? "\u2014" : `${rate}%`;
-  };
-
   const rows = providers
     .map((row) => {
       const usage = normalizeUsage(row);
@@ -305,10 +298,10 @@ function providerTableHtml(data, metrics) {
         .sort((a, b) => b[1].requestCount - a[1].requestCount)
         .map(
           ([name, entry]) =>
-            `<div class="row t-prov"><span class="model ellipsis">${escapeHtml(name)}</span><span class="num muted">${formatCount(entry.requestCount)}</span><span></span><span class="num muted d">${formatCompact(entry.totalTokens)}</span><span class="num muted d">${cachedText(entry)}</span></div>`
+            `<div class="row t-prov"><span class="model ellipsis">${escapeHtml(name)}</span><span class="num muted">${formatCount(entry.requestCount)}</span><span></span><span class="num muted d">${formatCompact(entry.totalTokens)}</span><span class="num muted d">${cachedRateText(entry)}</span></div>`
         )
         .join("");
-      return `<div class="row t-prov"><span>${escapeHtml(providerName(row.provider))}</span><span class="num">${formatCount(usage.requestCount)}</span><span class="num muted">${share}%</span><span class="num d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cachedText(usage)}</span></div>${modelRows}`;
+      return `<div class="row t-prov"><span>${escapeHtml(providerName(row.provider))}</span><span class="num">${formatCount(usage.requestCount)}</span><span class="num muted">${share}%</span><span class="num d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cachedRateText(usage)}</span></div>${modelRows}`;
     })
     .join("");
 
@@ -322,10 +315,47 @@ function topKeysHtml(data, metrics) {
       const share = metrics.requestCount
         ? ((row.requestCount / metrics.requestCount) * 100).toFixed(1)
         : "0.0";
-      return `<div class="row t-keys" data-key-id="${escapeHtml(row.apiKeyId)}" tabindex="0" role="button"><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${formatCount(row.requestCount)}</span><span class="num muted">${share}%</span></div>`;
+      return `<div class="row t-keys" data-key-id="${escapeHtml(row.apiKeyId)}" tabindex="0" role="button"><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${formatCount(row.requestCount)}</span><span class="num muted">${share}%</span><span class="num muted d">${cachedRateText(row)}</span></div>`;
     })
     .join("");
-  return `<div><div class="sh"><h2>Top keys</h2><div class="right"><button class="link small" type="button" data-action="go-keys">View all keys</button></div></div><div class="list dashboard-table" tabindex="0" aria-label="Top keys"><div class="row thead t-keys"><span>Key</span><span class="num">Requests</span><span class="num">Share</span></div>${body || '<p class="list-note muted">No usage in this window.</p>'}</div></div>`;
+  return `<div><div class="sh"><h2>Top keys</h2><div class="right"><button class="link small" type="button" data-action="go-keys">View all keys</button></div></div><div class="list dashboard-table" tabindex="0" aria-label="Top keys"><div class="row thead t-keys"><span>Key</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Cached</span></div>${body || '<p class="list-note muted">No usage in this window.</p>'}</div></div>`;
+}
+
+function idleText(ms) {
+  const minutes = Math.round(ms / 60_000);
+  return minutes < 60 ? `${minutes}m` : `${Math.round(minutes / 60)}h`;
+}
+
+function missReasonText(miss) {
+  switch (miss.reason) {
+    case "account_changed":
+      return "Routed to another account";
+    case "compacted":
+      return "History compacted";
+    case "idle_expired":
+      return `${miss.expiry === "certain" ? "Expired" : "Possibly expired"} after ${idleText(miss.idleMs)} idle`;
+    default:
+      return "Unknown cause";
+  }
+}
+
+const MISSES_SHOWN = 20;
+
+function cacheMissesHtml(data) {
+  const misses = data.cacheMisses || [];
+  const rows = misses
+    .slice(0, MISSES_SHOWN)
+    .map((miss) => {
+      const when = escapeHtml(relativeTime(miss.at));
+      const key = apiKeyDisplayHtml(miss.apiKeyId);
+      const account = accountDisplayHtml(miss.providerAccountId);
+      const model = escapeHtml(miss.model || "(unknown)");
+      const reason = escapeHtml(missReasonText(miss));
+      const repaid = `Read ${formatCount(miss.cachedTokens)} of ${formatCount(miss.expectedCachedTokens)} cached tokens`;
+      return `<div class="row t-miss"><span class="muted d">${when}</span><span class="ellipsis d">${key}</span><span class="ellipsis d">${account}</span><span class="mono ellipsis muted d">${model}</span><span class="ellipsis" title="${reason}">${reason}</span><span class="num d" title="${escapeHtml(repaid)}">${formatCompact(miss.repaidTokens)}</span><span class="l2">${formatCompact(miss.repaidTokens)} re-paid \u00b7 ${when} \u00b7 ${key} \u00b7 ${account} \u00b7 ${model}</span></div>`;
+    })
+    .join("");
+  return `<div class="misses"><div class="sh"><h2>Recent cache misses</h2>${misses.length ? `<span class="muted">${misses.length}</span>` : ""}<div class="right"><span class="muted small">Since the last restart</span></div></div><div class="list dashboard-table" tabindex="0" aria-label="Recent cache misses"><div class="row thead t-miss"><span>When</span><span>Key</span><span>Account</span><span>Model</span><span>Reason</span><span class="num">Re-paid</span></div>${rows || '<p class="list-note muted">No cache misses in this window.</p>'}</div></div>`;
 }
 
 function renderDashboard(rawData) {
@@ -347,6 +377,7 @@ function renderDashboard(rawData) {
     kpisHtml(metrics, normalizeUsage(data.previousTotals), windowLabel),
     requestChartHtml(data, width),
     `<div class="tables">${providerTableHtml(data, metrics)}${topKeysHtml(data, metrics)}</div>`,
+    cacheMissesHtml(data),
   ].join("");
 
   const plot = el.querySelector(".plot");
