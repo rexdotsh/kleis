@@ -180,6 +180,22 @@ const transformCodexResponse = async (
   });
 };
 
+// The ChatGPT backend rejects uncompressed bodies over about 1 MiB.
+// https://github.com/openai/codex/blob/d138398cef7d49e46fe33f1d0ddbd2ca0ed16aa4/codex-rs/core/src/client.rs#L1769-L1777
+const CODEX_ZSTD_MIN_BODY_LENGTH = 256 * 1024;
+
+export const encodeCodexRequestBody = (
+  headers: Headers,
+  bodyText: string,
+  clientSentZstd: boolean
+): BodyInit => {
+  if (!clientSentZstd && bodyText.length < CODEX_ZSTD_MIN_BODY_LENGTH) {
+    return bodyText;
+  }
+  headers.set("content-encoding", "zstd");
+  return Bun.zstdCompressSync(bodyText) as Uint8Array<ArrayBuffer>;
+};
+
 type CodexProxyPreparationInput = {
   operation?: ProxyOperation;
   headers: Headers;

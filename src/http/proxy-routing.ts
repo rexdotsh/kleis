@@ -1,3 +1,5 @@
+import zlib from "node:zlib";
+
 import type { Provider } from "../db/schema";
 import {
   buildProxyRoutePath,
@@ -59,10 +61,64 @@ export type ProxyRequestBody = {
   model: string | null;
 };
 
+type ProxyRequestBodyError = {
+  status: 400 | 413 | 415;
+  message: string;
+};
+
+const MAX_DECODED_BODY_BYTES = 64 * 1024 * 1024;
+
+const BODY_DECODERS: Record<
+  string,
+  (buffer: Uint8Array, options: { maxOutputLength: number }) => Uint8Array
+> = {
+  zstd: zlib.zstdDecompressSync,
+  gzip: zlib.gunzipSync,
+  deflate: zlib.inflateSync,
+};
+
+const readRequestText = async (
+  request: Request
+): Promise<string | ProxyRequestBodyError> => {
+  const encoding =
+    request.headers.get("content-encoding")?.trim().toLowerCase() ?? "";
+  if (!encoding || encoding === "identity") {
+    return request.text();
+  }
+
+  const decoder = BODY_DECODERS[encoding];
+  if (!decoder) {
+    return {
+      status: 415,
+      message: `Unsupported request content-encoding: ${encoding}`,
+    };
+  }
+
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  try {
+    return new TextDecoder().decode(
+      decoder(bytes, { maxOutputLength: MAX_DECODED_BODY_BYTES })
+    );
+  } catch (error) {
+    return (error as { code?: unknown }).code === "ERR_BUFFER_TOO_LARGE"
+      ? {
+          status: 413,
+          message: `Decompressed request body exceeds ${MAX_DECODED_BODY_BYTES / 1024 / 1024} MiB`,
+        }
+      : {
+          status: 400,
+          message: `Request body is not valid ${encoding} data`,
+        };
+  }
+};
+
 export const readProxyRequestBody = async (
   request: Request
-): Promise<ProxyRequestBody> => {
-  const text = await request.text();
+): Promise<ProxyRequestBody | ProxyRequestBodyError> => {
+  const text = await readRequestText(request);
+  if (typeof text !== "string") {
+    return text;
+  }
   let parsed: unknown | null = null;
   if (text.trim()) {
     try {

@@ -21,6 +21,7 @@ import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy"
 import { isEventStreamResponse } from "../../providers/proxies/response";
 import {
   deriveCodexSessionId,
+  encodeCodexRequestBody,
   prepareCodexProxyRequest,
   readCodexSessionId,
 } from "../../providers/proxies/codex-proxy";
@@ -121,7 +122,7 @@ const fetchProxyUpstream = async (input: {
   url: string;
   method: string;
   headers: Headers;
-  body: string;
+  body: BodyInit;
   signal: AbortSignal;
   useCodexSseHeaderTimeout: boolean;
 }): Promise<Response> => {
@@ -337,6 +338,8 @@ const proxyRequest = async (
             codexSessionId
           )
         : null;
+      const clientSentZstd =
+        context.req.header("content-encoding")?.trim().toLowerCase() === "zstd";
       sendAttempt = async (attemptAccount) => {
         const attemptHeaders = new Headers(headers);
         const codexProxy = prepareCodexProxyRequest({
@@ -378,7 +381,11 @@ const proxyRequest = async (
           url: codexProxy.upstreamUrl,
           method: context.req.method,
           headers: attemptHeaders,
-          body: codexProxy.bodyText,
+          body: encodeCodexRequestBody(
+            attemptHeaders,
+            codexProxy.bodyText,
+            clientSentZstd
+          ),
           signal: context.req.raw.signal,
           useCodexSseHeaderTimeout:
             readBooleanField(codexProxy.bodyJson, "stream") === true,

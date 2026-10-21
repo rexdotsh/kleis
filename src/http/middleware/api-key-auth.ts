@@ -65,6 +65,12 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
   let requestedModel: string | null = null;
   if (isProxyRequest) {
     const requestBody = await readProxyRequestBody(context.req.raw);
+    if (!("text" in requestBody)) {
+      return context.json(
+        { error: "bad_request", message: requestBody.message },
+        requestBody.status
+      );
+    }
     requestedModel = requestBody.model;
     if (!requestedModel) {
       return context.json(

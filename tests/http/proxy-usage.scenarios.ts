@@ -170,6 +170,102 @@ test("proxy authorization enforces credentials, provider and model scopes before
   }
 });
 
+test("compressed bodies are decoded for validation and Codex bodies are sent as zstd when compressed or large", async () => {
+  const key = await createApiKey(db, {}, Date.now());
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const original = globalThis.fetch;
+  let upstream = { encoding: null as string | null, body: "" };
+  globalThis.fetch = (async (_input, init) => {
+    const encoding = new Headers(init?.headers).get("content-encoding");
+    const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
+    upstream = {
+      encoding,
+      body: new TextDecoder().decode(
+        encoding === "zstd" ? Bun.zstdDecompressSync(bytes) : bytes
+      ),
+    };
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  const small = JSON.stringify({ model: "gpt-fake", input: "hi" });
+  const large = JSON.stringify({ model: "gpt-fake", input: "x".repeat(2e6) });
+  const claude = JSON.stringify({ model: "claude-fake", messages: [] });
+  const bodies: string[] = [];
+  try {
+    for (const entry of [
+      { path: "/openai/v1/responses", body: small, sent: null, out: null },
+      { path: "/openai/v1/responses", body: large, sent: null, out: "zstd" },
+      { path: "/openai/v1/responses", body: small, sent: "zstd", out: "zstd" },
+      { path: "/openai/v1/responses", body: small, sent: "gzip", out: null },
+      { path: "/anthropic/v1/messages", body: claude, sent: "zstd", out: null },
+      { path: "/anthropic/v1/messages", body: claude, sent: null, out: null },
+    ]) {
+      const response = await authenticated.request(entry.path, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key.key}`,
+          ...(entry.sent ? { "content-encoding": entry.sent } : {}),
+        },
+        body:
+          entry.sent === "zstd"
+            ? Bun.zstdCompressSync(entry.body)
+            : entry.sent === "gzip"
+              ? Bun.gzipSync(entry.body)
+              : entry.body,
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(upstream.encoding).toBe(entry.out);
+      expect(JSON.parse(upstream.body)).toMatchObject(JSON.parse(entry.body));
+      bodies.push(upstream.body);
+    }
+    expect(bodies[4]).toBe(bodies[5]);
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("undecodable or oversized compressed bodies are rejected before forwarding", async () => {
+  const key = await createApiKey(db, {}, Date.now());
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const original = globalThis.fetch;
+  let forwarded = 0;
+  globalThis.fetch = (async () => {
+    forwarded++;
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  const bomb = Bun.zstdCompressSync(
+    `{"model":"gpt-fake","input":"${"x".repeat(65 * 1024 * 1024)}"}`
+  );
+  try {
+    for (const entry of [
+      { encoding: "zstd", body: bomb, status: 413, message: "64 MiB" },
+      { encoding: "zstd", body: "not zstd", status: 400, message: "zstd" },
+      { encoding: "br", body: "{}", status: 415, message: "br" },
+    ]) {
+      const response = await authenticated.request("/openai/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key.key}`,
+          "content-encoding": entry.encoding,
+        },
+        body: entry.body,
+      });
+      expect(response.status).toBe(entry.status);
+      expect(
+        ((await response.json()) as { message: string }).message
+      ).toContain(entry.message);
+    }
+    expect(forwarded).toBe(0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("the proxy forwards its selected credential, never client secrets, spoofed accounts or IPs", async () => {
   const original = globalThis.fetch;
   let upstream = new Headers();
