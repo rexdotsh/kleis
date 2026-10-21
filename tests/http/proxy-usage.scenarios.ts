@@ -227,7 +227,7 @@ test("compressed bodies are decoded for validation and Codex bodies are sent as 
   }
 });
 
-test("undecodable or oversized compressed bodies are rejected before forwarding", async () => {
+test("undecodable or unsupported compressed bodies are rejected before forwarding", async () => {
   const key = await createApiKey(db, {}, Date.now());
   const authenticated = new Hono();
   authenticated.use("*", requireProxyApiKey);
@@ -238,14 +238,16 @@ test("undecodable or oversized compressed bodies are rejected before forwarding"
     forwarded++;
     return Response.json({ output: [] });
   }) as typeof fetch;
-  const bomb = Bun.zstdCompressSync(
-    `{"model":"gpt-fake","input":"${"x".repeat(65 * 1024 * 1024)}"}`
-  );
   try {
     for (const entry of [
-      { encoding: "zstd", body: bomb, status: 413, message: "64 MiB" },
       { encoding: "zstd", body: "not zstd", status: 400, message: "zstd" },
       { encoding: "br", body: "{}", status: 415, message: "br" },
+      {
+        encoding: "constructor",
+        body: '{"model":"gpt-fake"}',
+        status: 415,
+        message: "constructor",
+      },
     ]) {
       const response = await authenticated.request("/openai/v1/responses", {
         method: "POST",
@@ -259,6 +261,62 @@ test("undecodable or oversized compressed bodies are rejected before forwarding"
       expect(
         ((await response.json()) as { message: string }).message
       ).toContain(entry.message);
+    }
+    expect(forwarded).toBe(0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("compressed uploads over the limit are rejected and cancelled while still streaming", async () => {
+  const key = await createApiKey(db, {}, Date.now());
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const original = globalThis.fetch;
+  let forwarded = 0;
+  globalThis.fetch = (async () => {
+    forwarded++;
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  const bomb = Bun.zstdCompressSync("x".repeat(65 * 1024 * 1024));
+  const skippableFrame = new Uint8Array(8 + 1024 * 1024);
+  new DataView(skippableFrame.buffer).setUint32(0, 0x184d2a50, true);
+  new DataView(skippableFrame.buffer).setUint32(4, 1024 * 1024, true);
+  try {
+    for (const chunks of [
+      [bomb],
+      Array.from({ length: 70 }, () => skippableFrame),
+    ]) {
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller): void {
+          const chunk = chunks.shift();
+          if (chunk) controller.enqueue(chunk);
+        },
+        cancel(): void {
+          cancelled = true;
+        },
+      });
+      const response = await Promise.race([
+        authenticated.request("/openai/v1/responses", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${key.key}`,
+            "content-encoding": "zstd",
+          },
+          body,
+        }),
+        Bun.sleep(2000).then(() => null),
+      ]);
+      expect(response?.status).toBe(413);
+      expect(await response?.json()).toMatchObject({
+        message: expect.stringContaining("64 MiB"),
+      });
+      for (let attempt = 0; attempt < 50 && !cancelled; attempt++) {
+        await Bun.sleep(1);
+      }
+      expect(cancelled).toBe(true);
     }
     expect(forwarded).toBe(0);
   } finally {

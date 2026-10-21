@@ -1,5 +1,3 @@
-import zlib from "node:zlib";
-
 import type { Provider } from "../db/schema";
 import {
   buildProxyRoutePath,
@@ -66,15 +64,27 @@ type ProxyRequestBodyError = {
   message: string;
 };
 
-const MAX_DECODED_BODY_BYTES = 64 * 1024 * 1024;
+const MAX_BODY_MIB = 64;
+const BODY_ENCODINGS = new Set(["zstd", "gzip", "deflate"]);
 
-const BODY_DECODERS: Record<
-  string,
-  (buffer: Uint8Array, options: { maxOutputLength: number }) => Uint8Array
-> = {
-  zstd: zlib.zstdDecompressSync,
-  gzip: zlib.gunzipSync,
-  deflate: zlib.inflateSync,
+class BodyTooLargeError extends Error {}
+
+const limitBytes = (label: string) => {
+  let total = 0;
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller): void {
+      total += chunk.byteLength;
+      if (total > MAX_BODY_MIB * 1024 * 1024) {
+        controller.error(
+          new BodyTooLargeError(
+            `${label} request body exceeds ${MAX_BODY_MIB} MiB`
+          )
+        );
+        return;
+      }
+      controller.enqueue(chunk);
+    },
+  });
 };
 
 const readRequestText = async (
@@ -85,30 +95,30 @@ const readRequestText = async (
   if (!encoding || encoding === "identity") {
     return request.text();
   }
-
-  const decoder = BODY_DECODERS[encoding];
-  if (!decoder) {
+  if (!BODY_ENCODINGS.has(encoding)) {
     return {
       status: 415,
       message: `Unsupported request content-encoding: ${encoding}`,
     };
   }
+  if (!request.body) {
+    return "";
+  }
 
-  const bytes = new Uint8Array(await request.arrayBuffer());
+  const decoded = request.body
+    .pipeThrough(limitBytes("Compressed"))
+    .pipeThrough(
+      new DecompressionStream(
+        encoding as CompressionFormat
+      ) as ReadableWritablePair<Uint8Array, Uint8Array>
+    )
+    .pipeThrough(limitBytes("Decompressed"));
   try {
-    return new TextDecoder().decode(
-      decoder(bytes, { maxOutputLength: MAX_DECODED_BODY_BYTES })
-    );
+    return await new Response(decoded).text();
   } catch (error) {
-    return (error as { code?: unknown }).code === "ERR_BUFFER_TOO_LARGE"
-      ? {
-          status: 413,
-          message: `Decompressed request body exceeds ${MAX_DECODED_BODY_BYTES / 1024 / 1024} MiB`,
-        }
-      : {
-          status: 400,
-          message: `Request body is not valid ${encoding} data`,
-        };
+    return error instanceof BodyTooLargeError
+      ? { status: 413, message: error.message }
+      : { status: 400, message: `Request body is not valid ${encoding} data` };
   }
 };
 
