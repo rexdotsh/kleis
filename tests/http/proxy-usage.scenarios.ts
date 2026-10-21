@@ -364,6 +364,42 @@ test("the proxy forwards its selected credential, never client secrets, spoofed 
   }
 });
 
+test("Codex compaction keeps tools and generation settings but drops response-only fields", async () => {
+  const original = globalThis.fetch;
+  let forwarded: unknown = null;
+  globalThis.fetch = (async (_input, init) => {
+    forwarded = JSON.parse(String(init?.body));
+    return Response.json({ object: "response.compaction", output: [] });
+  }) as typeof fetch;
+  const kept = {
+    model: "gpt-fake",
+    input: [{ role: "user", content: "compact this" }],
+    instructions: "Keep context",
+    tools: [{ type: "function", name: "read", parameters: {} }],
+    parallel_tool_calls: true,
+    reasoning: { effort: "high", summary: "auto" },
+    text: { verbosity: "low" },
+    include: ["reasoning.encrypted_content"],
+  };
+  try {
+    const response = await app.request("/openai/v1/responses/compact", {
+      method: "POST",
+      body: JSON.stringify({
+        ...kept,
+        stream: true,
+        store: true,
+        client_metadata: { source: "fake" },
+      }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(forwarded).toEqual(kept);
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("route records one successful SSE request including latest tokens", async () => {
   const original = globalThis.fetch;
   globalThis.fetch = (async () =>
