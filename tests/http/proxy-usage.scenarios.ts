@@ -534,6 +534,89 @@ test("route records one successful SSE request including latest tokens", async (
   }
 });
 
+test("Claude compaction usage iterations are counted once in JSON and SSE", async () => {
+  const onDemand = {
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    iterations: [
+      {
+        type: "compaction",
+        input_tokens: 132,
+        output_tokens: 173,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+    ],
+  };
+  const threshold = {
+    input_tokens: 23_000,
+    output_tokens: 1000,
+    cache_read_input_tokens: 4000,
+    iterations: [
+      { type: "compaction", input_tokens: 180_000, output_tokens: 3500 },
+      {
+        type: "message",
+        input_tokens: 23_000,
+        output_tokens: 1000,
+        cache_read_input_tokens: 4000,
+      },
+    ],
+  };
+  const sse = (finalUsage: Record<string, unknown>) =>
+    new Response(
+      event({
+        type: "message_start",
+        message: { usage: { input_tokens: 0, output_tokens: 0 } },
+      }) +
+        event({ type: "message_delta", usage: finalUsage }) +
+        event({ type: "message_stop" }),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+  const original = globalThis.fetch;
+  try {
+    for (const { upstream, expected } of [
+      {
+        upstream: () => Response.json({ type: "message", usage: onDemand }),
+        expected: { inputTokens: 132, outputTokens: 173 },
+      },
+      {
+        upstream: () => sse(onDemand),
+        expected: { inputTokens: 132, outputTokens: 173 },
+      },
+      {
+        upstream: () => Response.json({ type: "message", usage: threshold }),
+        expected: {
+          inputTokens: 203_000,
+          outputTokens: 4500,
+          cacheReadTokens: 4000,
+        },
+      },
+      {
+        upstream: () => sse(threshold),
+        expected: {
+          inputTokens: 203_000,
+          outputTokens: 4500,
+          cacheReadTokens: 4000,
+        },
+      },
+    ]) {
+      globalThis.fetch = (async () => upstream()) as typeof fetch;
+      const response = await request();
+      expect(response.status).toBe(200);
+      await response.text();
+      await flushProxyUsage();
+      expect(await db.select().from(requestUsageBuckets)).toMatchObject([
+        { requestCount: 1, cacheReadTokens: 0, ...expected },
+      ]);
+      await db.delete(requestUsageBuckets);
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("Codex HTTP-200 SSE rate limits count as failed requests", async () => {
   const original = globalThis.fetch;
   const warn = spyOn(console, "warn").mockImplementation(() => undefined);

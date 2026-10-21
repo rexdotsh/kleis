@@ -10,9 +10,9 @@ import { requireProxyEndpointRoute } from "../proxy-endpoints";
 import {
   readAnthropicUsageFromResponse,
   readAnthropicUsageObject,
+  readAnthropicUsageToken,
   type TokenUsage,
 } from "../../usage/token-usage";
-import { toNonNegativeInteger } from "../../utils/number";
 import { isObjectRecord, type JsonObject, withField } from "../../utils/object";
 import {
   type ClaudeToolNames,
@@ -218,16 +218,6 @@ const maybeTransformClaudeStreamResponse = (
   };
   let sawStreamUsage = false;
 
-  const readOptionalUsageToken = (
-    usage: Record<string, unknown>,
-    key: string
-  ): number | null => {
-    const value = usage[key];
-    return value === null || value === undefined
-      ? null
-      : toNonNegativeInteger(value);
-  };
-
   return createSseRelay({
     response,
     provider: "claude",
@@ -263,18 +253,26 @@ const maybeTransformClaudeStreamResponse = (
           }
 
           sawStreamUsage = true;
-          streamUsage.inputTokens =
-            readOptionalUsageToken(usage, "input_tokens") ??
-            streamUsage.inputTokens;
-          streamUsage.outputTokens =
-            readOptionalUsageToken(usage, "output_tokens") ??
-            streamUsage.outputTokens;
-          streamUsage.cacheReadTokens =
-            readOptionalUsageToken(usage, "cache_read_input_tokens") ??
-            streamUsage.cacheReadTokens;
-          streamUsage.cacheWriteTokens =
-            readOptionalUsageToken(usage, "cache_creation_input_tokens") ??
-            streamUsage.cacheWriteTokens;
+          streamUsage.inputTokens = readAnthropicUsageToken(
+            usage,
+            "input_tokens",
+            streamUsage.inputTokens
+          );
+          streamUsage.outputTokens = readAnthropicUsageToken(
+            usage,
+            "output_tokens",
+            streamUsage.outputTokens
+          );
+          streamUsage.cacheReadTokens = readAnthropicUsageToken(
+            usage,
+            "cache_read_input_tokens",
+            streamUsage.cacheReadTokens
+          );
+          streamUsage.cacheWriteTokens = readAnthropicUsageToken(
+            usage,
+            "cache_creation_input_tokens",
+            streamUsage.cacheWriteTokens
+          );
           return;
         }
 
