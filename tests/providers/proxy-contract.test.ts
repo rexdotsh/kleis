@@ -379,46 +379,6 @@ describe("proxy contract: codex", () => {
     });
   });
 
-  test("uses derived session headers and prompt cache key for codex requests", () => {
-    const headers = new Headers({
-      session_id: "raw-session-underscore",
-      "session-id": "raw-session-header",
-      "x-session-affinity": "raw-session-affinity",
-      "x-session-id": "raw-x-session-id",
-      "x-client-request-id": "raw-request-id",
-    });
-    const bodyJson = {
-      model: "gpt-5-codex",
-      prompt_cache_key: "raw-prompt-cache-key",
-      input: [
-        {
-          role: "user",
-          content: [{ type: "input_text", text: "hello" }],
-        },
-      ],
-    };
-
-    const result = prepareCodexProxyRequest({
-      headers,
-      accessToken: "codex-access",
-      accountId: "acct-fallback",
-      metadata: null,
-      bodyText: JSON.stringify(bodyJson),
-      bodyJson,
-      sessionId: "kleis_derived_session",
-    });
-
-    const transformed = JSON.parse(result.bodyText) as {
-      prompt_cache_key?: string;
-    };
-    expect(transformed.prompt_cache_key).toBe("kleis_derived_session");
-    expect(headers.get("session_id")).toBeNull();
-    expect(headers.get("x-session-affinity")).toBe("kleis_derived_session");
-    expect(headers.get("x-session-id")).toBe("kleis_derived_session");
-    expect(headers.get("session-id")).toBe("kleis_derived_session");
-    expect(headers.get("x-client-request-id")).toBeNull();
-  });
-
   test("does not use x-client-request-id as codex session affinity", () => {
     const headers = new Headers({
       "x-client-request-id": "raw-request-id",
@@ -507,7 +467,7 @@ describe("proxy contract: codex", () => {
       metadata: null,
       bodyText: JSON.stringify(bodyJson),
       bodyJson,
-      sessionId: "kleis_compaction_session",
+      promptCacheKey: "kleis_compaction_key",
       onTokenUsage: capture.onTokenUsage,
     });
 
@@ -518,7 +478,7 @@ describe("proxy contract: codex", () => {
       model: bodyJson.model,
       input: bodyJson.input,
       instructions: bodyJson.instructions,
-      prompt_cache_key: "kleis_compaction_session",
+      prompt_cache_key: "kleis_compaction_key",
     });
 
     await result.transformResponse(
@@ -1962,6 +1922,7 @@ describe("proxy contract: codex", () => {
     expect(firstBody.stream).toBeUndefined();
     expect(firstBody.previous_response_id).toBeUndefined();
     expect(firstBody.input).toEqual(firstInput);
+    expect(firstBody).not.toHaveProperty("prompt_cache_key");
     expect(secondBody.previous_response_id).toBe("resp_1");
     expect(secondBody.input).toEqual([
       { role: "user", content: [{ type: "input_text", text: "Finish" }] },
