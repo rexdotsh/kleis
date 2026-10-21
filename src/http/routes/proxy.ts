@@ -32,6 +32,12 @@ import {
   readUpstreamErrorPayload,
 } from "../../providers/proxies/upstream-error";
 import { rewriteUsageLimitResponse } from "../../providers/proxies/usage-limit-response";
+import {
+  createPromptCacheTracker,
+  readClaudePromptCacheRequest,
+  readCodexPromptCacheRequest,
+  type PromptCacheRequest,
+} from "../../usage/prompt-cache";
 import type { UsageRequestSource } from "../../usage/request-outcome";
 import { createUsageBuffer } from "../../usage/usage-buffer";
 import {
@@ -84,6 +90,7 @@ const createCodexSseHeaderTimeout = (): {
 };
 
 const usageBuffer = createUsageBuffer(db);
+const promptCacheTracker = createPromptCacheTracker();
 const upstreamFailureLogger = createUpstreamFailureLogger();
 
 const logUpstreamResponse = async (
@@ -111,6 +118,8 @@ const logUpstreamResponse = async (
 };
 
 export const flushProxyUsage = (): Promise<void> => usageBuffer.flush();
+
+export const listRecentPromptCacheMisses = promptCacheTracker.recentMisses;
 
 export const flushProxyFailureLogs = (): Promise<void> =>
   Promise.resolve(upstreamFailureLogger.flush());
@@ -157,6 +166,7 @@ type UsageRecorderInput = {
   apiKeyId: string;
   route: ProxyRoute;
   model: string;
+  promptCache: PromptCacheRequest | null;
   getProviderAccountId: () => string;
 };
 
@@ -169,6 +179,7 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
   let requestOccurredAt = 0;
   let requestPersisted = false;
   let latestTokenUsage: TokenUsage | null = null;
+  let promptCache = input.promptCache;
 
   const recordRequestCounters = (
     statusCode: number,
@@ -215,6 +226,15 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
       }
 
       latestTokenUsage = tokenUsage;
+      if (promptCache) {
+        promptCacheTracker.observe(promptCache, {
+          apiKeyId: input.apiKeyId,
+          providerAccountId: input.getProviderAccountId(),
+          model: input.model,
+          usage: tokenUsage,
+        });
+        promptCache = null;
+      }
       if (!requestPersisted) {
         return;
       }
@@ -261,14 +281,6 @@ const proxyRequest = async (
   const parsedModel = parseModelForProxyRoute(requestedModel, route);
   const usageModel = parsedModel.upstreamModel ?? "";
 
-  const usageRecorder = createUsageRecorder({
-    startedAt,
-    apiKeyId,
-    route,
-    model: usageModel,
-    getProviderAccountId: () => providerAccountId,
-  });
-
   let requestBodyJson = parsedRequestBody;
   let requestBody = requestBodyText;
   if (
@@ -283,6 +295,27 @@ const proxyRequest = async (
     };
     requestBody = JSON.stringify(requestBodyJson);
   }
+
+  const usageRecorder = createUsageRecorder({
+    startedAt,
+    apiKeyId,
+    route,
+    model: usageModel,
+    promptCache:
+      route.provider === "codex"
+        ? readCodexPromptCacheRequest(
+            apiKeyId,
+            requestBodyJson,
+            readCodexSessionId(requestBodyJson, context.req.raw.headers),
+            route.operation
+          )
+        : readClaudePromptCacheRequest(
+            apiKeyId,
+            requestBodyJson,
+            context.req.raw.headers
+          ),
+    getProviderAccountId: () => providerAccountId,
+  });
 
   const now = Date.now();
   let account: Awaited<ReturnType<typeof getRoutableProviderAccount>>;

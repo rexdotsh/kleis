@@ -21,8 +21,12 @@ const { requestUsageBuckets } = await import("../../src/db/schema");
 const { createApiKey } = await import("../../src/db/repositories/api-keys");
 const { requireProxyApiKey } =
   await import("../../src/http/middleware/api-key-auth");
-const { proxyRoutes, flushProxyUsage, flushProxyFailureLogs } =
-  await import("../../src/http/routes/proxy");
+const {
+  proxyRoutes,
+  flushProxyUsage,
+  flushProxyFailureLogs,
+  listRecentPromptCacheMisses,
+} = await import("../../src/http/routes/proxy");
 const { namespaceCodexKey } =
   await import("../../src/providers/proxies/codex-proxy");
 
@@ -613,6 +617,91 @@ test("Claude compaction usage iterations are counted once in JSON and SSE", asyn
       await db.delete(requestUsageBuckets);
     }
   } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a prompt cache miss is logged and listed without prompt text or session IDs", async () => {
+  const original = globalThis.fetch;
+  const info = spyOn(console, "info").mockImplementation(() => undefined);
+  const claudeUsage = (cached: number) => ({
+    type: "message",
+    usage: {
+      input_tokens: 20_500 - cached,
+      output_tokens: 10,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: cached,
+    },
+  });
+  const codexUsage = (cached: number) => ({
+    output: [],
+    usage: {
+      input_tokens: 20_500,
+      output_tokens: 10,
+      input_tokens_details: { cached_tokens: cached },
+    },
+  });
+  try {
+    for (const entry of [
+      {
+        path: "/anthropic/v1/messages",
+        headers: { "x-claude-code-session-id": "fake-claude-session" },
+        body: (tool: string) => ({
+          model: "claude-fake",
+          system: "SECRET system text",
+          tools: [{ name: tool, input_schema: { type: "object" } }],
+          messages: [{ role: "user", content: "SECRET prompt" }],
+        }),
+        usage: claudeUsage,
+        accountId: () => account.id,
+      },
+      {
+        path: "/openai/v1/responses",
+        headers: { "session-id": "fake-codex-session" },
+        body: (tool: string) => ({
+          model: "gpt-fake",
+          instructions: "SECRET instructions",
+          tools: [{ type: "function", name: tool }],
+          input: [{ type: "message", role: "user", content: "SECRET prompt" }],
+        }),
+        usage: codexUsage,
+        accountId: () => codexAccount.id,
+      },
+    ]) {
+      for (const [tool, cached] of [
+        ["read", 20_000],
+        ["write", 0],
+      ] as const) {
+        globalThis.fetch = (async () =>
+          Response.json(entry.usage(cached))) as typeof fetch;
+        const response = await app.request(entry.path, {
+          method: "POST",
+          headers: entry.headers,
+          body: JSON.stringify(entry.body(tool)),
+        });
+        expect(response.status).toBe(200);
+        await response.text();
+      }
+      const lines = info.mock.calls
+        .map((call) => String(call[0]))
+        .filter((line) => line.includes('"prompt_cache_miss"'));
+      expect(lines).toHaveLength(1);
+      const [line = ""] = lines;
+      expect(line).not.toMatch(/SECRET|fake-(claude|codex)-session/);
+      const expected = {
+        apiKeyId: "fake-key",
+        providerAccountId: entry.accountId(),
+        reason: "prefix_changed",
+        changed: ["tools"],
+        repaidTokens: 20_000,
+      };
+      expect(JSON.parse(line)).toMatchObject(expected);
+      expect(listRecentPromptCacheMisses()[0]).toMatchObject(expected);
+      info.mockClear();
+    }
+    await flushProxyUsage();
+  } finally {
+    info.mockRestore();
     globalThis.fetch = original;
   }
 });
