@@ -23,7 +23,7 @@ import {
   CODEX_COMPACTION_ENDPOINT,
   CODEX_ORIGINATOR,
   CODEX_RESPONSE_ENDPOINT,
-  KLEIS_USER_AGENT,
+  CODEX_USER_AGENT,
 } from "../constants";
 import type { ProxyOperation } from "../proxy-endpoints";
 
@@ -248,7 +248,7 @@ export const prepareCodexProxyRequest = (
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("content-type", "application/json");
   if (!input.headers.get("user-agent")) {
-    input.headers.set("user-agent", KLEIS_USER_AGENT);
+    input.headers.set("user-agent", CODEX_USER_AGENT);
   }
   mergeHeaderValue(
     input.headers,

@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { Hono } from "hono";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { installErrorHandler } from "../../src/http/error-handler";
+import { CODEX_USER_AGENT } from "../../src/providers/constants";
 
 // Run through proxy-usage.test.ts, which starts this file in its own process
 // with an in-memory database.
@@ -480,7 +481,7 @@ test("Codex keeps client request, thread, user-agent and beta headers", async ()
       {
         sent: {},
         expected: {
-          "user-agent": expect.stringMatching(/^kleis\/\d+\.\d+\.\d+$/),
+          "user-agent": CODEX_USER_AGENT,
           "x-codex-beta-features": "remote_compaction_v2",
           "openai-beta": null,
         },
