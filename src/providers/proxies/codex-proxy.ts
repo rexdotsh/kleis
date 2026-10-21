@@ -33,27 +33,23 @@ const trimString = (value: unknown): string =>
 const toHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
+export const readCodexPromptCacheKey = (body: unknown): string | null =>
+  (isObjectRecord(body) && trimString(body.prompt_cache_key)) || null;
+
 export const readCodexSessionId = (
   body: unknown,
   headers: Headers
-): string | null => {
-  const bodySessionId = isObjectRecord(body)
-    ? trimString(body.prompt_cache_key)
-    : "";
-  return (
-    bodySessionId ||
-    trimString(headers.get("session_id")) ||
-    trimString(headers.get("session-id")) ||
-    trimString(headers.get("x-session-affinity")) ||
-    null
-  );
-};
+): string | null =>
+  trimString(headers.get("session_id")) ||
+  trimString(headers.get("session-id")) ||
+  trimString(headers.get("x-session-affinity")) ||
+  readCodexPromptCacheKey(body);
 
-export const deriveCodexSessionId = async (
+export const namespaceCodexKey = async (
   accountKey: string,
-  sessionId: string
+  key: string
 ): Promise<string> => {
-  const data = new TextEncoder().encode(`${accountKey}:${sessionId}`);
+  const data = new TextEncoder().encode(`${accountKey}:${key}`);
   const digest = await crypto.subtle.digest("SHA-256", data);
   return `kleis_${toHex(new Uint8Array(digest)).slice(0, 48)}`;
 };
@@ -78,7 +74,7 @@ export const clearCodexSessionHeaders = (headers: Headers): void => {
 
 export const transformCodexBodyJson = (
   bodyJson: unknown,
-  sessionId?: string | null
+  promptCacheKey?: string | null
 ): JsonObject | null => {
   if (!isObjectRecord(bodyJson)) {
     return null;
@@ -109,13 +105,13 @@ export const transformCodexBodyJson = (
     ...(promotedInstructions ? { input: input.slice(1) } : {}),
     instructions,
     store: false,
-    ...(sessionId ? { prompt_cache_key: sessionId } : {}),
+    ...(promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
   };
 };
 
 const transformCodexCompactionBodyJson = (
   bodyJson: unknown,
-  sessionId?: string | null
+  promptCacheKey?: string | null
 ): JsonObject | null => {
   if (!isObjectRecord(bodyJson)) {
     return null;
@@ -144,8 +140,8 @@ const transformCodexCompactionBodyJson = (
     }
   }
 
-  if (sessionId) {
-    compactBody.prompt_cache_key = sessionId;
+  if (promptCacheKey) {
+    compactBody.prompt_cache_key = promptCacheKey;
   }
   return compactBody;
 };
@@ -212,6 +208,7 @@ type CodexProxyPreparationInput = {
   bodyText: string;
   bodyJson: unknown;
   sessionId?: string | null;
+  promptCacheKey?: string | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
   onStreamEnd?: ((statusCode: number) => void) | null;
 };
@@ -231,8 +228,8 @@ export const prepareCodexProxyRequest = (
     readBooleanField(input.bodyJson, "stream") === true;
   const bodyJson =
     input.operation === "compact"
-      ? transformCodexCompactionBodyJson(input.bodyJson, input.sessionId)
-      : transformCodexBodyJson(input.bodyJson, input.sessionId);
+      ? transformCodexCompactionBodyJson(input.bodyJson, input.promptCacheKey)
+      : transformCodexBodyJson(input.bodyJson, input.promptCacheKey);
 
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("content-type", "application/json");

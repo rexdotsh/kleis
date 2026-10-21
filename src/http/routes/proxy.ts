@@ -20,9 +20,10 @@ import {
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { isEventStreamResponse } from "../../providers/proxies/response";
 import {
-  deriveCodexSessionId,
   encodeCodexRequestBody,
+  namespaceCodexKey,
   prepareCodexProxyRequest,
+  readCodexPromptCacheKey,
   readCodexSessionId,
 } from "../../providers/proxies/codex-proxy";
 import { tryProxyCodexWebSocket } from "../../providers/proxies/codex-websocket";
@@ -331,12 +332,14 @@ const proxyRequest = async (
 
   switch (route.provider) {
     case "codex": {
+      const accountKey = `${apiKeyId}:${account.id}`;
       const codexSessionId = readCodexSessionId(requestBodyJson, headers);
       const codexUpstreamSessionId = codexSessionId
-        ? await deriveCodexSessionId(
-            `${apiKeyId}:${account.id}`,
-            codexSessionId
-          )
+        ? await namespaceCodexKey(accountKey, codexSessionId)
+        : null;
+      const promptCacheKey = readCodexPromptCacheKey(requestBodyJson);
+      const codexPromptCacheKey = promptCacheKey
+        ? await namespaceCodexKey(accountKey, promptCacheKey)
         : null;
       const clientSentZstd =
         context.req.header("content-encoding")?.trim().toLowerCase() === "zstd";
@@ -355,6 +358,7 @@ const proxyRequest = async (
           bodyText: requestBody,
           bodyJson: requestBodyJson,
           sessionId: codexUpstreamSessionId,
+          promptCacheKey: codexPromptCacheKey,
           onTokenUsage: usageRecorder.onTokenUsage,
           onStreamEnd,
         });

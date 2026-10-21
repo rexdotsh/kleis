@@ -12,7 +12,7 @@ import {
 } from "../account-tracking/live-limits";
 import {
   applyCodexSessionHeaders,
-  deriveCodexSessionId,
+  namespaceCodexKey,
   readCodexSessionId,
 } from "./codex-proxy";
 import { readOpenAiResponsesUsageFromSseEvent } from "../../usage/token-usage";
@@ -762,7 +762,7 @@ export const tryProxyCodexWebSocket = async (
   const requestId = input.upstreamSessionId
     ? input.upstreamSessionId
     : sessionId
-      ? await deriveCodexSessionId(input.accountKey, sessionId)
+      ? await namespaceCodexKey(input.accountKey, sessionId)
       : crypto.randomUUID();
   const cacheKey = sessionId ? `${input.accountKey}:${sessionId}` : null;
   const headers = buildWebSocketHeaders(input.headers, requestId);
@@ -777,9 +777,7 @@ export const tryProxyCodexWebSocket = async (
   }
 
   let acquired: Awaited<ReturnType<typeof acquireSocket>> | null = null;
-  const fullBody = withoutTransportFields(
-    sessionId ? { ...body, prompt_cache_key: requestId } : body
-  );
+  const fullBody = withoutTransportFields(body);
   let requestBody: Record<string, unknown>;
   let requestPayloadText: string;
   let requestBytes: number;

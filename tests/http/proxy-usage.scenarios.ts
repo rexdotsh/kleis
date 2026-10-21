@@ -22,6 +22,8 @@ const { requireProxyApiKey } =
   await import("../../src/http/middleware/api-key-auth");
 const { proxyRoutes, flushProxyUsage, flushProxyFailureLogs } =
   await import("../../src/http/routes/proxy");
+const { namespaceCodexKey } =
+  await import("../../src/providers/proxies/codex-proxy");
 
 const app = new Hono();
 installErrorHandler(app);
@@ -394,6 +396,53 @@ test("Codex compaction keeps tools and generation settings but drops response-on
     expect(response.status).toBe(200);
     await response.text();
     expect(forwarded).toEqual(kept);
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("Codex session headers and prompt cache keys are namespaced independently and never invented", async () => {
+  const original = globalThis.fetch;
+  let forwarded = { headers: new Headers(), body: {} as unknown };
+  globalThis.fetch = (async (_input, init) => {
+    forwarded = {
+      headers: new Headers(init?.headers),
+      body: JSON.parse(String(init?.body)),
+    };
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  const namespaced = (key: string) =>
+    namespaceCodexKey(`fake-key:${codexAccount.id}`, key);
+  try {
+    for (const entry of [
+      { path: "responses", session: "s1", key: "k1", affinity: "s1" },
+      { path: "responses", session: "s1", key: null, affinity: "s1" },
+      { path: "responses/compact", session: "s1", key: null, affinity: "s1" },
+      { path: "responses", session: null, key: "k1", affinity: "k1" },
+    ]) {
+      const response = await app.request(`/openai/v1/${entry.path}`, {
+        method: "POST",
+        headers: entry.session ? { "session-id": entry.session } : {},
+        body: JSON.stringify({
+          model: "gpt-fake",
+          input: [],
+          ...(entry.key ? { prompt_cache_key: entry.key } : {}),
+        }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      const affinity = await namespaced(entry.affinity);
+      expect(forwarded.headers.get("session-id")).toBe(affinity);
+      expect(forwarded.headers.get("x-session-affinity")).toBe(affinity);
+      if (entry.key) {
+        expect(forwarded.body).toMatchObject({
+          prompt_cache_key: await namespaced(entry.key),
+        });
+      } else {
+        expect(forwarded.body).not.toHaveProperty("prompt_cache_key");
+      }
+    }
     await flushProxyUsage();
   } finally {
     globalThis.fetch = original;
