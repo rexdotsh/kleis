@@ -12,6 +12,7 @@ import {
 } from "../account-tracking/live-limits";
 import {
   applyCodexSessionHeaders,
+  mergeHeaderValue,
   namespaceCodexKey,
   readCodexSessionId,
 } from "./codex-proxy";
@@ -737,11 +738,14 @@ const buildWebSocketHeaders = (
   nextHeaders.delete("content-length");
   nextHeaders.delete("content-type");
   nextHeaders.delete("host");
-  nextHeaders.delete("openai-beta");
   nextHeaders.delete("transfer-encoding");
   nextHeaders.delete("upgrade");
-  nextHeaders.set("OpenAI-Beta", CODEX_WEBSOCKET_BETA_HEADER);
-  nextHeaders.set(CODEX_BETA_FEATURES_HEADER, CODEX_BETA_FEATURES);
+  mergeHeaderValue(nextHeaders, "OpenAI-Beta", CODEX_WEBSOCKET_BETA_HEADER);
+  mergeHeaderValue(
+    nextHeaders,
+    CODEX_BETA_FEATURES_HEADER,
+    CODEX_BETA_FEATURES
+  );
   applyCodexSessionHeaders(nextHeaders, requestId);
   return nextHeaders;
 };

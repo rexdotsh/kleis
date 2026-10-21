@@ -9,7 +9,8 @@ export const CODEX_COMPACTION_ENDPOINT = `${CODEX_RESPONSE_ENDPOINT}/compact`;
 export const CODEX_WEBSOCKET_BETA_HEADER = "responses_websockets=2026-02-06";
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/plugin/codex.ts#L619
 export const CODEX_ORIGINATOR = "opencode";
-export const CODEX_USER_AGENT = "opencode";
+// OpenCode v2.1.2: https://github.com/anomalyco/opencode/blob/a517687fde98a7329ada3ae644a01a9fc6c4e99e/packages/core/src/session/model-request.ts#L288
+export const CODEX_USER_AGENT = "opencode/latest/2.1.2/cli";
 
 export const ANTHROPIC_API_BASE_URL = "https://api.anthropic.com";
 // https://github.com/anomalyco/opencode/blob/d848c9b6a32f408e8b9bf6448b83af05629454d0/packages/opencode/src/provider/provider.ts#L124-L127
