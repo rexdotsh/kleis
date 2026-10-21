@@ -59,10 +59,76 @@ export type ProxyRequestBody = {
   model: string | null;
 };
 
+type ProxyRequestBodyError = {
+  status: 400 | 413 | 415;
+  message: string;
+};
+
+const MAX_BODY_MIB = 64;
+const BODY_ENCODINGS = new Set(["zstd", "gzip", "deflate"]);
+
+class BodyTooLargeError extends Error {}
+
+const limitBytes = (label: string) => {
+  let total = 0;
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller): void {
+      total += chunk.byteLength;
+      if (total > MAX_BODY_MIB * 1024 * 1024) {
+        controller.error(
+          new BodyTooLargeError(
+            `${label} request body exceeds ${MAX_BODY_MIB} MiB`
+          )
+        );
+        return;
+      }
+      controller.enqueue(chunk);
+    },
+  });
+};
+
+const readRequestText = async (
+  request: Request
+): Promise<string | ProxyRequestBodyError> => {
+  const encoding =
+    request.headers.get("content-encoding")?.trim().toLowerCase() ?? "";
+  if (!encoding || encoding === "identity") {
+    return request.text();
+  }
+  if (!BODY_ENCODINGS.has(encoding)) {
+    return {
+      status: 415,
+      message: `Unsupported request content-encoding: ${encoding}`,
+    };
+  }
+  if (!request.body) {
+    return "";
+  }
+
+  const decoded = request.body
+    .pipeThrough(limitBytes("Compressed"))
+    .pipeThrough(
+      new DecompressionStream(
+        encoding as CompressionFormat
+      ) as ReadableWritablePair<Uint8Array, Uint8Array>
+    )
+    .pipeThrough(limitBytes("Decompressed"));
+  try {
+    return await new Response(decoded).text();
+  } catch (error) {
+    return error instanceof BodyTooLargeError
+      ? { status: 413, message: error.message }
+      : { status: 400, message: `Request body is not valid ${encoding} data` };
+  }
+};
+
 export const readProxyRequestBody = async (
   request: Request
-): Promise<ProxyRequestBody> => {
-  const text = await request.text();
+): Promise<ProxyRequestBody | ProxyRequestBodyError> => {
+  const text = await readRequestText(request);
+  if (typeof text !== "string") {
+    return text;
+  }
   let parsed: unknown | null = null;
   if (text.trim()) {
     try {

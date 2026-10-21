@@ -170,6 +170,160 @@ test("proxy authorization enforces credentials, provider and model scopes before
   }
 });
 
+test("compressed bodies are decoded for validation and Codex bodies are sent as zstd when compressed or large", async () => {
+  const key = await createApiKey(db, {}, Date.now());
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const original = globalThis.fetch;
+  let upstream = { encoding: null as string | null, body: "" };
+  globalThis.fetch = (async (_input, init) => {
+    const encoding = new Headers(init?.headers).get("content-encoding");
+    const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
+    upstream = {
+      encoding,
+      body: new TextDecoder().decode(
+        encoding === "zstd" ? Bun.zstdDecompressSync(bytes) : bytes
+      ),
+    };
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  const small = JSON.stringify({ model: "gpt-fake", input: "hi" });
+  const large = JSON.stringify({ model: "gpt-fake", input: "x".repeat(2e6) });
+  const claude = JSON.stringify({ model: "claude-fake", messages: [] });
+  const bodies: string[] = [];
+  try {
+    for (const entry of [
+      { path: "/openai/v1/responses", body: small, sent: null, out: null },
+      { path: "/openai/v1/responses", body: large, sent: null, out: "zstd" },
+      { path: "/openai/v1/responses", body: small, sent: "zstd", out: "zstd" },
+      { path: "/openai/v1/responses", body: small, sent: "gzip", out: null },
+      { path: "/anthropic/v1/messages", body: claude, sent: "zstd", out: null },
+      { path: "/anthropic/v1/messages", body: claude, sent: null, out: null },
+    ]) {
+      const response = await authenticated.request(entry.path, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key.key}`,
+          ...(entry.sent ? { "content-encoding": entry.sent } : {}),
+        },
+        body:
+          entry.sent === "zstd"
+            ? Bun.zstdCompressSync(entry.body)
+            : entry.sent === "gzip"
+              ? Bun.gzipSync(entry.body)
+              : entry.body,
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(upstream.encoding).toBe(entry.out);
+      expect(JSON.parse(upstream.body)).toMatchObject(JSON.parse(entry.body));
+      bodies.push(upstream.body);
+    }
+    expect(bodies[4]).toBe(bodies[5]);
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("undecodable or unsupported compressed bodies are rejected before forwarding", async () => {
+  const key = await createApiKey(db, {}, Date.now());
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const original = globalThis.fetch;
+  let forwarded = 0;
+  globalThis.fetch = (async () => {
+    forwarded++;
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  try {
+    for (const entry of [
+      { encoding: "zstd", body: "not zstd", status: 400, message: "zstd" },
+      { encoding: "br", body: "{}", status: 415, message: "br" },
+      {
+        encoding: "constructor",
+        body: '{"model":"gpt-fake"}',
+        status: 415,
+        message: "constructor",
+      },
+    ]) {
+      const response = await authenticated.request("/openai/v1/responses", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key.key}`,
+          "content-encoding": entry.encoding,
+        },
+        body: entry.body,
+      });
+      expect(response.status).toBe(entry.status);
+      expect(
+        ((await response.json()) as { message: string }).message
+      ).toContain(entry.message);
+    }
+    expect(forwarded).toBe(0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("compressed uploads over the limit are rejected and cancelled while still streaming", async () => {
+  const key = await createApiKey(db, {}, Date.now());
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const original = globalThis.fetch;
+  let forwarded = 0;
+  globalThis.fetch = (async () => {
+    forwarded++;
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  const bomb = Bun.zstdCompressSync("x".repeat(65 * 1024 * 1024));
+  const skippableFrame = new Uint8Array(8 + 1024 * 1024);
+  new DataView(skippableFrame.buffer).setUint32(0, 0x184d2a50, true);
+  new DataView(skippableFrame.buffer).setUint32(4, 1024 * 1024, true);
+  try {
+    for (const chunks of [
+      [bomb],
+      Array.from({ length: 70 }, () => skippableFrame),
+    ]) {
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller): void {
+          const chunk = chunks.shift();
+          if (chunk) controller.enqueue(chunk);
+        },
+        cancel(): void {
+          cancelled = true;
+        },
+      });
+      const response = await Promise.race([
+        authenticated.request("/openai/v1/responses", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${key.key}`,
+            "content-encoding": "zstd",
+          },
+          body,
+        }),
+        Bun.sleep(2000).then(() => null),
+      ]);
+      expect(response?.status).toBe(413);
+      expect(await response?.json()).toMatchObject({
+        message: expect.stringContaining("64 MiB"),
+      });
+      for (let attempt = 0; attempt < 50 && !cancelled; attempt++) {
+        await Bun.sleep(1);
+      }
+      expect(cancelled).toBe(true);
+    }
+    expect(forwarded).toBe(0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("the proxy forwards its selected credential, never client secrets, spoofed accounts or IPs", async () => {
   const original = globalThis.fetch;
   let upstream = new Headers();

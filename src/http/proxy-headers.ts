@@ -7,6 +7,7 @@ const PROXY_ONLY_HEADERS = new Set([
   CODEX_ACCOUNT_ID_HEADER.toLowerCase(),
   "host",
   "content-length",
+  "content-encoding",
   "cookie",
   "forwarded",
   "via",
