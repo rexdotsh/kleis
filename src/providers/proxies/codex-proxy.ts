@@ -121,12 +121,18 @@ const transformCodexCompactionBodyJson = (
     return null;
   }
 
+  // https://github.com/anomalyco/opencode/blob/c3712e0c7a2d7f8d288f8b9875ae026146910a4c/packages/ai/src/protocols/utils/responses-compaction.ts#L93-L103
   const allowedFields = [
     "model",
     "input",
     "instructions",
     "previous_response_id",
     "service_tier",
+    "reasoning",
+    "text",
+    "include",
+    "parallel_tool_calls",
+    "tools",
     "prompt_cache_key",
     "prompt_cache_retention",
     "prompt_cache_options",
