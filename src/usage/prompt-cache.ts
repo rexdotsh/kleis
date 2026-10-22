@@ -130,11 +130,10 @@ const firstItem = (
   include: (item: unknown) => boolean = () => true
 ): unknown => (Array.isArray(items) ? items.find(include) : items);
 
-const isCodexTask = (item: unknown): boolean =>
-  !(
-    isObjectRecord(item) &&
-    (item.role === "system" || item.role === "developer")
-  );
+const isCodexInstruction = (item: unknown): boolean =>
+  isObjectRecord(item) && (item.role === "system" || item.role === "developer");
+
+const isCodexTask = (item: unknown): boolean => !isCodexInstruction(item);
 
 // A conversation is one session's turns with the same model, system prompt,
 // tools and first task item, so subagents and side requests in that session
@@ -166,7 +165,16 @@ export const readPromptCacheRequest = (
   }
 
   const sessionHash = hashJson([input.apiKeyId, provider, session]);
-  const system = hashJson(claude ? body.system : body.instructions);
+  const system = hashJson(
+    claude
+      ? body.system
+      : [
+          body.instructions,
+          Array.isArray(body.input)
+            ? body.input.filter(isCodexInstruction)
+            : null,
+        ]
+  );
   const tools = hashJson(body.tools);
   const requestClass = input.headers.get(CLAUDE_CODE_REQUEST_CLASS_HEADER);
   return {
