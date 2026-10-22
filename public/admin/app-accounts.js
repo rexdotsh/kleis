@@ -33,6 +33,8 @@ import {
   switchToTab,
 } from "./app-usage.js";
 
+const RESET_CONFIRM_RELOAD_MS = 6000;
+
 async function loadAccounts() {
   const requestSeq = ++state.accountsRequestSeq;
   invalidateUsageDetails("account");
@@ -307,6 +309,11 @@ async function redeemResetCreditAction(request, accountId) {
     refreshed?.find((entry) => entry.id === accountId)
   );
   toast(message, type);
+  // The server reads the limits once more a few seconds after a reset.
+  if (feedback.changed)
+    setTimeout(() => {
+      loadAccounts().catch(() => undefined);
+    }, RESET_CONFIRM_RELOAD_MS);
 }
 
 function startEditAccount(id) {

@@ -95,6 +95,7 @@ function codexResultToast(result) {
         message: "Limits reset \u00b7 1 credit used",
         type: "success",
         showBalance: true,
+        changed: true,
       };
     case "nothing_to_reset":
       return {
@@ -112,6 +113,7 @@ function codexResultToast(result) {
           "This credit already reset your limits \u00b7 nothing more was used",
         type: "info",
         showBalance: true,
+        changed: true,
       };
     default:
       return {

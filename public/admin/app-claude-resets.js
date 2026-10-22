@@ -171,6 +171,7 @@ function claimToast(claim) {
       message: `Refilled the ${limitsText(claim.cleared)} \u00b7 1 reset used`,
       type: "success",
       remaining: claim.resetsLeft,
+      changed: true,
     };
   }
   const [message, type] = CLAIM_RESULT_TOASTS[claim.result] || [
