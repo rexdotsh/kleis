@@ -23,9 +23,9 @@ const HOUR_MS = 60 * MINUTE_MS;
 // Below this many reusable tokens a drop is too small to report.
 const MIN_REUSABLE_TOKENS = 4096;
 const MAX_CONVERSATIONS = 5000;
+// The Claude proxy sends every breakpoint with the 1h TTL.
 // https://platform.claude.com/docs/en/build-with-claude/prompt-caching#1-hour-cache-duration
-const CLAUDE_TTL_MS = 5 * MINUTE_MS;
-const CLAUDE_LONG_TTL_MS = HOUR_MS;
+const CLAUDE_TTL_MS = HOUR_MS;
 // OpenAI keeps prefixes for at least 5 minutes, often far longer, so a Codex
 // gap past the TTL only possibly expired the cache.
 // https://platform.openai.com/docs/guides/prompt-caching#cache-lifetime
@@ -66,7 +66,6 @@ export type PromptCacheRequest = {
   system: bigint;
   tools: bigint;
   ttlMs: number;
-  has5mBreakpoint: boolean;
   isMain: boolean;
   isClassifiedMain: boolean;
 };
@@ -88,8 +87,6 @@ export type PromptCacheTurn = PromptCacheRequest & {
   previousSession: SessionState | undefined;
 };
 
-type IdleGap = "under_5m" | "5m_to_60m" | "over_60m";
-
 export type PromptCacheMiss = {
   at: number;
   provider: Provider;
@@ -99,75 +96,24 @@ export type PromptCacheMiss = {
   model: string;
   reason: PromptCacheMissReason;
   isMain: boolean;
-  has5mBreakpoint: boolean;
-  // A main miss after a 5m to 60m gap on a request with a 5m breakpoint,
-  // for a reason a 1h TTL could have prevented.
-  idleRewrite: boolean;
   idleMs: number;
-  idleGap: IdleGap;
   ttlMs: number;
-  cacheTtl: string;
   expiry: "certain" | "possible" | null;
   contextTokens: number;
   cachedTokens: number;
   expectedCachedTokens: number;
   repaidTokens: number;
-  cacheWrite5mTokens: number;
-  cacheWrite1hTokens: number;
   conversationHash: string;
   sessionHash: string;
 };
 
 type PromptCacheMissTotal = Pick<
   PromptCacheMiss,
-  | "provider"
-  | "reason"
-  | "isMain"
-  | "idleGap"
-  | "has5mBreakpoint"
-  | "repaidTokens"
+  "provider" | "reason" | "isMain" | "repaidTokens"
 > & { misses: number };
-
-const TTL_REASONS = new Set<PromptCacheMissReason>([
-  "idle_expired",
-  "unknown",
-  "session_unknown",
-]);
-
-const idleGap = (idleMs: number): IdleGap =>
-  idleMs <= 5 * MINUTE_MS
-    ? "under_5m"
-    : idleMs <= HOUR_MS
-      ? "5m_to_60m"
-      : "over_60m";
-
-const ttlLabel = (ttlMs: number): string =>
-  ttlMs % HOUR_MS === 0 ? `${ttlMs / HOUR_MS}h` : `${ttlMs / MINUTE_MS}m`;
 
 const hashJson = (value: unknown): bigint =>
   Bun.hash.wyhash(JSON.stringify(value) ?? "");
-
-// Breakpoints sit on the request, system blocks, tools, messages and their
-// content blocks.
-const collectBreakpointTtls = (value: unknown, ttls: Set<string>): void => {
-  if (!isObjectRecord(value)) return;
-  if (isObjectRecord(value.cache_control)) {
-    ttls.add(value.cache_control.ttl === "1h" ? "1h" : "5m");
-  }
-  if (Array.isArray(value.content)) {
-    for (const item of value.content) collectBreakpointTtls(item, ttls);
-  }
-};
-
-const claudeBreakpointTtls = (body: Record<string, unknown>): Set<string> => {
-  const ttls = new Set<string>();
-  collectBreakpointTtls(body, ttls);
-  for (const part of [body.system, body.tools, body.messages]) {
-    if (!Array.isArray(part)) continue;
-    for (const item of part) collectBreakpointTtls(item, ttls);
-  }
-  return ttls;
-};
 
 const codexTtlMs = (body: Record<string, unknown>): number => {
   const ttl = isObjectRecord(body.prompt_cache_options)
@@ -223,7 +169,6 @@ export const readPromptCacheRequest = (
   const system = hashJson(claude ? body.system : body.instructions);
   const tools = hashJson(body.tools);
   const requestClass = input.headers.get(CLAUDE_CODE_REQUEST_CLASS_HEADER);
-  const ttls = claude ? claudeBreakpointTtls(body) : null;
   return {
     conversation: hashJson([
       `${sessionHash}`,
@@ -238,12 +183,7 @@ export const readPromptCacheRequest = (
     model: input.model,
     system,
     tools,
-    ttlMs: ttls
-      ? ttls.has("1h")
-        ? CLAUDE_LONG_TTL_MS
-        : CLAUDE_TTL_MS
-      : codexTtlMs(body),
-    has5mBreakpoint: ttls?.has("5m") === true,
+    ttlMs: claude ? CLAUDE_TTL_MS : codexTtlMs(body),
     isClassifiedMain: requestClass === "main",
     isMain:
       (requestClass ?? "main") === "main" &&
@@ -388,16 +328,8 @@ export const createPromptCacheTracker = () => {
         model: turn.model,
         reason,
         isMain: turn.isMain,
-        has5mBreakpoint: turn.has5mBreakpoint,
-        idleRewrite:
-          turn.isMain &&
-          turn.has5mBreakpoint &&
-          idleGap(idleMs) === "5m_to_60m" &&
-          TTL_REASONS.has(reason),
         idleMs,
-        idleGap: idleGap(idleMs),
         ttlMs: baseline.ttlMs,
-        cacheTtl: ttlLabel(baseline.ttlMs),
         expiry:
           reason !== "idle_expired"
             ? null
@@ -408,13 +340,11 @@ export const createPromptCacheTracker = () => {
         cachedTokens: call.cacheReadTokens,
         expectedCachedTokens,
         repaidTokens,
-        cacheWrite5mTokens: call.cacheWrite5mTokens ?? 0,
-        cacheWrite1hTokens: call.cacheWrite1hTokens ?? 0,
         conversationHash: turn.conversation.toString(16),
         sessionHash: turn.session.toString(16),
       };
       logInfo("prompt_cache_miss", miss);
-      const totalKey = `${miss.provider}:${reason}:${miss.isMain}:${miss.idleGap}:${miss.has5mBreakpoint}`;
+      const totalKey = `${miss.provider}:${reason}:${miss.isMain}`;
       const total = totals.get(totalKey);
       if (total) {
         total.misses += 1;
@@ -424,8 +354,6 @@ export const createPromptCacheTracker = () => {
           provider: miss.provider,
           reason,
           isMain: miss.isMain,
-          idleGap: miss.idleGap,
-          has5mBreakpoint: miss.has5mBreakpoint,
           misses: 1,
           repaidTokens,
         });
@@ -433,8 +361,8 @@ export const createPromptCacheTracker = () => {
       return miss;
     },
 
-    // Re-paid tokens since this process started, by provider, reason, main
-    // turn, idle gap and 5m breakpoint.
+    // Re-paid tokens since this process started, by provider, reason and
+    // main turn.
     missTotals: () => ({
       since,
       totals: Array.from(totals.values(), (total) => ({ ...total })),

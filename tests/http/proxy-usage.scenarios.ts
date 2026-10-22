@@ -629,70 +629,6 @@ test("Claude compaction usage iterations are counted once in JSON and SSE", asyn
   }
 });
 
-test("Claude cache writes are recorded by TTL in JSON and SSE", async () => {
-  const split = {
-    cache_creation_input_tokens: 7,
-    cache_creation: {
-      ephemeral_5m_input_tokens: 3,
-      ephemeral_1h_input_tokens: 4,
-    },
-  };
-  const iterations = {
-    ...split,
-    iterations: [
-      { type: "compaction", input_tokens: 9, ...split },
-      { type: "message", input_tokens: 1, ...split },
-    ],
-  };
-  const sse = (
-    start: Record<string, unknown>,
-    delta: Record<string, unknown>
-  ) =>
-    new Response(
-      event({ type: "message_start", message: { usage: start } }) +
-        event({ type: "message_delta", usage: delta }) +
-        event({ type: "message_stop" }),
-      { headers: { "content-type": "text/event-stream" } }
-    );
-  const original = globalThis.fetch;
-  try {
-    for (const { upstream, expected } of [
-      {
-        upstream: () => Response.json({ type: "message", usage: split }),
-        expected: { cacheWrite5mTokens: 3, cacheWrite1hTokens: 4 },
-      },
-      {
-        upstream: () => sse(split, { output_tokens: 1 }),
-        expected: { cacheWrite5mTokens: 3, cacheWrite1hTokens: 4 },
-      },
-      {
-        upstream: () => sse({ input_tokens: 1 }, split),
-        expected: { cacheWrite5mTokens: 3, cacheWrite1hTokens: 4 },
-      },
-      {
-        upstream: () => Response.json({ type: "message", usage: iterations }),
-        expected: { cacheWrite5mTokens: 6, cacheWrite1hTokens: 8 },
-      },
-      {
-        upstream: () => sse({ input_tokens: 0 }, iterations),
-        expected: { cacheWrite5mTokens: 6, cacheWrite1hTokens: 8 },
-      },
-    ]) {
-      globalThis.fetch = (async () => upstream()) as typeof fetch;
-      const response = await request();
-      expect(response.status).toBe(200);
-      await response.text();
-      await flushProxyUsage();
-      expect(await db.select().from(requestUsageBuckets)).toMatchObject([
-        { requestCount: 1, ...expected },
-      ]);
-      await db.delete(requestUsageBuckets);
-    }
-  } finally {
-    globalThis.fetch = original;
-  }
-});
-
 test("concurrent first turns are not compared, and a later cold turn logs and records one content-free miss", async () => {
   const original = globalThis.fetch;
   const info = spyOn(console, "info").mockImplementation(() => undefined);
@@ -707,8 +643,6 @@ test("concurrent first turns are not compared, and a later cold turn logs and re
           provider: string;
           reason: string;
           isMain: boolean;
-          idleGap: string;
-          has5mBreakpoint: boolean;
           repaidTokens: number;
         }[];
       };
@@ -716,29 +650,13 @@ test("concurrent first turns are not compared, and a later cold turn logs and re
     const main = body.promptCacheMisses.totals.filter(
       (total) => total.provider === provider && total.isMain
     );
-    return {
-      cacheRepaidTokens: main.reduce((sum, t) => sum + t.repaidTokens, 0),
-      cacheRepaidIdleTokens: main
-        .filter(
-          (t) =>
-            t.idleGap === "5m_to_60m" &&
-            t.has5mBreakpoint &&
-            ["idle_expired", "unknown", "session_unknown"].includes(t.reason)
-        )
-        .reduce((sum, t) => sum + t.repaidTokens, 0),
-    };
+    return main.reduce((sum, t) => sum + t.repaidTokens, 0);
   };
   const recorded = async (provider: string) => {
     await flushProxyUsage();
     const rows = await db.select().from(requestUsageBuckets);
     const own = rows.filter((row) => row.provider === provider);
-    return {
-      cacheRepaidTokens: own.reduce((sum, r) => sum + r.cacheRepaidTokens, 0),
-      cacheRepaidIdleTokens: own.reduce(
-        (sum, r) => sum + r.cacheRepaidIdleTokens,
-        0
-      ),
-    };
+    return own.reduce((sum, r) => sum + r.cacheRepaidTokens, 0);
   };
   const missLines = () =>
     info.mock.calls
@@ -767,7 +685,8 @@ test("concurrent first turns are not compared, and a later cold turn logs and re
         cold: {
           usage: { input_tokens: 500, cache_creation_input_tokens: 20_000 },
         },
-        idle: 20_000,
+        // The proxy sends Claude breakpoints with the 1h TTL.
+        reason: "unknown",
         accountId: () => account.id,
       },
       {
@@ -784,7 +703,7 @@ test("concurrent first turns are not compared, and a later cold turn logs and re
             input_tokens_details: { cache_write_tokens: 20_000 },
           },
         },
-        idle: 0,
+        reason: "idle_expired",
         accountId: () => codexAccount.id,
       },
     ]) {
@@ -813,23 +732,15 @@ test("concurrent first turns are not compared, and a later cold turn logs and re
         setSystemTime();
       }
       const after = await repaidSinceStart(entry.provider);
-      const expectedRepaid = {
-        cacheRepaidTokens: 20_000,
-        cacheRepaidIdleTokens: entry.idle,
-      };
-      expect({
-        cacheRepaidTokens: after.cacheRepaidTokens - before.cacheRepaidTokens,
-        cacheRepaidIdleTokens:
-          after.cacheRepaidIdleTokens - before.cacheRepaidIdleTokens,
-      }).toEqual(expectedRepaid);
-      expect(await recorded(entry.provider)).toEqual(expectedRepaid);
+      expect(after - before).toBe(20_000);
+      expect(await recorded(entry.provider)).toBe(20_000);
       const [line = "", ...rest] = missLines();
       expect(rest).toHaveLength(0);
       expect(line).not.toMatch(/SECRET|fake-(claude|codex)-session/);
       const expected = {
         apiKeyId: "fake-key",
         providerAccountId: entry.accountId(),
-        reason: "idle_expired",
+        reason: entry.reason,
         repaidTokens: 20_000,
       };
       expect(JSON.parse(line)).toMatchObject(expected);
