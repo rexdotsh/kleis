@@ -36,14 +36,17 @@ const toHex = (bytes: Uint8Array): string =>
 export const readCodexPromptCacheKey = (body: unknown): string | null =>
   (isObjectRecord(body) && trimString(body.prompt_cache_key)) || null;
 
+export const readCodexSessionHeader = (headers: Headers): string | null =>
+  trimString(headers.get("session_id")) ||
+  trimString(headers.get("session-id")) ||
+  trimString(headers.get("x-session-affinity")) ||
+  null;
+
 export const readCodexSessionId = (
   body: unknown,
   headers: Headers
 ): string | null =>
-  trimString(headers.get("session_id")) ||
-  trimString(headers.get("session-id")) ||
-  trimString(headers.get("x-session-affinity")) ||
-  readCodexPromptCacheKey(body);
+  readCodexSessionHeader(headers) ?? readCodexPromptCacheKey(body);
 
 export const namespaceCodexKey = async (
   accountKey: string,
@@ -160,6 +163,15 @@ const transformCodexCompactionBodyJson = (
   return compactBody;
 };
 
+export const transformCodexRequestBody = (
+  bodyJson: unknown,
+  operation?: ProxyOperation,
+  promptCacheKey?: string | null
+): JsonObject | null =>
+  operation === "compact"
+    ? transformCodexCompactionBodyJson(bodyJson, promptCacheKey)
+    : transformCodexBodyJson(bodyJson, promptCacheKey);
+
 const transformCodexResponse = async (
   response: Response,
   onTokenUsage: ((usage: TokenUsage) => void) | null | undefined,
@@ -240,10 +252,11 @@ export const prepareCodexProxyRequest = (
   const isStreamingRequest =
     input.operation !== "compact" &&
     readBooleanField(input.bodyJson, "stream") === true;
-  const bodyJson =
-    input.operation === "compact"
-      ? transformCodexCompactionBodyJson(input.bodyJson, input.promptCacheKey)
-      : transformCodexBodyJson(input.bodyJson, input.promptCacheKey);
+  const bodyJson = transformCodexRequestBody(
+    input.bodyJson,
+    input.operation,
+    input.promptCacheKey
+  );
 
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("content-type", "application/json");

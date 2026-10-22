@@ -617,6 +617,80 @@ test("Claude compaction usage iterations are counted once in JSON and SSE", asyn
   }
 });
 
+test("concurrent first turns are not compared, and a later cold turn logs one content-free miss", async () => {
+  const original = globalThis.fetch;
+  const info = spyOn(console, "info").mockImplementation(() => undefined);
+  const gates: ((response: Response) => void)[] = [];
+  globalThis.fetch = (() =>
+    new Promise<Response>((resolve) => gates.push(resolve))) as typeof fetch;
+  const missLines = () =>
+    info.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes('"prompt_cache_miss"'));
+  try {
+    for (const entry of [
+      {
+        path: "/anthropic/v1/messages",
+        headers: { "x-claude-code-session-id": "fake-claude-session" },
+        body: { system: "SECRET system", messages: [{ content: "SECRET" }] },
+        cold: {
+          usage: { input_tokens: 500, cache_creation_input_tokens: 20_000 },
+        },
+        accountId: () => account.id,
+      },
+      {
+        path: "/openai/v1/responses",
+        headers: { "session-id": "fake-codex-session" },
+        body: {
+          instructions: "SECRET instructions",
+          input: [{ content: "SECRET" }],
+        },
+        cold: {
+          usage: {
+            input_tokens: 20_500,
+            input_tokens_details: { cache_write_tokens: 20_000 },
+          },
+        },
+        accountId: () => codexAccount.id,
+      },
+    ]) {
+      gates.length = 0;
+      const send = () =>
+        app.request(entry.path, {
+          method: "POST",
+          headers: entry.headers,
+          body: JSON.stringify(entry.body),
+        });
+      const finish = async (pending: Promise<Response>, gate: number) => {
+        while (gates.length <= gate) await Bun.sleep(1);
+        gates[gate]?.(Response.json(entry.cold));
+        await (await pending).text();
+      };
+      const [first, second] = [send(), send()];
+      await finish(first, 0);
+      await finish(second, 1);
+      expect(missLines()).toHaveLength(0);
+
+      await finish(send(), 2);
+      const [line = "", ...rest] = missLines();
+      expect(rest).toHaveLength(0);
+      expect(line).not.toMatch(/SECRET|fake-(claude|codex)-session/);
+      const expected = {
+        apiKeyId: "fake-key",
+        providerAccountId: entry.accountId(),
+        reason: "unknown",
+        repaidTokens: 20_000,
+      };
+      expect(JSON.parse(line)).toMatchObject(expected);
+      info.mockClear();
+    }
+    await flushProxyUsage();
+  } finally {
+    info.mockRestore();
+    globalThis.fetch = original;
+  }
+});
+
 test("Codex HTTP-200 SSE rate limits count as failed requests", async () => {
   const original = globalThis.fetch;
   const warn = spyOn(console, "warn").mockImplementation(() => undefined);
