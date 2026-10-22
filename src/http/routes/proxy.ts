@@ -232,11 +232,7 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
         });
         promptCache = null;
         if (miss?.isMain) {
-          usage = {
-            ...usage,
-            cacheRepaidTokens: miss.repaidTokens,
-            cacheRepaidIdleTokens: miss.idleRewrite ? miss.repaidTokens : 0,
-          };
+          usage = { ...usage, cacheRepaidTokens: miss.repaidTokens };
         }
       }
       latestTokenUsage = usage;

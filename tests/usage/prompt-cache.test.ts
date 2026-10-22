@@ -85,29 +85,7 @@ const compactionClass = {
 };
 const codexSubagent = { ...session, "x-openai-subagent": "collab_spawn" };
 const warm = claudeUsage(12_000, 8000);
-const cold = claudeUsage(0, 20_000, {
-  cache_creation: { ephemeral_5m_input_tokens: 20_000 },
-});
-const longTtl = [
-  ...history,
-  { role: "user", content: [{ type: "text", cache_control: { ttl: "1h" } }] },
-];
-const mixedTtl = {
-  system: [
-    {
-      type: "text",
-      text: "You are a fake assistant.",
-      cache_control: { type: "ephemeral", ttl: "1h" },
-    },
-  ],
-  messages: [
-    ...history,
-    {
-      role: "user",
-      content: [{ type: "text", cache_control: { type: "ephemeral" } }],
-    },
-  ],
-};
+const cold = claudeUsage(0, 20_000);
 const compaction = { type: "compaction", input_tokens: 132 };
 const compactionBilled = claudeUsage(0, 20_000, {
   iterations: [
@@ -147,8 +125,6 @@ test("a turn that reads far less than the previous turn cached is reported only 
         contextTokens: 20_500,
         expectedCachedTokens: 20_000,
         repaidTokens: 20_000,
-        cacheWrite5mTokens: 20_000,
-        cacheWrite1hTokens: 0,
       },
     ],
     [
@@ -157,14 +133,14 @@ test("a turn that reads far less than the previous turn cached is reported only 
       { reason: "account_changed", previousProviderAccountId: "account-1" },
     ],
     [
-      "a gap past the Claude TTL",
-      [claude(warm), claude(cold, {}, { minute: 7 })],
-      {
-        reason: "idle_expired",
-        expiry: "certain",
-        cacheTtl: "5m",
-        idleGap: "5m_to_60m",
-      },
+      "a gap past the 1h Claude TTL the proxy sends",
+      [claude(warm), claude(cold, {}, { minute: 70 })],
+      { reason: "idle_expired", expiry: "certain", ttlMs: 3_600_000 },
+    ],
+    [
+      "a Claude gap of ten minutes, inside the 1h TTL the proxy sends",
+      [claude(warm), claude(cold, {}, { minute: 10 })],
+      { reason: "unknown", expiry: null },
     ],
     [
       "a subagent gap past an hour",
@@ -172,7 +148,7 @@ test("a turn that reads far less than the previous turn cached is reported only 
         claude(warm, {}, { headers: subagent }),
         claude(cold, {}, { headers: subagent, minute: 70 }),
       ],
-      { reason: "idle_expired", isMain: false, idleGap: "over_60m" },
+      { reason: "idle_expired", isMain: false },
     ],
     [
       "two side requests ten minutes apart",
@@ -180,49 +156,12 @@ test("a turn that reads far less than the previous turn cached is reported only 
         claude(warm, {}, { headers: auxiliary }),
         claude(cold, {}, { headers: auxiliary, minute: 10 }),
       ],
-      { reason: "idle_expired", isMain: false, idleGap: "5m_to_60m" },
-    ],
-    [
-      "a gap past 5m breakpoints behind a 1h system breakpoint",
-      [claude(warm, mixedTtl), claude(cold, mixedTtl, { minute: 10 })],
-      {
-        reason: "unknown",
-        cacheTtl: "1h",
-        idleGap: "5m_to_60m",
-        has5mBreakpoint: true,
-        idleRewrite: true,
-      },
-    ],
-    [
-      "a model change after a 5m to 60m gap",
-      [
-        claude(warm, mixedTtl),
-        claude(cold, mixedTtl, { model: "claude-other", minute: 10 }),
-      ],
-      {
-        reason: "model_changed",
-        idleGap: "5m_to_60m",
-        has5mBreakpoint: true,
-        idleRewrite: false,
-      },
+      { reason: "unknown", isMain: false },
     ],
     [
       "a gap past the shortest Codex TTL",
       [codex(codexUsage(20_000)), codex(codexUsage(0), {}, { minute: 7 })],
       { reason: "idle_expired", expiry: "possible" },
-    ],
-    [
-      "a gap inside a later 1h breakpoint",
-      [
-        claude(warm, { messages: longTtl }),
-        claude(cold, { messages: longTtl }, { minute: 7 }),
-      ],
-      {
-        reason: "unknown",
-        cacheTtl: "1h",
-        idleGap: "5m_to_60m",
-        has5mBreakpoint: false,
-      },
     ],
     [
       "appended history",
@@ -376,16 +315,12 @@ test("a turn that reads far less than the previous turn cached is reported only 
           claudeUsage(0, 20_000, {
             iterations: [
               compaction,
-              {
-                input_tokens: 500,
-                cache_creation_input_tokens: 20_000,
-                cache_creation: { ephemeral_1h_input_tokens: 20_000 },
-              },
+              { input_tokens: 500, cache_creation_input_tokens: 20_000 },
             ],
           })
         ),
       ],
-      { reason: "compacted", cacheWrite1hTokens: 20_000 },
+      { reason: "compacted" },
     ],
     [
       "the turn after on-demand compaction",

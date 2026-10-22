@@ -9,7 +9,6 @@ import {
 } from "../constants";
 import { requireProxyEndpointRoute } from "../proxy-endpoints";
 import {
-  readAnthropicCacheWriteTtl,
   readAnthropicUsageFromResponse,
   readAnthropicIterations,
   readAnthropicUsageObject,
@@ -276,11 +275,7 @@ const maybeTransformClaudeStreamResponse = (
             "cache_creation_input_tokens",
             streamUsage.cacheWriteTokens
           );
-          Object.assign(
-            streamUsage,
-            readAnthropicCacheWriteTtl(usage, streamUsage),
-            readAnthropicIterations(usage)
-          );
+          Object.assign(streamUsage, readAnthropicIterations(usage));
           return;
         }
 
