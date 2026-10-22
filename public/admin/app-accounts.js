@@ -46,11 +46,23 @@ function settleLimitsUpdating() {
   }
 }
 
-function reloadAccountsLater(delay, before = () => undefined) {
-  setTimeout(() => {
-    before();
+// Marks the account's limits as updating until a read taken after
+// `respondedAt` (server time) arrives, re-reading the accounts twice and
+// giving up quietly at the second read.
+function awaitLimitsAfterReset(accountId, respondedAt) {
+  const wait = { after: respondedAt, timedOut: false };
+  state.limitsUpdating.set(accountId, wait);
+  renderAccounts();
+  const reload = () => {
     loadAccounts().catch(() => undefined);
-  }, delay);
+  };
+  setTimeout(reload, RESET_CONFIRM_RELOAD_MS);
+  setTimeout(() => {
+    if (state.limitsUpdating.get(accountId) !== wait) return;
+    wait.timedOut = true;
+    renderAccounts();
+    reload();
+  }, RESET_CONFIRM_TIMEOUT_MS);
 }
 
 async function loadAccounts() {
@@ -318,16 +330,19 @@ async function redeemResetCreditAction(request, accountId) {
   if (!confirmed) return;
 
   let feedback;
+  let respondedAt = Date.now();
   try {
-    const { result } = await request(
+    const response = await request(
       `/admin/accounts/${accountId}/tracking/${account.provider}/reset-credits/consume`,
       { method: "POST", body: JSON.stringify({ resetId: offer.resetId }) }
     );
-    feedback = resetProviders[account.provider].resultToast(result);
+    feedback = resetProviders[account.provider].resultToast(response.result);
+    respondedAt = response.respondedAt ?? respondedAt;
   } catch (error) {
     feedback = { message: error.message, type: "error" };
   }
   if (!request.isCurrent()) return;
+  if (feedback.changed) awaitLimitsAfterReset(accountId, respondedAt);
   const refreshed = await loadAccounts();
   if (!request.isCurrent()) return;
   const { message, type } = resetFeedback(
@@ -336,19 +351,6 @@ async function redeemResetCreditAction(request, accountId) {
     refreshed?.find((entry) => entry.id === accountId)
   );
   toast(message, type);
-  if (!feedback.changed) return;
-  // The server reads the limits once more a few seconds after a reset; until
-  // that read shows up the account's limits are marked as updating.
-  const wait = {
-    after: accountById(accountId)?.quota?.fetchedAt ?? 0,
-    timedOut: false,
-  };
-  state.limitsUpdating.set(accountId, wait);
-  renderAccounts();
-  reloadAccountsLater(RESET_CONFIRM_RELOAD_MS);
-  reloadAccountsLater(RESET_CONFIRM_TIMEOUT_MS, () => {
-    wait.timedOut = true;
-  });
 }
 
 function startEditAccount(id) {
