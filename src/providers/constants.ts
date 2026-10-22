@@ -24,6 +24,9 @@ export const CLAUDE_REQUIRED_BETA_HEADERS = [
   CLAUDE_OAUTH_BETA_HEADER,
   CLAUDE_INTERLEAVED_THINKING_BETA_HEADER,
 ] as const;
+// Claude Code sends it with every 1h cache_control.
+export const CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER =
+  "extended-cache-ttl-2025-04-11";
 // Claude Opus 5.5 requires Claude Code 2.1.280 or newer.
 export const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.280 (external, cli)";
 // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L581-L586
