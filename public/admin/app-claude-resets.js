@@ -98,6 +98,7 @@ function claudeResetOffer(account) {
     heading: "Limit reset",
     action: "Use reset",
     canUse: Boolean(offer),
+    atLimitOnly: !offer && resets.unavailable === "requires_limit",
     resetId: offer?.grantId,
     scope: windowLabels.length ? limitsText(clears) : null,
     windowLabels,

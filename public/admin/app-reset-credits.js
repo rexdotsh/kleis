@@ -6,14 +6,37 @@ import {
   accountName,
   fact,
   kbd,
+  needsReauthorization,
   providerLabel,
   untilText,
 } from "./app-render-shared.js";
 
 const resetProviders = { codex: codexResets, claude: claudeResets };
+const EXPIRING_SOON_MS = 2 * DAY_MS;
 
 function resetOfferFor(account) {
   return resetProviders[account?.provider]?.offerFor(account) || null;
+}
+
+function expiringResets(account) {
+  const offer = resetOfferFor(account);
+  const left = offer?.expiresAt - Date.now();
+  if (
+    !(offer?.canUse || offer?.atLimitOnly) ||
+    !offer.count ||
+    !(left > 0 && left < EXPIRING_SOON_MS) ||
+    needsReauthorization(account)
+  )
+    return null;
+  const hours = Math.floor(left / 3_600_000);
+  const time = hours
+    ? `${hours}h`
+    : untilText(offer.expiresAt).replace(/^in /, "");
+  const balance = `${offer.count} ${offer.noun}${offer.count === 1 ? "" : "s"}`;
+  return {
+    tag: `${balance} \u00b7 ${time} left`,
+    text: `${balance}${offer.count === 1 ? "" : ", next"} expires in ${time}${offer.atLimitOnly ? ", usable at limit" : ""}`,
+  };
 }
 
 function windowHours(window) {
@@ -118,6 +141,7 @@ function resetFeedback(feedback, offer, refreshedAccount) {
 export {
   resetProviders,
   resetOfferFor,
+  expiringResets,
   resetCreditsDetail,
   resetConfirmation,
   resetFeedback,
