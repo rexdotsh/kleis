@@ -245,6 +245,23 @@ const selectOffer = (
   };
 };
 
+// Grants that end at the same time count as one expiry with their resets
+// added up.
+const groupExpiries = (
+  grants: ClaudeResetGrant[],
+  expiry: (grant: ClaudeResetGrant) => number
+): ClaudeResetSummary["expiries"] => {
+  const groups: (ClaudeResetSummary["expiries"][number] & { at: number })[] =
+    [];
+  for (const grant of [...grants].sort((a, b) => expiry(a) - expiry(b))) {
+    const at = expiry(grant);
+    const last = groups.at(-1);
+    if (last?.at === at) last.count += grant.resetsLeft;
+    else groups.push({ at, endsAt: grant.endsAt, count: grant.resetsLeft });
+  }
+  return groups.map(({ endsAt, count }) => ({ endsAt, count }));
+};
+
 export const summarizeClaudeResets = (
   status: ClaudeResetStatus,
   usage: ClaudeResetLimitUsage,
@@ -264,9 +281,7 @@ export const summarizeClaudeResets = (
   return {
     saved: live.reduce((total, grant) => total + grant.resetsLeft, 0),
     nextEndsAt: next?.endsAt ?? null,
-    expiries: [...live]
-      .sort((a, b) => expiry(a) - expiry(b))
-      .map((grant) => ({ endsAt: grant.endsAt, count: grant.resetsLeft })),
+    expiries: groupExpiries(live, expiry),
     clears: next?.clears ?? [],
     ineligibleReason: status.eligible ? null : status.ineligibleReason,
     offer: typeof offer === "string" ? null : offer,
