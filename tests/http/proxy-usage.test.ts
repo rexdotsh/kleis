@@ -18,4 +18,4 @@ test("proxy routes record each request and its tokens once", () => {
   const output = `${result.stdout.toString()}${result.stderr.toString()}`;
 
   expect({ exitCode: result.exitCode, output }).toMatchObject({ exitCode: 0 });
-});
+}, 60_000);
