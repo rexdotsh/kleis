@@ -1796,6 +1796,32 @@ input[type="checkbox"].toggle:checked::after {
 .daily-tokens {
   padding-bottom: 20px;
 }
+.resets {
+  display: flex;
+  gap: 4px 16px;
+  align-items: baseline;
+  padding-bottom: 20px;
+}
+.resets .fact-label {
+  flex-shrink: 0;
+}
+.resets-copy {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--muted);
+}
+.resets-value {
+  color: var(--text);
+}
+.resets-action .link {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--text);
+  white-space: nowrap;
+}
 .daily-head,
 .daily-axis {
   display: flex;

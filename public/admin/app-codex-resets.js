@@ -38,7 +38,11 @@ function codexResetOffer(account) {
   const next = credits[0] || null;
   const expiry = quotaTimestamp(next?.expiresAt);
   const windows = accountWindows(account).filter((window) => !window.named);
-  const tightest = [...windows].sort((a, b) => b.percent - a.percent)[0];
+  const state = !count
+    ? "unavailable"
+    : account.codexResets?.unavailable === "requires_limit"
+      ? "at_limit"
+      : "now";
   return {
     count,
     next,
@@ -46,7 +50,9 @@ function codexResetOffer(account) {
     noun: "reset credit",
     heading: "Reset credit",
     action: "Use credit",
-    canUse: Boolean(count && next),
+    state,
+    canUse: state === "now" && Boolean(next),
+    atLimitOnly: state === "at_limit",
     resetId: next?.id,
     scope:
       next?.resetType === "codex_rate_limits"
@@ -54,25 +60,22 @@ function codexResetOffer(account) {
           ? `${windows.map((window) => window.label).join(" + ")} windows`
           : "Codex rate-limit windows"
         : null,
-    windowLabels:
-      next?.resetType === "codex_rate_limits"
-        ? windows.map((window) => window.label)
-        : [],
     expiresAt: expiry,
     expiryText: expiry
       ? `${count > 1 ? "next expires" : "expires"} ${untilText(expiry)}`
       : "expiry not reported",
     title: next?.title,
-    earlyUse:
-      tightest && tightest.percent < 100
+    status:
+      state === "at_limit"
         ? {
-            scope: `${tightest.label} window`,
-            percentUsed: Math.round(tightest.percent),
+            label: "usable once a limit is hit",
+            description: "Codex only uses a credit once you hit a limit.",
           }
         : null,
+    earlyUse: null,
     notes: [],
     useful:
-      count > 0 &&
+      state === "now" &&
       !account.quota?.error &&
       !needsReauthorization(account) &&
       windows.some(
@@ -83,33 +86,36 @@ function codexResetOffer(account) {
   };
 }
 
+const NO_CREDIT_SPENT = "No credit was spent.";
+
 function codexResultToast(result) {
-  const windows =
-    typeof result?.windowsReset === "number" && result.windowsReset > 0
-      ? ` (${result.windowsReset} window${result.windowsReset === 1 ? "" : "s"} reset)`
-      : "";
   switch (result?.code) {
     case "reset":
       return {
-        message: `Limits restored${windows}`,
+        message: "Limits reset \u00b7 1 credit used",
         type: "success",
         showBalance: true,
       };
     case "nothing_to_reset":
       return {
-        message: "Nothing to reset - limits are already clear",
+        message: `Nothing to reset yet: Codex only uses a credit once you hit a limit. ${NO_CREDIT_SPENT}`,
         type: "info",
       };
     case "no_credit":
       return {
-        message: "No reset credit available on this account",
+        message: `That credit is no longer available. ${NO_CREDIT_SPENT}`,
         type: "error",
       };
     case "already_redeemed":
-      return { message: `Credit was already redeemed${windows}`, type: "info" };
+      return {
+        message:
+          "This credit already reset your limits \u00b7 nothing more was used",
+        type: "info",
+        showBalance: true,
+      };
     default:
       return {
-        message: `Codex reset result: ${result?.code || "complete"}`,
+        message: `Codex answered \u201c${result?.code || "unknown"}\u201d \u00b7 the next limits check shows whether a credit was used`,
         type: "info",
       };
   }

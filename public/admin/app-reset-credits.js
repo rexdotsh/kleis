@@ -4,7 +4,6 @@ import { escapeHtml, mutationAttributes } from "./app-core.js";
 import {
   DAY_MS,
   accountName,
-  fact,
   kbd,
   needsReauthorization,
   providerLabel,
@@ -39,62 +38,48 @@ function expiringResets(account) {
   };
 }
 
-function windowHours(window) {
-  const span = window.label.match(/(\d+)([dh])$/);
-  return span ? Number(span[1]) * (span[2] === "d" ? 24 : 1) : 0;
-}
-
-function resetCreditsDetail(account, windows) {
+// The account's resets on one line: the balance, what the owner can do with
+// it now, and what it refills.
+function resetCreditsDetail(account) {
   const offer = resetOfferFor(account);
-  if (!offer || (!offer.canUse && !offer.status)) return null;
-  const covered = windows.filter(
-    (window) =>
-      (account.provider !== "codex" || !window.named) &&
-      offer.windowLabels.includes(window.label)
-  );
-  const window = covered.sort(
-    (a, b) => b.percent - a.percent || windowHours(b) - windowHours(a)
-  )[0];
-  const expiring = offer.expiresAt && offer.expiresAt - Date.now() < 3 * DAY_MS;
-  const noun = account.provider === "codex" ? "credit" : offer.noun;
-  const balance = `${offer.count ?? "\u2014"} ${noun}${offer.count === 1 ? "" : "s"}`;
-  const text = offer.status
-    ? offer.status.replaceCount
-      ? offer.status.label
-      : balance
-    : !offer.scope
-      ? `${balance} \u00b7 scope not reported`
-      : `${balance}${account.provider === "codex" && !expiring ? " to refill" : ""}`;
+  if (!offer || (!offer.canUse && !offer.status)) return "";
+  const { status } = offer;
+  const balance = `${offer.count ?? "\u2014"} ${offer.unit}${offer.count === 1 ? "" : "s"}`;
+  const value = status?.replaceCount ? status.label : balance;
+  const left =
+    offer.expiresAt && offer.expiresAt - Date.now() < 3 * DAY_MS
+      ? `${untilText(offer.expiresAt).replace(/^in /, "")} left`
+      : null;
+  const scope = offer.scope ? `refills ${offer.scope}` : "scope not reported";
   const title = [
-    text,
-    offer.status && !offer.status.replaceCount && offer.status.label,
-    offer.scope ? `refills ${offer.scope}` : "reset scope not reported",
+    value,
+    status && !status.replaceCount && status.label,
+    scope,
     offer.expiryText,
     offer.title,
-    offer.status?.description,
+    status?.description,
   ]
     .filter(Boolean)
     .join(" \u00b7 ");
   const action = offer.canUse
     ? `<button class="link small" type="button" data-action="redeem-reset-credit" data-account-id="${account.id}" ${mutationAttributes("redeem-reset-credit", account.id)} aria-label="${escapeHtml(`Use ${offer.noun}`)}">Use${kbd("U")}</button>`
-    : offer.status?.link
-      ? `<a class="link small" href="${offer.settingsUrl}" target="_blank" rel="noopener" aria-label="${escapeHtml(`${providerLabel(account.provider)} settings: ${offer.status.label}`)}">${escapeHtml(offer.status.link)}</a>`
+    : status?.link
+      ? `<a class="link small" href="${offer.settingsUrl}" target="_blank" rel="noopener" aria-label="${escapeHtml(`${providerLabel(account.provider)} settings: ${status.label}`)}">${escapeHtml(status.link)}</a>`
       : "";
-  const copy = expiring
-    ? `${text} \u00b7 ${untilText(offer.expiresAt).replace(/^in /, "")} left`
-    : text;
-  const line = `<span class="reset-line" title="${escapeHtml(title)}"><span class="reset-copy">${escapeHtml(copy)}</span>${action ? `<span aria-hidden="true">\u00b7</span>${action}` : ""}</span>`;
-  return {
-    window,
-    line,
-    fallback: window
-      ? ""
-      : fact(
-          `${offer.heading}${offer.count === 1 ? "" : "s"}`,
-          `<span title="${escapeHtml(title)}">${escapeHtml(copy)}</span>`,
-          [action && `<span class="reset-line">${action}</span>`]
-        ),
-  };
+  const details = status?.replaceCount
+    ? [status.description]
+    : [
+        status?.label,
+        offer.canUse && offer.earlyUse && "usable early",
+        left,
+        scope,
+      ];
+  return `<div class="resets" title="${escapeHtml(title)}"><span class="fact-label">${escapeHtml(`${offer.heading}s`)}</span><span class="resets-copy"><span class="resets-value">${escapeHtml(value)}</span>${details
+    .filter(Boolean)
+    .map((detail) => ` \u00b7 ${escapeHtml(detail)}`)
+    .join(
+      ""
+    )}</span>${action ? `<span class="resets-action">${action}</span>` : ""}</div>`;
 }
 
 function earlyUseText(earlyUse) {

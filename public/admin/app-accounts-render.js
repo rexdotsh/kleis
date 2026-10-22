@@ -189,20 +189,18 @@ function resetText(window) {
 function limitFacts(account) {
   const quota = account.quota;
   const windows = accountWindows(account);
-  const reset = resetCreditsDetail(account, windows);
   if (!quota)
     return [
       fact("Rate limits", '<span class="muted">\u2014</span>', [
         "waiting for the first sync",
       ]),
-      reset?.fallback,
     ];
   const facts = windows.map((window) => {
     const severity = limitSeverity(window.percent);
     return fact(
       escapeHtml(window.named ? window.label : `${window.label} window`),
       `<span class="${severity}">${Math.round(window.percent)}%</span>`,
-      [escapeHtml(resetText(window)), reset?.window === window && reset.line],
+      [escapeHtml(resetText(window))],
       `<span class="bar${severity ? ` ${severity}` : ""}"><i style="width:${window.percent}%"></i></span>`
     );
   });
@@ -224,7 +222,6 @@ function limitFacts(account) {
     );
   else if (!facts.length)
     facts.push(fact("Rate limits", '<span class="muted">None reported</span>'));
-  if (reset?.fallback) facts.push(reset.fallback);
   return facts;
 }
 
@@ -379,6 +376,7 @@ function accountDetailHtml(account) {
       tokensFact(accountUsageForId(account.id)),
       accountFact(account),
     ].join("")}</div>
+    ${resetCreditsDetail(account)}
     ${hasDailyTokens(account.id) ? `<div class="daily-tokens" data-daily-for="${account.id}">${dailyTokensBodyHtml(account.id)}</div>` : ""}
     ${hasTraffic(accountUsageForId(account.id)) ? `<div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>` : ""}
     <div class="actions">

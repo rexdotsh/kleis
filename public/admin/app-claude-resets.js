@@ -31,12 +31,10 @@ function expiryText(endsAt) {
 }
 
 const UNAVAILABLE_TEXT = {
-  requires_limit: "at limit only",
   paused: "paused",
-  cooldown: "try later",
-  not_usable: "unavailable",
-  checking: "checking",
-  unsupported_limits: "scope not reported",
+  cooldown: "cooling down after a recent reset",
+  not_usable: "unavailable right now",
+  unsupported_limits: "can't confirm what it refills",
 };
 
 function claudeResetStatus(resets) {
@@ -63,10 +61,16 @@ function claudeResetStatus(resets) {
     };
   }
   if (!resets.saved || resets.offer) return null;
-  const label = UNAVAILABLE_TEXT[resets.unavailable] || "waiting";
+  if (resets.unavailable === "requires_limit") {
+    return {
+      label: "usable once a limit is hit",
+      description:
+        "Claude only uses this reset once you hit a limit it refills.",
+    };
+  }
   return {
-    label,
-    link: label,
+    label: UNAVAILABLE_TEXT[resets.unavailable] || "unavailable right now",
+    link: "Settings",
     description:
       resets.unavailable === "cooldown"
         ? "Another reset was just used. Try later."
@@ -91,17 +95,22 @@ function claudeResetOffer(account) {
         ];
   const endsAt = offer?.endsAt ?? resets.nextEndsAt;
   const weekly = quotaTimestamp(offer?.weeklyResetsAt);
+  const state = offer
+    ? "now"
+    : resets.unavailable === "requires_limit"
+      ? "at_limit"
+      : "unavailable";
   return {
     count: resets.saved,
     unit: "reset",
     noun: "saved reset",
     heading: "Limit reset",
     action: "Use reset",
-    canUse: Boolean(offer),
-    atLimitOnly: !offer && resets.unavailable === "requires_limit",
+    state,
+    canUse: state === "now",
+    atLimitOnly: state === "at_limit",
     resetId: offer?.grantId,
     scope: windowLabels.length ? limitsText(clears) : null,
-    windowLabels,
     expiresAt: quotaTimestamp(endsAt),
     expiryText: expiryText(endsAt),
     title: offer?.label,
@@ -128,17 +137,24 @@ function claudeResetOffer(account) {
   };
 }
 
+const NO_RESET_SPENT = "No reset was spent.";
+
 const CLAIM_RESULT_TOASTS = {
-  reset: ["Limits reset", "success"],
   already_used: [
-    "That reset was already used \u00b7 nothing changed now",
+    "That reset was already used \u00b7 nothing more was spent",
     "info",
   ],
-  not_limited: ["Nothing was used \u00b7 no limit needed a reset", "info"],
-  cooldown: ["Another reset was just used \u00b7 nothing was used now", "info"],
-  ineligible: [
-    "This reset isn't available any more \u00b7 nothing was used",
+  not_limited: [
+    `Nothing to reset yet: no limit this reset refills is hit. ${NO_RESET_SPENT}`,
     "info",
+  ],
+  cooldown: [
+    `Another reset was used recently \u00b7 try again later. ${NO_RESET_SPENT}`,
+    "info",
+  ],
+  ineligible: [
+    `This reset can't be used on this account any more. ${NO_RESET_SPENT}`,
+    "error",
   ],
 };
 
@@ -146,21 +162,22 @@ function claimToast(claim) {
   if (claim.result === "unavailable") {
     return {
       message:
-        "Couldn't confirm the reset \u00b7 the next limits check will show whether it was used",
+        "Couldn't confirm the reset \u00b7 the next limits check shows whether it was used",
       type: "error",
     };
   }
+  if (claim.result === "reset") {
+    return {
+      message: `Refilled the ${limitsText(claim.cleared)} \u00b7 1 reset used`,
+      type: "success",
+      remaining: claim.resetsLeft,
+    };
+  }
   const [message, type] = CLAIM_RESULT_TOASTS[claim.result] || [
-    "Reset finished",
+    `Claude answered \u201c${claim.result}\u201d \u00b7 the next limits check shows whether a reset was used`,
     "info",
   ];
-  return claim.result === "reset"
-    ? {
-        message: `Refilled the ${limitsText(claim.cleared)}`,
-        type,
-        remaining: claim.resetsLeft,
-      }
-    : { message, type };
+  return { message, type };
 }
 
 const claudeResets = { offerFor: claudeResetOffer, resultToast: claimToast };
