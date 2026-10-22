@@ -21,12 +21,8 @@ const { requestUsageBuckets } = await import("../../src/db/schema");
 const { createApiKey } = await import("../../src/db/repositories/api-keys");
 const { requireProxyApiKey } =
   await import("../../src/http/middleware/api-key-auth");
-const {
-  proxyRoutes,
-  flushProxyUsage,
-  flushProxyFailureLogs,
-  listRecentPromptCacheMisses,
-} = await import("../../src/http/routes/proxy");
+const { proxyRoutes, flushProxyUsage, flushProxyFailureLogs } =
+  await import("../../src/http/routes/proxy");
 const { namespaceCodexKey } =
   await import("../../src/providers/proxies/codex-proxy");
 
@@ -686,7 +682,6 @@ test("concurrent first turns are not compared, and a later cold turn logs one co
         repaidTokens: 20_000,
       };
       expect(JSON.parse(line)).toMatchObject(expected);
-      expect(listRecentPromptCacheMisses()[0]).toMatchObject(expected);
       info.mockClear();
     }
     await flushProxyUsage();

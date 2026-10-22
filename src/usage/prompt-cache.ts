@@ -18,7 +18,6 @@ const MINUTE_MS = 60_000;
 // Below this many reusable tokens a drop is too small to report.
 const MIN_REUSABLE_TOKENS = 4096;
 const MAX_CONVERSATIONS = 5000;
-const MAX_RECENT_MISSES = 100;
 // https://platform.claude.com/docs/en/build-with-claude/prompt-caching#1-hour-cache-duration
 const CLAUDE_TTL_MS = 5 * MINUTE_MS;
 const CLAUDE_LONG_TTL_MS = 60 * MINUTE_MS;
@@ -166,7 +165,6 @@ export const readPromptCacheRequest = (
 
 export const createPromptCacheTracker = () => {
   const conversations = new Map<bigint, ConversationState>();
-  const misses: PromptCacheMiss[] = [];
 
   const remember = (key: bigint, state: ConversationState): void => {
     conversations.delete(key);
@@ -255,12 +253,8 @@ export const createPromptCacheTracker = () => {
         repaidTokens: expectedCachedTokens - call.cacheReadTokens,
         conversationHash: turn.conversation.toString(16),
       };
-      misses.push(miss);
-      if (misses.length > MAX_RECENT_MISSES) misses.shift();
       logInfo("prompt_cache_miss", miss);
       return miss;
     },
-
-    recentMisses: (): PromptCacheMiss[] => [...misses].reverse(),
   };
 };
