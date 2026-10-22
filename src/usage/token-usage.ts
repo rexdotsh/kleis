@@ -6,13 +6,20 @@ export type TokenUsage = {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  // Anthropic's cache writes split by the TTL they were written with.
+  cacheWrite5mTokens?: number;
+  cacheWrite1hTokens?: number;
   reasoningTokens?: number;
   totalTokens?: number;
   // The last sampling call alone when a response lists several; the summed
   // fields above are billing totals, not the prompt one call sent.
   lastCall?: Pick<
     TokenUsage,
-    "inputTokens" | "cacheReadTokens" | "cacheWriteTokens"
+    | "inputTokens"
+    | "cacheReadTokens"
+    | "cacheWriteTokens"
+    | "cacheWrite5mTokens"
+    | "cacheWrite1hTokens"
   >;
   // The response shows that a server-side compaction ran.
   compacted?: true;
@@ -35,9 +42,13 @@ export const isTokenUsagePopulated = (
 export const readAnthropicUsageToken = (
   usage: Record<string, unknown>,
   field: string,
-  fallback = 0
+  fallback = 0,
+  read: (record: Record<string, unknown>, field: string) => unknown = (
+    record,
+    name
+  ) => record[name]
 ): number => {
-  const value = usage[field];
+  const value = read(usage, field);
   const topLevel =
     value === null || value === undefined
       ? fallback
@@ -49,11 +60,48 @@ export const readAnthropicUsageToken = (
   let iterationsTotal = 0;
   for (const iteration of usage.iterations) {
     if (isObjectRecord(iteration)) {
-      iterationsTotal += toNonNegativeInteger(iteration[field]);
+      iterationsTotal += toNonNegativeInteger(read(iteration, field));
     }
   }
   return Math.max(topLevel, iterationsTotal);
 };
+
+const readCacheCreation = (
+  record: Record<string, unknown>,
+  field: string
+): unknown =>
+  isObjectRecord(record.cache_creation)
+    ? record.cache_creation[field]
+    : undefined;
+
+const hasCacheCreation = (usage: Record<string, unknown>): boolean =>
+  isObjectRecord(usage.cache_creation) ||
+  (Array.isArray(usage.iterations) &&
+    usage.iterations.some(
+      (iteration) =>
+        isObjectRecord(iteration) && isObjectRecord(iteration.cache_creation)
+    ));
+
+export const readAnthropicCacheWriteTtl = (
+  usage: Record<string, unknown>,
+  fallback?: Pick<TokenUsage, "cacheWrite5mTokens" | "cacheWrite1hTokens">
+): Pick<TokenUsage, "cacheWrite5mTokens" | "cacheWrite1hTokens"> =>
+  hasCacheCreation(usage)
+    ? {
+        cacheWrite5mTokens: readAnthropicUsageToken(
+          usage,
+          "ephemeral_5m_input_tokens",
+          fallback?.cacheWrite5mTokens,
+          readCacheCreation
+        ),
+        cacheWrite1hTokens: readAnthropicUsageToken(
+          usage,
+          "ephemeral_1h_input_tokens",
+          fallback?.cacheWrite1hTokens,
+          readCacheCreation
+        ),
+      }
+    : {};
 
 export const readAnthropicIterations = (
   usage: Record<string, unknown>
@@ -63,7 +111,11 @@ export const readAnthropicIterations = (
   }
 
   let compacted = false;
-  let lastCall = { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  let lastCall: TokenUsage["lastCall"] = {
+    inputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  };
   for (const iteration of usage.iterations) {
     if (!isObjectRecord(iteration)) {
       continue;
@@ -78,6 +130,7 @@ export const readAnthropicIterations = (
       cacheWriteTokens: toNonNegativeInteger(
         iteration.cache_creation_input_tokens
       ),
+      ...readAnthropicCacheWriteTtl(iteration),
     };
   }
   return { lastCall, ...(compacted ? { compacted: true } : {}) };
@@ -96,6 +149,7 @@ export const readAnthropicUsageObject = (usage: unknown): TokenUsage | null => {
       usage,
       "cache_creation_input_tokens"
     ),
+    ...readAnthropicCacheWriteTtl(usage),
     ...readAnthropicIterations(usage),
   };
 };

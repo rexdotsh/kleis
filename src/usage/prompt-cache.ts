@@ -12,15 +12,20 @@ export type PromptCacheMissReason =
   | "account_changed"
   | "compacted"
   | "idle_expired"
-  | "unknown";
+  | "unknown"
+  | "model_changed"
+  | "system_changed"
+  | "tools_changed"
+  | "session_unknown";
 
 const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
 // Below this many reusable tokens a drop is too small to report.
 const MIN_REUSABLE_TOKENS = 4096;
 const MAX_CONVERSATIONS = 5000;
 // https://platform.claude.com/docs/en/build-with-claude/prompt-caching#1-hour-cache-duration
 const CLAUDE_TTL_MS = 5 * MINUTE_MS;
-const CLAUDE_LONG_TTL_MS = 60 * MINUTE_MS;
+const CLAUDE_LONG_TTL_MS = HOUR_MS;
 // OpenAI keeps prefixes for at least 5 minutes, often far longer, so a Codex
 // gap past the TTL only possibly expired the cache.
 // https://platform.openai.com/docs/guides/prompt-caching#cache-lifetime
@@ -39,13 +44,30 @@ const CLAUDE_SESSION_HEADERS = [
   "x-session-affinity",
   "x-session-id",
 ] as const;
+// Subagents in OpenCode, Claude Code and Codex send one of these. Claude Code
+// also sends a request class, which is "main" only for main-thread turns.
+// https://github.com/openai/codex/blob/main/codex-rs/core/src/client.rs
+const SUBAGENT_HEADERS = [
+  "x-opencode-parent-session-id",
+  "x-parent-session-id",
+  "x-claude-code-agent-id",
+  "x-claude-code-parent-agent-id",
+  "x-openai-subagent",
+  "x-codex-parent-thread-id",
+] as const;
+const CLAUDE_CODE_REQUEST_CLASS_HEADER = "x-claude-code-request-class";
 
 export type PromptCacheRequest = {
   conversation: bigint;
+  session: bigint;
   provider: Provider;
   apiKeyId: string;
   model: string;
+  system: bigint;
+  tools: bigint;
   ttlMs: number;
+  isSubagent: boolean;
+  isMainTurn: boolean;
 };
 
 type ConversationState = {
@@ -56,10 +78,16 @@ type ConversationState = {
   at: number;
 };
 
+type SessionState = ConversationState &
+  Pick<PromptCacheRequest, "conversation" | "model" | "system" | "tools">;
+
 export type PromptCacheTurn = PromptCacheRequest & {
   startedAt: number;
   previous: ConversationState | undefined;
+  previousSession: SessionState | undefined;
 };
+
+type IdleGap = "under_5m" | "5m_to_60m" | "over_60m";
 
 export type PromptCacheMiss = {
   at: number;
@@ -69,15 +97,39 @@ export type PromptCacheMiss = {
   previousProviderAccountId: string;
   model: string;
   reason: PromptCacheMissReason;
+  isSubagent: boolean;
   idleMs: number;
+  idleGap: IdleGap;
   ttlMs: number;
+  cacheTtl: string;
   expiry: "certain" | "possible" | null;
-  inputTokens: number;
+  contextTokens: number;
   cachedTokens: number;
   expectedCachedTokens: number;
   repaidTokens: number;
+  cacheWrite5mTokens: number;
+  cacheWrite1hTokens: number;
   conversationHash: string;
+  sessionHash: string;
 };
+
+type PromptCacheMissTotal = Pick<
+  PromptCacheMiss,
+  "provider" | "reason" | "isSubagent" | "idleGap" | "repaidTokens"
+> & { misses: number };
+
+const idleGap = (idleMs: number): IdleGap =>
+  idleMs <= 5 * MINUTE_MS
+    ? "under_5m"
+    : idleMs <= HOUR_MS
+      ? "5m_to_60m"
+      : "over_60m";
+
+const ttlLabel = (ttlMs: number): string =>
+  ttlMs % HOUR_MS === 0 ? `${ttlMs / HOUR_MS}h` : `${ttlMs / MINUTE_MS}m`;
+
+const hashJson = (value: unknown): bigint =>
+  Bun.hash.wyhash(JSON.stringify(value) ?? "");
 
 // Breakpoints sit on the request, system blocks, tools, messages and their
 // content blocks.
@@ -144,36 +196,62 @@ export const readPromptCacheRequest = (
     return null;
   }
 
+  const sessionHash = hashJson([input.apiKeyId, provider, session]);
+  const system = hashJson(claude ? body.system : body.instructions);
+  const tools = hashJson(body.tools);
+  const isSubagent = SUBAGENT_HEADERS.some((name) => input.headers.has(name));
+  const requestClass = input.headers.get(CLAUDE_CODE_REQUEST_CLASS_HEADER);
   return {
-    conversation: Bun.hash.wyhash(
-      JSON.stringify([
-        input.apiKeyId,
-        provider,
-        session,
-        input.model,
-        claude ? body.system : body.instructions,
-        body.tools,
-        claude ? firstItem(body.messages) : firstItem(body.input, isCodexTask),
-      ])
-    ),
+    conversation: hashJson([
+      `${sessionHash}`,
+      input.model,
+      `${system}`,
+      `${tools}`,
+      claude ? firstItem(body.messages) : firstItem(body.input, isCodexTask),
+    ]),
+    session: sessionHash,
     provider,
     apiKeyId: input.apiKeyId,
     model: input.model,
+    system,
+    tools,
     ttlMs: claude ? claudeTtlMs(body) : codexTtlMs(body),
+    isSubagent,
+    isMainTurn: !isSubagent && (requestClass ?? "main") === "main",
   };
+};
+
+const remember = <State>(
+  states: Map<bigint, State>,
+  key: bigint,
+  state: State
+): void => {
+  states.delete(key);
+  states.set(key, state);
+  if (states.size > MAX_CONVERSATIONS) {
+    const oldest = states.keys().next();
+    if (!oldest.done) states.delete(oldest.value);
+  }
+};
+
+const sessionMissReason = (
+  turn: PromptCacheTurn,
+  previous: SessionState,
+  providerAccountId: string
+): PromptCacheMissReason => {
+  if (previous.providerAccountId !== providerAccountId)
+    return "account_changed";
+  if (previous.model !== turn.model) return "model_changed";
+  if (previous.system !== turn.system) return "system_changed";
+  if (previous.tools !== turn.tools) return "tools_changed";
+  return "session_unknown";
 };
 
 export const createPromptCacheTracker = () => {
   const conversations = new Map<bigint, ConversationState>();
-
-  const remember = (key: bigint, state: ConversationState): void => {
-    conversations.delete(key);
-    conversations.set(key, state);
-    if (conversations.size > MAX_CONVERSATIONS) {
-      const oldest = conversations.keys().next();
-      if (!oldest.done) conversations.delete(oldest.value);
-    }
-  };
+  const sessions = new Map<bigint, SessionState>();
+  const totals = new Map<string, PromptCacheMissTotal>();
+  const since = Date.now();
 
   return {
     // The baseline is the state when the request starts, so requests that
@@ -185,10 +263,15 @@ export const createPromptCacheTracker = () => {
       ...request,
       startedAt: now,
       previous: conversations.get(request.conversation),
+      previousSession: request.isMainTurn
+        ? sessions.get(request.session)
+        : undefined,
     }),
 
     // Reports a miss when a turn reads under half of what the previous turn
-    // left cached.
+    // of its conversation left cached. A main turn that starts a new
+    // conversation is compared with the session's previous main turn when it
+    // carries at least that turn's cached context and re-pays 4096 tokens.
     observe(
       turn: PromptCacheTurn,
       input: { providerAccountId: string; usage: TokenUsage; now?: number }
@@ -197,64 +280,121 @@ export const createPromptCacheTracker = () => {
       const { usage } = input;
       const call = usage.lastCall ?? usage;
       const cachedTokens = call.cacheReadTokens + call.cacheWriteTokens;
-      const inputTokens = call.inputTokens + cachedTokens;
+      const contextTokens = call.inputTokens + cachedTokens;
       const compacted = usage.compacted === true;
-      if (inputTokens >= MIN_REUSABLE_TOKENS) {
-        remember(turn.conversation, {
-          providerAccountId: input.providerAccountId,
-          cachedTokens,
-          ttlMs: turn.ttlMs,
-          compacted,
-          at: now,
+      const state: ConversationState = {
+        providerAccountId: input.providerAccountId,
+        cachedTokens,
+        ttlMs: turn.ttlMs,
+        compacted,
+        at: now,
+      };
+      if (contextTokens >= MIN_REUSABLE_TOKENS) {
+        remember(conversations, turn.conversation, state);
+      }
+      if (turn.isMainTurn && compacted) {
+        sessions.delete(turn.session);
+      } else if (turn.isMainTurn && contextTokens >= MIN_REUSABLE_TOKENS) {
+        remember(sessions, turn.session, {
+          ...state,
+          conversation: turn.conversation,
+          model: turn.model,
+          system: turn.system,
+          tools: turn.tools,
         });
       }
 
-      const { previous } = turn;
-      const expectedCachedTokens = Math.min(
-        previous?.cachedTokens ?? 0,
-        inputTokens
-      );
+      const { previous, previousSession } = turn;
+      let baseline: ConversationState;
+      let expectedCachedTokens: number;
+      let reason: PromptCacheMissReason = "unknown";
+      if (previous) {
+        baseline = previous;
+        expectedCachedTokens = Math.min(previous.cachedTokens, contextTokens);
+        if (previous.providerAccountId !== input.providerAccountId) {
+          reason = "account_changed";
+        } else if (compacted || previous.compacted) {
+          reason = "compacted";
+        } else if (turn.startedAt - previous.at > previous.ttlMs) {
+          reason = "idle_expired";
+        }
+      } else if (
+        previousSession &&
+        !compacted &&
+        contextTokens >= previousSession.cachedTokens
+      ) {
+        baseline = previousSession;
+        expectedCachedTokens = previousSession.cachedTokens;
+        reason = sessionMissReason(
+          turn,
+          previousSession,
+          input.providerAccountId
+        );
+      } else {
+        return null;
+      }
+      const repaidTokens = expectedCachedTokens - call.cacheReadTokens;
       if (
-        !previous ||
         expectedCachedTokens < MIN_REUSABLE_TOKENS ||
-        call.cacheReadTokens >= expectedCachedTokens / 2
+        call.cacheReadTokens >= expectedCachedTokens / 2 ||
+        (!previous && repaidTokens < MIN_REUSABLE_TOKENS)
       ) {
         return null;
       }
 
-      const idleMs = turn.startedAt - previous.at;
-      let reason: PromptCacheMissReason = "unknown";
-      if (previous.providerAccountId !== input.providerAccountId) {
-        reason = "account_changed";
-      } else if (compacted || previous.compacted) {
-        reason = "compacted";
-      } else if (idleMs > previous.ttlMs) {
-        reason = "idle_expired";
-      }
+      const idleMs = turn.startedAt - baseline.at;
       const miss: PromptCacheMiss = {
         at: now,
         provider: turn.provider,
         apiKeyId: turn.apiKeyId,
         providerAccountId: input.providerAccountId,
-        previousProviderAccountId: previous.providerAccountId,
+        previousProviderAccountId: baseline.providerAccountId,
         model: turn.model,
         reason,
+        isSubagent: turn.isSubagent,
         idleMs,
-        ttlMs: previous.ttlMs,
+        idleGap: idleGap(idleMs),
+        ttlMs: baseline.ttlMs,
+        cacheTtl: ttlLabel(baseline.ttlMs),
         expiry:
           reason !== "idle_expired"
             ? null
             : turn.provider === "claude"
               ? "certain"
               : "possible",
-        inputTokens,
+        contextTokens,
         cachedTokens: call.cacheReadTokens,
         expectedCachedTokens,
-        repaidTokens: expectedCachedTokens - call.cacheReadTokens,
+        repaidTokens,
+        cacheWrite5mTokens: call.cacheWrite5mTokens ?? 0,
+        cacheWrite1hTokens: call.cacheWrite1hTokens ?? 0,
         conversationHash: turn.conversation.toString(16),
+        sessionHash: turn.session.toString(16),
       };
       logInfo("prompt_cache_miss", miss);
+      const totalKey = `${miss.provider}:${reason}:${miss.isSubagent}:${miss.idleGap}`;
+      const total = totals.get(totalKey);
+      if (total) {
+        total.misses += 1;
+        total.repaidTokens += repaidTokens;
+      } else {
+        totals.set(totalKey, {
+          provider: miss.provider,
+          reason,
+          isSubagent: miss.isSubagent,
+          idleGap: miss.idleGap,
+          misses: 1,
+          repaidTokens,
+        });
+      }
       return miss;
     },
+
+    // Re-paid tokens since this process started, by provider, reason,
+    // subagent and idle gap.
+    missTotals: () => ({
+      since,
+      totals: Array.from(totals.values(), (total) => ({ ...total })),
+    }),
   };
 };

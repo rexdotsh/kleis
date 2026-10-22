@@ -75,8 +75,13 @@ const codexUsage = (cached: number, output: unknown[] = []) => ({
   },
 });
 
+const session = { "x-claude-code-session-id": "s1", "session-id": "s1" };
+const subagent = { ...session, "x-claude-code-agent-id": "fake-agent" };
+const codexSubagent = { ...session, "x-openai-subagent": "collab_spawn" };
 const warm = claudeUsage(12_000, 8000);
-const cold = claudeUsage(0, 20_000);
+const cold = claudeUsage(0, 20_000, {
+  cache_creation: { ephemeral_5m_input_tokens: 20_000 },
+});
 const longTtl = [
   ...history,
   { role: "user", content: [{ type: "text", cache_control: { ttl: "1h" } }] },
@@ -114,7 +119,15 @@ test("a turn that reads far less than the previous turn cached is reported only 
     [
       "a drop with no evidence",
       [claude(warm), claude(cold)],
-      { reason: "unknown", expectedCachedTokens: 20_000, repaidTokens: 20_000 },
+      {
+        reason: "unknown",
+        isSubagent: false,
+        contextTokens: 20_500,
+        expectedCachedTokens: 20_000,
+        repaidTokens: 20_000,
+        cacheWrite5mTokens: 20_000,
+        cacheWrite1hTokens: 0,
+      },
     ],
     [
       "another account",
@@ -124,7 +137,20 @@ test("a turn that reads far less than the previous turn cached is reported only 
     [
       "a gap past the Claude TTL",
       [claude(warm), claude(cold, {}, { minute: 7 })],
-      { reason: "idle_expired", expiry: "certain" },
+      {
+        reason: "idle_expired",
+        expiry: "certain",
+        cacheTtl: "5m",
+        idleGap: "5m_to_60m",
+      },
+    ],
+    [
+      "a subagent gap past an hour",
+      [
+        claude(warm, {}, { headers: subagent }),
+        claude(cold, {}, { headers: subagent, minute: 70 }),
+      ],
+      { reason: "idle_expired", isSubagent: true, idleGap: "over_60m" },
     ],
     [
       "a gap past the shortest Codex TTL",
@@ -137,7 +163,7 @@ test("a turn that reads far less than the previous turn cached is reported only 
         claude(warm, { messages: longTtl }),
         claude(cold, { messages: longTtl }, { minute: 7 }),
       ],
-      { reason: "unknown" },
+      { reason: "unknown", cacheTtl: "1h", idleGap: "5m_to_60m" },
     ],
     [
       "appended history",
@@ -146,8 +172,64 @@ test("a turn that reads far less than the previous turn cached is reported only 
     ],
     [
       "a subagent in the parent's session",
-      [claude(warm), claude(cold, { system: "You are a fake subagent." })],
+      [
+        claude(warm),
+        claude(
+          cold,
+          { system: "You are a fake subagent." },
+          { headers: subagent }
+        ),
+      ],
       null,
+    ],
+    [
+      "a model change in the session",
+      [claude(warm), claude(cold, {}, { model: "claude-other" })],
+      { reason: "model_changed", repaidTokens: 20_000 },
+    ],
+    [
+      "a system prompt change in the session",
+      [claude(warm), claude(cold, { system: "You are another assistant." })],
+      { reason: "system_changed" },
+    ],
+    [
+      "a tools change in the session",
+      [claude(warm), claude(cold, { tools: [{ name: "write" }] })],
+      { reason: "tools_changed" },
+    ],
+    [
+      "a new task in the session",
+      [claude(warm), claude(cold, { messages: [{ content: "other task" }] })],
+      { reason: "session_unknown" },
+    ],
+    [
+      "a Claude Code side request in the session",
+      [
+        claude(warm),
+        claude(
+          cold,
+          {},
+          {
+            model: "claude-small",
+            headers: { ...session, "x-claude-code-request-class": "auxiliary" },
+          }
+        ),
+      ],
+      null,
+    ],
+    [
+      "a model change that re-pays under 4096 tokens",
+      [
+        claude(claudeUsage(1000, 5000)),
+        claude(claudeUsage(2500, 3500), {}, { model: "claude-other" }),
+      ],
+      null,
+    ],
+    [
+      "a model change running alongside the previous turn",
+      [claude(warm), claude(cold, {}, { model: "claude-other" })],
+      null,
+      { concurrent: true },
     ],
     [
       "a title request in the parent's session",
@@ -196,12 +278,16 @@ test("a turn that reads far less than the previous turn cached is reported only 
           claudeUsage(0, 20_000, {
             iterations: [
               compaction,
-              { input_tokens: 500, cache_creation_input_tokens: 20_000 },
+              {
+                input_tokens: 500,
+                cache_creation_input_tokens: 20_000,
+                cache_creation: { ephemeral_1h_input_tokens: 20_000 },
+              },
             ],
           })
         ),
       ],
-      { reason: "compacted" },
+      { reason: "compacted", cacheWrite1hTokens: 20_000 },
     ],
     [
       "the turn after on-demand compaction",
@@ -218,14 +304,21 @@ test("a turn that reads far less than the previous turn cached is reported only 
     ],
     [
       "a sibling task in the parent's session",
-      [claude(warm), claude(cold, { messages: [{ content: "other task" }] })],
+      [
+        claude(warm),
+        claude(
+          cold,
+          { messages: [{ content: "other task" }] },
+          { headers: subagent }
+        ),
+      ],
       null,
     ],
     [
       "a sibling Codex agent whose instructions are promoted",
       [
         codex(codexUsage(20_000), promoted("Agent A")),
-        codex(codexUsage(0), promoted("Agent B")),
+        codex(codexUsage(0), promoted("Agent B"), { headers: codexSubagent }),
       ],
       null,
     ],
@@ -233,7 +326,7 @@ test("a turn that reads far less than the previous turn cached is reported only 
       "a sibling Codex task sent as string input",
       [
         codex(codexUsage(20_000), { input: "task A" }),
-        codex(codexUsage(0), { input: "task B" }),
+        codex(codexUsage(0), { input: "task B" }, { headers: codexSubagent }),
       ],
       null,
     ],
@@ -258,12 +351,7 @@ test("a turn that reads far less than the previous turn cached is reported only 
     for (const [name, turns, expected, options] of rows) {
       const tracker = createPromptCacheTracker();
       const begin = (turn: Turn, index: number) => {
-        const headers = new Headers(
-          turn.headers ?? {
-            "x-claude-code-session-id": "s1",
-            "session-id": "s1",
-          }
-        );
+        const headers = new Headers(turn.headers ?? session);
         const request = readPromptCacheRequest(turn.provider, {
           apiKeyId: "fake-key",
           model: turn.model ?? "fake-model",

@@ -23,6 +23,7 @@ const { requireProxyApiKey } =
   await import("../../src/http/middleware/api-key-auth");
 const { proxyRoutes, flushProxyUsage, flushProxyFailureLogs } =
   await import("../../src/http/routes/proxy");
+const { adminUsageRoutes } = await import("../../src/http/routes/admin-usage");
 const { namespaceCodexKey } =
   await import("../../src/providers/proxies/codex-proxy");
 
@@ -617,12 +618,87 @@ test("Claude compaction usage iterations are counted once in JSON and SSE", asyn
   }
 });
 
+test("Claude cache writes are recorded by TTL in JSON and SSE", async () => {
+  const split = {
+    cache_creation_input_tokens: 7,
+    cache_creation: {
+      ephemeral_5m_input_tokens: 3,
+      ephemeral_1h_input_tokens: 4,
+    },
+  };
+  const iterations = {
+    ...split,
+    iterations: [
+      { type: "compaction", input_tokens: 9, ...split },
+      { type: "message", input_tokens: 1, ...split },
+    ],
+  };
+  const sse = (
+    start: Record<string, unknown>,
+    delta: Record<string, unknown>
+  ) =>
+    new Response(
+      event({ type: "message_start", message: { usage: start } }) +
+        event({ type: "message_delta", usage: delta }) +
+        event({ type: "message_stop" }),
+      { headers: { "content-type": "text/event-stream" } }
+    );
+  const original = globalThis.fetch;
+  try {
+    for (const { upstream, expected } of [
+      {
+        upstream: () => Response.json({ type: "message", usage: split }),
+        expected: { cacheWrite5mTokens: 3, cacheWrite1hTokens: 4 },
+      },
+      {
+        upstream: () => sse(split, { output_tokens: 1 }),
+        expected: { cacheWrite5mTokens: 3, cacheWrite1hTokens: 4 },
+      },
+      {
+        upstream: () => sse({ input_tokens: 1 }, split),
+        expected: { cacheWrite5mTokens: 3, cacheWrite1hTokens: 4 },
+      },
+      {
+        upstream: () => Response.json({ type: "message", usage: iterations }),
+        expected: { cacheWrite5mTokens: 6, cacheWrite1hTokens: 8 },
+      },
+      {
+        upstream: () => sse({ input_tokens: 0 }, iterations),
+        expected: { cacheWrite5mTokens: 6, cacheWrite1hTokens: 8 },
+      },
+    ]) {
+      globalThis.fetch = (async () => upstream()) as typeof fetch;
+      const response = await request();
+      expect(response.status).toBe(200);
+      await response.text();
+      await flushProxyUsage();
+      expect(await db.select().from(requestUsageBuckets)).toMatchObject([
+        { requestCount: 1, ...expected },
+      ]);
+      await db.delete(requestUsageBuckets);
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("concurrent first turns are not compared, and a later cold turn logs one content-free miss", async () => {
   const original = globalThis.fetch;
   const info = spyOn(console, "info").mockImplementation(() => undefined);
   const gates: ((response: Response) => void)[] = [];
   globalThis.fetch = (() =>
     new Promise<Response>((resolve) => gates.push(resolve))) as typeof fetch;
+  const admin = new Hono().route("/", adminUsageRoutes);
+  const repaidSinceStart = async (provider: string) => {
+    const body = (await (await admin.request("/dashboard")).json()) as {
+      promptCacheMisses: {
+        totals: { provider: string; reason: string; repaidTokens: number }[];
+      };
+    };
+    return body.promptCacheMisses.totals
+      .filter((total) => total.provider === provider)
+      .reduce((sum, total) => sum + total.repaidTokens, 0);
+  };
   const missLines = () =>
     info.mock.calls
       .map((call) => String(call[0]))
@@ -630,6 +706,7 @@ test("concurrent first turns are not compared, and a later cold turn logs one co
   try {
     for (const entry of [
       {
+        provider: "claude",
         path: "/anthropic/v1/messages",
         headers: { "x-claude-code-session-id": "fake-claude-session" },
         body: { system: "SECRET system", messages: [{ content: "SECRET" }] },
@@ -639,6 +716,7 @@ test("concurrent first turns are not compared, and a later cold turn logs one co
         accountId: () => account.id,
       },
       {
+        provider: "codex",
         path: "/openai/v1/responses",
         headers: { "session-id": "fake-codex-session" },
         body: {
@@ -671,7 +749,11 @@ test("concurrent first turns are not compared, and a later cold turn logs one co
       await finish(second, 1);
       expect(missLines()).toHaveLength(0);
 
+      const repaidBefore = await repaidSinceStart(entry.provider);
       await finish(send(), 2);
+      expect(await repaidSinceStart(entry.provider)).toBe(
+        repaidBefore + 20_000
+      );
       const [line = "", ...rest] = missLines();
       expect(rest).toHaveLength(0);
       expect(line).not.toMatch(/SECRET|fake-(claude|codex)-session/);

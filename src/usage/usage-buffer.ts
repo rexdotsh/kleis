@@ -23,6 +23,8 @@ const SUMMED_FIELDS = [
   "outputTokens",
   "cacheReadTokens",
   "cacheWriteTokens",
+  "cacheWrite5mTokens",
+  "cacheWrite1hTokens",
   "inputTotalTokens",
   "reasoningTokens",
   "totalTokens",

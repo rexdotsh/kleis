@@ -118,6 +118,8 @@ const logUpstreamResponse = async (
 
 export const flushProxyUsage = (): Promise<void> => usageBuffer.flush();
 
+export const readPromptCacheMissTotals = () => promptCacheTracker.missTotals();
+
 export const flushProxyFailureLogs = (): Promise<void> =>
   Promise.resolve(upstreamFailureLogger.flush());
 
