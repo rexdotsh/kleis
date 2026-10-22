@@ -34,6 +34,24 @@ import {
 } from "./app-usage.js";
 
 const RESET_CONFIRM_RELOAD_MS = 6000;
+const RESET_CONFIRM_TIMEOUT_MS = 20_000;
+
+// Ends the wait once a limits read newer than the one shown at the reset
+// arrives.
+function settleLimitsUpdating() {
+  for (const [id, wait] of state.limitsUpdating) {
+    const fetchedAt = state.accountsById.get(id)?.quota?.fetchedAt;
+    if (!state.accountsById.has(id) || (fetchedAt ?? 0) > wait.after)
+      state.limitsUpdating.delete(id);
+  }
+}
+
+function reloadAccountsLater(delay, before = () => undefined) {
+  setTimeout(() => {
+    before();
+    loadAccounts().catch(() => undefined);
+  }, delay);
+}
 
 async function loadAccounts() {
   const requestSeq = ++state.accountsRequestSeq;
@@ -63,8 +81,12 @@ async function loadAccounts() {
       claudeResets: account.quota
         ? account.claudeResets
         : state.accountsById.get(account.id)?.claudeResets,
+      codexResets: account.quota
+        ? account.codexResets
+        : state.accountsById.get(account.id)?.codexResets,
     }));
     state.accountsById = usageMapFromList(state.accounts, "id");
+    settleLimitsUpdating();
     pruneUsageDetails("account", state.accountsById);
     pruneUsageDetails("daily", state.accountsById);
     state.providerStatuses = accountsResult.value.providers || [];
@@ -120,7 +142,7 @@ async function loadMissingQuotas(requestSeq, missingQuotas) {
   );
   if (!missing) return;
   try {
-    const { quotas, profiles, claudeResets } = await api(
+    const { quotas, profiles, claudeResets, codexResets } = await api(
       "/admin/accounts/quotas"
     );
     if (requestSeq !== state.accountsRequestSeq) return;
@@ -140,7 +162,12 @@ async function loadMissingQuotas(requestSeq, missingQuotas) {
         account.claudeResets = claudeResets[account.id];
         changed = true;
       }
+      if (codexResets && account.id in codexResets) {
+        account.codexResets = codexResets[account.id];
+        changed = true;
+      }
     }
+    settleLimitsUpdating();
     if (changed) {
       renderAccounts();
       if (state.keysLoaded) renderKeys();
@@ -309,11 +336,19 @@ async function redeemResetCreditAction(request, accountId) {
     refreshed?.find((entry) => entry.id === accountId)
   );
   toast(message, type);
-  // The server reads the limits once more a few seconds after a reset.
-  if (feedback.changed)
-    setTimeout(() => {
-      loadAccounts().catch(() => undefined);
-    }, RESET_CONFIRM_RELOAD_MS);
+  if (!feedback.changed) return;
+  // The server reads the limits once more a few seconds after a reset; until
+  // that read shows up the account's limits are marked as updating.
+  const wait = {
+    after: accountById(accountId)?.quota?.fetchedAt ?? 0,
+    timedOut: false,
+  };
+  state.limitsUpdating.set(accountId, wait);
+  renderAccounts();
+  reloadAccountsLater(RESET_CONFIRM_RELOAD_MS);
+  reloadAccountsLater(RESET_CONFIRM_TIMEOUT_MS, () => {
+    wait.timedOut = true;
+  });
 }
 
 function startEditAccount(id) {

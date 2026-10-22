@@ -188,6 +188,29 @@ code,
 .tag-primary {
   color: var(--accent);
 }
+.stale {
+  opacity: 0.45;
+}
+.updating {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.updating::before {
+  width: 6px;
+  height: 6px;
+  content: "";
+  background: currentColor;
+  border-radius: 50%;
+  animation: updating-pulse 1.2s ease-in-out infinite;
+}
+@keyframes updating-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
 
 /* Login */
 

@@ -158,7 +158,19 @@ const CLAIM_RESULT_TOASTS = {
   ],
 };
 
+const UNCONFIRMED_REASONS = new Set([
+  "stamp_indeterminate",
+  "reset_unconfirmed",
+]);
+
 function claimToast(claim) {
+  if (UNCONFIRMED_REASONS.has(claim.reason)) {
+    return {
+      message:
+        "Reset not confirmed yet \u00b7 the next limits check shows whether it was used",
+      type: "info",
+    };
+  }
   if (claim.result === "unavailable") {
     return {
       message:
