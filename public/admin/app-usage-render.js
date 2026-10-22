@@ -22,7 +22,6 @@ import {
   normalizeUsage,
   providerName,
   providerStatusMap,
-  relativeTime,
   renderWithMotion,
   requestsCellHtml,
   shortDate,
@@ -321,43 +320,6 @@ function topKeysHtml(data, metrics) {
   return `<div><div class="sh"><h2>Top keys</h2><div class="right"><button class="link small" type="button" data-action="go-keys">View all keys</button></div></div><div class="list dashboard-table" tabindex="0" aria-label="Top keys"><div class="row thead t-keys"><span>Key</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Cached</span></div>${body || '<p class="list-note muted">No usage in this window.</p>'}</div></div>`;
 }
 
-function idleText(ms) {
-  const minutes = Math.round(ms / 60_000);
-  return minutes < 60 ? `${minutes}m` : `${Math.round(minutes / 60)}h`;
-}
-
-function missReasonText(miss) {
-  switch (miss.reason) {
-    case "account_changed":
-      return "Routed to another account";
-    case "compacted":
-      return "History compacted";
-    case "idle_expired":
-      return `${miss.expiry === "certain" ? "Expired" : "Possibly expired"} after ${idleText(miss.idleMs)} idle`;
-    default:
-      return "Unknown cause";
-  }
-}
-
-const MISSES_SHOWN = 20;
-
-function cacheMissesHtml(data) {
-  const misses = data.cacheMisses || [];
-  const rows = misses
-    .slice(0, MISSES_SHOWN)
-    .map((miss) => {
-      const when = escapeHtml(relativeTime(miss.at));
-      const key = apiKeyDisplayHtml(miss.apiKeyId);
-      const account = accountDisplayHtml(miss.providerAccountId);
-      const model = escapeHtml(miss.model || "(unknown)");
-      const reason = escapeHtml(missReasonText(miss));
-      const repaid = `Read ${formatCount(miss.cachedTokens)} of ${formatCount(miss.expectedCachedTokens)} cached tokens`;
-      return `<div class="row t-miss"><span class="muted d">${when}</span><span class="ellipsis d">${key}</span><span class="ellipsis d">${account}</span><span class="mono ellipsis muted d">${model}</span><span class="ellipsis" title="${reason}">${reason}</span><span class="num d" title="${escapeHtml(repaid)}">${formatCompact(miss.repaidTokens)}</span><span class="l2">${formatCompact(miss.repaidTokens)} re-paid \u00b7 ${when} \u00b7 ${key} \u00b7 ${account} \u00b7 ${model}</span></div>`;
-    })
-    .join("");
-  return `<div class="misses"><div class="sh"><h2>Recent cache misses</h2>${misses.length ? `<span class="muted">${misses.length}</span>` : ""}<div class="right"><span class="muted small">Since the last restart</span></div></div><div class="list dashboard-table" tabindex="0" aria-label="Recent cache misses"><div class="row thead t-miss"><span>When</span><span>Key</span><span>Account</span><span>Model</span><span>Reason</span><span class="num">Re-paid</span></div>${rows || '<p class="list-note muted">No cache misses in this window.</p>'}</div></div>`;
-}
-
 function renderDashboard(rawData) {
   if (!state.accountsLoaded) return;
   state.overviewReady = true;
@@ -377,7 +339,6 @@ function renderDashboard(rawData) {
     kpisHtml(metrics, normalizeUsage(data.previousTotals), windowLabel),
     requestChartHtml(data, width),
     `<div class="tables">${providerTableHtml(data, metrics)}${topKeysHtml(data, metrics)}</div>`,
-    cacheMissesHtml(data),
   ].join("");
 
   const plot = el.querySelector(".plot");

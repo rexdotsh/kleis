@@ -3,7 +3,6 @@ import { Hono } from "hono";
 
 import { db } from "../../db";
 import { getDashboardUsage } from "../../db/repositories/dashboard-usage";
-import { listRecentPromptCacheMisses } from "./proxy";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 
 export const adminUsageRoutes = new Hono().get(
@@ -19,9 +18,6 @@ export const adminUsageRoutes = new Hono().get(
       since,
       now,
       ...data,
-      cacheMisses: listRecentPromptCacheMisses().filter(
-        (miss) => miss.at >= since
-      ),
     });
   }
 );

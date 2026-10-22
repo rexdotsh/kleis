@@ -1300,14 +1300,6 @@ button.row {
 .t-keys {
   grid-template-columns: minmax(0, 1fr) 88px 64px 64px;
 }
-.misses {
-  margin-top: 32px;
-}
-.t-miss {
-  grid-template-columns:
-    72px minmax(0, 0.8fr) minmax(0, 0.8fr) minmax(0, 1fr)
-    minmax(0, 1.4fr) 72px;
-}
 .model {
   padding-left: 16px;
   font-family: var(--font-mono);
@@ -2256,17 +2248,6 @@ input[type="checkbox"].toggle:checked::after {
   }
   .t-keys {
     grid-template-columns: minmax(0, 1fr) 88px 64px;
-  }
-  .t-miss:not(.thead) {
-    grid-template-columns: minmax(0, 1fr);
-    row-gap: 2px;
-    height: auto;
-    min-height: 56px;
-    padding-top: 8px;
-    padding-bottom: 8px;
-  }
-  .t-miss .l2 {
-    padding-left: 0;
   }
   .detail {
     padding: 8px 16px 16px;
