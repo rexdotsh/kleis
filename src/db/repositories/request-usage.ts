@@ -63,6 +63,12 @@ const tokenColumns = (tokenUsage: TokenUsage | null | undefined) => {
     outputTokens,
     cacheReadTokens,
     cacheWriteTokens,
+    cacheWrite5mTokens: toNonNegativeInteger(tokenUsage?.cacheWrite5mTokens),
+    cacheWrite1hTokens: toNonNegativeInteger(tokenUsage?.cacheWrite1hTokens),
+    cacheRepaidTokens: toNonNegativeInteger(tokenUsage?.cacheRepaidTokens),
+    cacheRepaidIdleTokens: toNonNegativeInteger(
+      tokenUsage?.cacheRepaidIdleTokens
+    ),
     inputTotalTokens,
     reasoningTokens: toNonNegativeInteger(tokenUsage?.reasoningTokens),
     totalTokens: toNonNegativeInteger(
@@ -95,6 +101,10 @@ export type UsageBucketWrite = typeof requestUsageBuckets.$inferInsert & {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  cacheWrite5mTokens: number;
+  cacheWrite1hTokens: number;
+  cacheRepaidTokens: number;
+  cacheRepaidIdleTokens: number;
   inputTotalTokens: number;
   reasoningTokens: number;
   totalTokens: number;
@@ -184,6 +194,10 @@ export const upsertUsageRows = async (
           outputTokens: addExcluded(buckets.outputTokens),
           cacheReadTokens: addExcluded(buckets.cacheReadTokens),
           cacheWriteTokens: addExcluded(buckets.cacheWriteTokens),
+          cacheWrite5mTokens: addExcluded(buckets.cacheWrite5mTokens),
+          cacheWrite1hTokens: addExcluded(buckets.cacheWrite1hTokens),
+          cacheRepaidTokens: addExcluded(buckets.cacheRepaidTokens),
+          cacheRepaidIdleTokens: addExcluded(buckets.cacheRepaidIdleTokens),
           inputTotalTokens: sql`${storedInputTotalTokens} + ${excluded(buckets.inputTotalTokens)}`,
           reasoningTokens: sql`coalesce(${buckets.reasoningTokens}, 0) + ${excluded(buckets.reasoningTokens)}`,
           totalTokens: sql`coalesce(${buckets.totalTokens}, ${storedInputTotalTokens} + ${buckets.outputTokens}) + ${excluded(buckets.totalTokens)}`,

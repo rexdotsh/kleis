@@ -75,12 +75,39 @@ const codexUsage = (cached: number, output: unknown[] = []) => ({
   },
 });
 
+const session = { "x-claude-code-session-id": "s1", "session-id": "s1" };
+const subagent = { ...session, "x-claude-code-agent-id": "fake-agent" };
+const auxiliary = { ...session, "x-claude-code-request-class": "auxiliary" };
+const mainClass = { ...session, "x-claude-code-request-class": "main" };
+const compactionClass = {
+  ...session,
+  "x-claude-code-request-class": "compaction",
+};
+const codexSubagent = { ...session, "x-openai-subagent": "collab_spawn" };
 const warm = claudeUsage(12_000, 8000);
-const cold = claudeUsage(0, 20_000);
+const cold = claudeUsage(0, 20_000, {
+  cache_creation: { ephemeral_5m_input_tokens: 20_000 },
+});
 const longTtl = [
   ...history,
   { role: "user", content: [{ type: "text", cache_control: { ttl: "1h" } }] },
 ];
+const mixedTtl = {
+  system: [
+    {
+      type: "text",
+      text: "You are a fake assistant.",
+      cache_control: { type: "ephemeral", ttl: "1h" },
+    },
+  ],
+  messages: [
+    ...history,
+    {
+      role: "user",
+      content: [{ type: "text", cache_control: { type: "ephemeral" } }],
+    },
+  ],
+};
 const compaction = { type: "compaction", input_tokens: 132 };
 const compactionBilled = claudeUsage(0, 20_000, {
   iterations: [
@@ -114,7 +141,15 @@ test("a turn that reads far less than the previous turn cached is reported only 
     [
       "a drop with no evidence",
       [claude(warm), claude(cold)],
-      { reason: "unknown", expectedCachedTokens: 20_000, repaidTokens: 20_000 },
+      {
+        reason: "unknown",
+        isMain: true,
+        contextTokens: 20_500,
+        expectedCachedTokens: 20_000,
+        repaidTokens: 20_000,
+        cacheWrite5mTokens: 20_000,
+        cacheWrite1hTokens: 0,
+      },
     ],
     [
       "another account",
@@ -124,7 +159,52 @@ test("a turn that reads far less than the previous turn cached is reported only 
     [
       "a gap past the Claude TTL",
       [claude(warm), claude(cold, {}, { minute: 7 })],
-      { reason: "idle_expired", expiry: "certain" },
+      {
+        reason: "idle_expired",
+        expiry: "certain",
+        cacheTtl: "5m",
+        idleGap: "5m_to_60m",
+      },
+    ],
+    [
+      "a subagent gap past an hour",
+      [
+        claude(warm, {}, { headers: subagent }),
+        claude(cold, {}, { headers: subagent, minute: 70 }),
+      ],
+      { reason: "idle_expired", isMain: false, idleGap: "over_60m" },
+    ],
+    [
+      "two side requests ten minutes apart",
+      [
+        claude(warm, {}, { headers: auxiliary }),
+        claude(cold, {}, { headers: auxiliary, minute: 10 }),
+      ],
+      { reason: "idle_expired", isMain: false, idleGap: "5m_to_60m" },
+    ],
+    [
+      "a gap past 5m breakpoints behind a 1h system breakpoint",
+      [claude(warm, mixedTtl), claude(cold, mixedTtl, { minute: 10 })],
+      {
+        reason: "unknown",
+        cacheTtl: "1h",
+        idleGap: "5m_to_60m",
+        has5mBreakpoint: true,
+        idleRewrite: true,
+      },
+    ],
+    [
+      "a model change after a 5m to 60m gap",
+      [
+        claude(warm, mixedTtl),
+        claude(cold, mixedTtl, { model: "claude-other", minute: 10 }),
+      ],
+      {
+        reason: "model_changed",
+        idleGap: "5m_to_60m",
+        has5mBreakpoint: true,
+        idleRewrite: false,
+      },
     ],
     [
       "a gap past the shortest Codex TTL",
@@ -137,7 +217,12 @@ test("a turn that reads far less than the previous turn cached is reported only 
         claude(warm, { messages: longTtl }),
         claude(cold, { messages: longTtl }, { minute: 7 }),
       ],
-      { reason: "unknown" },
+      {
+        reason: "unknown",
+        cacheTtl: "1h",
+        idleGap: "5m_to_60m",
+        has5mBreakpoint: false,
+      },
     ],
     [
       "appended history",
@@ -146,8 +231,103 @@ test("a turn that reads far less than the previous turn cached is reported only 
     ],
     [
       "a subagent in the parent's session",
-      [claude(warm), claude(cold, { system: "You are a fake subagent." })],
+      [
+        claude(warm),
+        claude(
+          cold,
+          { system: "You are a fake subagent." },
+          { headers: subagent }
+        ),
+      ],
       null,
+    ],
+    [
+      "a model change in the session",
+      [claude(warm), claude(cold, {}, { model: "claude-other" })],
+      { reason: "model_changed", repaidTokens: 20_000 },
+    ],
+    [
+      "a system prompt change in the session",
+      [claude(warm), claude(cold, { system: "You are another assistant." })],
+      { reason: "system_changed" },
+    ],
+    [
+      "a tools change in the session",
+      [claude(warm), claude(cold, { tools: [{ name: "write" }] })],
+      { reason: "tools_changed" },
+    ],
+    [
+      "a removed tool that shrinks the context",
+      [claude(warm), claude(claudeUsage(0, 18_000), { tools: [] })],
+      { reason: "tools_changed", repaidTokens: 18_500 },
+    ],
+    [
+      "a model change after an unclassified title request",
+      [
+        claude(warm),
+        claude(claudeUsage(0, 4600), { tools: [] }, { model: "claude-small" }),
+        claude(cold, {}, { model: "claude-other" }),
+      ],
+      { reason: "model_changed", repaidTokens: 20_000 },
+    ],
+    [
+      "a classified main turn that drops tools and changes model",
+      [
+        claude(warm, {}, { headers: mainClass }),
+        claude(
+          claudeUsage(0, 9000),
+          { tools: [] },
+          { model: "claude-other", headers: mainClass }
+        ),
+      ],
+      { reason: "model_changed", repaidTokens: 9500 },
+    ],
+    [
+      "a new task after a classified compaction",
+      [
+        claude(warm),
+        claude(
+          claudeUsage(0, 0, { input_tokens: 0, iterations: [compaction] }),
+          {},
+          { headers: compactionClass }
+        ),
+        claude(cold, { messages: [{ content: "summary" }] }),
+      ],
+      null,
+    ],
+    [
+      "a new task in the session",
+      [claude(warm), claude(cold, { messages: [{ content: "other task" }] })],
+      { reason: "session_unknown" },
+    ],
+    [
+      "a Claude Code side request in the session",
+      [
+        claude(warm),
+        claude(
+          cold,
+          {},
+          {
+            model: "claude-small",
+            headers: { ...session, "x-claude-code-request-class": "auxiliary" },
+          }
+        ),
+      ],
+      null,
+    ],
+    [
+      "a model change that re-pays under 4096 tokens",
+      [
+        claude(claudeUsage(1000, 5000)),
+        claude(claudeUsage(2500, 3500), {}, { model: "claude-other" }),
+      ],
+      null,
+    ],
+    [
+      "a model change running alongside the previous turn",
+      [claude(warm), claude(cold, {}, { model: "claude-other" })],
+      null,
+      { concurrent: true },
     ],
     [
       "a title request in the parent's session",
@@ -196,12 +376,16 @@ test("a turn that reads far less than the previous turn cached is reported only 
           claudeUsage(0, 20_000, {
             iterations: [
               compaction,
-              { input_tokens: 500, cache_creation_input_tokens: 20_000 },
+              {
+                input_tokens: 500,
+                cache_creation_input_tokens: 20_000,
+                cache_creation: { ephemeral_1h_input_tokens: 20_000 },
+              },
             ],
           })
         ),
       ],
-      { reason: "compacted" },
+      { reason: "compacted", cacheWrite1hTokens: 20_000 },
     ],
     [
       "the turn after on-demand compaction",
@@ -218,14 +402,21 @@ test("a turn that reads far less than the previous turn cached is reported only 
     ],
     [
       "a sibling task in the parent's session",
-      [claude(warm), claude(cold, { messages: [{ content: "other task" }] })],
+      [
+        claude(warm),
+        claude(
+          cold,
+          { messages: [{ content: "other task" }] },
+          { headers: subagent }
+        ),
+      ],
       null,
     ],
     [
       "a sibling Codex agent whose instructions are promoted",
       [
         codex(codexUsage(20_000), promoted("Agent A")),
-        codex(codexUsage(0), promoted("Agent B")),
+        codex(codexUsage(0), promoted("Agent B"), { headers: codexSubagent }),
       ],
       null,
     ],
@@ -233,7 +424,7 @@ test("a turn that reads far less than the previous turn cached is reported only 
       "a sibling Codex task sent as string input",
       [
         codex(codexUsage(20_000), { input: "task A" }),
-        codex(codexUsage(0), { input: "task B" }),
+        codex(codexUsage(0), { input: "task B" }, { headers: codexSubagent }),
       ],
       null,
     ],
@@ -258,12 +449,7 @@ test("a turn that reads far less than the previous turn cached is reported only 
     for (const [name, turns, expected, options] of rows) {
       const tracker = createPromptCacheTracker();
       const begin = (turn: Turn, index: number) => {
-        const headers = new Headers(
-          turn.headers ?? {
-            "x-claude-code-session-id": "s1",
-            "session-id": "s1",
-          }
-        );
+        const headers = new Headers(turn.headers ?? session);
         const request = readPromptCacheRequest(turn.provider, {
           apiKeyId: "fake-key",
           model: turn.model ?? "fake-model",
