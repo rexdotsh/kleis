@@ -175,7 +175,7 @@ function accountRowHtml(account, serving, grouped = false) {
   const credits = resetOfferFor(account);
   const expiring = serving ? expiringResets(account) : null;
   const creditHint = expiring
-    ? `<span class="tag warn" title="${escapeHtml(expiring.text)}">${escapeHtml(expiring.tag)}</span>`
+    ? `<span class="tag resets-tag${expiring.actionable ? " warn" : ""}" title="${escapeHtml(expiring.text)}">${escapeHtml(expiring.tag)}</span>`
     : serving && credits?.useful
       ? `<span class="tag">${credits.count} ${credits.noun}${credits.count === 1 ? "" : "s"}</span>`
       : "";

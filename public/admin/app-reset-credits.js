@@ -17,25 +17,64 @@ function resetOfferFor(account) {
   return resetProviders[account?.provider]?.offerFor(account) || null;
 }
 
+const expiryFormat = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+
+const counted = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+const timeLeft = (at) => {
+  const hours = Math.floor((at - Date.now()) / 3_600_000);
+  return hours ? `${hours}h` : untilText(at).replace(/^in /, "");
+};
+
+const knownExpiries = (offer) =>
+  (offer?.expiries || []).filter((group) => group.at !== null);
+
+// Resets about to expire. Only ones usable now ask for attention; the rest
+// say a limit has to be hit first.
 function expiringResets(account) {
   const offer = resetOfferFor(account);
-  const left = offer?.expiresAt - Date.now();
+  const soonest = knownExpiries(offer)[0];
+  const left = soonest?.at - Date.now();
   if (
-    !(offer?.canUse || offer?.atLimitOnly) ||
+    !(offer?.state === "now" || offer?.state === "at_limit") ||
     !offer.count ||
     !(left > 0 && left < EXPIRING_SOON_MS) ||
     needsReauthorization(account)
   )
     return null;
-  const hours = Math.floor(left / 3_600_000);
-  const time = hours
-    ? `${hours}h`
-    : untilText(offer.expiresAt).replace(/^in /, "");
-  const balance = `${offer.count} ${offer.noun}${offer.count === 1 ? "" : "s"}`;
-  return {
-    tag: `${balance} \u00b7 ${time} left`,
-    text: `${balance}${offer.count === 1 ? "" : ", next"} expires in ${time}${offer.atLimitOnly ? ", usable at limit" : ""}`,
-  };
+  const time = timeLeft(soonest.at);
+  if (offer.state === "now") {
+    return {
+      actionable: true,
+      tag: `${counted(offer.count, offer.unit)} \u00b7 ${time} left`,
+      text: `${counted(offer.count, offer.noun)}${offer.count === 1 ? "" : ", next"} expires in ${time}`,
+    };
+  }
+  const text = `${counted(soonest.count, offer.unit)} expire${soonest.count === 1 ? "s" : ""} in ${time} \u00b7 usable once a limit is hit`;
+  return { actionable: false, tag: text, text };
+}
+
+function expiriesText(offer) {
+  const known = knownExpiries(offer);
+  if (!known.length) return null;
+  const total = known.reduce((sum, group) => sum + group.count, 0);
+  const times = known.map(
+    (group) =>
+      `${untilText(group.at).replace(/^in /, "")}${group.count > 1 ? ` (${group.count})` : ""}`
+  );
+  return `${total === 1 ? "expires" : "expire"} in ${times.join(", ")}`;
+}
+
+function expiryDates(offer) {
+  const known = knownExpiries(offer);
+  return known.length
+    ? `expire ${known.map((group) => `${expiryFormat.format(group.at)}${group.count > 1 ? ` (${group.count})` : ""}`).join(", ")}`
+    : offer.expiryText;
 }
 
 // The account's resets on one line: the balance, what the owner can do with
@@ -46,16 +85,12 @@ function resetCreditsDetail(account) {
   const { status } = offer;
   const balance = `${offer.count ?? "\u2014"} ${offer.unit}${offer.count === 1 ? "" : "s"}`;
   const value = status?.replaceCount ? status.label : balance;
-  const left =
-    offer.expiresAt && offer.expiresAt - Date.now() < 3 * DAY_MS
-      ? `${untilText(offer.expiresAt).replace(/^in /, "")} left`
-      : null;
   const scope = offer.scope ? `refills ${offer.scope}` : "scope not reported";
   const title = [
     value,
     status && !status.replaceCount && status.label,
     scope,
-    offer.expiryText,
+    expiryDates(offer),
     offer.title,
     status?.description,
   ]
@@ -71,7 +106,7 @@ function resetCreditsDetail(account) {
     : [
         status?.label,
         offer.canUse && offer.earlyUse && "usable early",
-        left,
+        expiriesText(offer),
         scope,
       ];
   return `<div class="resets" title="${escapeHtml(title)}"><span class="fact-label">${escapeHtml(`${offer.heading}s`)}</span><span class="resets-copy"><span class="resets-value">${escapeHtml(value)}</span>${details

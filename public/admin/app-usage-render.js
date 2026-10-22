@@ -177,7 +177,7 @@ function renderAttention() {
     if (!isAccountServing(account, statuses)) continue;
     const issues = accountIssues(account);
     const expiring = expiringResets(account);
-    if (expiring)
+    if (expiring?.actionable)
       issues.push({ severity: "warn", text: expiring.text, when: "" });
     if (!issues.length) continue;
     items.push({

@@ -233,6 +233,27 @@ describe("Claude saved resets", () => {
       });
     });
 
+    test("saved resets that end together count together", async () => {
+      const account = await addAccount();
+      upstream.usage = () =>
+        Response.json(
+          usageBody(
+            cedar([
+              grant({ id: "grant_fake_1", resets_left: 1 }),
+              grant({
+                id: "grant_fake_2",
+                resets_left: 2,
+                ends_at: "2100-01-01T00:00:00.000Z",
+              }),
+            ])
+          )
+        );
+      await read(account);
+      expect(view(account)?.expiries).toEqual([
+        { endsAt: "2100-01-01T00:00:00Z", count: 3 },
+      ]);
+    });
+
     test("respects the shared 429 pause and retry pace under traffic", async () => {
       const account = await addAccount();
       await read(account);

@@ -36,6 +36,13 @@ function codexResetOffer(account) {
       ? Math.max(0, available)
       : null;
   const next = credits[0] || null;
+  const expiries = [];
+  for (const credit of credits) {
+    const at = quotaTimestamp(credit.expiresAt);
+    const last = expiries.at(-1);
+    if (last && last.at === at) last.count++;
+    else expiries.push({ at, count: 1 });
+  }
   const expiry = quotaTimestamp(next?.expiresAt);
   const windows = accountWindows(account).filter((window) => !window.named);
   const state = !count
@@ -61,6 +68,7 @@ function codexResetOffer(account) {
           : "Codex rate-limit windows"
         : null,
     expiresAt: expiry,
+    expiries,
     expiryText: expiry
       ? `${count > 1 ? "next expires" : "expires"} ${untilText(expiry)}`
       : "expiry not reported",
