@@ -701,6 +701,7 @@ test("concurrent first turns are not compared, and a later cold turn logs and re
       promptCacheMisses: {
         totals: {
           provider: string;
+          reason: string;
           isMain: boolean;
           idleGap: string;
           has5mBreakpoint: boolean;
@@ -714,7 +715,12 @@ test("concurrent first turns are not compared, and a later cold turn logs and re
     return {
       cacheRepaidTokens: main.reduce((sum, t) => sum + t.repaidTokens, 0),
       cacheRepaidIdleTokens: main
-        .filter((t) => t.idleGap === "5m_to_60m" && t.has5mBreakpoint)
+        .filter(
+          (t) =>
+            t.idleGap === "5m_to_60m" &&
+            t.has5mBreakpoint &&
+            ["idle_expired", "unknown", "session_unknown"].includes(t.reason)
+        )
         .reduce((sum, t) => sum + t.repaidTokens, 0),
     };
   };

@@ -78,6 +78,7 @@ const codexUsage = (cached: number, output: unknown[] = []) => ({
 const session = { "x-claude-code-session-id": "s1", "session-id": "s1" };
 const subagent = { ...session, "x-claude-code-agent-id": "fake-agent" };
 const auxiliary = { ...session, "x-claude-code-request-class": "auxiliary" };
+const mainClass = { ...session, "x-claude-code-request-class": "main" };
 const compactionClass = {
   ...session,
   "x-claude-code-request-class": "compaction",
@@ -189,6 +190,20 @@ test("a turn that reads far less than the previous turn cached is reported only 
         cacheTtl: "1h",
         idleGap: "5m_to_60m",
         has5mBreakpoint: true,
+        idleRewrite: true,
+      },
+    ],
+    [
+      "a model change after a 5m to 60m gap",
+      [
+        claude(warm, mixedTtl),
+        claude(cold, mixedTtl, { model: "claude-other", minute: 10 }),
+      ],
+      {
+        reason: "model_changed",
+        idleGap: "5m_to_60m",
+        has5mBreakpoint: true,
+        idleRewrite: false,
       },
     ],
     [
@@ -254,6 +269,18 @@ test("a turn that reads far less than the previous turn cached is reported only 
         claude(cold, {}, { model: "claude-other" }),
       ],
       { reason: "model_changed", repaidTokens: 20_000 },
+    ],
+    [
+      "a classified main turn that drops tools and changes model",
+      [
+        claude(warm, {}, { headers: mainClass }),
+        claude(
+          claudeUsage(0, 9000),
+          { tools: [] },
+          { model: "claude-other", headers: mainClass }
+        ),
+      ],
+      { reason: "model_changed", repaidTokens: 9500 },
     ],
     [
       "a new task after a classified compaction",

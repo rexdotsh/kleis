@@ -68,6 +68,7 @@ export type PromptCacheRequest = {
   ttlMs: number;
   has5mBreakpoint: boolean;
   isMain: boolean;
+  isClassifiedMain: boolean;
 };
 
 type ConversationState = {
@@ -99,6 +100,9 @@ export type PromptCacheMiss = {
   reason: PromptCacheMissReason;
   isMain: boolean;
   has5mBreakpoint: boolean;
+  // A main miss after a 5m to 60m gap on a request with a 5m breakpoint,
+  // for a reason a 1h TTL could have prevented.
+  idleRewrite: boolean;
   idleMs: number;
   idleGap: IdleGap;
   ttlMs: number;
@@ -123,6 +127,12 @@ type PromptCacheMissTotal = Pick<
   | "has5mBreakpoint"
   | "repaidTokens"
 > & { misses: number };
+
+const TTL_REASONS = new Set<PromptCacheMissReason>([
+  "idle_expired",
+  "unknown",
+  "session_unknown",
+]);
 
 const idleGap = (idleMs: number): IdleGap =>
   idleMs <= 5 * MINUTE_MS
@@ -234,6 +244,7 @@ export const readPromptCacheRequest = (
         : CLAUDE_TTL_MS
       : codexTtlMs(body),
     has5mBreakpoint: ttls?.has("5m") === true,
+    isClassifiedMain: requestClass === "main",
     isMain:
       (requestClass ?? "main") === "main" &&
       !SUBAGENT_HEADERS.some((name) => input.headers.has(name)),
@@ -289,8 +300,9 @@ export const createPromptCacheTracker = () => {
 
     // Reports a miss when a turn reads under half of what the previous turn
     // of its conversation left cached. A main turn that starts a new
-    // conversation is compared with the session's previous main turn, unless
-    // it carries under half that turn's cached context, as titles do.
+    // conversation is compared with the session's previous main turn. Without
+    // a request class, a turn carrying under half that turn's cached context
+    // is taken for a title or side request and skipped.
     observe(
       turn: PromptCacheTurn,
       input: { providerAccountId: string; usage: TokenUsage; now?: number }
@@ -315,7 +327,9 @@ export const createPromptCacheTracker = () => {
       const continuesSession =
         turn.isMain &&
         contextTokens >= MIN_REUSABLE_TOKENS &&
-        (!previousSession || contextTokens * 2 >= previousSession.cachedTokens);
+        (!previousSession ||
+          turn.isClassifiedMain ||
+          contextTokens * 2 >= previousSession.cachedTokens);
       if (compacted) {
         sessions.delete(turn.session);
       } else if (continuesSession) {
@@ -375,6 +389,11 @@ export const createPromptCacheTracker = () => {
         reason,
         isMain: turn.isMain,
         has5mBreakpoint: turn.has5mBreakpoint,
+        idleRewrite:
+          turn.isMain &&
+          turn.has5mBreakpoint &&
+          idleGap(idleMs) === "5m_to_60m" &&
+          TTL_REASONS.has(reason),
         idleMs,
         idleGap: idleGap(idleMs),
         ttlMs: baseline.ttlMs,

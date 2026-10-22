@@ -235,10 +235,7 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
           usage = {
             ...usage,
             cacheRepaidTokens: miss.repaidTokens,
-            cacheRepaidIdleTokens:
-              miss.idleGap === "5m_to_60m" && miss.has5mBreakpoint
-                ? miss.repaidTokens
-                : 0,
+            cacheRepaidIdleTokens: miss.idleRewrite ? miss.repaidTokens : 0,
           };
         }
       }
