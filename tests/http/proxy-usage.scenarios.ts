@@ -990,30 +990,41 @@ test("Codex streaming HTTP errors without content-type retain bytes and log safe
   }
 });
 
-test("thrown upstream failures reach the global error handler exactly once", async () => {
-  const original = globalThis.fetch;
-  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
-  const log = spyOn(console, "error").mockImplementation(() => undefined);
-  globalThis.fetch = (() =>
-    Promise.reject(
-      new Error("ConnectionRefused: upstream socket")
-    )) as typeof fetch;
-  try {
-    expect((await request()).status).toBe(500);
-    expect(warn).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
-      event: "http_request_failed",
-      provider: "claude",
-      providerAccountId: account.id,
-      errorMessage: "ConnectionRefused: upstream socket",
-    });
-  } finally {
-    warn.mockRestore();
-    log.mockRestore();
-    globalThis.fetch = original;
+test.each(["/anthropic/v1/messages", "/openai/v1/responses"])(
+  "upstream POST resets are not replayed and log their dependency: %s",
+  async (path) => {
+    const original = globalThis.fetch;
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const log = spyOn(console, "error").mockImplementation(() => undefined);
+    const fetch = spyOn(globalThis, "fetch").mockRejectedValue(
+      Object.assign(
+        new TypeError("The socket connection was closed unexpectedly"),
+        {
+          code: "ECONNRESET",
+        }
+      )
+    );
+    try {
+      expect(
+        (await app.request(path, { method: "POST", body: "{}" })).status
+      ).toBe(500);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(warn).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toMatchObject({
+        event: "http_request_failed",
+        dependency: "upstream",
+        errorCode: "ECONNRESET",
+        errorMessage: "The socket connection was closed unexpectedly",
+      });
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+      fetch.mockRestore();
+      globalThis.fetch = original;
+    }
   }
-});
+);
 
 test("100 identical Claude 429s do not flood the logs or change client responses", async () => {
   const originalFetch = globalThis.fetch;

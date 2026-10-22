@@ -45,6 +45,7 @@ import {
 } from "../../usage/token-usage";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
 import { hashLogId } from "../../utils/log";
+import { DependencyError } from "../../utils/dependency-error";
 import { sendWithAuthReplay } from "../auth-replay";
 import { createUpstreamProxyHeaders } from "../proxy-headers";
 import { createUpstreamFailureLogger } from "../upstream-failure-log";
@@ -153,8 +154,10 @@ const fetchProxyUpstream = async (input: {
     return await fetch(input.url, requestInit);
   } catch (error) {
     const timeoutError = headerTimeout?.error();
-    if (timeoutError && !input.signal.aborted) throw timeoutError;
-    throw error;
+    throw new DependencyError(
+      "upstream",
+      timeoutError && !input.signal.aborted ? timeoutError : error
+    );
   } finally {
     headerTimeout?.clear();
   }
@@ -538,7 +541,7 @@ const proxyRequest = async (
         upstreamStatus: attempt.response.status,
       });
       usageRecorder.recordImmediate(500);
-      throw error;
+      throw new DependencyError("upstream", error);
     }
   }
 
