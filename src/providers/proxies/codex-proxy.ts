@@ -89,6 +89,15 @@ export const mergeHeaderValue = (
   headers.set(name, values.join(","));
 };
 
+const hasInstructionContext = (body: JsonObject): boolean =>
+  Boolean(trimString(body.instructions)) ||
+  (Array.isArray(body.input) &&
+    body.input.some(
+      (item) =>
+        isObjectRecord(item) &&
+        (item.role === "system" || item.role === "developer")
+    ));
+
 export const transformCodexBodyJson = (
   bodyJson: unknown,
   promptCacheKey?: string | null
@@ -97,7 +106,7 @@ export const transformCodexBodyJson = (
     return null;
   }
 
-  // ChatGPT rejects output limits and requires instructions and stateless storage.
+  // ChatGPT rejects output limits and requires stateless storage.
   // https://github.com/anomalyco/opencode/blob/d9987ef9c896383eb47b9103f6c93fa772a44b83/packages/core/src/plugin/provider/openai.ts#L311-L317
   const {
     max_completion_tokens: _maxCompletionTokens,
@@ -105,22 +114,12 @@ export const transformCodexBodyJson = (
     ...body
   } = bodyJson;
 
-  const incomingInstructions = trimString(body.instructions);
-  const input = Array.isArray(body.input) ? body.input : [];
-  const firstInput = input[0];
-  const promotedInstructions =
-    !incomingInstructions &&
-    isObjectRecord(firstInput) &&
-    (firstInput.role === "system" || firstInput.role === "developer")
-      ? trimString(firstInput.content)
-      : "";
-  const instructions =
-    incomingInstructions || promotedInstructions || CODEX_DEFAULT_INSTRUCTIONS;
-
   return {
     ...body,
-    ...(promotedInstructions ? { input: input.slice(1) } : {}),
-    instructions,
+    // Requests without any instruction context get the bundled defaults.
+    ...(hasInstructionContext(body)
+      ? {}
+      : { instructions: CODEX_DEFAULT_INSTRUCTIONS }),
     store: false,
     ...(promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
   };

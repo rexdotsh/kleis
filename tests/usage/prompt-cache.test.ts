@@ -348,7 +348,7 @@ test("a turn that reads far less than the previous turn cached is reported only 
       null,
     ],
     [
-      "a sibling Codex agent whose instructions are promoted",
+      "a sibling Codex agent with different developer instructions",
       [
         codex(codexUsage(20_000), promoted("Agent A")),
         codex(codexUsage(0), promoted("Agent B"), { headers: codexSubagent }),

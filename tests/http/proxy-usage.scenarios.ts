@@ -9,6 +9,7 @@ import {
 import { Hono } from "hono";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { installErrorHandler } from "../../src/http/error-handler";
+import CODEX_DEFAULT_INSTRUCTIONS from "../../src/providers/codex-default-instructions.txt";
 import {
   CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER,
   CLAUDE_SYSTEM_IDENTITY,
@@ -513,6 +514,40 @@ test("Codex keeps client request, thread, user-agent and beta headers", async ()
       ).toEqual(entry.expected);
       expect(upstream.get("authorization")).toBe("Bearer fake-codex-token");
       expect(upstream.get("ChatGPT-Account-Id")).toBe("fake-codex-account");
+    }
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("Codex instruction context passes through unchanged and only missing context gets the defaults", async () => {
+  const original = globalThis.fetch;
+  let forwarded: unknown = null;
+  globalThis.fetch = (async (_input, init) => {
+    forwarded = JSON.parse(String(init?.body));
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  const user = { role: "user", content: "hi" };
+  try {
+    for (const [body, instructions] of [
+      [{ input: [{ role: "developer", content: " Base " }, user] }, undefined],
+      [{ input: [user, { role: "system", content: "sys" }] }, undefined],
+      [{ instructions: "  Keep it short  ", input: [user] }, undefined],
+      [{ input: [user] }, CODEX_DEFAULT_INSTRUCTIONS],
+    ] as const) {
+      const response = await app.request("/openai/v1/responses", {
+        method: "POST",
+        body: JSON.stringify({ model: "gpt-fake", ...body }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(forwarded).toEqual({
+        model: "gpt-fake",
+        ...body,
+        ...(instructions ? { instructions } : {}),
+        store: false,
+      });
     }
     await flushProxyUsage();
   } finally {
