@@ -36,14 +36,17 @@ const toHex = (bytes: Uint8Array): string =>
 export const readCodexPromptCacheKey = (body: unknown): string | null =>
   (isObjectRecord(body) && trimString(body.prompt_cache_key)) || null;
 
+export const readCodexSessionHeader = (headers: Headers): string | null =>
+  trimString(headers.get("session_id")) ||
+  trimString(headers.get("session-id")) ||
+  trimString(headers.get("x-session-affinity")) ||
+  null;
+
 export const readCodexSessionId = (
   body: unknown,
   headers: Headers
 ): string | null =>
-  trimString(headers.get("session_id")) ||
-  trimString(headers.get("session-id")) ||
-  trimString(headers.get("x-session-affinity")) ||
-  readCodexPromptCacheKey(body);
+  readCodexSessionHeader(headers) ?? readCodexPromptCacheKey(body);
 
 export const namespaceCodexKey = async (
   accountKey: string,

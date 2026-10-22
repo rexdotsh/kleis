@@ -8,6 +8,14 @@ export type TokenUsage = {
   cacheWriteTokens: number;
   reasoningTokens?: number;
   totalTokens?: number;
+  // The last sampling call alone when a response lists several; the summed
+  // fields above are billing totals, not the prompt one call sent.
+  lastCall?: Pick<
+    TokenUsage,
+    "inputTokens" | "cacheReadTokens" | "cacheWriteTokens"
+  >;
+  // The response shows that a server-side compaction ran.
+  compacted?: true;
 };
 
 export const isTokenUsagePopulated = (
@@ -47,6 +55,34 @@ export const readAnthropicUsageToken = (
   return Math.max(topLevel, iterationsTotal);
 };
 
+export const readAnthropicIterations = (
+  usage: Record<string, unknown>
+): Pick<TokenUsage, "lastCall" | "compacted"> => {
+  if (!Array.isArray(usage.iterations)) {
+    return {};
+  }
+
+  let compacted = false;
+  let lastCall = { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+  for (const iteration of usage.iterations) {
+    if (!isObjectRecord(iteration)) {
+      continue;
+    }
+    if (iteration.type === "compaction") {
+      compacted = true;
+      continue;
+    }
+    lastCall = {
+      inputTokens: toNonNegativeInteger(iteration.input_tokens),
+      cacheReadTokens: toNonNegativeInteger(iteration.cache_read_input_tokens),
+      cacheWriteTokens: toNonNegativeInteger(
+        iteration.cache_creation_input_tokens
+      ),
+    };
+  }
+  return { lastCall, ...(compacted ? { compacted: true } : {}) };
+};
+
 export const readAnthropicUsageObject = (usage: unknown): TokenUsage | null => {
   if (!isObjectRecord(usage)) {
     return null;
@@ -60,6 +96,7 @@ export const readAnthropicUsageObject = (usage: unknown): TokenUsage | null => {
       usage,
       "cache_creation_input_tokens"
     ),
+    ...readAnthropicIterations(usage),
   };
 };
 
@@ -116,7 +153,13 @@ export const readOpenAiResponsesUsageFromResponse = (
     return null;
   }
 
-  return readOpenAiResponsesUsageObject(responseBody.usage);
+  const usage = readOpenAiResponsesUsageObject(responseBody.usage);
+  const compacted =
+    Array.isArray(responseBody.output) &&
+    responseBody.output.some(
+      (item) => isObjectRecord(item) && item.type === "compaction"
+    );
+  return usage && compacted ? { ...usage, compacted } : usage;
 };
 
 export const readOpenAiResponsesUsageFromSseEvent = (

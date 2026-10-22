@@ -1,240 +1,254 @@
 import { expect, spyOn, test } from "bun:test";
 
-import type { ProxyOperation } from "../../src/providers/proxy-endpoints";
 import {
   createPromptCacheTracker,
-  readClaudePromptCacheRequest,
-  readCodexPromptCacheRequest,
+  readPromptCacheRequest,
   type PromptCacheMiss,
 } from "../../src/usage/prompt-cache";
-import type { TokenUsage } from "../../src/usage/token-usage";
-
-const MINUTE_MS = 60_000;
-const startedAt = Date.parse("2026-10-21T12:00:00Z");
-const firstAt = startedAt + 2 * 60 * MINUTE_MS;
-
-const claudeBody = (fields: Record<string, unknown> = {}) => ({
-  model: "claude-fake",
-  system: [{ type: "text", text: "You are a fake assistant." }],
-  tools: [{ name: "read", input_schema: { type: "object" } }],
-  messages: [
-    { role: "user", content: [{ type: "text", text: "first" }] },
-    { role: "assistant", content: "ok" },
-    { role: "user", content: "next" },
-  ],
-  ...fields,
-});
-const codexBody = (fields: Record<string, unknown> = {}) => ({
-  model: "gpt-fake",
-  instructions: "Fake instructions.",
-  tools: [{ type: "function", name: "read" }],
-  input: [
-    { type: "message", role: "user", content: "first" },
-    { type: "function_call", call_id: "c1", name: "read", arguments: "{}" },
-  ],
-  ...fields,
-});
-
-const warm: TokenUsage = {
-  inputTokens: 500,
-  outputTokens: 50,
-  cacheReadTokens: 12_000,
-  cacheWriteTokens: 8000,
-};
-const hit: TokenUsage = {
-  ...warm,
-  cacheReadTokens: 20_000,
-  cacheWriteTokens: 0,
-};
-const cold: TokenUsage = {
-  inputTokens: 20_500,
-  outputTokens: 50,
-  cacheReadTokens: 0,
-  cacheWriteTokens: 0,
-};
+import {
+  readAnthropicUsageFromResponse,
+  readOpenAiResponsesUsageFromResponse,
+} from "../../src/usage/token-usage";
 
 type Turn = {
+  provider: "claude" | "codex";
   body: Record<string, unknown>;
-  operation?: ProxyOperation;
-  account?: string;
+  response: unknown;
+  headers?: Record<string, string>;
   model?: string;
-  afterMs?: number;
-  usage?: TokenUsage;
+  account?: string;
+  minute?: number;
 };
 
-const longTtlSystem = [
-  {
-    type: "text",
-    text: "You are a fake assistant.",
-    cache_control: { type: "ephemeral", ttl: "1h" },
-  },
+const history = [
+  { role: "user", content: "first" },
+  { role: "assistant", content: "ok" },
+  { role: "user", content: "next" },
 ];
-const compactionBlock = {
-  role: "assistant",
-  content: [{ type: "compaction", content: "summary", signature: "sig" }],
+const claude = (
+  response: unknown,
+  fields: Record<string, unknown> = {},
+  turn: Partial<Turn> = {}
+): Turn => ({
+  provider: "claude",
+  body: {
+    system: "You are a fake assistant.",
+    tools: [{ name: "read" }],
+    messages: history,
+    ...fields,
+  },
+  response,
+  ...turn,
+});
+const codex = (
+  response: unknown,
+  fields: Record<string, unknown> = {},
+  turn: Partial<Turn> = {}
+): Turn => ({
+  provider: "codex",
+  body: {
+    instructions: "Fake instructions.",
+    tools: [{ type: "function", name: "read" }],
+    input: [{ type: "function_call", call_id: "c1", name: "read" }],
+    ...fields,
+  },
+  response,
+  ...turn,
+});
+const claudeUsage = (
+  read: number,
+  write: number,
+  fields: Record<string, unknown> = {}
+) => ({
+  usage: {
+    input_tokens: 500,
+    cache_read_input_tokens: read,
+    cache_creation_input_tokens: write,
+    ...fields,
+  },
+});
+const codexUsage = (cached: number, output: unknown[] = []) => ({
+  output,
+  usage: {
+    input_tokens: 20_500,
+    input_tokens_details: { cached_tokens: cached },
+  },
+});
+
+const warm = claudeUsage(12_000, 8000);
+const cold = claudeUsage(0, 20_000);
+const longTtl = [
+  ...history,
+  { role: "user", content: [{ type: "text", cache_control: { ttl: "1h" } }] },
+];
+const compaction = { type: "compaction", input_tokens: 132 };
+const compactionBilled = claudeUsage(0, 20_000, {
+  iterations: [
+    { ...compaction, cache_read_input_tokens: 90_000 },
+    { input_tokens: 500, cache_creation_input_tokens: 20_000 },
+  ],
+});
+const afterCompaction = {
+  usage: { input_tokens: 40_000, cache_read_input_tokens: 20_000 },
 };
 
-test("a large cache drop in a known conversation is reported with its likeliest reason", () => {
-  const rows: {
-    name: string;
-    provider: "claude" | "codex";
-    first?: Turn;
-    second: Turn;
-    expected: Partial<PromptCacheMiss> | null;
-  }[] = [
-    {
-      name: "a turn that reads its prefix",
-      provider: "claude",
-      first: { body: claudeBody() },
-      second: { body: claudeBody(), usage: hit },
-      expected: null,
-    },
-    {
-      name: "changed tools",
-      provider: "claude",
-      first: { body: claudeBody() },
-      second: { body: claudeBody({ tools: [{ name: "write" }] }) },
-      expected: {
-        reason: "prefix_changed",
-        changed: ["tools"],
-        expectedCachedTokens: 20_000,
-        repaidTokens: 20_000,
-      },
-    },
-    {
-      name: "a moved cache breakpoint",
-      provider: "claude",
-      first: {
-        body: claudeBody({
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: "first",
-                  cache_control: { type: "ephemeral" },
-                },
-              ],
-            },
-            { role: "assistant", content: "ok" },
-          ],
-        }),
-      },
-      second: { body: claudeBody() },
-      expected: { reason: "unknown", changed: [] },
-    },
-    {
-      name: "another account",
-      provider: "claude",
-      first: { body: claudeBody() },
-      second: { body: claudeBody(), account: "account-2" },
-      expected: {
-        reason: "account_changed",
-        previousProviderAccountId: "account-1",
-      },
-    },
-    {
-      name: "another model",
-      provider: "codex",
-      first: { body: codexBody() },
-      second: { body: codexBody(), model: "gpt-other" },
-      expected: { reason: "model_changed", previousModel: "fake-model" },
-    },
-    {
-      name: "a gap past the Claude TTL",
-      provider: "claude",
-      first: { body: claudeBody() },
-      second: { body: claudeBody(), afterMs: 6 * MINUTE_MS },
-      expected: { reason: "idle_expired", expiry: "certain" },
-    },
-    {
-      name: "a gap inside a 1h Claude TTL",
-      provider: "claude",
-      first: { body: claudeBody({ system: longTtlSystem }) },
-      second: {
-        body: claudeBody({ system: longTtlSystem }),
-        afterMs: 6 * MINUTE_MS,
-      },
-      expected: { reason: "unknown" },
-    },
-    {
-      name: "a gap past the shortest Codex TTL",
-      provider: "codex",
-      first: { body: codexBody() },
-      second: { body: codexBody(), afterMs: 6 * MINUTE_MS },
-      expected: { reason: "idle_expired", expiry: "possible" },
-    },
-    {
-      name: "changed Codex instructions",
-      provider: "codex",
-      first: { body: codexBody() },
-      second: { body: codexBody({ instructions: "Other instructions." }) },
-      expected: { reason: "prefix_changed", changed: ["instructions"] },
-    },
-    {
-      name: "Claude on-demand compaction",
-      provider: "claude",
-      first: { body: claudeBody({ compaction: { type: "summarize" } }) },
-      second: {
-        body: claudeBody({
-          messages: [compactionBlock, { role: "user", content: "next" }],
-        }),
-      },
-      expected: { reason: "compacted" },
-    },
-    {
-      name: "Codex remote compaction",
-      provider: "codex",
-      first: { body: codexBody(), operation: "compact" },
-      second: {
-        body: codexBody({
-          input: [{ type: "compaction", encrypted_content: "fake" }],
-        }),
-      },
-      expected: { reason: "compacted" },
-    },
-    {
-      name: "a resumed conversation right after start",
-      provider: "codex",
-      second: { body: codexBody(), afterMs: -110 * MINUTE_MS },
-      expected: { reason: "first_request_after_restart" },
-    },
+test("a turn that reads far less than the previous turn cached is reported only with evidence for its reason", () => {
+  const rows: [
+    string,
+    Turn[],
+    Partial<PromptCacheMiss> | null,
+    { concurrent?: boolean }?,
+  ][] = [
+    [
+      "a turn that reads its prefix",
+      [claude(warm), claude(claudeUsage(20_000, 300))],
+      null,
+    ],
+    [
+      "a drop with no evidence",
+      [claude(warm), claude(cold)],
+      { reason: "unknown", expectedCachedTokens: 20_000, repaidTokens: 20_000 },
+    ],
+    [
+      "another account",
+      [claude(warm), claude(cold, {}, { account: "account-2" })],
+      { reason: "account_changed", previousProviderAccountId: "account-1" },
+    ],
+    [
+      "a gap past the Claude TTL",
+      [claude(warm), claude(cold, {}, { minute: 7 })],
+      { reason: "idle_expired", expiry: "certain" },
+    ],
+    [
+      "a gap past the shortest Codex TTL",
+      [codex(codexUsage(20_000)), codex(codexUsage(0), {}, { minute: 7 })],
+      { reason: "idle_expired", expiry: "possible" },
+    ],
+    [
+      "a gap inside a later 1h breakpoint",
+      [
+        claude(warm, { messages: longTtl }),
+        claude(cold, { messages: longTtl }, { minute: 7 }),
+      ],
+      { reason: "unknown" },
+    ],
+    [
+      "appended history",
+      [claude(warm, { messages: history.slice(0, 1) }), claude(cold)],
+      { reason: "unknown" },
+    ],
+    [
+      "a subagent in the parent's session",
+      [claude(warm), claude(cold, { system: "You are a fake subagent." })],
+      null,
+    ],
+    [
+      "a title request in the parent's session",
+      [
+        claude(warm),
+        claude(claudeUsage(0, 4600), { tools: [] }, { model: "claude-small" }),
+      ],
+      null,
+    ],
+    [
+      "conversations sharing only metadata.user_id",
+      [
+        claude(warm, { metadata: { user_id: "fake" } }, { headers: {} }),
+        claude(cold, { metadata: { user_id: "fake" } }, { headers: {} }),
+      ],
+      null,
+    ],
+    [
+      "conversations sharing only a prompt_cache_key",
+      [
+        codex(
+          codexUsage(20_000),
+          { prompt_cache_key: "fake" },
+          { headers: {} }
+        ),
+        codex(codexUsage(0), { prompt_cache_key: "fake" }, { headers: {} }),
+      ],
+      null,
+    ],
+    [
+      "two first turns running at the same time",
+      [claude(cold), claude(cold)],
+      null,
+      { concurrent: true },
+    ],
+    [
+      "a request that asked for compaction without getting one",
+      [claude(warm, { compaction: {} }), claude(cold)],
+      { reason: "unknown" },
+    ],
+    [
+      "a Claude compaction response",
+      [
+        claude(warm),
+        claude(
+          claudeUsage(0, 0, { input_tokens: 0, iterations: [compaction] })
+        ),
+        claude(cold),
+      ],
+      { reason: "compacted" },
+    ],
+    [
+      "a Codex compaction response",
+      [
+        codex(codexUsage(20_000, [{ type: "compaction" }])),
+        codex(codexUsage(0)),
+      ],
+      { reason: "compacted" },
+    ],
+    [
+      "a turn after compaction billed more than the last call cached",
+      [claude(compactionBilled), claude(afterCompaction)],
+      null,
+    ],
+    ["a conversation with no state", [codex(codexUsage(0))], null],
   ];
 
   const info = spyOn(console, "info").mockImplementation(() => undefined);
   try {
-    for (const row of rows) {
-      const tracker = createPromptCacheTracker(startedAt);
-      const observe = (turn: Turn, usage: TokenUsage) => {
-        const request =
-          row.provider === "claude"
-            ? readClaudePromptCacheRequest(
-                "fake-key",
-                turn.body,
-                new Headers({ "x-claude-code-session-id": "session-1" })
-              )
-            : readCodexPromptCacheRequest(
-                "fake-key",
-                turn.body,
-                "session-1",
-                turn.operation
-              );
-        if (!request) throw new Error(`${row.name}: no conversation`);
-        return tracker.observe(request, {
+    for (const [name, turns, expected, options] of rows) {
+      const tracker = createPromptCacheTracker();
+      const begin = (turn: Turn, index: number) => {
+        const headers = new Headers(
+          turn.headers ?? {
+            "x-claude-code-session-id": "s1",
+            "session-id": "s1",
+          }
+        );
+        const request = readPromptCacheRequest(turn.provider, {
           apiKeyId: "fake-key",
-          providerAccountId: turn.account ?? "account-1",
           model: turn.model ?? "fake-model",
+          headers,
+          body: turn.body,
+        });
+        const at = Date.UTC(2026, 9, 21) + (turn.minute ?? index) * 60_000;
+        return request && { turn, at, started: tracker.begin(request, at) };
+      };
+      const finish = (begun: ReturnType<typeof begin>) => {
+        if (!begun) return null;
+        const { turn } = begun;
+        const usage =
+          turn.provider === "claude"
+            ? readAnthropicUsageFromResponse(turn.response)
+            : readOpenAiResponsesUsageFromResponse(turn.response);
+        if (!usage) throw new Error(`${name}: no usage`);
+        return tracker.observe(begun.started, {
+          providerAccountId: turn.account ?? "account-1",
           usage,
-          now: firstAt + (turn.afterMs ?? MINUTE_MS),
+          now: begun.at + 30_000,
         });
       };
-      if (row.first) observe({ ...row.first, afterMs: 0 }, warm);
-      const miss = observe(row.second, row.second.usage ?? cold);
-      expect({ row: row.name, miss }).toMatchObject({
-        row: row.name,
-        miss: row.expected,
-      });
+
+      let miss: PromptCacheMiss | null = null;
+      const begun = options?.concurrent ? turns.map(begin) : null;
+      for (const [index, turn] of turns.entries()) {
+        miss = finish(begun ? begun[index] : begin(turn, index));
+      }
+      expect({ name, miss }).toMatchObject({ name, miss: expected });
     }
   } finally {
     info.mockRestore();

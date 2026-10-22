@@ -9,6 +9,7 @@ import {
 import { requireProxyEndpointRoute } from "../proxy-endpoints";
 import {
   readAnthropicUsageFromResponse,
+  readAnthropicIterations,
   readAnthropicUsageObject,
   readAnthropicUsageToken,
   type TokenUsage,
@@ -273,6 +274,7 @@ const maybeTransformClaudeStreamResponse = (
             "cache_creation_input_tokens",
             streamUsage.cacheWriteTokens
           );
+          Object.assign(streamUsage, readAnthropicIterations(usage));
           return;
         }
 

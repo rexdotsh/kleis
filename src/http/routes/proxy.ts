@@ -34,9 +34,8 @@ import {
 import { rewriteUsageLimitResponse } from "../../providers/proxies/usage-limit-response";
 import {
   createPromptCacheTracker,
-  readClaudePromptCacheRequest,
-  readCodexPromptCacheRequest,
-  type PromptCacheRequest,
+  readPromptCacheRequest,
+  type PromptCacheTurn,
 } from "../../usage/prompt-cache";
 import type { UsageRequestSource } from "../../usage/request-outcome";
 import { createUsageBuffer } from "../../usage/usage-buffer";
@@ -166,7 +165,7 @@ type UsageRecorderInput = {
   apiKeyId: string;
   route: ProxyRoute;
   model: string;
-  promptCache: PromptCacheRequest | null;
+  promptCache: PromptCacheTurn | null;
   getProviderAccountId: () => string;
 };
 
@@ -228,9 +227,7 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
       latestTokenUsage = tokenUsage;
       if (promptCache) {
         promptCacheTracker.observe(promptCache, {
-          apiKeyId: input.apiKeyId,
           providerAccountId: input.getProviderAccountId(),
-          model: input.model,
           usage: tokenUsage,
         });
         promptCache = null;
@@ -296,24 +293,19 @@ const proxyRequest = async (
     requestBody = JSON.stringify(requestBodyJson);
   }
 
+  const promptCacheRequest = readPromptCacheRequest(route.provider, {
+    apiKeyId,
+    model: usageModel,
+    headers: context.req.raw.headers,
+    body: requestBodyJson,
+  });
   const usageRecorder = createUsageRecorder({
     startedAt,
     apiKeyId,
     route,
     model: usageModel,
     promptCache:
-      route.provider === "codex"
-        ? readCodexPromptCacheRequest(
-            apiKeyId,
-            requestBodyJson,
-            readCodexSessionId(requestBodyJson, context.req.raw.headers),
-            route.operation
-          )
-        : readClaudePromptCacheRequest(
-            apiKeyId,
-            requestBodyJson,
-            context.req.raw.headers
-          ),
+      promptCacheRequest && promptCacheTracker.begin(promptCacheRequest),
     getProviderAccountId: () => providerAccountId,
   });
 
