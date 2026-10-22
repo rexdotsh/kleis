@@ -21,16 +21,45 @@ export const isTokenUsagePopulated = (
       usage.cacheWriteTokens > 0)
   );
 
+// The top-level fields cover only the message iterations; usage.iterations
+// also lists server-side compaction calls, so its sum is the billed total.
+// https://platform.claude.com/docs/en/build-with-claude/compaction-threshold#understanding-usage
+export const readAnthropicUsageToken = (
+  usage: Record<string, unknown>,
+  field: string,
+  fallback = 0
+): number => {
+  const value = usage[field];
+  const topLevel =
+    value === null || value === undefined
+      ? fallback
+      : toNonNegativeInteger(value);
+  if (!Array.isArray(usage.iterations)) {
+    return topLevel;
+  }
+
+  let iterationsTotal = 0;
+  for (const iteration of usage.iterations) {
+    if (isObjectRecord(iteration)) {
+      iterationsTotal += toNonNegativeInteger(iteration[field]);
+    }
+  }
+  return Math.max(topLevel, iterationsTotal);
+};
+
 export const readAnthropicUsageObject = (usage: unknown): TokenUsage | null => {
   if (!isObjectRecord(usage)) {
     return null;
   }
 
   return {
-    inputTokens: toNonNegativeInteger(usage.input_tokens),
-    outputTokens: toNonNegativeInteger(usage.output_tokens),
-    cacheReadTokens: toNonNegativeInteger(usage.cache_read_input_tokens),
-    cacheWriteTokens: toNonNegativeInteger(usage.cache_creation_input_tokens),
+    inputTokens: readAnthropicUsageToken(usage, "input_tokens"),
+    outputTokens: readAnthropicUsageToken(usage, "output_tokens"),
+    cacheReadTokens: readAnthropicUsageToken(usage, "cache_read_input_tokens"),
+    cacheWriteTokens: readAnthropicUsageToken(
+      usage,
+      "cache_creation_input_tokens"
+    ),
   };
 };
 
