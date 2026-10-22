@@ -13,11 +13,15 @@ import {
   type ClaudeResetSummary,
   summarizeClaudeResets,
 } from "../../providers/account-tracking/claude-resets";
-import { consumeCodexResetCredit } from "../../providers/account-tracking/codex";
+import {
+  type CodexUsageStatus,
+  consumeCodexResetCredit,
+} from "../../providers/account-tracking/codex";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
 import { errorLogFields, logWarn } from "../../utils/log";
 import {
   claudeResetLimitUsage,
+  getCachedProviderAccountQuota,
   invalidateResetCredits,
   isTrackingAccount,
   peekClaudeResetCredits,
@@ -29,8 +33,8 @@ import {
   type TrackingAccount,
 } from "./provider-account-tracking";
 
-// Claude resets are only spent against a read this recent.
-const CLAUDE_OFFER_MAX_AGE_MS = 10 * 60_000;
+// Resets are only offered, or refused, on reads this recent.
+const READ_MAX_AGE_MS = 10 * 60_000;
 
 export class ResetSpendConflict extends Error {
   constructor(message: string) {
@@ -50,6 +54,8 @@ const conflictMessages = {
   in_progress: "A reset is already in progress for this account.",
   stale: "Waiting for the next limits check before another reset can be used.",
   not_current: "That reset is no longer available.",
+  nothing_to_reset:
+    "Nothing to reset yet: Codex only uses a credit once you hit a limit. No credit was spent.",
 } as const;
 
 const conflict = (reason: keyof typeof conflictMessages) =>
@@ -122,6 +128,45 @@ const loadAccount = async (
     : null;
 };
 
+type CodexLimit = Pick<
+  CodexUsageStatus,
+  "allowed" | "limitReached" | "primaryWindow" | "secondaryWindow"
+>;
+
+// Codex spends a credit only when a limit is hit and answers
+// "nothing_to_reset" otherwise. True only when recent limits show every limit
+// clear; anything unknown leaves the decision to Codex.
+const codexHasNothingToReset = (
+  account: TrackingAccount,
+  now = Date.now()
+): boolean => {
+  const quota = getCachedProviderAccountQuota(account);
+  const status =
+    quota?.data.provider === "codex" ? quota.data.status : undefined;
+  if (!status || (quota?.fetchedAt ?? 0) < now - READ_MAX_AGE_MS) return false;
+  const clear = (limit: Partial<CodexLimit>) =>
+    limit.allowed !== false &&
+    limit.limitReached === false &&
+    [limit.primaryWindow, limit.secondaryWindow].every(
+      (window) =>
+        !window ||
+        (window.usedPercent !== null &&
+          (window.usedPercent < 100 ||
+            (window.resetAt !== null && window.resetAt * 1000 <= now)))
+    );
+  return (
+    status.rateLimitReachedType === null &&
+    [status, ...status.additionalRateLimits].every(clear)
+  );
+};
+
+export const describeCodexResets = (
+  account: ProviderAccountRecord
+): { unavailable: "requires_limit" | null } | null =>
+  isTrackingAccount(account) && account.provider === "codex"
+    ? { unavailable: codexHasNothingToReset(account) ? "requires_limit" : null }
+    : null;
+
 export const redeemCodexResetCredit = async (
   database: Database,
   providerAccountId: string,
@@ -138,6 +183,7 @@ export const redeemCodexResetCredit = async (
   ) {
     throw conflict("not_current");
   }
+  if (codexHasNothingToReset(account)) throw conflict("nothing_to_reset");
   const result = await spendReset(
     database,
     account,
@@ -172,7 +218,7 @@ const claudeSummary = (
 ): ClaudeResetSummary | "checking" | null => {
   const credits = peekClaudeResetCredits(account);
   if (!credits) return null;
-  if (credits.observedAt < now - CLAUDE_OFFER_MAX_AGE_MS) return "checking";
+  if (credits.observedAt < now - READ_MAX_AGE_MS) return "checking";
   return summarizeClaudeResets(
     credits.status,
     claudeResetLimitUsage(account, credits, now),

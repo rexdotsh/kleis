@@ -437,6 +437,52 @@ describe.each(Object.keys(providers) as Provider[])(
       }
     );
 
+    const codexUsage = (
+      fiveHourPercent: number,
+      limitReached: boolean | null = false
+    ) => ({
+      rate_limit: {
+        allowed: true,
+        limit_reached: limitReached,
+        primary_window: {
+          used_percent: fiveHourPercent,
+          limit_window_seconds: 18_000,
+          reset_after_seconds: 3600,
+        },
+        secondary_window: {
+          used_percent: 12,
+          limit_window_seconds: 604_800,
+          reset_after_seconds: 86_400,
+        },
+      },
+      rate_limit_reached_type: null,
+    });
+
+    test.skipIf(name !== "codex")(
+      "a credit isn't sent while fresh limits show nothing to reset",
+      async () => {
+        usage = () => Response.json(codexUsage(6));
+        const account = await addAccount();
+        const refused = await failure(spend(account));
+        expect(refused).toBeInstanceOf(ResetSpendConflict);
+        expect(refused.message).toContain("No credit was spent");
+        expect(sent).toHaveLength(0);
+      }
+    );
+
+    test.skipIf(name !== "codex").each([
+      ["a window is used up", () => codexUsage(100), 0],
+      ["Codex reports a limit reached", () => codexUsage(40, true), 0],
+      ["whether a limit is reached is unknown", () => codexUsage(40, null), 0],
+      ["the limits are too old to tell", () => codexUsage(6), 11 * MINUTE],
+    ])("a credit is sent when %s", async (_kind, limits, age) => {
+      usage = () => Response.json(limits());
+      const account = await addAccount();
+      at(clock + age);
+      await spend(account);
+      expect(sent).toHaveLength(1);
+    });
+
     test("a pick missing from the latest discovery data sends nothing", async () => {
       const account = await addAccount();
       const stale = await failure(spend(account, "fake_spent_elsewhere"));
