@@ -1298,7 +1298,7 @@ button.row {
   grid-template-columns: minmax(0, 1fr) 88px 56px 72px 64px;
 }
 .t-keys {
-  grid-template-columns: minmax(0, 1fr) 88px 64px;
+  grid-template-columns: minmax(0, 1fr) 88px 64px 64px;
 }
 .model {
   padding-left: 16px;
@@ -1784,9 +1784,11 @@ input[type="checkbox"].toggle:checked::after {
 .usage-grid .thead {
   height: 28px;
 }
-.t-model,
-.t-bykey {
+.t-model {
   grid-template-columns: minmax(0, 1fr) 96px 56px 56px 64px;
+}
+.t-bykey {
+  grid-template-columns: minmax(0, 1fr) 96px 56px 56px 56px 64px;
 }
 .usage-slot:empty {
   display: none;
@@ -2243,6 +2245,9 @@ input[type="checkbox"].toggle:checked::after {
   .attn .l2 {
     grid-column: 2 / -1;
     padding-left: 0;
+  }
+  .t-keys {
+    grid-template-columns: minmax(0, 1fr) 88px 64px;
   }
   .detail {
     padding: 8px 16px 16px;

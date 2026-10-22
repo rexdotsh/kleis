@@ -69,6 +69,12 @@ function cacheReadRate(inputTotalTokens, cacheReadTokens) {
     : null;
 }
 
+function cachedRateText(rawUsage) {
+  const usage = normalizeUsage(rawUsage);
+  const rate = cacheReadRate(usage.inputTotalTokens, usage.cacheReadTokens);
+  return rate === null ? "\u2014" : `${rate}%`;
+}
+
 function normalizeUsage(rawUsage) {
   const usage = rawUsage || {};
   const metrics = {};
@@ -237,6 +243,15 @@ function usageFact(rawUsage, windowMs) {
           `last request ${escapeHtml(relativeTime(usage.lastRequestAt))}`,
     ]
   );
+}
+
+function tokensFact(rawUsage) {
+  const usage = normalizeUsage(rawUsage);
+  const cached = cacheReadRate(usage.inputTotalTokens, usage.cacheReadTokens);
+  return fact("Tokens", formatCompact(usage.totalTokens), [
+    cached === null ? "" : `${cached}% cached input`,
+    usage.outputTokens ? `${formatCompact(usage.outputTokens)} output` : "",
+  ]);
 }
 
 function formRow(label, description, control, forId = "") {
@@ -749,6 +764,7 @@ export {
   formatCount,
   formatCompact,
   cacheReadRate,
+  cachedRateText,
   normalizeUsage,
   formatMetadataForInput,
   shortId,
@@ -772,6 +788,7 @@ export {
   requestsCellHtml,
   fact,
   usageFact,
+  tokensFact,
   formRow,
   formFoot,
   renderPreservingForm,

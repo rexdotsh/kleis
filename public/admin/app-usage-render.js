@@ -13,6 +13,7 @@ import {
   accountIssues,
   accountName,
   cacheReadRate,
+  cachedRateText,
   formatCompact,
   formatCount,
   icon,
@@ -44,7 +45,7 @@ function usagePanelHtml({ title, columns, head, body }, message, loading) {
   return `<div class="usage-panel"><div class="list usage-table"><div class="row thead ${columns}"><span>${title}${status}</span>${head}</div>${body || placeholder}</div></div>`;
 }
 
-const DASHBOARD_LOADING_HTML = `<div class="kpis">${["Requests", "Success", "Tokens", "Cached input", "Avg latency"].map((label) => `<div class="kpi"><div class="kpi-label">${label}</div><div class="val"><span class="bone"></span></div><div class="sub">&nbsp;</div></div>`).join("")}</div><div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><span class="bone chart-bone"></span></div></div><div class="tables">${["By provider", "Top keys"].map((label) => `<div><div class="sh"><h2>${label}</h2></div><div class="list dashboard-table">${SKELETON_HTML}</div></div>`).join("")}</div>`;
+const DASHBOARD_LOADING_HTML = `<div class="kpis">${["Requests", "Success", "Tokens", "Cache hit rate", "Avg latency"].map((label) => `<div class="kpi"><div class="kpi-label">${label}</div><div class="val"><span class="bone"></span></div><div class="sub">&nbsp;</div></div>`).join("")}</div><div class="chart"><div class="sh"><h2>Requests</h2></div><div class="plot"><span class="bone chart-bone"></span></div></div><div class="tables">${["By provider", "Top keys"].map((label) => `<div><div class="sh"><h2>${label}</h2></div><div class="list dashboard-table">${SKELETON_HTML}</div></div>`).join("")}</div>`;
 
 function usageSlotHtml(kind, id) {
   const windowMs =
@@ -78,11 +79,7 @@ function modelListHtml(rows, message, loading) {
     .sort((a, b) => (b.requestCount ?? 0) - (a.requestCount ?? 0))
     .map((row) => {
       const usage = normalizeUsage(row);
-      const cached = cacheReadRate(
-        usage.inputTotalTokens,
-        usage.cacheReadTokens
-      );
-      return `<div class="row t-model"><span class="name"><span class="mono ellipsis">${escapeHtml(row.model?.trim() || "(unknown)")}</span><span class="tag d">${escapeHtml(`${providerName(row.provider)} \u00b7 ${row.endpoint}`)}</span></span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cached === null ? "\u2014" : `${cached}%`}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
+      return `<div class="row t-model"><span class="name"><span class="mono ellipsis">${escapeHtml(row.model?.trim() || "(unknown)")}</span><span class="tag d">${escapeHtml(`${providerName(row.provider)} \u00b7 ${row.endpoint}`)}</span></span><span class="num">${requestsCellHtml(row)}</span><span class="num muted">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cachedRateText(usage)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
     })
     .join("");
   return usagePanelHtml(
@@ -131,14 +128,14 @@ function peersListHtml(kind, data, message, loading) {
       const name = byKey
         ? `<span class="ellipsis">${apiKeyDisplayHtml(id)}</span>`
         : `<span class="name"><span class="ellipsis">${accountDisplayHtml(id)}</span><span class="tag d">${escapeHtml(providerName(row.provider))}</span></span>`;
-      return `<div class="row t-bykey"${link}>${name}<span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
+      return `<div class="row t-bykey"${link}>${name}<span class="num">${requestsCellHtml(row)}</span><span class="num muted">${share}</span><span class="num muted d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cachedRateText(usage)}</span><span class="num muted d">${formatCount(usage.avgLatencyMs)} ms</span></div>`;
     })
     .join("");
   return usagePanelHtml(
     {
       title: byKey ? "Key" : "Account",
       columns: "t-bykey",
-      head: '<span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Latency</span>',
+      head: '<span class="num">Requests</span><span class="num">Share</span><span class="num d">Tokens</span><span class="num d">Cached</span><span class="num d">Latency</span>',
       body,
     },
     message,
@@ -252,7 +249,7 @@ function kpisHtml(metrics, previous, windowLabel) {
       deltaText(metrics.totalTokens, previous.totalTokens),
     ],
     [
-      "Cached input",
+      "Cache hit rate",
       cached === null ? "\u2014" : `${cached}%`,
       cached === null ? "" : "of input tokens",
     ],
@@ -290,11 +287,6 @@ function providerTableHtml(data, metrics) {
     group.set(name, entry);
     models.set(row.provider, group);
   }
-  const cachedText = (usage) => {
-    const rate = cacheReadRate(usage.inputTotalTokens, usage.cacheReadTokens);
-    return rate === null ? "\u2014" : `${rate}%`;
-  };
-
   const rows = providers
     .map((row) => {
       const usage = normalizeUsage(row);
@@ -305,10 +297,10 @@ function providerTableHtml(data, metrics) {
         .sort((a, b) => b[1].requestCount - a[1].requestCount)
         .map(
           ([name, entry]) =>
-            `<div class="row t-prov"><span class="model ellipsis">${escapeHtml(name)}</span><span class="num muted">${formatCount(entry.requestCount)}</span><span></span><span class="num muted d">${formatCompact(entry.totalTokens)}</span><span class="num muted d">${cachedText(entry)}</span></div>`
+            `<div class="row t-prov"><span class="model ellipsis">${escapeHtml(name)}</span><span class="num muted">${formatCount(entry.requestCount)}</span><span></span><span class="num muted d">${formatCompact(entry.totalTokens)}</span><span class="num muted d">${cachedRateText(entry)}</span></div>`
         )
         .join("");
-      return `<div class="row t-prov"><span>${escapeHtml(providerName(row.provider))}</span><span class="num">${formatCount(usage.requestCount)}</span><span class="num muted">${share}%</span><span class="num d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cachedText(usage)}</span></div>${modelRows}`;
+      return `<div class="row t-prov"><span>${escapeHtml(providerName(row.provider))}</span><span class="num">${formatCount(usage.requestCount)}</span><span class="num muted">${share}%</span><span class="num d">${formatCompact(usage.totalTokens)}</span><span class="num muted d">${cachedRateText(usage)}</span></div>${modelRows}`;
     })
     .join("");
 
@@ -322,10 +314,10 @@ function topKeysHtml(data, metrics) {
       const share = metrics.requestCount
         ? ((row.requestCount / metrics.requestCount) * 100).toFixed(1)
         : "0.0";
-      return `<div class="row t-keys" data-key-id="${escapeHtml(row.apiKeyId)}" tabindex="0" role="button"><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${formatCount(row.requestCount)}</span><span class="num muted">${share}%</span></div>`;
+      return `<div class="row t-keys" data-key-id="${escapeHtml(row.apiKeyId)}" tabindex="0" role="button"><span class="ellipsis">${apiKeyDisplayHtml(row.apiKeyId)}</span><span class="num">${formatCount(row.requestCount)}</span><span class="num muted">${share}%</span><span class="num muted d">${cachedRateText(row)}</span></div>`;
     })
     .join("");
-  return `<div><div class="sh"><h2>Top keys</h2><div class="right"><button class="link small" type="button" data-action="go-keys">View all keys</button></div></div><div class="list dashboard-table" tabindex="0" aria-label="Top keys"><div class="row thead t-keys"><span>Key</span><span class="num">Requests</span><span class="num">Share</span></div>${body || '<p class="list-note muted">No usage in this window.</p>'}</div></div>`;
+  return `<div><div class="sh"><h2>Top keys</h2><div class="right"><button class="link small" type="button" data-action="go-keys">View all keys</button></div></div><div class="list dashboard-table" tabindex="0" aria-label="Top keys"><div class="row thead t-keys"><span>Key</span><span class="num">Requests</span><span class="num">Share</span><span class="num d">Cached</span></div>${body || '<p class="list-note muted">No usage in this window.</p>'}</div></div>`;
 }
 
 function renderDashboard(rawData) {
