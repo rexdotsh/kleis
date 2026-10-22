@@ -34,6 +34,9 @@ const sessionState = () => ({
   keyFilter: "",
   accountFilter: "",
   expandedAccountId: null,
+  // Accounts waiting for the limits read after a reset: the server time the
+  // reset was answered, and whether the wait timed out.
+  limitsUpdating: new Map(),
   pendingExpandedAccountId: null,
   showAllReauthorize: false,
   expandedKeyId: null,

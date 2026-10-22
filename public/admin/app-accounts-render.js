@@ -134,6 +134,11 @@ function limitSummaryText(account, windows) {
     .join(" \u00b7 ");
 }
 
+const UPDATING_HTML =
+  '<span class="updating" role="status">Updating limits\u2026</span>';
+const UNCONFIRMED_TAG =
+  '<span class="tag" title="The limits read after the reset hasn\'t arrived yet">Couldn\'t confirm yet</span>';
+
 function accountRowHtml(account, serving, grouped = false) {
   const name = accountName(account);
   const open = state.expandedAccountId === account.id;
@@ -152,11 +157,19 @@ function accountRowHtml(account, serving, grouped = false) {
   const resetSeverity = reset ? limitSeverity(reset.percent) : "";
   const countdown = resetCountdown(reset?.resetsAt);
   const usage = accountUsageForId(account.id);
-  const phoneParts = [
-    tokenNote && `<span class="err">${tokenNote}</span>`,
+  const wait = state.limitsUpdating.get(account.id);
+  const updating = wait && !wait.timedOut;
+  const limitParts = [
     limitSummaryText(account, windows),
     reset &&
       `<span class="${resetSeverity}">${escapeHtml(reset.label)} resets ${escapeHtml(countdown)}</span>`,
+  ].filter(Boolean);
+  const phoneParts = [
+    tokenNote && `<span class="err">${tokenNote}</span>`,
+    updating && UPDATING_HTML,
+    updating
+      ? `<span class="stale">${limitParts.join(" \u00b7 ")}</span>`
+      : limitParts.join(" \u00b7 "),
   ].filter(Boolean);
   const cursor = state.cursorAccountId === account.id ? " cursor" : "";
   const credits = resetOfferFor(account);
@@ -168,9 +181,9 @@ function accountRowHtml(account, serving, grouped = false) {
       : "";
 
   return `<div class="row t-acc${open ? " open" : ""}${serving ? "" : " dim"}${cursor}" data-account-id="${account.id}" data-flip="account:${account.id}" tabindex="0" role="button" aria-expanded="${open}">
-    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag tag-primary">Primary</span>' : ""}${isFreeTierAccount(account) ? `<span class="tag">${grouped ? escapeHtml(providerName(account.provider)) : "Free"}</span>` : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}${creditHint}${tokenNote ? `<span class="token-note err small d">${tokenNote}</span>` : ""}</span>
-    <span class="meters d">${limitMetersHtml(account, windows)}</span>
-    <span class="num d reset ${resetSeverity || "muted"}">${reset ? `<small>${escapeHtml(reset.label)}</small> ` : ""}${escapeHtml(countdown)}</span>
+    <span class="name"><span class="dot ${dot}"></span><span class="ellipsis">${escapeHtml(name)}</span>${account.isPrimary ? '<span class="tag tag-primary">Primary</span>' : ""}${isFreeTierAccount(account) ? `<span class="tag">${grouped ? escapeHtml(providerName(account.provider)) : "Free"}</span>` : ""}${account.enabled === false ? '<span class="tag">Disabled</span>' : ""}${creditHint}${wait?.timedOut ? UNCONFIRMED_TAG : ""}${tokenNote ? `<span class="token-note err small d">${tokenNote}</span>` : ""}</span>
+    <span class="meters d${updating ? " stale" : ""}">${limitMetersHtml(account, windows)}</span>
+    ${updating ? `<span class="num d reset muted">${UPDATING_HTML}</span>` : `<span class="num d reset ${resetSeverity || "muted"}">${reset ? `<small>${escapeHtml(reset.label)}</small> ` : ""}${escapeHtml(countdown)}</span>`}
     <span class="num">${requestsCellHtml(usage)}</span>
     <button class="more" type="button" data-menu="account" data-account-id="${account.id}" aria-label="Actions for ${escapeHtml(name)}" aria-haspopup="menu" aria-expanded="false">${icon("more")}</button>
     <span class="l2">${phoneParts.join(" \u00b7 ")}</span>
@@ -189,21 +202,21 @@ function resetText(window) {
 function limitFacts(account) {
   const quota = account.quota;
   const windows = accountWindows(account);
-  const reset = resetCreditsDetail(account, windows);
+  const wait = state.limitsUpdating.get(account.id);
+  const stale = wait && !wait.timedOut ? " stale" : "";
   if (!quota)
     return [
       fact("Rate limits", '<span class="muted">\u2014</span>', [
         "waiting for the first sync",
       ]),
-      reset?.fallback,
     ];
   const facts = windows.map((window) => {
     const severity = limitSeverity(window.percent);
     return fact(
       escapeHtml(window.named ? window.label : `${window.label} window`),
-      `<span class="${severity}">${Math.round(window.percent)}%</span>`,
-      [escapeHtml(resetText(window)), reset?.window === window && reset.line],
-      `<span class="bar${severity ? ` ${severity}` : ""}"><i style="width:${window.percent}%"></i></span>`
+      `<span class="${severity}${stale}">${Math.round(window.percent)}%</span>`,
+      [escapeHtml(resetText(window))],
+      `<span class="bar${severity ? ` ${severity}` : ""}${stale}"><i style="width:${window.percent}%"></i></span>`
     );
   });
   if (isRateLimitedWithData(quota))
@@ -224,7 +237,6 @@ function limitFacts(account) {
     );
   else if (!facts.length)
     facts.push(fact("Rate limits", '<span class="muted">None reported</span>'));
-  if (reset?.fallback) facts.push(reset.fallback);
   return facts;
 }
 
@@ -366,9 +378,11 @@ function accountDetailHtml(account) {
     account.provider === "codex" || account.provider === "claude";
   const button = (label, action, shortcut, cls = "btn btn-ghost btn-sm") =>
     `<button class="${cls}" data-action="${action}" data-account-id="${account.id}" ${actionMutationAttributes(action, account.id)} type="button">${label}${kbd(shortcut)}</button>`;
-  const synced = account.quota?.fetchedAt
-    ? `<span>${limitsSourceText(account.quota)}</span>`
+  const wait = state.limitsUpdating.get(account.id);
+  let synced = account.quota?.fetchedAt
+    ? `<span>${limitsSourceText(account.quota)}${wait?.timedOut ? " \u00b7 couldn't confirm the new limits yet" : ""}</span>`
     : "";
+  if (wait && !wait.timedOut) synced = UPDATING_HTML;
   const entering =
     state.enteringDetail === `account:${account.id}` ? " entering" : "";
   return `<div class="detail${entering}" data-detail-for="${account.id}" data-flip="detail:${account.id}">
@@ -379,6 +393,7 @@ function accountDetailHtml(account) {
       tokensFact(accountUsageForId(account.id)),
       accountFact(account),
     ].join("")}</div>
+    ${resetCreditsDetail(account)}
     ${hasDailyTokens(account.id) ? `<div class="daily-tokens" data-daily-for="${account.id}">${dailyTokensBodyHtml(account.id)}</div>` : ""}
     ${hasTraffic(accountUsageForId(account.id)) ? `<div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>` : ""}
     <div class="actions">

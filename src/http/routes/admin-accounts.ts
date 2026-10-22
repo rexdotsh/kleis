@@ -351,8 +351,9 @@ export const adminAccountsRoutes = new Hono()
           provider === "codex"
             ? await redeemCodexResetCredit(db, id, resetId)
             : await claimClaudeReset(db, id, resetId);
+        // Limits read after this time show the spend's effect.
         return result
-          ? context.json({ result })
+          ? context.json({ result, respondedAt: Date.now() })
           : context.json(accountNotFoundBody, 404);
       } catch (error) {
         if (error instanceof ResetSpendConflict) {

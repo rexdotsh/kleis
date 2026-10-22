@@ -33,6 +33,38 @@ import {
   switchToTab,
 } from "./app-usage.js";
 
+const RESET_CONFIRM_RELOAD_MS = 6000;
+const RESET_CONFIRM_TIMEOUT_MS = 20_000;
+
+// Ends the wait once a limits read newer than the one shown at the reset
+// arrives.
+function settleLimitsUpdating() {
+  for (const [id, wait] of state.limitsUpdating) {
+    const fetchedAt = state.accountsById.get(id)?.quota?.fetchedAt;
+    if (!state.accountsById.has(id) || (fetchedAt ?? 0) > wait.after)
+      state.limitsUpdating.delete(id);
+  }
+}
+
+// Marks the account's limits as updating until a read taken after
+// `respondedAt` (server time) arrives, re-reading the accounts twice and
+// giving up quietly at the second read.
+function awaitLimitsAfterReset(accountId, respondedAt) {
+  const wait = { after: respondedAt, timedOut: false };
+  state.limitsUpdating.set(accountId, wait);
+  renderAccounts();
+  const reload = () => {
+    loadAccounts().catch(() => undefined);
+  };
+  setTimeout(reload, RESET_CONFIRM_RELOAD_MS);
+  setTimeout(() => {
+    if (state.limitsUpdating.get(accountId) !== wait) return;
+    wait.timedOut = true;
+    renderAccounts();
+    reload();
+  }, RESET_CONFIRM_TIMEOUT_MS);
+}
+
 async function loadAccounts() {
   const requestSeq = ++state.accountsRequestSeq;
   invalidateUsageDetails("account");
@@ -61,8 +93,12 @@ async function loadAccounts() {
       claudeResets: account.quota
         ? account.claudeResets
         : state.accountsById.get(account.id)?.claudeResets,
+      codexResets: account.quota
+        ? account.codexResets
+        : state.accountsById.get(account.id)?.codexResets,
     }));
     state.accountsById = usageMapFromList(state.accounts, "id");
+    settleLimitsUpdating();
     pruneUsageDetails("account", state.accountsById);
     pruneUsageDetails("daily", state.accountsById);
     state.providerStatuses = accountsResult.value.providers || [];
@@ -118,7 +154,7 @@ async function loadMissingQuotas(requestSeq, missingQuotas) {
   );
   if (!missing) return;
   try {
-    const { quotas, profiles, claudeResets } = await api(
+    const { quotas, profiles, claudeResets, codexResets } = await api(
       "/admin/accounts/quotas"
     );
     if (requestSeq !== state.accountsRequestSeq) return;
@@ -138,7 +174,12 @@ async function loadMissingQuotas(requestSeq, missingQuotas) {
         account.claudeResets = claudeResets[account.id];
         changed = true;
       }
+      if (codexResets && account.id in codexResets) {
+        account.codexResets = codexResets[account.id];
+        changed = true;
+      }
     }
+    settleLimitsUpdating();
     if (changed) {
       renderAccounts();
       if (state.keysLoaded) renderKeys();
@@ -289,16 +330,19 @@ async function redeemResetCreditAction(request, accountId) {
   if (!confirmed) return;
 
   let feedback;
+  let respondedAt = Date.now();
   try {
-    const { result } = await request(
+    const response = await request(
       `/admin/accounts/${accountId}/tracking/${account.provider}/reset-credits/consume`,
       { method: "POST", body: JSON.stringify({ resetId: offer.resetId }) }
     );
-    feedback = resetProviders[account.provider].resultToast(result);
+    feedback = resetProviders[account.provider].resultToast(response.result);
+    respondedAt = response.respondedAt ?? respondedAt;
   } catch (error) {
     feedback = { message: error.message, type: "error" };
   }
   if (!request.isCurrent()) return;
+  if (feedback.changed) awaitLimitsAfterReset(accountId, respondedAt);
   const refreshed = await loadAccounts();
   if (!request.isCurrent()) return;
   const { message, type } = resetFeedback(
