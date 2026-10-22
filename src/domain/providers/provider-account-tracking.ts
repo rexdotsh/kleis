@@ -65,6 +65,8 @@ export type TrackingAccount = ProviderAccountRecord & {
 type CodexTrackingData = {
   provider: "codex";
   status?: Awaited<ReturnType<typeof fetchCodexUsageStatus>>;
+  // When the usage endpoint last reported every limit; traffic reports some.
+  statusObservedAt?: number;
   // When the credits were read; unknown reads count as older than any spend.
   resetCredits?: CodexResetCredits & { observedAt?: number };
   profile?: Awaited<ReturnType<typeof fetchCodexUsageProfile>>;
@@ -250,8 +252,10 @@ const fetchCodexData = async (account: TrackingAccount) => {
       errors.push(result.reason);
     }
   }
-  if (data.status)
+  if (data.status) {
     data.status = normalizeCodexPollResets(data.status, observedAt);
+    data.statusObservedAt = observedAt;
+  }
   if (data.resetCredits) data.resetCredits.observedAt = observedAt;
   return { data, errors };
 };

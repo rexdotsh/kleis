@@ -483,6 +483,26 @@ describe.each(Object.keys(providers) as Provider[])(
       expect(sent).toHaveLength(1);
     });
 
+    test.skipIf(name !== "codex")(
+      "traffic doesn't make old limits count as fresh",
+      async () => {
+        usage = () => Response.json(codexUsage(6));
+        const account = await addAccount();
+        at(clock + 11 * MINUTE);
+        recordProviderAccountLiveLimits(
+          account,
+          readCodexLiveLimits(
+            new Headers({
+              "x-codex-primary-used-percent": "6",
+              "x-codex-primary-window-minutes": "300",
+            })
+          )
+        );
+        await spend(account);
+        expect(sent).toHaveLength(1);
+      }
+    );
+
     test("a pick missing from the latest discovery data sends nothing", async () => {
       const account = await addAccount();
       const stale = await failure(spend(account, "fake_spent_elsewhere"));

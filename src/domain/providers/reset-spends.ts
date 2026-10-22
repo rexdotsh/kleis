@@ -134,16 +134,16 @@ type CodexLimit = Pick<
 >;
 
 // Codex spends a credit only when a limit is hit and answers
-// "nothing_to_reset" otherwise. True only when recent limits show every limit
-// clear; anything unknown leaves the decision to Codex.
+// "nothing_to_reset" otherwise. True only when a recent full read of the
+// limits shows every limit clear; anything unknown leaves it to Codex.
 const codexHasNothingToReset = (
   account: TrackingAccount,
   now = Date.now()
 ): boolean => {
-  const quota = getCachedProviderAccountQuota(account);
-  const status =
-    quota?.data.provider === "codex" ? quota.data.status : undefined;
-  if (!status || (quota?.fetchedAt ?? 0) < now - READ_MAX_AGE_MS) return false;
+  const data = getCachedProviderAccountQuota(account)?.data;
+  if (data?.provider !== "codex" || !data.status) return false;
+  const { status } = data;
+  if ((data.statusObservedAt ?? 0) < now - READ_MAX_AGE_MS) return false;
   const clear = (limit: Partial<CodexLimit>) =>
     limit.allowed !== false &&
     limit.limitReached === false &&
