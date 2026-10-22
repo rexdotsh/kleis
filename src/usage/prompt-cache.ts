@@ -66,8 +66,8 @@ export type PromptCacheRequest = {
   system: bigint;
   tools: bigint;
   ttlMs: number;
-  isSubagent: boolean;
-  isMainTurn: boolean;
+  has5mBreakpoint: boolean;
+  isMain: boolean;
 };
 
 type ConversationState = {
@@ -97,7 +97,8 @@ export type PromptCacheMiss = {
   previousProviderAccountId: string;
   model: string;
   reason: PromptCacheMissReason;
-  isSubagent: boolean;
+  isMain: boolean;
+  has5mBreakpoint: boolean;
   idleMs: number;
   idleGap: IdleGap;
   ttlMs: number;
@@ -115,7 +116,12 @@ export type PromptCacheMiss = {
 
 type PromptCacheMissTotal = Pick<
   PromptCacheMiss,
-  "provider" | "reason" | "isSubagent" | "idleGap" | "repaidTokens"
+  | "provider"
+  | "reason"
+  | "isMain"
+  | "idleGap"
+  | "has5mBreakpoint"
+  | "repaidTokens"
 > & { misses: number };
 
 const idleGap = (idleMs: number): IdleGap =>
@@ -133,18 +139,25 @@ const hashJson = (value: unknown): bigint =>
 
 // Breakpoints sit on the request, system blocks, tools, messages and their
 // content blocks.
-const hasLongTtl = (value: unknown): boolean =>
-  isObjectRecord(value) &&
-  ((isObjectRecord(value.cache_control) && value.cache_control.ttl === "1h") ||
-    (Array.isArray(value.content) && value.content.some(hasLongTtl)));
+const collectBreakpointTtls = (value: unknown, ttls: Set<string>): void => {
+  if (!isObjectRecord(value)) return;
+  if (isObjectRecord(value.cache_control)) {
+    ttls.add(value.cache_control.ttl === "1h" ? "1h" : "5m");
+  }
+  if (Array.isArray(value.content)) {
+    for (const item of value.content) collectBreakpointTtls(item, ttls);
+  }
+};
 
-const claudeTtlMs = (body: Record<string, unknown>): number =>
-  hasLongTtl(body) ||
-  [body.system, body.tools, body.messages].some(
-    (part) => Array.isArray(part) && part.some(hasLongTtl)
-  )
-    ? CLAUDE_LONG_TTL_MS
-    : CLAUDE_TTL_MS;
+const claudeBreakpointTtls = (body: Record<string, unknown>): Set<string> => {
+  const ttls = new Set<string>();
+  collectBreakpointTtls(body, ttls);
+  for (const part of [body.system, body.tools, body.messages]) {
+    if (!Array.isArray(part)) continue;
+    for (const item of part) collectBreakpointTtls(item, ttls);
+  }
+  return ttls;
+};
 
 const codexTtlMs = (body: Record<string, unknown>): number => {
   const ttl = isObjectRecord(body.prompt_cache_options)
@@ -199,8 +212,8 @@ export const readPromptCacheRequest = (
   const sessionHash = hashJson([input.apiKeyId, provider, session]);
   const system = hashJson(claude ? body.system : body.instructions);
   const tools = hashJson(body.tools);
-  const isSubagent = SUBAGENT_HEADERS.some((name) => input.headers.has(name));
   const requestClass = input.headers.get(CLAUDE_CODE_REQUEST_CLASS_HEADER);
+  const ttls = claude ? claudeBreakpointTtls(body) : null;
   return {
     conversation: hashJson([
       `${sessionHash}`,
@@ -215,9 +228,15 @@ export const readPromptCacheRequest = (
     model: input.model,
     system,
     tools,
-    ttlMs: claude ? claudeTtlMs(body) : codexTtlMs(body),
-    isSubagent,
-    isMainTurn: !isSubagent && (requestClass ?? "main") === "main",
+    ttlMs: ttls
+      ? ttls.has("1h")
+        ? CLAUDE_LONG_TTL_MS
+        : CLAUDE_TTL_MS
+      : codexTtlMs(body),
+    has5mBreakpoint: ttls?.has("5m") === true,
+    isMain:
+      (requestClass ?? "main") === "main" &&
+      !SUBAGENT_HEADERS.some((name) => input.headers.has(name)),
   };
 };
 
@@ -263,15 +282,15 @@ export const createPromptCacheTracker = () => {
       ...request,
       startedAt: now,
       previous: conversations.get(request.conversation),
-      previousSession: request.isMainTurn
+      previousSession: request.isMain
         ? sessions.get(request.session)
         : undefined,
     }),
 
     // Reports a miss when a turn reads under half of what the previous turn
     // of its conversation left cached. A main turn that starts a new
-    // conversation is compared with the session's previous main turn when it
-    // carries at least that turn's cached context and re-pays 4096 tokens.
+    // conversation is compared with the session's previous main turn, unless
+    // it carries under half that turn's cached context, as titles do.
     observe(
       turn: PromptCacheTurn,
       input: { providerAccountId: string; usage: TokenUsage; now?: number }
@@ -292,9 +311,14 @@ export const createPromptCacheTracker = () => {
       if (contextTokens >= MIN_REUSABLE_TOKENS) {
         remember(conversations, turn.conversation, state);
       }
-      if (turn.isMainTurn && compacted) {
+      const { previous, previousSession } = turn;
+      const continuesSession =
+        turn.isMain &&
+        contextTokens >= MIN_REUSABLE_TOKENS &&
+        (!previousSession || contextTokens * 2 >= previousSession.cachedTokens);
+      if (compacted) {
         sessions.delete(turn.session);
-      } else if (turn.isMainTurn && contextTokens >= MIN_REUSABLE_TOKENS) {
+      } else if (continuesSession) {
         remember(sessions, turn.session, {
           ...state,
           conversation: turn.conversation,
@@ -304,7 +328,6 @@ export const createPromptCacheTracker = () => {
         });
       }
 
-      const { previous, previousSession } = turn;
       let baseline: ConversationState;
       let expectedCachedTokens: number;
       let reason: PromptCacheMissReason = "unknown";
@@ -318,13 +341,12 @@ export const createPromptCacheTracker = () => {
         } else if (turn.startedAt - previous.at > previous.ttlMs) {
           reason = "idle_expired";
         }
-      } else if (
-        previousSession &&
-        !compacted &&
-        contextTokens >= previousSession.cachedTokens
-      ) {
+      } else if (previousSession && continuesSession && !compacted) {
         baseline = previousSession;
-        expectedCachedTokens = previousSession.cachedTokens;
+        expectedCachedTokens = Math.min(
+          previousSession.cachedTokens,
+          contextTokens
+        );
         reason = sessionMissReason(
           turn,
           previousSession,
@@ -351,7 +373,8 @@ export const createPromptCacheTracker = () => {
         previousProviderAccountId: baseline.providerAccountId,
         model: turn.model,
         reason,
-        isSubagent: turn.isSubagent,
+        isMain: turn.isMain,
+        has5mBreakpoint: turn.has5mBreakpoint,
         idleMs,
         idleGap: idleGap(idleMs),
         ttlMs: baseline.ttlMs,
@@ -372,7 +395,7 @@ export const createPromptCacheTracker = () => {
         sessionHash: turn.session.toString(16),
       };
       logInfo("prompt_cache_miss", miss);
-      const totalKey = `${miss.provider}:${reason}:${miss.isSubagent}:${miss.idleGap}`;
+      const totalKey = `${miss.provider}:${reason}:${miss.isMain}:${miss.idleGap}:${miss.has5mBreakpoint}`;
       const total = totals.get(totalKey);
       if (total) {
         total.misses += 1;
@@ -381,8 +404,9 @@ export const createPromptCacheTracker = () => {
         totals.set(totalKey, {
           provider: miss.provider,
           reason,
-          isSubagent: miss.isSubagent,
+          isMain: miss.isMain,
           idleGap: miss.idleGap,
+          has5mBreakpoint: miss.has5mBreakpoint,
           misses: 1,
           repaidTokens,
         });
@@ -390,8 +414,8 @@ export const createPromptCacheTracker = () => {
       return miss;
     },
 
-    // Re-paid tokens since this process started, by provider, reason,
-    // subagent and idle gap.
+    // Re-paid tokens since this process started, by provider, reason, main
+    // turn, idle gap and 5m breakpoint.
     missTotals: () => ({
       since,
       totals: Array.from(totals.values(), (total) => ({ ...total })),

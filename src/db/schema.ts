@@ -135,6 +135,16 @@ export const requestUsageBuckets = sqliteTable(
     cacheWrite1hTokens: integer("cache_write_1h_tokens", { mode: "number" })
       .notNull()
       .default(0),
+    // Tokens re-paid on main-turn prompt-cache misses, and the part of them
+    // after a 5m to 60m idle gap on a request with a 5m breakpoint.
+    cacheRepaidTokens: integer("cache_repaid_tokens", { mode: "number" })
+      .notNull()
+      .default(0),
+    cacheRepaidIdleTokens: integer("cache_repaid_idle_tokens", {
+      mode: "number",
+    })
+      .notNull()
+      .default(0),
     inputTotalTokens: integer("input_total_tokens", { mode: "number" }),
     reasoningTokens: integer("reasoning_tokens", { mode: "number" }),
     totalTokens: integer("total_tokens", { mode: "number" }),

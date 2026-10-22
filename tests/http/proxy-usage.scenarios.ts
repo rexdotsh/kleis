@@ -1,4 +1,11 @@
-import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
+import {
+  beforeAll,
+  beforeEach,
+  expect,
+  setSystemTime,
+  spyOn,
+  test,
+} from "bun:test";
 import { Hono } from "hono";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { installErrorHandler } from "../../src/http/error-handler";
@@ -682,7 +689,7 @@ test("Claude cache writes are recorded by TTL in JSON and SSE", async () => {
   }
 });
 
-test("concurrent first turns are not compared, and a later cold turn logs one content-free miss", async () => {
+test("concurrent first turns are not compared, and a later cold turn logs and records one content-free miss", async () => {
   const original = globalThis.fetch;
   const info = spyOn(console, "info").mockImplementation(() => undefined);
   const gates: ((response: Response) => void)[] = [];
@@ -692,12 +699,36 @@ test("concurrent first turns are not compared, and a later cold turn logs one co
   const repaidSinceStart = async (provider: string) => {
     const body = (await (await admin.request("/dashboard")).json()) as {
       promptCacheMisses: {
-        totals: { provider: string; reason: string; repaidTokens: number }[];
+        totals: {
+          provider: string;
+          isMain: boolean;
+          idleGap: string;
+          has5mBreakpoint: boolean;
+          repaidTokens: number;
+        }[];
       };
     };
-    return body.promptCacheMisses.totals
-      .filter((total) => total.provider === provider)
-      .reduce((sum, total) => sum + total.repaidTokens, 0);
+    const main = body.promptCacheMisses.totals.filter(
+      (total) => total.provider === provider && total.isMain
+    );
+    return {
+      cacheRepaidTokens: main.reduce((sum, t) => sum + t.repaidTokens, 0),
+      cacheRepaidIdleTokens: main
+        .filter((t) => t.idleGap === "5m_to_60m" && t.has5mBreakpoint)
+        .reduce((sum, t) => sum + t.repaidTokens, 0),
+    };
+  };
+  const recorded = async (provider: string) => {
+    await flushProxyUsage();
+    const rows = await db.select().from(requestUsageBuckets);
+    const own = rows.filter((row) => row.provider === provider);
+    return {
+      cacheRepaidTokens: own.reduce((sum, r) => sum + r.cacheRepaidTokens, 0),
+      cacheRepaidIdleTokens: own.reduce(
+        (sum, r) => sum + r.cacheRepaidIdleTokens,
+        0
+      ),
+    };
   };
   const missLines = () =>
     info.mock.calls
@@ -709,10 +740,24 @@ test("concurrent first turns are not compared, and a later cold turn logs one co
         provider: "claude",
         path: "/anthropic/v1/messages",
         headers: { "x-claude-code-session-id": "fake-claude-session" },
-        body: { system: "SECRET system", messages: [{ content: "SECRET" }] },
+        body: {
+          system: "SECRET system",
+          messages: [
+            {
+              content: [
+                {
+                  type: "text",
+                  text: "SECRET",
+                  cache_control: { type: "ephemeral" },
+                },
+              ],
+            },
+          ],
+        },
         cold: {
           usage: { input_tokens: 500, cache_creation_input_tokens: 20_000 },
         },
+        idle: 20_000,
         accountId: () => account.id,
       },
       {
@@ -729,6 +774,7 @@ test("concurrent first turns are not compared, and a later cold turn logs one co
             input_tokens_details: { cache_write_tokens: 20_000 },
           },
         },
+        idle: 0,
         accountId: () => codexAccount.id,
       },
     ]) {
@@ -749,18 +795,31 @@ test("concurrent first turns are not compared, and a later cold turn logs one co
       await finish(second, 1);
       expect(missLines()).toHaveLength(0);
 
-      const repaidBefore = await repaidSinceStart(entry.provider);
-      await finish(send(), 2);
-      expect(await repaidSinceStart(entry.provider)).toBe(
-        repaidBefore + 20_000
-      );
+      const before = await repaidSinceStart(entry.provider);
+      setSystemTime(new Date(Date.now() + 10 * 60_000));
+      try {
+        await finish(send(), 2);
+      } finally {
+        setSystemTime();
+      }
+      const after = await repaidSinceStart(entry.provider);
+      const expectedRepaid = {
+        cacheRepaidTokens: 20_000,
+        cacheRepaidIdleTokens: entry.idle,
+      };
+      expect({
+        cacheRepaidTokens: after.cacheRepaidTokens - before.cacheRepaidTokens,
+        cacheRepaidIdleTokens:
+          after.cacheRepaidIdleTokens - before.cacheRepaidIdleTokens,
+      }).toEqual(expectedRepaid);
+      expect(await recorded(entry.provider)).toEqual(expectedRepaid);
       const [line = "", ...rest] = missLines();
       expect(rest).toHaveLength(0);
       expect(line).not.toMatch(/SECRET|fake-(claude|codex)-session/);
       const expected = {
         apiKeyId: "fake-key",
         providerAccountId: entry.accountId(),
-        reason: "unknown",
+        reason: "idle_expired",
         repaidTokens: 20_000,
       };
       expect(JSON.parse(line)).toMatchObject(expected);

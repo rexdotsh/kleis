@@ -224,19 +224,30 @@ const createUsageRecorder = (input: UsageRecorderInput) => {
         return;
       }
 
-      latestTokenUsage = tokenUsage;
+      let usage = tokenUsage;
       if (promptCache) {
-        promptCacheTracker.observe(promptCache, {
+        const miss = promptCacheTracker.observe(promptCache, {
           providerAccountId: input.getProviderAccountId(),
-          usage: tokenUsage,
+          usage,
         });
         promptCache = null;
+        if (miss?.isMain) {
+          usage = {
+            ...usage,
+            cacheRepaidTokens: miss.repaidTokens,
+            cacheRepaidIdleTokens:
+              miss.idleGap === "5m_to_60m" && miss.has5mBreakpoint
+                ? miss.repaidTokens
+                : 0,
+          };
+        }
       }
+      latestTokenUsage = usage;
       if (!requestPersisted) {
         return;
       }
 
-      recordTokenCounters(tokenUsage, requestOccurredAt || Date.now());
+      recordTokenCounters(usage, requestOccurredAt || Date.now());
     },
     recordImmediate(statusCode: number): void {
       requestOccurredAt = Date.now();

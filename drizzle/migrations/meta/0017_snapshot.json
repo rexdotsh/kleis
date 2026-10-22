@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "ff33f7c5-0991-48aa-93d9-f913904792f3",
+  "id": "d57584cd-0447-4fb4-8bed-d14fc9293aa3",
   "prevId": "1f39be37-6ade-4baa-8c52-fbaab421b728",
   "tables": {
     "api_keys": {
@@ -544,6 +544,22 @@
         },
         "cache_write_1h_tokens": {
           "name": "cache_write_1h_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "cache_repaid_tokens": {
+          "name": "cache_repaid_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "cache_repaid_idle_tokens": {
+          "name": "cache_repaid_idle_tokens",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,

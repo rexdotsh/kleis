@@ -9,6 +9,9 @@ export type TokenUsage = {
   // Anthropic's cache writes split by the TTL they were written with.
   cacheWrite5mTokens?: number;
   cacheWrite1hTokens?: number;
+  // Set by the proxy from this request's prompt-cache miss.
+  cacheRepaidTokens?: number;
+  cacheRepaidIdleTokens?: number;
   reasoningTokens?: number;
   totalTokens?: number;
   // The last sampling call alone when a response lists several; the summed

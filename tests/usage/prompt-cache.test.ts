@@ -77,6 +77,11 @@ const codexUsage = (cached: number, output: unknown[] = []) => ({
 
 const session = { "x-claude-code-session-id": "s1", "session-id": "s1" };
 const subagent = { ...session, "x-claude-code-agent-id": "fake-agent" };
+const auxiliary = { ...session, "x-claude-code-request-class": "auxiliary" };
+const compactionClass = {
+  ...session,
+  "x-claude-code-request-class": "compaction",
+};
 const codexSubagent = { ...session, "x-openai-subagent": "collab_spawn" };
 const warm = claudeUsage(12_000, 8000);
 const cold = claudeUsage(0, 20_000, {
@@ -86,6 +91,22 @@ const longTtl = [
   ...history,
   { role: "user", content: [{ type: "text", cache_control: { ttl: "1h" } }] },
 ];
+const mixedTtl = {
+  system: [
+    {
+      type: "text",
+      text: "You are a fake assistant.",
+      cache_control: { type: "ephemeral", ttl: "1h" },
+    },
+  ],
+  messages: [
+    ...history,
+    {
+      role: "user",
+      content: [{ type: "text", cache_control: { type: "ephemeral" } }],
+    },
+  ],
+};
 const compaction = { type: "compaction", input_tokens: 132 };
 const compactionBilled = claudeUsage(0, 20_000, {
   iterations: [
@@ -121,7 +142,7 @@ test("a turn that reads far less than the previous turn cached is reported only 
       [claude(warm), claude(cold)],
       {
         reason: "unknown",
-        isSubagent: false,
+        isMain: true,
         contextTokens: 20_500,
         expectedCachedTokens: 20_000,
         repaidTokens: 20_000,
@@ -150,7 +171,25 @@ test("a turn that reads far less than the previous turn cached is reported only 
         claude(warm, {}, { headers: subagent }),
         claude(cold, {}, { headers: subagent, minute: 70 }),
       ],
-      { reason: "idle_expired", isSubagent: true, idleGap: "over_60m" },
+      { reason: "idle_expired", isMain: false, idleGap: "over_60m" },
+    ],
+    [
+      "two side requests ten minutes apart",
+      [
+        claude(warm, {}, { headers: auxiliary }),
+        claude(cold, {}, { headers: auxiliary, minute: 10 }),
+      ],
+      { reason: "idle_expired", isMain: false, idleGap: "5m_to_60m" },
+    ],
+    [
+      "a gap past 5m breakpoints behind a 1h system breakpoint",
+      [claude(warm, mixedTtl), claude(cold, mixedTtl, { minute: 10 })],
+      {
+        reason: "unknown",
+        cacheTtl: "1h",
+        idleGap: "5m_to_60m",
+        has5mBreakpoint: true,
+      },
     ],
     [
       "a gap past the shortest Codex TTL",
@@ -163,7 +202,12 @@ test("a turn that reads far less than the previous turn cached is reported only 
         claude(warm, { messages: longTtl }),
         claude(cold, { messages: longTtl }, { minute: 7 }),
       ],
-      { reason: "unknown", cacheTtl: "1h", idleGap: "5m_to_60m" },
+      {
+        reason: "unknown",
+        cacheTtl: "1h",
+        idleGap: "5m_to_60m",
+        has5mBreakpoint: false,
+      },
     ],
     [
       "appended history",
@@ -196,6 +240,33 @@ test("a turn that reads far less than the previous turn cached is reported only 
       "a tools change in the session",
       [claude(warm), claude(cold, { tools: [{ name: "write" }] })],
       { reason: "tools_changed" },
+    ],
+    [
+      "a removed tool that shrinks the context",
+      [claude(warm), claude(claudeUsage(0, 18_000), { tools: [] })],
+      { reason: "tools_changed", repaidTokens: 18_500 },
+    ],
+    [
+      "a model change after an unclassified title request",
+      [
+        claude(warm),
+        claude(claudeUsage(0, 4600), { tools: [] }, { model: "claude-small" }),
+        claude(cold, {}, { model: "claude-other" }),
+      ],
+      { reason: "model_changed", repaidTokens: 20_000 },
+    ],
+    [
+      "a new task after a classified compaction",
+      [
+        claude(warm),
+        claude(
+          claudeUsage(0, 0, { input_tokens: 0, iterations: [compaction] }),
+          {},
+          { headers: compactionClass }
+        ),
+        claude(cold, { messages: [{ content: "summary" }] }),
+      ],
+      null,
     ],
     [
       "a new task in the session",
