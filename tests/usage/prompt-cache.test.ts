@@ -230,6 +230,14 @@ test("a turn that reads far less than the previous turn cached is reported only 
       null,
     ],
     [
+      "a sibling Codex task sent as string input",
+      [
+        codex(codexUsage(20_000), { input: "task A" }),
+        codex(codexUsage(0), { input: "task B" }),
+      ],
+      null,
+    ],
+    [
       "a Codex compaction response",
       [
         codex(codexUsage(20_000, [{ type: "compaction" }])),

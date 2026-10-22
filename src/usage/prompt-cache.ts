@@ -108,7 +108,7 @@ const codexTtlMs = (body: Record<string, unknown>): number => {
 const firstItem = (
   items: unknown,
   include: (item: unknown) => boolean = () => true
-): unknown => (Array.isArray(items) ? items.find(include) : undefined);
+): unknown => (Array.isArray(items) ? items.find(include) : items);
 
 const isCodexTask = (item: unknown): boolean =>
   !(
