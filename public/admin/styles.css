@@ -185,6 +185,12 @@ code,
 .tag.warn {
   color: var(--warn);
 }
+.tag.resets-tag {
+  flex: 0 1000 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .tag-primary {
   color: var(--accent);
 }

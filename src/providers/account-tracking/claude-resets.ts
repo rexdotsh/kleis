@@ -167,6 +167,8 @@ export type ClaudeResetOffer = {
 export type ClaudeResetSummary = {
   saved: number;
   nextEndsAt: string | null;
+  // Every saved reset's end, soonest first.
+  expiries: { endsAt: string | null; count: number }[];
   clears: ClaudeResetLimitType[];
   ineligibleReason: string | null;
   offer: ClaudeResetOffer | null;
@@ -262,6 +264,9 @@ export const summarizeClaudeResets = (
   return {
     saved: live.reduce((total, grant) => total + grant.resetsLeft, 0),
     nextEndsAt: next?.endsAt ?? null,
+    expiries: [...live]
+      .sort((a, b) => expiry(a) - expiry(b))
+      .map((grant) => ({ endsAt: grant.endsAt, count: grant.resetsLeft })),
     clears: next?.clears ?? [],
     ineligibleReason: status.eligible ? null : status.ineligibleReason,
     offer: typeof offer === "string" ? null : offer,

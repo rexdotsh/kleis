@@ -240,6 +240,7 @@ export const describeClaudeResets = (
     ? {
         saved: 0,
         nextEndsAt: null,
+        expiries: [],
         clears: [],
         ineligibleReason: null,
         offer: null,

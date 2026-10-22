@@ -112,6 +112,10 @@ function claudeResetOffer(account) {
     resetId: offer?.grantId,
     scope: windowLabels.length ? limitsText(clears) : null,
     expiresAt: quotaTimestamp(endsAt),
+    expiries: (resets.expiries || []).map(({ endsAt: end, count }) => ({
+      at: quotaTimestamp(end),
+      count,
+    })),
     expiryText: expiryText(endsAt),
     title: offer?.label,
     status,
