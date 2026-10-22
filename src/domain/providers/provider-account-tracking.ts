@@ -56,6 +56,7 @@ const PROFILE_CACHE_MS = 24 * 60 * 60 * 1000;
 const PROFILE_CACHE_JITTER_MS = 60 * 60 * 1000;
 const PROFILE_RETRY_MS = 5 * 60 * 1000;
 const TOKEN_EXPIRY_MARGIN_MS = 60_000;
+const CONFIRMING_READ_DELAY_MS = 5000;
 
 export type TrackingAccount = ProviderAccountRecord & {
   provider: "codex" | "claude";
@@ -146,6 +147,10 @@ const noteClaudeUsageResult = (errors: unknown[]): void => {
 };
 const inFlight = new Map<string, Promise<AccountQuota | null>>();
 const generations = new Map<string, number>();
+
+// Lookups per account, counting invalidated ones that are still running.
+let lookupCount = 0;
+const lookups = new Map<string, { last: number; running: number }>();
 
 export const isTrackingAccount = (
   account: ProviderAccountRecord
@@ -647,12 +652,17 @@ const loadProviderAccountQuota = (
   if (pending && !force) {
     return pending;
   }
+  const lookup = lookups.get(key) ?? { last: 0, running: 0 };
+  lookup.last = ++lookupCount;
+  lookup.running++;
+  lookups.set(key, lookup);
   const request = fetchProviderAccountQuota(
     database,
     stored,
     key,
     nextGeneration(key)
   ).finally(() => {
+    lookup.running--;
     if (inFlight.get(key) === request) {
       inFlight.delete(key);
       liveDuringPoll.delete(key);
@@ -1097,4 +1107,20 @@ export const invalidateResetCredits = (account: TrackingAccount): void => {
   nextGeneration(key);
   const quota = cache.get(key)?.quota;
   if (quota) snapshots?.recordQuota(account, quota, quotaSignature(quota.data));
+};
+
+// One read a few seconds after a reset, once the upstream reports its effect.
+// Skipped when another lookup started since or is still running; the lookup
+// itself waits out the shared Claude 429 pause.
+export const scheduleConfirmingRead = (
+  database: Database,
+  account: TrackingAccount
+): void => {
+  const key = quotaKey(account);
+  const after = lookups.get(key)?.last ?? 0;
+  setTimeout(() => {
+    const lookup = lookups.get(key);
+    if (lookup && (lookup.running || lookup.last > after)) return;
+    loadProviderAccountQuota(database, account, false).catch(() => undefined);
+  }, CONFIRMING_READ_DELAY_MS).unref();
 };
