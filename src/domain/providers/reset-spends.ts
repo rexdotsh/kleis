@@ -9,6 +9,7 @@ import {
 } from "../../db/repositories/reset-spends";
 import { claimClaudeResetCredit } from "../../providers/account-tracking/claude";
 import {
+  type ClaudeResetClaimResult,
   type ClaudeResetSummary,
   summarizeClaudeResets,
 } from "../../providers/account-tracking/claude-resets";
@@ -24,6 +25,7 @@ import {
   reloadCodexQuota,
   resolveAccount,
   retryAfter401,
+  scheduleConfirmingRead,
   type TrackingAccount,
 } from "./provider-account-tracking";
 
@@ -64,14 +66,16 @@ const isRefusal = (error: unknown): boolean =>
 
 // Sends one spend, checked against discovery data read at `observedAt`. An
 // unknown outcome, or an answer `settles` rejects, stays pending until it
-// expires; the next limits check then shows what happened.
+// expires; the next limits check then shows what happened. Cached limits and
+// resets are dropped unless the answer says nothing changed.
 const spendReset = async <T>(
   database: Database,
   account: TrackingAccount,
   itemId: string,
   observedAt: number,
   send: (requestId: string) => Promise<T>,
-  settles: (result: T) => boolean
+  settles: (result: T) => boolean,
+  unchanged: (result: T) => boolean
 ): Promise<T> => {
   const started = await startResetSpend(
     database,
@@ -87,10 +91,11 @@ const spendReset = async <T>(
           ...errorLogFields(error),
         })
     );
+  let result: { value: T } | null = null;
   try {
-    const result = await send(started.requestId);
-    if (settles(result)) await settle("completed");
-    return result;
+    result = { value: await send(started.requestId) };
+    if (settles(result.value)) await settle("completed");
+    return result.value;
   } catch (error) {
     if (!isRefusal(error)) {
       throw new ResetSpendError(
@@ -102,7 +107,7 @@ const spendReset = async <T>(
       `${error instanceof Error ? error.message : "Reset refused"}. Nothing was used.`
     );
   } finally {
-    invalidateResetCredits(account);
+    if (!(result && unchanged(result.value))) invalidateResetCredits(account);
   }
 };
 
@@ -133,26 +138,32 @@ export const redeemCodexResetCredit = async (
   ) {
     throw conflict("not_current");
   }
-  try {
-    return await spendReset(
-      database,
-      account,
-      creditId,
-      credits.observedAt ?? 0,
-      (redeemRequestId) =>
-        retryAfter401(database, account, (current) =>
-          consumeCodexResetCredit({
-            accessToken: current.accessToken,
-            accountId: current.accountId,
-            redeemRequestId,
-            creditId,
-          })
-        ),
-      () => true
-    );
-  } finally {
+  const result = await spendReset(
+    database,
+    account,
+    creditId,
+    credits.observedAt ?? 0,
+    (redeemRequestId) =>
+      retryAfter401(database, account, (current) =>
+        consumeCodexResetCredit({
+          accessToken: current.accessToken,
+          accountId: current.accountId,
+          redeemRequestId,
+          creditId,
+        })
+      ),
+    () => true,
+    ({ code }) => code === "nothing_to_reset"
+  ).catch(async (error: unknown) => {
     await reloadCodexQuota(database, account);
+    throw error;
+  });
+  if (result.code === "nothing_to_reset") return result;
+  await reloadCodexQuota(database, account);
+  if (result.code === "reset" || result.code === "already_redeemed") {
+    scheduleConfirmingRead(database, account);
   }
+  return result;
 };
 
 const claudeSummary = (
@@ -196,6 +207,9 @@ const UNCONFIRMED_REASONS = new Set([
   "reset_unconfirmed",
 ]);
 
+const isConfirmed = ({ result, reason }: ClaudeResetClaimResult): boolean =>
+  result !== "unavailable" && !UNCONFIRMED_REASONS.has(reason ?? "");
+
 export const claimClaudeReset = async (
   database: Database,
   providerAccountId: string,
@@ -216,7 +230,7 @@ export const claimClaudeReset = async (
   const summary = claudeSummary(account);
   if (!credits || summary === "checking") throw conflict("stale");
   if (summary?.offer?.grantId !== grantId) throw conflict("not_current");
-  return spendReset(
+  const claim = await spendReset(
     database,
     account,
     grantId,
@@ -230,7 +244,11 @@ export const claimClaudeReset = async (
           requestId,
         })
       ),
-    ({ result, reason }) =>
-      result !== "unavailable" && !UNCONFIRMED_REASONS.has(reason ?? "")
+    isConfirmed,
+    ({ result }) => result === "not_limited"
   );
+  if (claim.result === "reset" && isConfirmed(claim)) {
+    scheduleConfirmingRead(database, account);
+  }
+  return claim;
 };
