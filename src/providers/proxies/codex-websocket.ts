@@ -148,6 +148,8 @@ const isCompactionRequest = (
   }
 };
 
+const ignoreSocketError = (): void => {};
+
 const isSocketOpen = (socket: WebSocketLike): boolean =>
   socket.readyState === undefined || socket.readyState === 1;
 
@@ -308,6 +310,10 @@ const connectWebSocket = (
       reject(extractWebSocketError(error));
       return;
     }
+
+    // ws throws when it emits "error" with no listener, and the relay detaches
+    // its own listeners before terminating a socket or caching it while idle.
+    socket.addEventListener("error", ignoreSocketError);
 
     socket.addEventListener("open", onOpen);
     socket.addEventListener("error", onError);

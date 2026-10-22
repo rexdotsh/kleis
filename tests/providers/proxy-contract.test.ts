@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import WebSocket from "ws";
 
 import {
   CLAUDE_SYSTEM_IDENTITY,
@@ -1387,6 +1388,42 @@ describe("proxy contract: codex", () => {
 
     expect(sockets[0]?.terminated).toBe(true);
     expect(warnings).toHaveLength(0);
+  });
+
+  test("aborting during the websocket handshake does not crash the process", async () => {
+    // Accepts the TCP connection but never answers the upgrade request.
+    const upstream = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: { data(): void {} },
+    });
+    class LocalWebSocket extends WebSocket {
+      constructor(_url: string, options?: MockWebSocketOptions) {
+        super(`ws://127.0.0.1:${upstream.port}/`, options);
+      }
+    }
+    setCodexWebSocketConstructorForTests(LocalWebSocket);
+    const abortController = new AbortController();
+
+    try {
+      const responsePromise = tryProxyCodexWebSocket({
+        headers: new Headers({ authorization: "Bearer codex-access" }),
+        bodyJson: {
+          model: "gpt-5.5",
+          stream: true,
+          input: [{ role: "user", content: "hello" }],
+        },
+        accountKey: "key-1:account-1",
+        signal: abortController.signal,
+      });
+      await Bun.sleep(50);
+      abortController.abort(new Error("stop"));
+      expect(await responsePromise).toBeNull();
+      // ws emits the handshake abort error on a later tick.
+      await Bun.sleep(50);
+    } finally {
+      upstream.stop(true);
+    }
   });
 
   test("websocket reasoning diagnostics observe upstream events without rewriting them", async () => {
