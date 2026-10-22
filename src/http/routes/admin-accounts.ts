@@ -21,6 +21,7 @@ import {
 import {
   claimClaudeReset,
   describeClaudeResets,
+  describeCodexResets,
   redeemCodexResetCredit,
   ResetSpendConflict,
   ResetSpendError,
@@ -207,6 +208,7 @@ export const adminAccountsRoutes = new Hono()
         quota: quotas.get(account.id) ?? null,
         profile: profiles.get(account.id) ?? null,
         claudeResets: describeClaudeResets(account),
+        codexResets: describeCodexResets(account),
       })),
       providers: summarizeProviderStatuses(accounts),
     });
@@ -222,6 +224,9 @@ export const adminAccountsRoutes = new Hono()
       profiles: Object.fromEntries(peekProviderAccountProfiles(accounts)),
       claudeResets: Object.fromEntries(
         accounts.map((account) => [account.id, describeClaudeResets(account)])
+      ),
+      codexResets: Object.fromEntries(
+        accounts.map((account) => [account.id, describeCodexResets(account)])
       ),
     });
   })
