@@ -57,7 +57,11 @@ import {
   requestUsageDetail,
 } from "./app-usage.js";
 import { renderAttention, usageSlotHtml } from "./app-usage-render.js";
-import { resetCreditsDetail, resetOfferFor } from "./app-reset-credits.js";
+import {
+  expiringResets,
+  resetCreditsDetail,
+  resetOfferFor,
+} from "./app-reset-credits.js";
 
 // Rows show the main windows (5h, 7d); model-specific windows stay in the
 // expanded row.
@@ -156,8 +160,10 @@ function accountRowHtml(account, serving, grouped = false) {
   ].filter(Boolean);
   const cursor = state.cursorAccountId === account.id ? " cursor" : "";
   const credits = resetOfferFor(account);
-  const creditHint =
-    serving && credits?.useful
+  const expiring = serving ? expiringResets(account) : null;
+  const creditHint = expiring
+    ? `<span class="tag warn" title="${escapeHtml(expiring.text)}">${escapeHtml(expiring.tag)}</span>`
+    : serving && credits?.useful
       ? `<span class="tag">${credits.count} ${credits.noun}${credits.count === 1 ? "" : "s"}</span>`
       : "";
 

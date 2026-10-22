@@ -28,6 +28,7 @@ import {
   successRateText,
   usageWindowLabel,
 } from "./app-render-shared.js";
+import { expiringResets } from "./app-reset-credits.js";
 
 /* Usage inside expanded rows */
 
@@ -175,6 +176,9 @@ function renderAttention() {
       continue;
     if (!isAccountServing(account, statuses)) continue;
     const issues = accountIssues(account);
+    const expiring = expiringResets(account);
+    if (expiring)
+      issues.push({ severity: "warn", text: expiring.text, when: "" });
     if (!issues.length) continue;
     items.push({
       severity: issues[0].severity,
