@@ -1,5 +1,9 @@
 import type { Provider } from "../db/schema";
-import { readCodexSessionHeader } from "../providers/proxies/codex-proxy";
+import {
+  readCodexSessionHeader,
+  transformCodexRequestBody,
+} from "../providers/proxies/codex-proxy";
+import type { ProxyOperation } from "../providers/proxy-endpoints";
 import { logInfo } from "../utils/log";
 import { isObjectRecord } from "../utils/object";
 import type { TokenUsage } from "./token-usage";
@@ -101,11 +105,29 @@ const codexTtlMs = (body: Record<string, unknown>): number => {
   );
 };
 
-// A conversation is one session's turns with the same model, system prompt
-// and tools, so subagents and side requests in that session keep their own.
+const firstItem = (
+  items: unknown,
+  include: (item: unknown) => boolean = () => true
+): unknown => (Array.isArray(items) ? items.find(include) : undefined);
+
+const isCodexTask = (item: unknown): boolean =>
+  !(
+    isObjectRecord(item) &&
+    (item.role === "system" || item.role === "developer")
+  );
+
+// A conversation is one session's turns with the same model, system prompt,
+// tools and first task item, so subagents and side requests in that session
+// keep their own. Codex requests are read as sent upstream.
 export const readPromptCacheRequest = (
   provider: Provider,
-  input: { apiKeyId: string; model: string; headers: Headers; body: unknown }
+  input: {
+    apiKeyId: string;
+    model: string;
+    headers: Headers;
+    body: unknown;
+    operation?: ProxyOperation;
+  }
 ): PromptCacheRequest | null => {
   const claude = provider === "claude";
   const session = claude
@@ -113,12 +135,16 @@ export const readPromptCacheRequest = (
         input.headers.get(name)?.trim()
       ).find(Boolean)
     : readCodexSessionHeader(input.headers);
-  const { body } = input;
-  if (!(session && isObjectRecord(body))) {
+  if (!session) {
+    return null;
+  }
+  const body = claude
+    ? input.body
+    : transformCodexRequestBody(input.body, input.operation);
+  if (!isObjectRecord(body)) {
     return null;
   }
 
-  const system = claude ? body.system : body.instructions;
   return {
     conversation: Bun.hash.wyhash(
       JSON.stringify([
@@ -126,8 +152,9 @@ export const readPromptCacheRequest = (
         provider,
         session,
         input.model,
-        system,
+        claude ? body.system : body.instructions,
         body.tools,
+        claude ? firstItem(body.messages) : firstItem(body.input, isCodexTask),
       ])
     ),
     provider,
@@ -174,7 +201,6 @@ export const createPromptCacheTracker = () => {
       const cachedTokens = call.cacheReadTokens + call.cacheWriteTokens;
       const inputTokens = call.inputTokens + cachedTokens;
       const compacted = usage.compacted === true;
-      const current = conversations.get(turn.conversation);
       if (inputTokens >= MIN_REUSABLE_TOKENS) {
         remember(turn.conversation, {
           providerAccountId: input.providerAccountId,
@@ -183,8 +209,6 @@ export const createPromptCacheTracker = () => {
           compacted,
           at: now,
         });
-      } else if (compacted && current) {
-        remember(turn.conversation, { ...current, compacted, at: now });
       }
 
       const { previous } = turn;

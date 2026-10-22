@@ -163,6 +163,15 @@ const transformCodexCompactionBodyJson = (
   return compactBody;
 };
 
+export const transformCodexRequestBody = (
+  bodyJson: unknown,
+  operation?: ProxyOperation,
+  promptCacheKey?: string | null
+): JsonObject | null =>
+  operation === "compact"
+    ? transformCodexCompactionBodyJson(bodyJson, promptCacheKey)
+    : transformCodexBodyJson(bodyJson, promptCacheKey);
+
 const transformCodexResponse = async (
   response: Response,
   onTokenUsage: ((usage: TokenUsage) => void) | null | undefined,
@@ -243,10 +252,11 @@ export const prepareCodexProxyRequest = (
   const isStreamingRequest =
     input.operation !== "compact" &&
     readBooleanField(input.bodyJson, "stream") === true;
-  const bodyJson =
-    input.operation === "compact"
-      ? transformCodexCompactionBodyJson(input.bodyJson, input.promptCacheKey)
-      : transformCodexBodyJson(input.bodyJson, input.promptCacheKey);
+  const bodyJson = transformCodexRequestBody(
+    input.bodyJson,
+    input.operation,
+    input.promptCacheKey
+  );
 
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("content-type", "application/json");

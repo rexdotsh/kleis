@@ -88,6 +88,13 @@ const compactionBilled = claudeUsage(0, 20_000, {
     { input_tokens: 500, cache_creation_input_tokens: 20_000 },
   ],
 });
+const promoted = (agent: string) => ({
+  instructions: undefined,
+  input: [
+    { role: "developer", content: agent },
+    { type: "message", role: "user", content: "task" },
+  ],
+});
 const afterCompaction = {
   usage: { input_tokens: 40_000, cache_read_input_tokens: 20_000 },
 };
@@ -182,15 +189,45 @@ test("a turn that reads far less than the previous turn cached is reported only 
       { reason: "unknown" },
     ],
     [
-      "a Claude compaction response",
+      "a compaction during the turn",
+      [
+        claude(warm),
+        claude(
+          claudeUsage(0, 20_000, {
+            iterations: [
+              compaction,
+              { input_tokens: 500, cache_creation_input_tokens: 20_000 },
+            ],
+          })
+        ),
+      ],
+      { reason: "compacted" },
+    ],
+    [
+      "the turn after on-demand compaction",
       [
         claude(warm),
         claude(
           claudeUsage(0, 0, { input_tokens: 0, iterations: [compaction] })
         ),
-        claude(cold),
+        claude(cold, {
+          messages: [{ role: "assistant", content: [{ type: "compaction" }] }],
+        }),
       ],
-      { reason: "compacted" },
+      null,
+    ],
+    [
+      "a sibling task in the parent's session",
+      [claude(warm), claude(cold, { messages: [{ content: "other task" }] })],
+      null,
+    ],
+    [
+      "a sibling Codex agent whose instructions are promoted",
+      [
+        codex(codexUsage(20_000), promoted("Agent A")),
+        codex(codexUsage(0), promoted("Agent B")),
+      ],
+      null,
     ],
     [
       "a Codex compaction response",

@@ -298,6 +298,7 @@ const proxyRequest = async (
     model: usageModel,
     headers: context.req.raw.headers,
     body: requestBodyJson,
+    ...(route.operation ? { operation: route.operation } : {}),
   });
   const usageRecorder = createUsageRecorder({
     startedAt,
