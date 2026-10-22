@@ -9,7 +9,11 @@ import {
 import { Hono } from "hono";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { installErrorHandler } from "../../src/http/error-handler";
-import { CODEX_USER_AGENT } from "../../src/providers/constants";
+import {
+  CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER,
+  CLAUDE_SYSTEM_IDENTITY,
+  CODEX_USER_AGENT,
+} from "../../src/providers/constants";
 
 // Run through proxy-usage.test.ts, which starts this file in its own process
 // with an in-memory database.
@@ -1919,4 +1923,89 @@ test("fail mode preserves terminal exhausted-limit errors without forwarding its
     warn.mockRestore();
     globalThis.fetch = originalFetch;
   }
+});
+
+const breakpoint = { type: "ephemeral" };
+const cachedTurn = (control: Record<string, string> = breakpoint) => ({
+  model: "claude-fake",
+  tools: [{ name: "read", input_schema: {}, cache_control: control }],
+  system: [
+    { type: "text", text: "rules", cache_control: { ...control, ttl: "5m" } },
+    { type: "text", text: "context", cache_control: control },
+  ],
+  messages: [
+    { role: "user", content: [{ type: "text", text: "hi" }] },
+    { role: "assistant", content: [{ type: "text", text: "reading" }] },
+    {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_fake",
+          content: [{ type: "text", text: "file", cache_control: control }],
+        },
+      ],
+    },
+  ],
+  cache_control: control,
+});
+
+const forwardClaude = async (body: string) => {
+  const original = globalThis.fetch;
+  let forwarded = { body: "", betas: [] as string[] };
+  globalThis.fetch = (async (_input, init) => {
+    forwarded = {
+      body: String(init?.body),
+      betas: (new Headers(init?.headers).get("anthropic-beta") ?? "").split(
+        ","
+      ),
+    };
+    return Response.json({ type: "message", content: [], usage });
+  }) as typeof fetch;
+  try {
+    const response = await app.request("/anthropic/v1/messages", {
+      method: "POST",
+      body,
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+  return {
+    body: forwarded.body,
+    ttls: Array.from(
+      forwarded.body.matchAll(/"cache_control":(\{[^}]*\})/g),
+      (match) => (JSON.parse(match[1] ?? "{}") as { ttl?: string }).ttl
+    ),
+    extendedBeta: forwarded.betas.includes(
+      CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER
+    ),
+  };
+};
+
+test("Claude requests send every breakpoint, explicit 5m included, with the 1h TTL and its beta", async () => {
+  const forwarded = await forwardClaude(JSON.stringify(cachedTurn()));
+  expect(forwarded.ttls).toEqual(["1h", "1h", "1h", "1h", "1h"]);
+  expect(forwarded.extendedBeta).toBe(true);
+});
+
+test("Claude TTL rewrites leave the rest of the body byte-identical", async () => {
+  const upgraded = await forwardClaude(JSON.stringify(cachedTurn()));
+  const explicit = await forwardClaude(
+    JSON.stringify(cachedTurn({ type: "ephemeral", ttl: "1h" }))
+  );
+  expect(upgraded.body).toBe(explicit.body);
+});
+
+test("Claude requests without cache_control are forwarded unchanged without the TTL beta", async () => {
+  const body = JSON.stringify({
+    model: "claude-fake",
+    system: [{ type: "text", text: CLAUDE_SYSTEM_IDENTITY }],
+    messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+  });
+  const forwarded = await forwardClaude(body);
+  expect(forwarded.body).toBe(body);
+  expect(forwarded.extendedBeta).toBe(false);
 });

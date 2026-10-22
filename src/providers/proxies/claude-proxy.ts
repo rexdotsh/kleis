@@ -3,6 +3,7 @@ import type { ClaudeAccountMetadata } from "../metadata";
 import {
   ANTHROPIC_API_BASE_URL,
   CLAUDE_CLI_USER_AGENT,
+  CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER,
   CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
 } from "../constants";
@@ -349,6 +350,40 @@ const transformClaudeResponse = async (
   });
 };
 
+// Every breakpoint gets the 1h TTL, so no 1h entry can follow a 5m one.
+// https://platform.claude.com/docs/en/build-with-claude/prompt-caching#1-hour-cache-duration
+const withLongCacheTtl = (
+  value: unknown,
+  cache: { found: boolean }
+): unknown => {
+  if (Array.isArray(value)) {
+    let items: unknown[] | null = null;
+    for (let index = 0; index < value.length; index++) {
+      const upgraded = withLongCacheTtl(value[index], cache);
+      if (upgraded !== value[index]) {
+        items ??= [...value];
+        items[index] = upgraded;
+      }
+    }
+    return items ?? value;
+  }
+  if (!isObjectRecord(value)) {
+    return value;
+  }
+
+  const result = Array.isArray(value.content)
+    ? withField(value, "content", withLongCacheTtl(value.content, cache))
+    : value;
+  const control = value.cache_control;
+  if (!isObjectRecord(control)) {
+    return result;
+  }
+  cache.found = true;
+  return control.type === "ephemeral" && control.ttl !== "1h"
+    ? withField(result, "cache_control", { ...control, ttl: "1h" })
+    : result;
+};
+
 const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {
   const incoming = (headers.get("anthropic-beta") ?? "")
     .split(",")
@@ -379,9 +414,32 @@ type ClaudeProxyPreparationResult = {
 export const prepareClaudeProxyRequest = (
   input: ClaudeProxyPreparationInput
 ): ClaudeProxyPreparationResult => {
+  const { payload, toolNames } = mapClaudeRequestToolNames(input.bodyJson);
+  let transformedPayload = isObjectRecord(payload)
+    ? { ...payload, system: withClaudeSystemIdentity(payload.system) }
+    : payload;
+  const cache = { found: false };
+  if (isObjectRecord(transformedPayload)) {
+    let upgraded = transformedPayload;
+    for (const key of ["tools", "system", "messages"] as const) {
+      upgraded = withField(
+        upgraded,
+        key,
+        withLongCacheTtl(upgraded[key], cache)
+      );
+    }
+    transformedPayload = withLongCacheTtl(upgraded, cache);
+  }
+  const bodyText =
+    transformedPayload !== input.bodyJson
+      ? JSON.stringify(transformedPayload)
+      : input.bodyText;
+
   const mergedBetas = mergeBetaHeaders(
     input.headers,
-    CLAUDE_REQUIRED_BETA_HEADERS
+    cache.found
+      ? [...CLAUDE_REQUIRED_BETA_HEADERS, CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER]
+      : CLAUDE_REQUIRED_BETA_HEADERS
   );
 
   // OAuth sessions require Claude Code identity headers.
@@ -395,15 +453,6 @@ export const prepareClaudeProxyRequest = (
   input.headers.set("accept", "application/json");
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
   input.headers.set("x-app", "cli");
-
-  const { payload, toolNames } = mapClaudeRequestToolNames(input.bodyJson);
-  const transformedPayload = isObjectRecord(payload)
-    ? { ...payload, system: withClaudeSystemIdentity(payload.system) }
-    : payload;
-  const bodyText =
-    transformedPayload !== input.bodyJson
-      ? JSON.stringify(transformedPayload)
-      : input.bodyText;
 
   return {
     upstreamUrl: buildUpstreamUrl(input.requestUrl.search),

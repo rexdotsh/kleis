@@ -3259,7 +3259,7 @@ describe("proxy contract: claude", () => {
     const identity = { type: "text", text: CLAUDE_SYSTEM_IDENTITY };
     const cachedIdentity = {
       ...identity,
-      cache_control: { type: "ephemeral" },
+      cache_control: { type: "ephemeral", ttl: "1h" },
     };
     const custom = { type: "text", text: "Custom system prompt" };
 
