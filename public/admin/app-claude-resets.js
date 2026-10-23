@@ -37,6 +37,16 @@ const UNAVAILABLE_TEXT = {
   unsupported_limits: "can't confirm what it refills",
 };
 
+// Reasons Claude Code knows for an account without resets.
+const INELIGIBLE_TEXT = {
+  tier: "Not offered on this plan.",
+  seat: "Not offered for this seat.",
+  tenure: "Not offered to this account yet.",
+  mobile: "Only usable on claude.ai.",
+  cli_version: "Not offered to this client version.",
+  unavailable: "Unavailable right now.",
+};
+
 function claudeResetStatus(resets) {
   if (resets.unavailable === "checking") {
     return {
@@ -54,10 +64,14 @@ function claudeResetStatus(resets) {
     };
   }
   if (resets.unavailable === "ineligible") {
+    // no_grant: Anthropic hasn't given this account any resets.
+    if (resets.ineligibleReason === "no_grant") return null;
     return {
       label: "not eligible",
       replaceCount: true,
-      description: resets.ineligibleReason,
+      description:
+        INELIGIBLE_TEXT[resets.ineligibleReason] ||
+        "Claude doesn't offer resets on this account right now.",
     };
   }
   if (!resets.saved || resets.offer) return null;
