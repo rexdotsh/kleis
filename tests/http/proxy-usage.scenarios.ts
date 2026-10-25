@@ -1955,3 +1955,121 @@ test("Claude requests without cache_control are forwarded unchanged without the 
   expect(forwarded.body).toBe(body);
   expect(forwarded.extendedBeta).toBe(false);
 });
+
+type ClaudeUpstreamRequest = { encoding: string | null; body: string };
+
+const withLocalClaudeUpstream = async (
+  respond: (request: ClaudeUpstreamRequest) => Response,
+  run: (received: ClaudeUpstreamRequest[]) => Promise<void>
+) => {
+  const received: ClaudeUpstreamRequest[] = [];
+  const server = Bun.serve({
+    port: 0,
+    async fetch(upstreamRequest) {
+      const encoding = upstreamRequest.headers.get("content-encoding");
+      const bytes = new Uint8Array(await upstreamRequest.arrayBuffer());
+      const request = {
+        encoding,
+        body: new TextDecoder().decode(
+          encoding === "gzip" ? Bun.gunzipSync(bytes) : bytes
+        ),
+      };
+      received.push(request);
+      return respond(request);
+    },
+  });
+  const original = globalThis.fetch;
+  globalThis.fetch = ((_input, init) =>
+    original(server.url, init)) as typeof fetch;
+  try {
+    await run(received);
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+    await server.stop(true);
+  }
+};
+
+const claudeTurn = (text: string) =>
+  JSON.stringify({
+    model: "claude-fake",
+    stream: true,
+    system: [{ type: "text", text: CLAUDE_SYSTEM_IDENTITY }],
+    messages: [{ role: "user", content: [{ type: "text", text }] }],
+  });
+
+test("large Claude bodies reach the upstream as decodable gzip and SSE still streams back", async () => {
+  const key = await createApiKey(db, {}, Date.now());
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const sse = () =>
+    new Response(complete, {
+      headers: { "content-type": "text/event-stream" },
+    });
+  await withLocalClaudeUpstream(sse, async (received) => {
+    for (const entry of [
+      { body: claudeTurn("hi"), sent: null, out: null },
+      { body: claudeTurn("x".repeat(5000)), sent: null, out: "gzip" },
+      { body: claudeTurn("x".repeat(5000)), sent: "zstd", out: "gzip" },
+    ]) {
+      const response = await authenticated.request("/anthropic/v1/messages", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${key.key}`,
+          ...(entry.sent ? { "content-encoding": entry.sent } : {}),
+        },
+        body: entry.sent ? Bun.zstdCompressSync(entry.body) : entry.body,
+      });
+      expect(response.headers.get("content-type")).toBe("text/event-stream");
+      expect(await response.text()).toBe(complete);
+      const upstream = received.at(-1);
+      expect(upstream?.encoding ?? null).toBe(entry.out);
+      expect(JSON.parse(upstream?.body ?? "")).toEqual(JSON.parse(entry.body));
+    }
+  });
+});
+
+// Claude Code turns gzip off for the process after a rejection, so this runs
+// after every other test that expects gzip.
+test("only a gzip rejection is resent once uncompressed, and later bodies stay uncompressed", async () => {
+  const anthropicError = (message: string) =>
+    Response.json(
+      { type: "error", error: { type: "invalid_request_error", message } },
+      { status: 400, headers: { "request-id": "req_fake" } }
+    );
+  const large = claudeTurn("x".repeat(5000));
+  const send = async () => {
+    const response = await app.request("/anthropic/v1/messages", {
+      method: "POST",
+      body: large,
+    });
+    return { status: response.status, body: await response.text() };
+  };
+
+  await withLocalClaudeUpstream(
+    () => anthropicError("messages: Field required"),
+    async (received) => {
+      expect((await send()).status).toBe(400);
+      expect(received.map((request) => request.encoding)).toEqual(["gzip"]);
+    }
+  );
+
+  await withLocalClaudeUpstream(
+    (request) =>
+      request.encoding === "gzip"
+        ? anthropicError("The request body is not valid JSON: unexpected byte")
+        : Response.json({ type: "message", content: [], usage }),
+    async (received) => {
+      expect(await send()).toMatchObject({ status: 200 });
+      expect(await send()).toMatchObject({ status: 200 });
+      expect(received.map((request) => request.encoding)).toEqual([
+        "gzip",
+        null,
+        null,
+      ]);
+      expect(received[1]?.body).toBe(received[0]?.body.trimEnd());
+      expect(JSON.parse(received[1]?.body ?? "")).toEqual(JSON.parse(large));
+    }
+  );
+});
