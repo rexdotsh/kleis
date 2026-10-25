@@ -1783,37 +1783,75 @@ test("a slow extra-usage error body is still caught and flags the account", asyn
   }
 });
 
-test("an older extra-usage reading never restores a state a later response cleared", async () => {
+test.each([
+  ["a later millisecond", false],
+  ["the same millisecond", true],
+])(
+  "an older extra-usage reading never restores a state a response arriving in %s cleared",
+  async (_name, frozen) => {
+    const originalFetch = globalThis.fetch;
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const clock = frozen
+      ? spyOn(Date, "now").mockReturnValue(Date.now())
+      : null;
+    try {
+      globalThis.fetch = (async () =>
+        Response.json(
+          { type: "message", content: [] },
+          {
+            headers: {
+              "anthropic-ratelimit-unified-status": "allowed",
+              "anthropic-ratelimit-unified-overage-in-use": "true",
+            },
+          }
+        )) as typeof fetch;
+      await (await request()).text();
+      expect(extraUsageState()).toBe("in_use");
+
+      const responses = [delayedLongContext429(70), planResponse()];
+      globalThis.fetch = (async () => responses.shift()) as typeof fetch;
+      const [slow, later] = await Promise.all([
+        request(),
+        Bun.sleep(20).then(request),
+      ]);
+      expect([slow.status, later.status]).toEqual([429, 200]);
+      await Promise.all([slow.text(), later.text()]);
+      expect(extraUsageState()).toBeUndefined();
+    } finally {
+      clock?.mockRestore();
+      warn.mockRestore();
+      globalThis.fetch = originalFetch;
+    }
+  }
+);
+
+test("a stalled error body is cut off and its bytes passed through", async () => {
   const originalFetch = globalThis.fetch;
   const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const partial = '{"type":"error","error":{"type":"invalid_request_error"';
+  let cancelled = false;
+  globalThis.fetch = (async () =>
+    new Response(
+      new ReadableStream({
+        start(controller): void {
+          controller.enqueue(new TextEncoder().encode(partial));
+        },
+        cancel(): void {
+          cancelled = true;
+        },
+      }),
+      { status: 400, headers: { "content-type": "application/json" } }
+    )) as typeof fetch;
   try {
-    globalThis.fetch = (async () =>
-      Response.json(
-        { type: "message", content: [] },
-        {
-          headers: {
-            "anthropic-ratelimit-unified-status": "allowed",
-            "anthropic-ratelimit-unified-overage-in-use": "true",
-          },
-        }
-      )) as typeof fetch;
-    await (await request()).text();
-    expect(extraUsageState()).toBe("in_use");
-
-    const responses = [delayedLongContext429(70), planResponse()];
-    globalThis.fetch = (async () => responses.shift()) as typeof fetch;
-    const [slow, later] = await Promise.all([
-      request(),
-      Bun.sleep(20).then(request),
-    ]);
-    expect([slow.status, later.status]).toEqual([429, 200]);
-    await Promise.all([slow.text(), later.text()]);
-    expect(extraUsageState()).toBeUndefined();
+    const response = await request();
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe(partial);
+    expect(cancelled).toBe(true);
   } finally {
     warn.mockRestore();
     globalThis.fetch = originalFetch;
   }
-});
+}, 10_000);
 
 test("synthesized quota errors discard upstream retry overrides and hints", async () => {
   const originalFetch = globalThis.fetch;

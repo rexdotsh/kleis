@@ -21,7 +21,9 @@ import {
   readCodexLiveLimits,
 } from "../../providers/account-tracking/live-limits";
 import {
+  type ClaudeResponseArrival,
   createClaudeExtraUsageResponse,
+  markClaudeResponseArrival,
   readClaudeExtraUsageBilling,
   readClaudeExtraUsageError,
 } from "../../providers/proxies/claude-extra-usage";
@@ -187,8 +189,7 @@ type ProxyAttempt = {
   transformResponse: ((response: Response) => Promise<Response>) | null;
   // Set, possibly to null, when the attempt already read the error body.
   errorPayload?: unknown;
-  // When the upstream response headers arrived.
-  receivedAt?: number;
+  arrival?: ClaudeResponseArrival;
 };
 
 const createUsageRecorder = (input: UsageRecorderInput) => {
@@ -471,12 +472,12 @@ const proxyRequest = async (
           signal: context.req.raw.signal,
           useCodexSseHeaderTimeout: false,
         });
-        const receivedAt = Date.now();
+        const arrival = markClaudeResponseArrival();
         const { transformResponse } = claudeProxy;
         // Extra-usage errors come as 400 or 429 and are classified from the
-        // whole body, however late it arrives.
+        // whole body, not the logger's best-effort read.
         if (response.status !== 400 && response.status !== 429) {
-          return { response, transformResponse, receivedAt };
+          return { response, transformResponse, arrival };
         }
         const buffered = await bufferUpstreamError(
           response,
@@ -486,7 +487,7 @@ const proxyRequest = async (
           response: buffered.response,
           errorPayload: buffered.payload,
           transformResponse,
-          receivedAt,
+          arrival,
         };
       };
       break;
@@ -545,7 +546,7 @@ const proxyRequest = async (
     recordClaudeExtraUsage(
       account,
       extraUsageError ?? readClaudeExtraUsageBilling(attempt.response),
-      attempt.receivedAt ?? respondedAt
+      attempt.arrival ?? markClaudeResponseArrival()
     );
     if (extraUsageError) {
       usageRecorder.recordFinal(attempt.response.status);

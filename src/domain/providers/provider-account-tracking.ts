@@ -30,7 +30,10 @@ import {
   claudeResetLimitTypes,
 } from "../../providers/account-tracking/claude-resets";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
-import type { ClaudeExtraUsageState } from "../../providers/proxies/claude-extra-usage";
+import type {
+  ClaudeExtraUsageState,
+  ClaudeResponseArrival,
+} from "../../providers/proxies/claude-extra-usage";
 import {
   type LiveLimits,
   mergeClaudeLiveLimits,
@@ -1018,17 +1021,18 @@ export const recordProviderAccountLiveLimits = (
   }
 };
 
-// When each account's latest extra-usage reading, clears included, was seen.
-const extraUsageObservedAt = new Map<string, number>();
+// The arrival sequence of each account's latest extra-usage reading in this
+// process, clears included.
+const extraUsageSequences = new Map<string, number>();
 
 // Keeps the last extra-usage state a Claude response reported; a response
 // billed to plan limits clears it. Responses can finish out of order, so a
-// reading older than the latest one is ignored. Memory and buffered
-// snapshots only.
+// reading whose headers arrived before the latest one's is ignored. Memory
+// and buffered snapshots only.
 export const recordClaudeExtraUsage = (
   account: ProviderAccountRecord,
   reading: ClaudeExtraUsageState | "plan" | null,
-  observedAt: number
+  { observedAt, sequence }: ClaudeResponseArrival
 ): void => {
   if (
     reading === null ||
@@ -1043,12 +1047,16 @@ export const recordClaudeExtraUsage = (
     entry?.quota.data.provider === "claude"
       ? entry.quota.data
       : { provider: "claude" };
-  const latest = Math.max(
-    extraUsageObservedAt.get(key) ?? 0,
-    previous.extraUsageSignal?.observedAt ?? 0
-  );
-  if (observedAt < latest) return;
-  extraUsageObservedAt.set(key, observedAt);
+  const latest = extraUsageSequences.get(key);
+  // A signal restored from a snapshot predates every reading in this process.
+  if (
+    latest === undefined
+      ? observedAt < (previous.extraUsageSignal?.observedAt ?? 0)
+      : sequence < latest
+  ) {
+    return;
+  }
+  extraUsageSequences.set(key, sequence);
   if (reading === "plan" && !previous.extraUsageSignal) return;
   const { extraUsageSignal: _replaced, ...rest } = previous;
   const data: ClaudeTrackingData =

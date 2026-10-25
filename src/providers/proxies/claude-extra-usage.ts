@@ -8,6 +8,17 @@ export type ClaudeExtraUsageError =
 
 export type ClaudeExtraUsageState = ClaudeExtraUsageError | "in_use";
 
+export type ClaudeResponseArrival = { observedAt: number; sequence: number };
+
+let arrivals = 0;
+
+// Headers arriving in the same millisecond share a timestamp, so the
+// sequence orders them; the timestamp is for display.
+export const markClaudeResponseArrival = (): ClaudeResponseArrival => ({
+  observedAt: Date.now(),
+  sequence: ++arrivals,
+});
+
 // Anthropic's error messages for requests that need paid extra usage. The
 // "usage credits" wordings are the ones Claude Code 2.1.310 also matches.
 // https://github.com/router-for-me/CLIProxyAPI/issues/6004
