@@ -29,6 +29,15 @@ export const CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER =
   "extended-cache-ttl-2025-04-11";
 // Claude Opus 5.5 requires Claude Code 2.1.280 or newer.
 export const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.280 (external, cli)";
+// Values Claude Code sends in x-claude-code-request-class.
+export const CLAUDE_REQUEST_CLASSES = new Set([
+  "main",
+  "subagent",
+  "workflow",
+  "compaction",
+  "auxiliary",
+  "side_reply",
+]);
 // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L581-L586
 export const CLAUDE_SYSTEM_IDENTITY =
   "You are Claude Code, Anthropic's official CLI for Claude.";

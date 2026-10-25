@@ -1,4 +1,5 @@
 import type { Provider } from "../db/schema";
+import { readClaudeSessionHeader } from "../providers/proxies/claude-proxy";
 import {
   readCodexSessionHeader,
   transformCodexRequestBody,
@@ -35,15 +36,6 @@ const CODEX_TTL_MS: Record<string, number> = {
   "24h": 1440 * MINUTE_MS,
 };
 const CODEX_DEFAULT_TTL_MS = 5 * MINUTE_MS;
-// Claude Code 2.1.86+ and OpenCode send a session header.
-// https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#2186
-// https://github.com/anomalyco/opencode/blob/a517687fde98a7329ada3ae644a01a9fc6c4e99e/packages/core/src/session/model-request.ts#L282-L291
-const CLAUDE_SESSION_HEADERS = [
-  "x-claude-code-session-id",
-  "x-opencode-session-id",
-  "x-session-affinity",
-  "x-session-id",
-] as const;
 // Subagents in OpenCode, Claude Code and Codex send one of these. Claude Code
 // also sends a request class, which is "main" only for main-thread turns.
 // https://github.com/openai/codex/blob/main/codex-rs/core/src/client.rs
@@ -150,9 +142,7 @@ export const readPromptCacheRequest = (
 ): PromptCacheRequest | null => {
   const claude = provider === "claude";
   const session = claude
-    ? CLAUDE_SESSION_HEADERS.map((name) =>
-        input.headers.get(name)?.trim()
-      ).find(Boolean)
+    ? readClaudeSessionHeader(input.headers)
     : readCodexSessionHeader(input.headers);
   if (!session) {
     return null;

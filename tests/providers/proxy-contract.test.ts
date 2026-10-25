@@ -3352,6 +3352,36 @@ describe("proxy contract: claude", () => {
     ]);
   });
 
+  test("namespaces Claude session and prompt IDs per API key and account", () => {
+    const ids = (apiKeyId: string, providerAccountId: string) => {
+      const headers = new Headers({ "x-opencode-session-id": "ses_fake" });
+      const body = { messages: [{ role: "user", content: "hi" }] };
+      prepareClaudeProxyRequest({
+        requestUrl: new URL("https://kleis.local/v1/messages"),
+        headers,
+        bodyText: JSON.stringify(body),
+        bodyJson: body,
+        accessToken: "claude-token",
+        apiKeyId,
+        providerAccountId,
+        metadata: null,
+      });
+      return [
+        headers.get("x-claude-code-session-id"),
+        headers.get("x-claude-code-prompt-id"),
+      ];
+    };
+    const base = ids("key-1", "account-1");
+    expect(ids("key-1", "account-1")).toEqual(base);
+    for (const other of [
+      ids("key-2", "account-1"),
+      ids("key-1", "account-2"),
+    ]) {
+      expect(other[0]).not.toBe(base[0]);
+      expect(other[1]).not.toBe(base[1]);
+    }
+  });
+
   test("always sends beta=true upstream and keeps other query params", () => {
     const result = prepareClaudeProxyRequest({
       requestUrl: new URL(
