@@ -24,7 +24,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@types/bun": "1.4.3",
+    "@types/bun": "1.4.4",
     "@types/ws": "8.18.1",
     "@typescript/native-preview": "^7.0.0-dev.20260223.1",
     "drizzle-kit": "^0.31.9",
