@@ -64,6 +64,63 @@ const isTextBlock = (
 // billing line can't be made true for the rewritten request.
 const BILLING_HEADER_LINE = /^x-anthropic-billing-header:[^\n]*\n?/;
 
+const withCacheControl = (block: unknown, control: unknown): unknown =>
+  isObjectRecord(block) && block.cache_control === undefined
+    ? { ...block, cache_control: control }
+    : block;
+
+// A breakpoint on a removed billing block moves to the prefix block before it
+// (the last tool when it was first), or to the next block when nothing is
+// before it, so the request stays cached.
+const withoutBillingHeader = (payload: JsonObject): JsonObject => {
+  if (typeof payload.system === "string") {
+    return withField(
+      payload,
+      "system",
+      payload.system.replace(BILLING_HEADER_LINE, "")
+    );
+  }
+  if (!Array.isArray(payload.system)) {
+    return payload;
+  }
+
+  let tools = payload.tools;
+  const system: unknown[] = [];
+  let carried: unknown;
+  for (const block of payload.system as unknown[]) {
+    if (!(isTextBlock(block) && BILLING_HEADER_LINE.test(block.text))) {
+      system.push(
+        carried === undefined ? block : withCacheControl(block, carried)
+      );
+      carried = undefined;
+      continue;
+    }
+    const text = block.text.replace(BILLING_HEADER_LINE, "");
+    if (text.trim()) {
+      system.push({ ...block, text });
+    } else if (block.cache_control !== undefined) {
+      if (system.length > 0) {
+        system.push(withCacheControl(system.pop(), block.cache_control));
+      } else if (Array.isArray(tools) && tools.length > 0) {
+        tools = [
+          ...tools.slice(0, -1),
+          withCacheControl(tools.at(-1), block.cache_control),
+        ];
+      } else {
+        carried = block.cache_control;
+      }
+    }
+  }
+  if (carried !== undefined) {
+    system.push({
+      type: "text",
+      text: CLAUDE_SYSTEM_IDENTITY,
+      cache_control: carried,
+    });
+  }
+  return { ...payload, tools, system };
+};
+
 const withClaudeSystemIdentity = (system: unknown): unknown => {
   let blocks = system || [];
   if (typeof blocks === "string") {
@@ -73,17 +130,11 @@ const withClaudeSystemIdentity = (system: unknown): unknown => {
     return system;
   }
 
-  const sanitized = blocks.flatMap((block: unknown) => {
-    if (!isTextBlock(block)) {
-      return [block];
-    }
-    const text = sanitizeClaudeSystemText(
-      block.text.replace(BILLING_HEADER_LINE, "")
-    );
-    return text.trim() || !BILLING_HEADER_LINE.test(block.text)
-      ? [{ ...block, text }]
-      : [];
-  });
+  const sanitized = blocks.map((block: unknown) =>
+    isTextBlock(block)
+      ? { ...block, text: sanitizeClaudeSystemText(block.text) }
+      : block
+  );
   return sanitized.some(
     (block) => isTextBlock(block) && block.text === CLAUDE_SYSTEM_IDENTITY
   )
@@ -443,22 +494,25 @@ const readMessageContent = (message: unknown): unknown[] => {
       : [];
 };
 
-const readFirstMessageText = (messages: unknown[]): string =>
-  readMessageContent(messages[0])
+const readMessageText = (message: unknown): string =>
+  readMessageContent(message)
     .filter(isTextBlock)
     .map((block) => block.text)
     .join("\n");
 
-// A user turn that isn't only tool results starts a new prompt.
-const countUserPrompts = (messages: unknown[]): number =>
-  messages.filter(
-    (message) =>
-      isObjectRecord(message) &&
-      message.role === "user" &&
-      readMessageContent(message).some(
-        (block) => !(isObjectRecord(block) && block.type === "tool_result")
-      )
-  ).length;
+const isUserPrompt = (message: unknown): boolean =>
+  isObjectRecord(message) &&
+  message.role === "user" &&
+  readMessageContent(message).some(
+    (block) => !(isObjectRecord(block) && block.type === "tool_result")
+  );
+
+// A user turn that isn't only tool results starts a new prompt. Its text is
+// part of the key so a prompt after compaction never reuses an earlier ID.
+const readPromptKey = (messages: unknown[]): string => {
+  const prompts = messages.filter(isUserPrompt);
+  return `${prompts.length}:${readMessageText(prompts.at(-1))}`;
+};
 
 const STAINLESS_OS_NAMES: Record<string, string> = {
   darwin: "MacOS",
@@ -500,7 +554,7 @@ export const prepareClaudeProxyRequest = (
     `${sessionKey}:${
       clientSession
         ? `session:${clientSession}`
-        : `message:${readFirstMessageText(messages)}`
+        : `message:${readMessageText(messages[0])}`
     }`
   );
   const userId = JSON.stringify({
@@ -510,16 +564,19 @@ export const prepareClaudeProxyRequest = (
   });
 
   const { payload, toolNames } = mapClaudeRequestToolNames(input.bodyJson);
-  let transformedPayload = isObjectRecord(payload)
+  const stripped = isObjectRecord(payload)
+    ? withoutBillingHeader(payload)
+    : payload;
+  let transformedPayload = isObjectRecord(stripped)
     ? {
-        ...payload,
-        system: withClaudeSystemIdentity(payload.system),
+        ...stripped,
+        system: withClaudeSystemIdentity(stripped.system),
         metadata: {
-          ...(isObjectRecord(payload.metadata) ? payload.metadata : {}),
+          ...(isObjectRecord(stripped.metadata) ? stripped.metadata : {}),
           user_id: userId,
         },
       }
-    : payload;
+    : stripped;
   const cache = { found: false };
   if (isObjectRecord(transformedPayload)) {
     let upgraded = transformedPayload;
@@ -566,7 +623,7 @@ export const prepareClaudeProxyRequest = (
   input.headers.set("x-app", "cli");
   input.headers.set(
     "x-claude-code-prompt-id",
-    hashUuid(`${sessionId}:${countUserPrompts(messages)}`)
+    hashUuid(`${sessionId}:${readPromptKey(messages)}`)
   );
   input.headers.set(
     "x-claude-code-request-class",
