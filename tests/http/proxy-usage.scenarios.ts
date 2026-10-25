@@ -1097,6 +1097,54 @@ test("100 identical Claude 429s do not flood the logs or change client responses
   }
 });
 
+test("Claude Code version rejections tell the client to bump the emulated version", async () => {
+  const originalFetch = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const error = spyOn(console, "error").mockImplementation(() => undefined);
+  // Shape from Claude Code 2.1.310 and opencode-claude-auth issue #278.
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      Response.json(
+        {
+          type: "error",
+          error: {
+            type: "invalid_request_error",
+            message:
+              "Claude Code 2.1.245 does not support this model; version 2.1.251 or newer is required. Run 'claude update', or update the Claude desktop app, then try again.",
+            details: { error_code: "claude_code_version_too_old" },
+          },
+        },
+        { status: 400 }
+      )
+    )) as typeof fetch;
+  try {
+    const response = await request();
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as {
+      error: { message: string; details: unknown };
+    };
+    expect(body.error.details).toEqual({
+      error_code: "claude_code_version_too_old",
+    });
+    expect(body.error.message).toContain("2.1.251 or newer");
+    expect(body.error.message).toContain(
+      "Bump the emulated Claude Code version in Kleis"
+    );
+    expect(body.error.message).not.toContain("claude update");
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(error.mock.calls[0]?.[0]))).toMatchObject({
+      level: "error",
+      event: "claude_code_version_too_old",
+      status: 400,
+      requiredVersion: "2.1.251",
+    });
+  } finally {
+    warn.mockRestore();
+    error.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("exhausted 429s expose only the blocking window's reset and account", async () => {
   const originalFetch = globalThis.fetch;
   const now = Math.floor(Date.now() / 1000) * 1000;
