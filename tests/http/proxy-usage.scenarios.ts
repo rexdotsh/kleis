@@ -1955,3 +1955,101 @@ test("Claude requests without cache_control are forwarded unchanged without the 
   expect(forwarded.body).toBe(body);
   expect(forwarded.extendedBeta).toBe(false);
 });
+
+const userTurn = (text: string) => ({
+  role: "user",
+  content: [{ type: "text", text }],
+});
+
+const sendClaude = async (
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {}
+) => {
+  const original = globalThis.fetch;
+  let forwarded = {
+    headers: {} as Record<string, string>,
+    body: {} as {
+      tools?: unknown;
+      system?: unknown;
+      metadata?: { user_id: string };
+    },
+  };
+  globalThis.fetch = (async (_input, init) => {
+    forwarded = {
+      headers: Object.fromEntries(new Headers(init?.headers)),
+      body: JSON.parse(String(init?.body)) as typeof forwarded.body,
+    };
+    return Response.json({ type: "message", content: [], usage });
+  }) as typeof fetch;
+  try {
+    const response = await app.request("/anthropic/v1/messages", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "claude-opus-5-5", ...body }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+  return forwarded;
+};
+
+test("Claude billing header blocks from clients are stripped, not forwarded", async () => {
+  const billing =
+    "x-anthropic-billing-header: cc_version=2.1.310.325; cc_entrypoint=sdk-cli; cch=00000;";
+  const identity = { type: "text", text: CLAUDE_SYSTEM_IDENTITY };
+  for (const system of [
+    [
+      { type: "text", text: billing },
+      identity,
+      { type: "text", text: "rules" },
+    ],
+    [{ type: "text", text: `${billing}\nrules` }],
+  ]) {
+    const { body } = await sendClaude({ system, messages: [userTurn("hi")] });
+    expect(body.system).toEqual([identity, { type: "text", text: "rules" }]);
+  }
+});
+
+test("Claude keeps a breakpoint from a stripped billing block on the prefix before it", async () => {
+  const billing = {
+    type: "text",
+    text: "x-anthropic-billing-header: cc_version=2.1.310.325; cc_entrypoint=sdk-cli;",
+    cache_control: breakpoint,
+  };
+  const identity = { type: "text", text: CLAUDE_SYSTEM_IDENTITY };
+  const rules = { type: "text", text: "rules" };
+  const cached = (block: object) => ({
+    ...block,
+    cache_control: { type: "ephemeral", ttl: "1h" },
+  });
+  const tool = { name: "read", input_schema: {} };
+  for (const { sent, expected } of [
+    {
+      sent: { tools: [tool], system: [billing, identity, rules] },
+      expected: {
+        tools: [cached({ ...tool, name: "mcp_Read" })],
+        system: [identity, rules],
+      },
+    },
+    {
+      sent: { system: [identity, billing, rules] },
+      expected: { system: [cached(identity), rules] },
+    },
+    {
+      sent: { system: [billing, identity, rules] },
+      expected: { system: [cached(identity), rules] },
+    },
+  ]) {
+    const { body, headers } = await sendClaude({
+      ...sent,
+      messages: [userTurn("hi")],
+    });
+    expect({ tools: body.tools, system: body.system }).toEqual(expected);
+    expect(headers["anthropic-beta"]?.split(",")).toContain(
+      CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER
+    );
+  }
+});
