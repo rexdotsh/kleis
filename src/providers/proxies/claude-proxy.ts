@@ -416,6 +416,7 @@ type ClaudeProxyPreparationResult = {
 export const prepareClaudeProxyRequest = (
   input: ClaudeProxyPreparationInput
 ): ClaudeProxyPreparationResult => {
+  const incoming = new Headers(input.headers);
   const { payload, toolNames } = mapClaudeRequestToolNames(input.bodyJson);
   let transformedPayload = isObjectRecord(payload)
     ? { ...payload, system: withClaudeSystemIdentity(payload.system) }
@@ -437,23 +438,30 @@ export const prepareClaudeProxyRequest = (
       ? JSON.stringify(transformedPayload)
       : input.bodyText;
 
-  const mergedBetas = mergeBetaHeaders(
-    input.headers,
-    cache.found
-      ? [...CLAUDE_REQUIRED_BETA_HEADERS, CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER]
-      : CLAUDE_REQUIRED_BETA_HEADERS
-  );
-
-  // OAuth sessions require Claude Code identity headers.
-  // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L525-L538
-  input.headers.set("authorization", `Bearer ${input.accessToken}`);
-  input.headers.set("anthropic-beta", mergedBetas);
-  input.headers.set("anthropic-dangerous-direct-browser-access", "true");
-  input.headers.set("anthropic-version", "2023-06-01");
-  input.headers.set("content-type", "application/json");
+  // Upstream gets exactly the headers interactive Claude Code sends to
+  // api.anthropic.com, so client and SDK labels never pass through.
+  for (const name of Array.from(input.headers.keys())) {
+    input.headers.delete(name);
+  }
   // Claude Code's SDK uses JSON Accept even for SSE responses.
   // https://unpkg.com/@anthropic-ai/sdk@0.128.0/src/client.ts
   input.headers.set("accept", "application/json");
+  input.headers.set(
+    "anthropic-beta",
+    mergeBetaHeaders(
+      incoming,
+      cache.found
+        ? [
+            ...CLAUDE_REQUIRED_BETA_HEADERS,
+            CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER,
+          ]
+        : CLAUDE_REQUIRED_BETA_HEADERS
+    )
+  );
+  input.headers.set("anthropic-dangerous-direct-browser-access", "true");
+  input.headers.set("anthropic-version", "2023-06-01");
+  input.headers.set("authorization", `Bearer ${input.accessToken}`);
+  input.headers.set("content-type", "application/json");
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
   input.headers.set("x-app", "cli");
   input.headers.set("x-stainless-arch", process.arch);

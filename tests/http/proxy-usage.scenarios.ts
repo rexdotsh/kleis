@@ -1955,3 +1955,65 @@ test("Claude requests without cache_control are forwarded unchanged without the 
   expect(forwarded.body).toBe(body);
   expect(forwarded.extendedBeta).toBe(false);
 });
+
+const userTurn = (text: string) => ({
+  role: "user",
+  content: [{ type: "text", text }],
+});
+
+const sendClaude = async (
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {}
+) => {
+  const original = globalThis.fetch;
+  let forwarded = {
+    headers: {} as Record<string, string>,
+    body: {} as {
+      tools?: unknown;
+      system?: unknown;
+      metadata?: { user_id: string };
+    },
+  };
+  globalThis.fetch = (async (_input, init) => {
+    forwarded = {
+      headers: Object.fromEntries(new Headers(init?.headers)),
+      body: JSON.parse(String(init?.body)) as typeof forwarded.body,
+    };
+    return Response.json({ type: "message", content: [], usage });
+  }) as typeof fetch;
+  try {
+    const response = await app.request("/anthropic/v1/messages", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "claude-opus-5-5", ...body }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+  return forwarded;
+};
+
+test("Claude client SDK, session and tracing headers never reach Anthropic", async () => {
+  const client = {
+    "user-agent":
+      "claude-cli/2.1.310 (external, sdk-cli, agent-sdk/0.2.310, client-app/fake-app/1.0)",
+    "x-app": "sdk",
+    "x-client-app": "fake-app/1.0",
+    "x-claude-code-request-class": "sdk",
+    "x-stainless-helper-method": "stream",
+    "x-stainless-package-version": "0.50.0",
+    "x-stainless-runtime": "deno",
+    "x-opencode-session-id": "ses_fake",
+    "x-session-affinity": "ses_fake",
+    traceparent: "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+    b3: "80f198ee56343ba864fe8b2a57d3eff7-e457b5a2e4d86bd1-1",
+    "x-fake-extra": "1",
+  };
+  const { headers } = await sendClaude({ messages: [userTurn("hi")] }, client);
+  expect(
+    Object.entries(client).filter(([name, value]) => headers[name] === value)
+  ).toEqual([]);
+});
