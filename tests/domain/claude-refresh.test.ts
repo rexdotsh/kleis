@@ -194,6 +194,36 @@ describe("Claude refresh lifecycle", () => {
     }
   );
 
+  test("stops sending a rejected scope on later refreshes", async () => {
+    await setGrantedScope(`${claudeCodeScope} user:plugins`);
+    const sent: (string | undefined)[] = [];
+    globalThis.fetch = ((_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { scope?: string };
+      sent.push(body.scope);
+      if (body.scope) {
+        return Promise.resolve(
+          Response.json({ error: "invalid_scope" }, { status: 400 })
+        );
+      }
+      return Promise.resolve(
+        Response.json({
+          access_token: "new-access",
+          refresh_token: "new-refresh",
+          expires_in: 3600,
+        })
+      );
+    }) as typeof fetch;
+
+    await refreshProviderAccount(database, id, Date.now());
+    await refreshProviderAccount(database, id, Date.now(), { force: true });
+
+    expect(sent).toStrictEqual([
+      `${claudeCodeScope} user:plugins`,
+      undefined,
+      undefined,
+    ]);
+  });
+
   test("does not retry a scoped refresh that timed out", async () => {
     await setGrantedScope(claudeCodeScope);
     let calls = 0;

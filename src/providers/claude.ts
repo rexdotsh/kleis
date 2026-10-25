@@ -134,7 +134,7 @@ const readRefreshScope = (grantedScope: string | null): string | null => {
 const refreshClaudeTokens = async (
   refreshToken: string,
   grantedScope: string | null
-): Promise<ClaudeTokenResponse> => {
+): Promise<{ tokens: ClaudeTokenResponse; scopeRejected: boolean }> => {
   const body = {
     grant_type: "refresh_token",
     refresh_token: refreshToken,
@@ -142,10 +142,13 @@ const refreshClaudeTokens = async (
   };
   const scope = readRefreshScope(grantedScope);
   if (!scope) {
-    return requestClaudeTokens(body);
+    return { tokens: await requestClaudeTokens(body), scopeRejected: false };
   }
   try {
-    return await requestClaudeTokens({ ...body, scope });
+    return {
+      tokens: await requestClaudeTokens({ ...body, scope }),
+      scopeRejected: false,
+    };
   } catch (error) {
     // Claude Code retries the same refresh token after invalid_scope.
     if (
@@ -155,7 +158,7 @@ const refreshClaudeTokens = async (
     ) {
       throw error;
     }
-    return requestClaudeTokens(body);
+    return { tokens: await requestClaudeTokens(body), scopeRejected: true };
   }
 };
 
@@ -301,7 +304,7 @@ export const claudeAdapter: ProviderAdapter = {
   ): Promise<ProviderTokenResult> {
     const existing =
       account.metadata?.provider === "claude" ? account.metadata : null;
-    const tokens = await refreshClaudeTokens(
+    const { tokens, scopeRejected } = await refreshClaudeTokens(
       account.refreshToken,
       existing?.scope ?? null
     );
@@ -310,7 +313,9 @@ export const claudeAdapter: ProviderAdapter = {
       tokens,
       mode: existing?.oauthMode ?? "max",
       host: existing?.oauthHost ?? "claude.ai",
-      existing,
+      // A rejected stored scope is dropped so later refreshes omit it.
+      existing:
+        existing && scopeRejected ? { ...existing, scope: null } : existing,
       fallbackRefreshToken: account.refreshToken,
       fallbackAccountId: account.accountId,
     });
