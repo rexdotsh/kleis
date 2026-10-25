@@ -2,9 +2,12 @@ import type { ClaudeAccountMetadata } from "../metadata";
 
 import {
   ANTHROPIC_API_BASE_URL,
+  CLAUDE_BETA_HEADERS,
+  CLAUDE_CACHE_DIAGNOSIS_BETA_HEADER,
   CLAUDE_CLI_USER_AGENT,
   CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER,
-  CLAUDE_REQUIRED_BETA_HEADERS,
+  CLAUDE_REQUEST_CLASSES,
+  CLAUDE_STAINLESS_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
 } from "../constants";
 import { requireProxyEndpointRoute } from "../proxy-endpoints";
@@ -57,6 +60,10 @@ const isTextBlock = (
   block.type === "text" &&
   typeof block.text === "string";
 
+// Claude Code fills its cch field after serializing the body, so a forwarded
+// billing line can't be made true for the rewritten request.
+const BILLING_HEADER_LINE = /^x-anthropic-billing-header:[^\n]*\n?/;
+
 const withClaudeSystemIdentity = (system: unknown): unknown => {
   let blocks = system || [];
   if (typeof blocks === "string") {
@@ -66,11 +73,17 @@ const withClaudeSystemIdentity = (system: unknown): unknown => {
     return system;
   }
 
-  const sanitized = blocks.map((block: unknown) =>
-    isTextBlock(block)
-      ? { ...block, text: sanitizeClaudeSystemText(block.text) }
-      : block
-  );
+  const sanitized = blocks.flatMap((block: unknown) => {
+    if (!isTextBlock(block)) {
+      return [block];
+    }
+    const text = sanitizeClaudeSystemText(
+      block.text.replace(BILLING_HEADER_LINE, "")
+    );
+    return text.trim() || !BILLING_HEADER_LINE.test(block.text)
+      ? [{ ...block, text }]
+      : [];
+  });
   return sanitized.some(
     (block) => isTextBlock(block) && block.text === CLAUDE_SYSTEM_IDENTITY
   )
@@ -387,12 +400,79 @@ const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {
   return [...new Set([...required, ...incoming])].join(",");
 };
 
+const readClaudeBetas = (model: unknown, cacheFound: boolean): string[] => [
+  ...CLAUDE_BETA_HEADERS.filter(
+    (entry) =>
+      !entry.models || (typeof model === "string" && entry.models.test(model))
+  ).map((entry) => entry.beta),
+  ...(cacheFound ? [CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER] : []),
+  CLAUDE_CACHE_DIAGNOSIS_BETA_HEADER,
+];
+
+// Claude Code 2.1.86+ and OpenCode send a session header.
+// https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#2186
+// https://github.com/anomalyco/opencode/blob/a517687fde98a7329ada3ae644a01a9fc6c4e99e/packages/core/src/session/model-request.ts#L282-L291
+const CLAUDE_SESSION_HEADERS = [
+  "x-claude-code-session-id",
+  "x-opencode-session-id",
+  "x-session-affinity",
+  "x-session-id",
+] as const;
+
+export const readClaudeSessionHeader = (headers: Headers): string | undefined =>
+  CLAUDE_SESSION_HEADERS.map((name) => headers.get(name)?.trim()).find(Boolean);
+
+const sha256Hex = (value: string): string =>
+  new Bun.CryptoHasher("sha256").update(value).digest("hex");
+
+// Claude Code's session and prompt IDs are version 4 UUIDs.
+const hashUuid = (value: string): string => {
+  const hex = sha256Hex(value);
+  const variant = "89ab".charAt(Number.parseInt(hex.charAt(16), 16) % 4);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+};
+
+const readMessageContent = (message: unknown): unknown[] => {
+  if (!isObjectRecord(message)) {
+    return [];
+  }
+  return typeof message.content === "string"
+    ? [{ type: "text", text: message.content }]
+    : Array.isArray(message.content)
+      ? message.content
+      : [];
+};
+
+const readFirstMessageText = (messages: unknown[]): string =>
+  readMessageContent(messages[0])
+    .filter(isTextBlock)
+    .map((block) => block.text)
+    .join("\n");
+
+// A user turn that isn't only tool results starts a new prompt.
+const countUserPrompts = (messages: unknown[]): number =>
+  messages.filter(
+    (message) =>
+      isObjectRecord(message) &&
+      message.role === "user" &&
+      readMessageContent(message).some(
+        (block) => !(isObjectRecord(block) && block.type === "tool_result")
+      )
+  ).length;
+
+const STAINLESS_OS_NAMES: Record<string, string> = {
+  darwin: "MacOS",
+  linux: "Linux",
+  win32: "Windows",
+};
+
 type ClaudeProxyPreparationInput = {
   requestUrl: URL;
   headers: Headers;
   bodyText: string;
   bodyJson: unknown;
   accessToken: string;
+  apiKeyId?: string;
   providerAccountId?: string;
   metadata: ClaudeAccountMetadata | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
@@ -409,9 +489,36 @@ type ClaudeProxyPreparationResult = {
 export const prepareClaudeProxyRequest = (
   input: ClaudeProxyPreparationInput
 ): ClaudeProxyPreparationResult => {
+  const incoming = new Headers(input.headers);
+  const messages =
+    isObjectRecord(input.bodyJson) && Array.isArray(input.bodyJson.messages)
+      ? input.bodyJson.messages
+      : [];
+  const sessionKey = `${input.apiKeyId ?? ""}:${input.providerAccountId ?? ""}`;
+  const clientSession = readClaudeSessionHeader(incoming);
+  const sessionId = hashUuid(
+    `${sessionKey}:${
+      clientSession
+        ? `session:${clientSession}`
+        : `message:${readFirstMessageText(messages)}`
+    }`
+  );
+  const userId = JSON.stringify({
+    device_id: sha256Hex(`device:${sessionKey}`),
+    account_uuid: input.metadata?.accountUuid ?? "",
+    session_id: sessionId,
+  });
+
   const { payload, toolNames } = mapClaudeRequestToolNames(input.bodyJson);
   let transformedPayload = isObjectRecord(payload)
-    ? { ...payload, system: withClaudeSystemIdentity(payload.system) }
+    ? {
+        ...payload,
+        system: withClaudeSystemIdentity(payload.system),
+        metadata: {
+          ...(isObjectRecord(payload.metadata) ? payload.metadata : {}),
+          user_id: userId,
+        },
+      }
     : payload;
   const cache = { found: false };
   if (isObjectRecord(transformedPayload)) {
@@ -430,24 +537,51 @@ export const prepareClaudeProxyRequest = (
       ? JSON.stringify(transformedPayload)
       : input.bodyText;
 
-  const mergedBetas = mergeBetaHeaders(
-    input.headers,
-    cache.found
-      ? [...CLAUDE_REQUIRED_BETA_HEADERS, CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER]
-      : CLAUDE_REQUIRED_BETA_HEADERS
-  );
+  const requestClass =
+    incoming.get("x-claude-code-request-class")?.trim() ?? "";
 
-  // OAuth sessions require Claude Code identity headers.
-  // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L525-L538
-  input.headers.set("authorization", `Bearer ${input.accessToken}`);
-  input.headers.set("anthropic-beta", mergedBetas);
-  input.headers.set("anthropic-version", "2023-06-01");
-  input.headers.set("content-type", "application/json");
+  // Upstream gets exactly the headers interactive Claude Code sends to
+  // api.anthropic.com, so client and SDK labels never pass through.
+  for (const name of Array.from(input.headers.keys())) {
+    input.headers.delete(name);
+  }
   // Claude Code's SDK uses JSON Accept even for SSE responses.
   // https://unpkg.com/@anthropic-ai/sdk@0.128.0/src/client.ts
   input.headers.set("accept", "application/json");
+  input.headers.set(
+    "anthropic-beta",
+    mergeBetaHeaders(
+      incoming,
+      readClaudeBetas(
+        isObjectRecord(input.bodyJson) ? input.bodyJson.model : null,
+        cache.found
+      )
+    )
+  );
+  input.headers.set("anthropic-dangerous-direct-browser-access", "true");
+  input.headers.set("anthropic-version", "2023-06-01");
+  input.headers.set("authorization", `Bearer ${input.accessToken}`);
+  input.headers.set("content-type", "application/json");
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
   input.headers.set("x-app", "cli");
+  input.headers.set(
+    "x-claude-code-prompt-id",
+    hashUuid(`${sessionId}:${countUserPrompts(messages)}`)
+  );
+  input.headers.set(
+    "x-claude-code-request-class",
+    CLAUDE_REQUEST_CLASSES.has(requestClass) ? requestClass : "main"
+  );
+  input.headers.set("x-claude-code-session-id", sessionId);
+  input.headers.set("x-client-request-id", crypto.randomUUID());
+  input.headers.set("x-stainless-arch", process.arch);
+  input.headers.set(
+    "x-stainless-os",
+    STAINLESS_OS_NAMES[process.platform] ?? `Other:${process.platform}`
+  );
+  for (const [name, value] of Object.entries(CLAUDE_STAINLESS_HEADERS)) {
+    input.headers.set(name, value);
+  }
 
   return {
     upstreamUrl: buildUpstreamUrl(input.requestUrl.search),

@@ -19,16 +19,53 @@ const CLAUDE_CODE_BETA_HEADER = "claude-code-20250219";
 export const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
 const CLAUDE_INTERLEAVED_THINKING_BETA_HEADER =
   "interleaved-thinking-2025-05-14";
-export const CLAUDE_REQUIRED_BETA_HEADERS = [
-  CLAUDE_CODE_BETA_HEADER,
-  CLAUDE_OAUTH_BETA_HEADER,
-  CLAUDE_INTERLEAVED_THINKING_BETA_HEADER,
-] as const;
+// Claude Code 2.1.310 main-thread betas in its order, with the models it sends
+// each for. Betas that change thinking output or tool permissions are left out.
+export const CLAUDE_BETA_HEADERS: ReadonlyArray<{
+  beta: string;
+  models?: RegExp;
+}> = [
+  { beta: CLAUDE_CODE_BETA_HEADER },
+  { beta: CLAUDE_OAUTH_BETA_HEADER },
+  { beta: CLAUDE_INTERLEAVED_THINKING_BETA_HEADER },
+  { beta: "thinking-token-count-2026-05-13" },
+  { beta: "context-management-2025-06-27" },
+  { beta: "prompt-caching-scope-2026-01-05" },
+  { beta: "per-turn-control-2026-07-01", models: /^claude-[a-z]+-5-5/ },
+  {
+    beta: "mid-conversation-tool-changes-2026-07-01",
+    models: /^claude-(?:[a-z]+-5-5|opus-4-8|mythos-5)/,
+  },
+  { beta: "advanced-tool-use-2025-11-20" },
+  {
+    beta: "effort-2025-11-24",
+    models: /^claude-(?:[a-z]+-5|opus-4-[5-9]|sonnet-4-6)/,
+  },
+];
 // Claude Code sends it with every 1h cache_control.
 export const CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER =
   "extended-cache-ttl-2025-04-11";
-// Claude Opus 5.5 requires Claude Code 2.1.280 or newer.
-export const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.280 (external, cli)";
+export const CLAUDE_CACHE_DIAGNOSIS_BETA_HEADER = "cache-diagnosis-2026-04-07";
+const CLAUDE_CODE_VERSION = "2.1.310";
+export const CLAUDE_CLI_USER_AGENT = `claude-cli/${CLAUDE_CODE_VERSION} (external, cli)`;
+// The Anthropic SDK build bundled in Claude Code 2.1.310.
+export const CLAUDE_STAINLESS_HEADERS = {
+  "x-stainless-lang": "js",
+  "x-stainless-package-version": "0.128.0",
+  "x-stainless-runtime": "node",
+  "x-stainless-runtime-version": "v26.3.0",
+  "x-stainless-retry-count": "0",
+  "x-stainless-timeout": "600",
+} as const;
+// Values Claude Code sends in x-claude-code-request-class.
+export const CLAUDE_REQUEST_CLASSES = new Set([
+  "main",
+  "subagent",
+  "workflow",
+  "compaction",
+  "auxiliary",
+  "side_reply",
+]);
 // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L581-L586
 export const CLAUDE_SYSTEM_IDENTITY =
   "You are Claude Code, Anthropic's official CLI for Claude.";

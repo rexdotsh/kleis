@@ -438,6 +438,7 @@ const proxyRequest = async (
           bodyText: requestBody,
           bodyJson: requestBodyJson,
           accessToken: attemptAccount.accessToken,
+          apiKeyId,
           providerAccountId: attemptAccount.id,
           metadata:
             attemptAccount.metadata?.provider === "claude"

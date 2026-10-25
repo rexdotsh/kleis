@@ -1945,13 +1945,208 @@ test("Claude TTL rewrites leave the rest of the body byte-identical", async () =
   expect(upgraded.body).toBe(explicit.body);
 });
 
-test("Claude requests without cache_control are forwarded unchanged without the TTL beta", async () => {
-  const body = JSON.stringify({
+test("Claude requests without cache_control keep their content without the TTL beta", async () => {
+  const body = {
     model: "claude-fake",
     system: [{ type: "text", text: CLAUDE_SYSTEM_IDENTITY }],
     messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-  });
-  const forwarded = await forwardClaude(body);
-  expect(forwarded.body).toBe(body);
+  };
+  const forwarded = await forwardClaude(JSON.stringify(body));
+  const { metadata: _metadata, ...content } = JSON.parse(forwarded.body);
+  expect(content).toEqual(body);
   expect(forwarded.extendedBeta).toBe(false);
+});
+
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const userTurn = (text: string) => ({
+  role: "user",
+  content: [{ type: "text", text }],
+});
+const toolTurns = [
+  {
+    role: "assistant",
+    content: [{ type: "tool_use", id: "toolu_fake", name: "read", input: {} }],
+  },
+  {
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: "toolu_fake", content: "" }],
+  },
+];
+
+const sendClaude = async (
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {}
+) => {
+  const original = globalThis.fetch;
+  let forwarded = {
+    headers: {} as Record<string, string>,
+    body: {} as { system?: unknown; metadata?: { user_id: string } },
+  };
+  globalThis.fetch = (async (_input, init) => {
+    forwarded = {
+      headers: Object.fromEntries(new Headers(init?.headers)),
+      body: JSON.parse(String(init?.body)) as typeof forwarded.body,
+    };
+    return Response.json({ type: "message", content: [], usage });
+  }) as typeof fetch;
+  try {
+    const response = await app.request("/anthropic/v1/messages", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "claude-opus-5-5", ...body }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+  return forwarded;
+};
+
+test("Claude requests carry exactly the interactive Claude Code header set", async () => {
+  const { headers } = await sendClaude({
+    system: [{ type: "text", text: "rules", cache_control: breakpoint }],
+    messages: [userTurn("hi")],
+  });
+  expect(headers).toEqual({
+    accept: "application/json",
+    "anthropic-beta": [
+      "claude-code-20250219",
+      "oauth-2025-04-20",
+      "interleaved-thinking-2025-05-14",
+      "thinking-token-count-2026-05-13",
+      "context-management-2025-06-27",
+      "prompt-caching-scope-2026-01-05",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
+      "extended-cache-ttl-2025-04-11",
+      "cache-diagnosis-2026-04-07",
+    ].join(","),
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    authorization: expect.stringMatching(/^Bearer fake-token-\d+$/),
+    "content-type": "application/json",
+    "user-agent": "claude-cli/2.1.310 (external, cli)",
+    "x-app": "cli",
+    "x-claude-code-prompt-id": expect.stringMatching(UUID),
+    "x-claude-code-request-class": "main",
+    "x-claude-code-session-id": expect.stringMatching(UUID),
+    "x-client-request-id": expect.stringMatching(UUID),
+    "x-stainless-arch": expect.any(String),
+    "x-stainless-lang": "js",
+    "x-stainless-os": expect.any(String),
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-retry-count": "0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.3.0",
+    "x-stainless-timeout": "600",
+  });
+});
+
+test("Claude billing header blocks from clients are stripped, not forwarded", async () => {
+  const billing =
+    "x-anthropic-billing-header: cc_version=2.1.310.325; cc_entrypoint=sdk-cli; cch=00000;";
+  const identity = { type: "text", text: CLAUDE_SYSTEM_IDENTITY };
+  for (const system of [
+    [
+      { type: "text", text: billing },
+      identity,
+      { type: "text", text: "rules" },
+    ],
+    [{ type: "text", text: `${billing}\nrules` }],
+  ]) {
+    const { body } = await sendClaude({ system, messages: [userTurn("hi")] });
+    expect(body.system).toEqual([identity, { type: "text", text: "rules" }]);
+  }
+});
+
+test("Claude client SDK and non-interactive labels never reach Anthropic", async () => {
+  const body = { messages: [userTurn("hi")] };
+  const without = (headers: Record<string, string>, ...names: string[]) =>
+    Object.fromEntries(
+      Object.entries(headers).filter(([name]) => !names.includes(name))
+    );
+  const clean = await sendClaude(body);
+  for (const [requestClass, expected] of [
+    ["sdk", "main"],
+    ["subagent", "subagent"],
+  ] as const) {
+    const labelled = await sendClaude(body, {
+      "user-agent":
+        "claude-cli/2.1.310 (external, sdk-cli, agent-sdk/0.2.310, client-app/fake-app/1.0)",
+      "x-app": "sdk",
+      "x-client-app": "fake-app/1.0",
+      "x-claude-code-request-class": requestClass,
+      "x-stainless-helper-method": "stream",
+      "x-stainless-package-version": "0.50.0",
+      "x-stainless-runtime": "deno",
+    });
+    expect(labelled.headers["x-claude-code-request-class"]).toBe(expected);
+    expect(
+      without(
+        labelled.headers,
+        "x-client-request-id",
+        "x-claude-code-request-class"
+      )
+    ).toEqual(
+      without(
+        clean.headers,
+        "x-client-request-id",
+        "x-claude-code-request-class"
+      )
+    );
+  }
+});
+
+test("Claude session, prompt and request-class headers are stable within a conversation", async () => {
+  const conversation = async (headers: Record<string, string>) => {
+    const turns = [
+      [
+        {
+          role: "user",
+          content: [{ type: "text", text: "hi", cache_control: breakpoint }],
+        },
+      ],
+      [userTurn("hi"), ...toolTurns],
+      [
+        userTurn("hi"),
+        ...toolTurns,
+        { role: "assistant", content: "ok" },
+        userTurn("next"),
+      ],
+    ];
+    const sent = [];
+    for (const messages of turns) {
+      sent.push(await sendClaude({ messages }, headers));
+    }
+    const ids = sent.map(({ headers: forwarded }) => ({
+      session: forwarded["x-claude-code-session-id"],
+      prompt: forwarded["x-claude-code-prompt-id"],
+      requestClass: forwarded["x-claude-code-request-class"],
+    }));
+    expect(new Set(ids.map((id) => id.session)).size).toBe(1);
+    expect(ids.map((id) => id.requestClass)).toEqual(["main", "main", "main"]);
+    expect(ids[1]?.prompt).toBe(ids[0]?.prompt);
+    expect(ids[2]?.prompt).not.toBe(ids[0]?.prompt);
+    for (const { body } of sent) {
+      expect(JSON.parse(body.metadata?.user_id ?? "")).toEqual({
+        device_id: expect.stringMatching(/^[0-9a-f]{64}$/),
+        account_uuid: "",
+        session_id: ids[0]?.session,
+      });
+    }
+    return ids[0]?.session;
+  };
+
+  const sessions = [
+    await conversation({ "x-opencode-session-id": "ses_fake_1" }),
+    await conversation({ "x-opencode-session-id": "ses_fake_2" }),
+    await conversation({}),
+  ];
+  expect(new Set(sessions).size).toBe(3);
+  expect(sessions).not.toContain("ses_fake_1");
 });
