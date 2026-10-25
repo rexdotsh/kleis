@@ -9,6 +9,9 @@ import { isObjectRecord } from "../src/utils/object";
 const PACKAGE = "@anthropic-ai/claude-code";
 const BINARY_PACKAGE = "@anthropic-ai/claude-code-linux-x64";
 const ISSUE_MARKER = "<!-- kleis:claude-code-version-check -->";
+// The workflow's GITHUB_TOKEN acts as this bot. Anyone can quote the marker,
+// so only issues the bot opened are tracked.
+const ISSUE_AUTHOR = "github-actions[bot]";
 
 const dryRun = process.argv.includes("--dry-run");
 const repository = process.env.GITHUB_REPOSITORY;
@@ -57,15 +60,24 @@ const readEmbeddedBunVersion = async (version: string): Promise<string> => {
   const found = new Set<string>();
   const decoder = new TextDecoder("latin1");
   let tail = "";
+  const scan = (text: string, final: boolean) => {
+    let keepFrom = Math.max(0, text.length - 32);
+    for (const match of text.matchAll(pattern)) {
+      // A version at the end of a chunk may continue in the next one.
+      if (!final && match.index + match[0].length === text.length) {
+        keepFrom = Math.min(keepFrom, match.index);
+      } else if (match[1]) {
+        found.add(match[1]);
+      }
+    }
+    tail = text.slice(keepFrom);
+  };
   for await (const chunk of response.body.pipeThrough(
     new DecompressionStream("gzip")
   )) {
-    const text = tail + decoder.decode(chunk, { stream: true });
-    for (const match of text.matchAll(pattern)) {
-      if (match[1]) found.add(match[1]);
-    }
-    tail = text.slice(-32);
+    scan(tail + decoder.decode(chunk, { stream: true }), false);
   }
+  scan(tail + decoder.decode(), true);
   const versions = [...found];
   if (versions.length !== 1 || !versions[0]) {
     throw new Error(
@@ -127,7 +139,9 @@ const github = (path: string, init?: RequestInit) =>
 const findOpenIssues = async () => {
   const issues: { number: number; title: string; body: string }[] = [];
   for (let page = 1; ; page++) {
-    const batch = await github(`/issues?state=open&per_page=100&page=${page}`);
+    const batch = await github(
+      `/issues?state=open&creator=${encodeURIComponent(ISSUE_AUTHOR)}&per_page=100&page=${page}`
+    );
     if (!Array.isArray(batch)) {
       throw new Error("Expected a list of issues");
     }
@@ -135,6 +149,8 @@ const findOpenIssues = async () => {
       if (
         isObjectRecord(issue) &&
         !issue.pull_request &&
+        isObjectRecord(issue.user) &&
+        issue.user.login === ISSUE_AUTHOR &&
         typeof issue.number === "number" &&
         typeof issue.body === "string" &&
         issue.body.includes(ISSUE_MARKER)
