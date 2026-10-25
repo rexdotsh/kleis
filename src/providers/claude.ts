@@ -1,3 +1,5 @@
+import { constants as zlibConstants, unzipSync } from "node:zlib";
+
 import { z } from "zod";
 
 import {
@@ -12,7 +14,7 @@ import {
   readOAuthCallbackCode,
 } from "./oauth-utils";
 import { parseOAuthStateMetadata } from "./oauth-state";
-import { requireOkResponse } from "./http";
+import { OAuthError, requireOkResponse } from "./http";
 import {
   buildOAuthTokenFields,
   readOAuthText,
@@ -32,16 +34,16 @@ const CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const CLAUDE_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
 const CLAUDE_SCOPE =
   "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
-// Claude Code 2.1.310 refreshes inference grants with this set (GAt() in the
-// binary) and posts token requests with axios 1.15.2's default headers.
+// Claude Code 2.1.310 refreshes inference grants with these scopes plus
+// user:plugins (GAt()), using axios 1.15.2's default headers.
 const CLAUDE_REFRESH_SCOPES = [
   "user:profile",
   "user:inference",
   "user:sessions:claude_code",
   "user:mcp_servers",
   "user:file_upload",
-  "user:plugins",
 ] as const;
+const CLAUDE_PLUGINS_SCOPE = "user:plugins";
 const CLAUDE_TOKEN_USER_AGENT = "axios/1.15.2";
 const CLAUDE_STATE_TTL_MS = 15 * 60 * 1000;
 const CLAUDE_TOKEN_TIMEOUT_MS = 15_000;
@@ -60,6 +62,27 @@ type ClaudeTokenResponse = OAuthTokenResponse & {
   workspace?: { id?: unknown; name?: unknown };
 };
 
+// Bun leaves `compress` bodies encoded; axios inflates them with zlib unzip.
+const decodeCompressedBody = async (response: Response): Promise<Response> => {
+  const encoding = response.headers.get("content-encoding")?.toLowerCase();
+  if (encoding !== "compress" && encoding !== "x-compress") {
+    return response;
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const headers = new Headers(response.headers);
+  headers.delete("content-encoding");
+  headers.delete("content-length");
+  return new Response(
+    bytes.byteLength > 0
+      ? unzipSync(bytes, {
+          flush: zlibConstants.Z_SYNC_FLUSH,
+          finishFlush: zlibConstants.Z_SYNC_FLUSH,
+        })
+      : bytes,
+    { status: response.status, statusText: response.statusText, headers }
+  );
+};
+
 const requestClaudeTokens = async (
   body: Record<string, string>
 ): Promise<ClaudeTokenResponse> => {
@@ -75,8 +98,9 @@ const requestClaudeTokens = async (
     signal: AbortSignal.timeout(CLAUDE_TOKEN_TIMEOUT_MS),
     redirect: "error",
   });
-  await requireOkResponse(response, "Claude OAuth request failed");
-  return readOAuthTokenResponse<ClaudeTokenResponse>(response, "Claude");
+  const decoded = await decodeCompressedBody(response);
+  await requireOkResponse(decoded, "Claude OAuth request failed");
+  return readOAuthTokenResponse<ClaudeTokenResponse>(decoded, "Claude");
 };
 
 const exchangeCodeForTokens = async (input: {
@@ -94,30 +118,45 @@ const exchangeCodeForTokens = async (input: {
   });
 };
 
-// A scope outside the grant fails with invalid_scope, so only granted scopes
-// are sent. Inference grants get Claude Code's refresh set, other grants are
-// sent as stored, and an unknown grant omits scope to keep the original one.
+// Without a stored grant that covers Claude Code's scopes, scope is omitted so
+// the refresh keeps the original grant.
 const readRefreshScope = (grantedScope: string | null): string | null => {
-  const granted = grantedScope?.split(/\s+/).filter(Boolean) ?? [];
-  if (!granted.includes("user:inference")) {
-    return granted.length > 0 ? granted.join(" ") : null;
+  const granted = new Set(grantedScope?.split(/\s+/));
+  if (!CLAUDE_REFRESH_SCOPES.every((scope) => granted.has(scope))) {
+    return null;
   }
-  return CLAUDE_REFRESH_SCOPES.filter((scope) => granted.includes(scope)).join(
-    " "
-  );
+  return [
+    ...CLAUDE_REFRESH_SCOPES,
+    ...(granted.has(CLAUDE_PLUGINS_SCOPE) ? [CLAUDE_PLUGINS_SCOPE] : []),
+  ].join(" ");
 };
 
-const refreshClaudeTokens = (
+const refreshClaudeTokens = async (
   refreshToken: string,
   grantedScope: string | null
 ): Promise<ClaudeTokenResponse> => {
-  const scope = readRefreshScope(grantedScope);
-  return requestClaudeTokens({
+  const body = {
     grant_type: "refresh_token",
     refresh_token: refreshToken,
     client_id: CLAUDE_CLIENT_ID,
-    ...(scope ? { scope } : {}),
-  });
+  };
+  const scope = readRefreshScope(grantedScope);
+  if (!scope) {
+    return requestClaudeTokens(body);
+  }
+  try {
+    return await requestClaudeTokens({ ...body, scope });
+  } catch (error) {
+    // Claude Code retries the same refresh token after invalid_scope.
+    if (
+      !(error instanceof OAuthError) ||
+      error.status !== 400 ||
+      error.code !== "invalid_scope"
+    ) {
+      throw error;
+    }
+    return requestClaudeTokens(body);
+  }
 };
 
 const buildTokenResult = (input: {

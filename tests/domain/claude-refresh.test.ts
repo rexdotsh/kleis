@@ -1,4 +1,5 @@
 import { createClient } from "@libsql/client";
+import { deflateSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/libsql";
 import { migrate } from "drizzle-orm/libsql/migrator";
@@ -131,60 +132,111 @@ describe("Claude refresh lifecycle", () => {
     });
   });
 
+  const setGrantedScope = (scope: string | null) =>
+    database.update(providerAccounts).set({
+      metadataJson: JSON.stringify({
+        provider: "claude",
+        scope,
+        oauthMode: "max",
+        oauthHost: "claude.ai",
+      }),
+    });
+  const claudeCodeScope =
+    "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+
   test.each([
     [
-      "an inference grant",
-      "user:inference user:profile org:create_api_key user:sessions:claude_code user:mcp_servers user:file_upload",
-      "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
+      "a grant covering Claude Code's scopes",
+      `org:create_api_key ${claudeCodeScope}`,
+      [claudeCodeScope],
     ],
+    ["an incomplete grant", "user:inference user:profile", [undefined]],
     [
-      "a grant without inference",
-      "org:create_api_key user:profile",
-      "org:create_api_key user:profile",
+      "an over-claimed grant",
+      `${claudeCodeScope} user:plugins`,
+      [`${claudeCodeScope} user:plugins`, undefined],
     ],
-    ["an unknown grant", null, undefined],
   ] as const)(
-    "requests only scopes within %s and stores the new grant",
-    async (_name, granted, expected) => {
-      await database.update(providerAccounts).set({
-        metadataJson: JSON.stringify({
-          provider: "claude",
-          scope: granted,
-          oauthMode: "max",
-          oauthHost: "claude.ai",
-        }),
-      });
-      let requestBody: Record<string, unknown> | null = null;
+    "refreshes %s without leaving the real grant",
+    async (_name, granted, expectedScopes) => {
+      await setGrantedScope(granted);
+      const sent: { refresh_token: string; scope?: string }[] = [];
       globalThis.fetch = ((_url, init) => {
-        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const body = JSON.parse(String(init?.body)) as (typeof sent)[number];
+        sent.push(body);
+        if (body.scope?.includes("user:plugins")) {
+          return Promise.resolve(
+            Response.json({ error: "invalid_scope" }, { status: 400 })
+          );
+        }
         return Promise.resolve(
           Response.json({
             access_token: "new-access",
             refresh_token: "new-refresh",
             expires_in: 3600,
-            scope: "user:profile user:inference",
+            scope: claudeCodeScope,
           })
         );
       }) as typeof fetch;
 
       const refreshed = await refreshProviderAccount(database, id, Date.now());
 
-      expect(requestBody).toEqual({
-        grant_type: "refresh_token",
-        refresh_token: "old-refresh",
-        client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-        ...(expected ? { scope: expected } : {}),
-      });
+      expect(sent.map((body) => body.scope)).toEqual([...expectedScopes]);
+      expect(sent.every((body) => body.refresh_token === "old-refresh")).toBe(
+        true
+      );
       expect(refreshed).toMatchObject({
         accessToken: "new-access",
         refreshToken: "new-refresh",
         lastRefreshStatus: "success",
       });
-      expect(refreshed?.metadata).toMatchObject({
-        scope: "user:profile user:inference",
-      });
+      expect(refreshed?.metadata).toMatchObject({ scope: claudeCodeScope });
     }
   );
+
+  test("does not retry a scoped refresh that timed out", async () => {
+    await setGrantedScope(claudeCodeScope);
+    let calls = 0;
+    globalThis.fetch = (() => {
+      calls++;
+      return Promise.reject(
+        new DOMException("The operation timed out.", "TimeoutError")
+      );
+    }) as typeof fetch;
+
+    await expect(
+      refreshProviderAccount(database, id, Date.now())
+    ).rejects.toThrow("timed out");
+    expect(calls).toBe(1);
+    expect(await findProviderAccountById(database, id)).toMatchObject({
+      refreshToken: "old-refresh",
+      lastRefreshStatus: "indeterminate",
+    });
+  });
+
+  test("stores tokens from a compress-encoded response", async () => {
+    globalThis.fetch = (() =>
+      Promise.resolve(
+        new Response(
+          deflateSync(
+            JSON.stringify({
+              access_token: "new-access",
+              refresh_token: "new-refresh",
+              expires_in: 3600,
+            })
+          ),
+          { headers: { "Content-Encoding": "compress" } }
+        )
+      )) as typeof fetch;
+
+    expect(
+      await refreshProviderAccount(database, id, Date.now())
+    ).toMatchObject({
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+      lastRefreshStatus: "success",
+    });
+  });
 
   test("shares a rotated result with concurrent refresh waiters", async () => {
     let release: (() => void) | undefined;
