@@ -32,6 +32,17 @@ const CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const CLAUDE_REDIRECT_URI = "https://platform.claude.com/oauth/code/callback";
 const CLAUDE_SCOPE =
   "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+// Claude Code 2.1.310 refreshes inference grants with this set (GAt() in the
+// binary) and posts token requests with axios 1.15.2's default headers.
+const CLAUDE_REFRESH_SCOPES = [
+  "user:profile",
+  "user:inference",
+  "user:sessions:claude_code",
+  "user:mcp_servers",
+  "user:file_upload",
+  "user:plugins",
+] as const;
+const CLAUDE_TOKEN_USER_AGENT = "axios/1.15.2";
 const CLAUDE_STATE_TTL_MS = 15 * 60 * 1000;
 const CLAUDE_TOKEN_TIMEOUT_MS = 15_000;
 const CLAUDE_EXPIRY_SKEW_MS = 60_000;
@@ -55,8 +66,10 @@ const requestClaudeTokens = async (
   const response = await fetch(CLAUDE_TOKEN_URL, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json",
       Accept: "application/json, text/plain, */*",
+      "Content-Type": "application/json",
+      "User-Agent": CLAUDE_TOKEN_USER_AGENT,
+      "Accept-Encoding": "gzip, compress, deflate, br",
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(CLAUDE_TOKEN_TIMEOUT_MS),
@@ -72,23 +85,40 @@ const exchangeCodeForTokens = async (input: {
   verifier: string;
 }): Promise<ClaudeTokenResponse> => {
   return requestClaudeTokens({
-    code: input.code,
-    state: input.state,
     grant_type: "authorization_code",
-    client_id: CLAUDE_CLIENT_ID,
+    code: input.code,
     redirect_uri: CLAUDE_REDIRECT_URI,
+    client_id: CLAUDE_CLIENT_ID,
     code_verifier: input.verifier,
+    state: input.state,
   });
 };
 
+// A scope outside the grant fails with invalid_scope, so only granted scopes
+// are sent. Inference grants get Claude Code's refresh set, other grants are
+// sent as stored, and an unknown grant omits scope to keep the original one.
+const readRefreshScope = (grantedScope: string | null): string | null => {
+  const granted = grantedScope?.split(/\s+/).filter(Boolean) ?? [];
+  if (!granted.includes("user:inference")) {
+    return granted.length > 0 ? granted.join(" ") : null;
+  }
+  return CLAUDE_REFRESH_SCOPES.filter((scope) => granted.includes(scope)).join(
+    " "
+  );
+};
+
 const refreshClaudeTokens = (
-  refreshToken: string
-): Promise<ClaudeTokenResponse> =>
-  requestClaudeTokens({
+  refreshToken: string,
+  grantedScope: string | null
+): Promise<ClaudeTokenResponse> => {
+  const scope = readRefreshScope(grantedScope);
+  return requestClaudeTokens({
     grant_type: "refresh_token",
-    client_id: CLAUDE_CLIENT_ID,
     refresh_token: refreshToken,
+    client_id: CLAUDE_CLIENT_ID,
+    ...(scope ? { scope } : {}),
   });
+};
 
 const buildTokenResult = (input: {
   tokens: ClaudeTokenResponse;
@@ -232,7 +262,10 @@ export const claudeAdapter: ProviderAdapter = {
   ): Promise<ProviderTokenResult> {
     const existing =
       account.metadata?.provider === "claude" ? account.metadata : null;
-    const tokens = await refreshClaudeTokens(account.refreshToken);
+    const tokens = await refreshClaudeTokens(
+      account.refreshToken,
+      existing?.scope ?? null
+    );
 
     return buildTokenResult({
       tokens,

@@ -131,6 +131,61 @@ describe("Claude refresh lifecycle", () => {
     });
   });
 
+  test.each([
+    [
+      "an inference grant",
+      "user:inference user:profile org:create_api_key user:sessions:claude_code user:mcp_servers user:file_upload",
+      "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
+    ],
+    [
+      "a grant without inference",
+      "org:create_api_key user:profile",
+      "org:create_api_key user:profile",
+    ],
+    ["an unknown grant", null, undefined],
+  ] as const)(
+    "requests only scopes within %s and stores the new grant",
+    async (_name, granted, expected) => {
+      await database.update(providerAccounts).set({
+        metadataJson: JSON.stringify({
+          provider: "claude",
+          scope: granted,
+          oauthMode: "max",
+          oauthHost: "claude.ai",
+        }),
+      });
+      let requestBody: Record<string, unknown> | null = null;
+      globalThis.fetch = ((_url, init) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Promise.resolve(
+          Response.json({
+            access_token: "new-access",
+            refresh_token: "new-refresh",
+            expires_in: 3600,
+            scope: "user:profile user:inference",
+          })
+        );
+      }) as typeof fetch;
+
+      const refreshed = await refreshProviderAccount(database, id, Date.now());
+
+      expect(requestBody).toEqual({
+        grant_type: "refresh_token",
+        refresh_token: "old-refresh",
+        client_id: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+        ...(expected ? { scope: expected } : {}),
+      });
+      expect(refreshed).toMatchObject({
+        accessToken: "new-access",
+        refreshToken: "new-refresh",
+        lastRefreshStatus: "success",
+      });
+      expect(refreshed?.metadata).toMatchObject({
+        scope: "user:profile user:inference",
+      });
+    }
+  );
+
   test("shares a rotated result with concurrent refresh waiters", async () => {
     let release: (() => void) | undefined;
     const pending = new Promise<void>((resolve) => {
