@@ -118,8 +118,8 @@ export const readUpstreamErrorPayload = async (
 // Reads an error body to the end, bounded by size, a deadline and the
 // request's abort signal; upstream reads have no timeout of their own. The
 // returned response replays the same bytes. A body over the size bound is
-// passed on unparsed, and one that stalls is cut off at the deadline and
-// passed on unparsed with the bytes that arrived.
+// passed on unparsed. One that stalls is cut off at the deadline and passed on
+// with the bytes that arrived, parsed if they already form the whole JSON.
 export const bufferUpstreamError = async (
   response: Response,
   signal: AbortSignal
@@ -188,10 +188,9 @@ export const bufferUpstreamError = async (
   }
   return {
     response: new Response(body, init),
-    payload:
-      complete && isJsonContent(response)
-        ? tryParseJson(new TextDecoder().decode(body))
-        : null,
+    payload: isJsonContent(response)
+      ? tryParseJson(new TextDecoder().decode(body))
+      : null,
   };
 };
 

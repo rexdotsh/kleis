@@ -1825,33 +1825,68 @@ test.each([
   }
 );
 
-test("a stalled error body is cut off and its bytes passed through", async () => {
-  const originalFetch = globalThis.fetch;
-  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
-  const partial = '{"type":"error","error":{"type":"invalid_request_error"';
-  let cancelled = false;
-  globalThis.fetch = (async () =>
-    new Response(
-      new ReadableStream({
-        start(controller): void {
-          controller.enqueue(new TextEncoder().encode(partial));
-        },
-        cancel(): void {
-          cancelled = true;
-        },
-      }),
-      { status: 400, headers: { "content-type": "application/json" } }
-    )) as typeof fetch;
-  try {
-    const response = await request();
-    expect(response.status).toBe(400);
-    expect(await response.text()).toBe(partial);
-    expect(cancelled).toBe(true);
-  } finally {
-    warn.mockRestore();
-    globalThis.fetch = originalFetch;
-  }
-}, 10_000);
+test.each([
+  {
+    name: "unfinished JSON is passed through unclassified",
+    status: 400,
+    body: '{"type":"error","error":{"type":"invalid_request_error"',
+    headers: {},
+    classified: false,
+  },
+  {
+    name: "a whole long-context error without EOF is still classified",
+    status: 429,
+    body: '{"type":"error","error":{"type":"rate_limit_error","message":"Extra usage is required for long context requests."}}',
+    headers: {
+      "anthropic-ratelimit-unified-status": "rejected",
+      "anthropic-ratelimit-unified-reset": String(
+        Math.floor(Date.now() / 1000) + 3600
+      ),
+    },
+    classified: true,
+  },
+])(
+  "a stalled error body is cut off at the deadline: $name",
+  async ({ status, body, headers, classified }) => {
+    const originalFetch = globalThis.fetch;
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    let cancelled = false;
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream({
+          start(controller): void {
+            controller.enqueue(new TextEncoder().encode(body));
+          },
+          cancel(): void {
+            cancelled = true;
+          },
+        }),
+        {
+          status,
+          headers: { "content-type": "application/json", ...headers },
+        }
+      )) as typeof fetch;
+    try {
+      const response = await request();
+      expect(response.status).toBe(status);
+      expect(cancelled).toBe(true);
+      if (!classified) {
+        expect(await response.text()).toBe(body);
+        return;
+      }
+      expect(response.headers.get("x-should-retry")).toBe("false");
+      expect(response.headers.has("retry-after")).toBe(false);
+      expect(await response.json()).toMatchObject({
+        error: { code: "extra_usage_long_context" },
+      });
+      expect(extraUsageState()).toBe("long_context");
+    } finally {
+      warn.mockRestore();
+      globalThis.fetch = originalFetch;
+    }
+  },
+  10_000
+);
 
 test("synthesized quota errors discard upstream retry overrides and hints", async () => {
   const originalFetch = globalThis.fetch;
