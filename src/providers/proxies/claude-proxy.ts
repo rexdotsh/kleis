@@ -57,6 +57,67 @@ const isTextBlock = (
   block.type === "text" &&
   typeof block.text === "string";
 
+// Claude Code fills its cch field after serializing the body, so a forwarded
+// billing line can't be made true for the rewritten request.
+const BILLING_HEADER_LINE = /^x-anthropic-billing-header:[^\n]*\n?/;
+
+const withCacheControl = (block: unknown, control: unknown): unknown =>
+  isObjectRecord(block) && block.cache_control === undefined
+    ? { ...block, cache_control: control }
+    : block;
+
+// A breakpoint on a removed billing block moves to the prefix block before it
+// (the last tool when it was first), or to the next block when nothing is
+// before it, so the request stays cached.
+const withoutBillingHeader = (payload: JsonObject): JsonObject => {
+  if (typeof payload.system === "string") {
+    return withField(
+      payload,
+      "system",
+      payload.system.replace(BILLING_HEADER_LINE, "")
+    );
+  }
+  if (!Array.isArray(payload.system)) {
+    return payload;
+  }
+
+  let tools = payload.tools;
+  const system: unknown[] = [];
+  let carried: unknown;
+  for (const block of payload.system as unknown[]) {
+    if (!(isTextBlock(block) && BILLING_HEADER_LINE.test(block.text))) {
+      system.push(
+        carried === undefined ? block : withCacheControl(block, carried)
+      );
+      carried = undefined;
+      continue;
+    }
+    const text = block.text.replace(BILLING_HEADER_LINE, "");
+    if (text.trim()) {
+      system.push({ ...block, text });
+    } else if (block.cache_control !== undefined) {
+      if (system.length > 0) {
+        system.push(withCacheControl(system.pop(), block.cache_control));
+      } else if (Array.isArray(tools) && tools.length > 0) {
+        tools = [
+          ...tools.slice(0, -1),
+          withCacheControl(tools.at(-1), block.cache_control),
+        ];
+      } else {
+        carried = block.cache_control;
+      }
+    }
+  }
+  if (carried !== undefined) {
+    system.push({
+      type: "text",
+      text: CLAUDE_SYSTEM_IDENTITY,
+      cache_control: carried,
+    });
+  }
+  return { ...payload, tools, system };
+};
+
 const withClaudeSystemIdentity = (system: unknown): unknown => {
   let blocks = system || [];
   if (typeof blocks === "string") {
@@ -410,9 +471,12 @@ export const prepareClaudeProxyRequest = (
   input: ClaudeProxyPreparationInput
 ): ClaudeProxyPreparationResult => {
   const { payload, toolNames } = mapClaudeRequestToolNames(input.bodyJson);
-  let transformedPayload = isObjectRecord(payload)
-    ? { ...payload, system: withClaudeSystemIdentity(payload.system) }
+  const stripped = isObjectRecord(payload)
+    ? withoutBillingHeader(payload)
     : payload;
+  let transformedPayload = isObjectRecord(stripped)
+    ? { ...stripped, system: withClaudeSystemIdentity(stripped.system) }
+    : stripped;
   const cache = { found: false };
   if (isObjectRecord(transformedPayload)) {
     let upgraded = transformedPayload;
