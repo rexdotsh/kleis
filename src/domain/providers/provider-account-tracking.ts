@@ -1018,12 +1018,17 @@ export const recordProviderAccountLiveLimits = (
   }
 };
 
+// When each account's latest extra-usage reading, clears included, was seen.
+const extraUsageObservedAt = new Map<string, number>();
+
 // Keeps the last extra-usage state a Claude response reported; a response
-// billed to plan limits clears it. Memory and buffered snapshots only.
+// billed to plan limits clears it. Responses can finish out of order, so a
+// reading older than the latest one is ignored. Memory and buffered
+// snapshots only.
 export const recordClaudeExtraUsage = (
   account: ProviderAccountRecord,
   reading: ClaudeExtraUsageState | "plan" | null,
-  now: number
+  observedAt: number
 ): void => {
   if (
     reading === null ||
@@ -1038,19 +1043,25 @@ export const recordClaudeExtraUsage = (
     entry?.quota.data.provider === "claude"
       ? entry.quota.data
       : { provider: "claude" };
+  const latest = Math.max(
+    extraUsageObservedAt.get(key) ?? 0,
+    previous.extraUsageSignal?.observedAt ?? 0
+  );
+  if (observedAt < latest) return;
+  extraUsageObservedAt.set(key, observedAt);
   if (reading === "plan" && !previous.extraUsageSignal) return;
   const { extraUsageSignal: _replaced, ...rest } = previous;
   const data: ClaudeTrackingData =
     reading === "plan"
       ? rest
-      : { ...rest, extraUsageSignal: { state: reading, observedAt: now } };
+      : { ...rest, extraUsageSignal: { state: reading, observedAt } };
   const quota: AccountQuota = entry
     ? { ...entry.quota, data }
     : { fetchedAt: null, error: null, errorStatus: null, source: null, data };
   cache.set(key, {
     quota,
     credential: entry?.credential ?? credentialBinding(account),
-    expiresAt: entry?.expiresAt ?? now,
+    expiresAt: entry?.expiresAt ?? Date.now(),
   });
   snapshots?.recordQuota(account, quota, quotaSignature(data));
 };

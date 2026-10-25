@@ -1705,6 +1705,10 @@ test("Claude extra-usage errors reach the client once, unretried, and flag the a
         headers: { "anthropic-ratelimit-unified-status": "allowed" },
         state: undefined,
       },
+      {
+        headers: { "anthropic-ratelimit-unified-overage-in-use": "true" },
+        state: "in_use",
+      },
     ]) {
       globalThis.fetch = (async () =>
         Response.json(
@@ -1714,11 +1718,97 @@ test("Claude extra-usage errors reach the client once, unretried, and flag the a
       const response = await request();
       expect(response.status).toBe(200);
       await response.text();
-      const data = getCachedProviderAccountQuota(account)?.data;
-      expect(
-        data?.provider === "claude" ? data.extraUsageSignal?.state : null
-      ).toBe(entry.state);
+      expect(extraUsageState()).toBe(entry.state);
     }
+  } finally {
+    warn.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+const extraUsageState = () => {
+  const data = getCachedProviderAccountQuota(account)?.data;
+  return data?.provider === "claude" ? data.extraUsageSignal?.state : null;
+};
+
+const delayedLongContext429 = (delayMs: number) =>
+  new Response(
+    new ReadableStream({
+      async start(controller): Promise<void> {
+        await Bun.sleep(delayMs);
+        controller.enqueue(
+          new TextEncoder().encode(
+            '{"type":"error","error":{"type":"rate_limit_error","message":"Extra usage is required for long context requests."}}'
+          )
+        );
+        controller.close();
+      },
+    }),
+    {
+      status: 429,
+      headers: {
+        "content-type": "application/json",
+        "anthropic-ratelimit-unified-status": "rejected",
+        "anthropic-ratelimit-unified-reset": String(
+          Math.floor(Date.now() / 1000) + 3600
+        ),
+      },
+    }
+  );
+
+const planResponse = () =>
+  Response.json(
+    { type: "message", content: [] },
+    { headers: { "anthropic-ratelimit-unified-status": "allowed" } }
+  );
+
+test("a slow extra-usage error body is still caught and flags the account", async () => {
+  const originalFetch = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    globalThis.fetch = (async () => planResponse()) as typeof fetch;
+    await (await request()).text();
+    globalThis.fetch = (async () => delayedLongContext429(150)) as typeof fetch;
+    const response = await request();
+    expect(response.status).toBe(429);
+    expect(response.headers.get("x-should-retry")).toBe("false");
+    expect(response.headers.has("retry-after")).toBe(false);
+    expect(await response.json()).toMatchObject({
+      error: { code: "extra_usage_long_context" },
+    });
+    expect(extraUsageState()).toBe("long_context");
+  } finally {
+    warn.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("an older extra-usage reading never restores a state a later response cleared", async () => {
+  const originalFetch = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    globalThis.fetch = (async () =>
+      Response.json(
+        { type: "message", content: [] },
+        {
+          headers: {
+            "anthropic-ratelimit-unified-status": "allowed",
+            "anthropic-ratelimit-unified-overage-in-use": "true",
+          },
+        }
+      )) as typeof fetch;
+    await (await request()).text();
+    expect(extraUsageState()).toBe("in_use");
+
+    const responses = [delayedLongContext429(70), planResponse()];
+    globalThis.fetch = (async () => responses.shift()) as typeof fetch;
+    const [slow, later] = await Promise.all([
+      request(),
+      Bun.sleep(20).then(request),
+    ]);
+    expect([slow.status, later.status]).toEqual([429, 200]);
+    await Promise.all([slow.text(), later.text()]);
+    expect(extraUsageState()).toBeUndefined();
   } finally {
     warn.mockRestore();
     globalThis.fetch = originalFetch;

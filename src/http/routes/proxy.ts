@@ -36,6 +36,7 @@ import {
 } from "../../providers/proxies/codex-proxy";
 import { tryProxyCodexWebSocket } from "../../providers/proxies/codex-websocket";
 import {
+  bufferUpstreamError,
   readUpstreamErrorFields,
   readUpstreamErrorPayload,
 } from "../../providers/proxies/upstream-error";
@@ -104,12 +105,16 @@ const logUpstreamResponse = async (
   response: Response,
   route: ProxyRoute,
   providerAccountId: string,
-  startedAt: number
+  startedAt: number,
+  bufferedPayload: unknown
 ): Promise<unknown> => {
   if (response.ok) {
     return null;
   }
-  const payload = await readUpstreamErrorPayload(response);
+  const payload =
+    bufferedPayload === undefined
+      ? await readUpstreamErrorPayload(response)
+      : bufferedPayload;
   upstreamFailureLogger.log({
     provider: route.provider,
     providerAccountId,
@@ -180,6 +185,10 @@ type UsageRecorderInput = {
 type ProxyAttempt = {
   response: Response;
   transformResponse: ((response: Response) => Promise<Response>) | null;
+  // Set, possibly to null, when the attempt already read the error body.
+  errorPayload?: unknown;
+  // When the upstream response headers arrived.
+  receivedAt?: number;
 };
 
 const createUsageRecorder = (input: UsageRecorderInput) => {
@@ -462,7 +471,23 @@ const proxyRequest = async (
           signal: context.req.raw.signal,
           useCodexSseHeaderTimeout: false,
         });
-        return { response, transformResponse: claudeProxy.transformResponse };
+        const receivedAt = Date.now();
+        const { transformResponse } = claudeProxy;
+        // Extra-usage errors come as 400 or 429 and are classified from the
+        // whole body, however late it arrives.
+        if (response.status !== 400 && response.status !== 429) {
+          return { response, transformResponse, receivedAt };
+        }
+        const buffered = await bufferUpstreamError(
+          response,
+          context.req.raw.signal
+        );
+        return {
+          response: buffered.response,
+          errorPayload: buffered.payload,
+          transformResponse,
+          receivedAt,
+        };
       };
       break;
     }
@@ -506,7 +531,8 @@ const proxyRequest = async (
     attempt.response,
     route,
     account.id,
-    startedAt
+    startedAt,
+    attempt.errorPayload
   );
   const liveLimits =
     route.provider === "codex"
@@ -519,7 +545,7 @@ const proxyRequest = async (
     recordClaudeExtraUsage(
       account,
       extraUsageError ?? readClaudeExtraUsageBilling(attempt.response),
-      respondedAt
+      attempt.receivedAt ?? respondedAt
     );
     if (extraUsageError) {
       usageRecorder.recordFinal(attempt.response.status);

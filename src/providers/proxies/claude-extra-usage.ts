@@ -54,13 +54,12 @@ export const readClaudeExtraUsageBilling = (
   if (!response.ok) return null;
   const header = (name: string) =>
     response.headers.get(`anthropic-ratelimit-unified-${name}`);
+  if (header("overage-in-use") === "true") return "in_use";
   const status = header("status");
   if (status === null) return null;
   const overage = header("overage-status");
-  const usingOverage =
-    status === "rejected" &&
-    (overage === "allowed" || overage === "allowed_warning");
-  return header("overage-in-use") === "true" || usingOverage
+  return status === "rejected" &&
+    (overage === "allowed" || overage === "allowed_warning")
     ? "in_use"
     : "plan";
 };
