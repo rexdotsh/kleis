@@ -2,9 +2,10 @@ import type { ClaudeAccountMetadata } from "../metadata";
 
 import {
   ANTHROPIC_API_BASE_URL,
+  CLAUDE_BETA_HEADERS,
+  CLAUDE_CACHE_DIAGNOSIS_BETA_HEADER,
   CLAUDE_CLI_USER_AGENT,
   CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER,
-  CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
 } from "../constants";
 import { requireProxyEndpointRoute } from "../proxy-endpoints";
@@ -387,6 +388,15 @@ const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {
   return [...new Set([...required, ...incoming])].join(",");
 };
 
+const readClaudeBetas = (model: unknown, cacheFound: boolean): string[] => [
+  ...CLAUDE_BETA_HEADERS.filter(
+    (entry) =>
+      !entry.models || (typeof model === "string" && entry.models.test(model))
+  ).map((entry) => entry.beta),
+  ...(cacheFound ? [CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER] : []),
+  CLAUDE_CACHE_DIAGNOSIS_BETA_HEADER,
+];
+
 type ClaudeProxyPreparationInput = {
   requestUrl: URL;
   headers: Headers;
@@ -432,9 +442,10 @@ export const prepareClaudeProxyRequest = (
 
   const mergedBetas = mergeBetaHeaders(
     input.headers,
-    cache.found
-      ? [...CLAUDE_REQUIRED_BETA_HEADERS, CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER]
-      : CLAUDE_REQUIRED_BETA_HEADERS
+    readClaudeBetas(
+      isObjectRecord(input.bodyJson) ? input.bodyJson.model : null,
+      cache.found
+    )
   );
 
   // OAuth sessions require Claude Code identity headers.

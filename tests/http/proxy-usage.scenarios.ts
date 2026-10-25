@@ -11,6 +11,8 @@ import { migrate } from "drizzle-orm/libsql/migrator";
 import { installErrorHandler } from "../../src/http/error-handler";
 import CODEX_DEFAULT_INSTRUCTIONS from "../../src/providers/codex-default-instructions.txt";
 import {
+  CLAUDE_BETA_HEADERS,
+  CLAUDE_CACHE_DIAGNOSIS_BETA_HEADER,
   CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER,
   CLAUDE_SYSTEM_IDENTITY,
   CODEX_USER_AGENT,
@@ -1954,4 +1956,73 @@ test("Claude requests without cache_control are forwarded unchanged without the 
   const forwarded = await forwardClaude(body);
   expect(forwarded.body).toBe(body);
   expect(forwarded.extendedBeta).toBe(false);
+});
+
+const userTurn = (text: string) => ({
+  role: "user",
+  content: [{ type: "text", text }],
+});
+
+const sendClaude = async (
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {}
+) => {
+  const original = globalThis.fetch;
+  let forwarded = {
+    headers: {} as Record<string, string>,
+    body: {} as {
+      tools?: unknown;
+      system?: unknown;
+      metadata?: { user_id: string };
+    },
+  };
+  globalThis.fetch = (async (_input, init) => {
+    forwarded = {
+      headers: Object.fromEntries(new Headers(init?.headers)),
+      body: JSON.parse(String(init?.body)) as typeof forwarded.body,
+    };
+    return Response.json({ type: "message", content: [], usage });
+  }) as typeof fetch;
+  try {
+    const response = await app.request("/anthropic/v1/messages", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "claude-opus-5-5", ...body }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+  return forwarded;
+};
+
+test("Claude requests send Claude Code's betas for the model, then the client's", async () => {
+  const betasFor = async (model: string) =>
+    (
+      await sendClaude(
+        {
+          model,
+          system: [{ type: "text", text: "rules", cache_control: breakpoint }],
+          messages: [userTurn("hi")],
+        },
+        { "anthropic-beta": "fake-client-beta" }
+      )
+    ).headers["anthropic-beta"]?.split(",");
+  const tail = [
+    CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER,
+    CLAUDE_CACHE_DIAGNOSIS_BETA_HEADER,
+    "fake-client-beta",
+  ];
+  expect(await betasFor("claude-opus-5-5")).toEqual([
+    ...CLAUDE_BETA_HEADERS.map((entry) => entry.beta),
+    ...tail,
+  ]);
+  expect(await betasFor("claude-sonnet-4-5")).toEqual([
+    ...CLAUDE_BETA_HEADERS.filter((entry) => !entry.models).map(
+      (entry) => entry.beta
+    ),
+    ...tail,
+  ]);
 });
