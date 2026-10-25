@@ -30,6 +30,7 @@ import {
   claudeResetLimitTypes,
 } from "../../providers/account-tracking/claude-resets";
 import { AccountTrackingHttpError } from "../../providers/account-tracking/http";
+import type { ClaudeExtraUsageState } from "../../providers/proxies/claude-extra-usage";
 import {
   type LiveLimits,
   mergeClaudeLiveLimits,
@@ -80,14 +81,36 @@ export type ClaudeResetCredits = {
   status: ClaudeResetStatus;
 };
 
+// The last extra-usage state a proxied response reported, and when.
+type ClaudeExtraUsageSignal = {
+  state: ClaudeExtraUsageState;
+  observedAt: number;
+};
+
 type ClaudeTrackingData = {
   provider: "claude";
   plan?: ClaudeSubscriptionPlan | null;
   subscription?: ClaudeSubscriptionUsage;
   resetCredits?: ClaudeResetCredits;
+  extraUsageSignal?: ClaudeExtraUsageSignal;
 };
 
 type TrackingData = CodexTrackingData | ClaudeTrackingData;
+
+// Polls and other credentials' limits don't report extra usage, so the last
+// signal survives them.
+const keepExtraUsageSignal = (
+  data: TrackingData,
+  previous: TrackingData | undefined
+): void => {
+  if (
+    data.provider === "claude" &&
+    previous?.provider === "claude" &&
+    previous.extraUsageSignal
+  ) {
+    data.extraUsageSignal ??= previous.extraUsageSignal;
+  }
+};
 
 export type AccountQuota = {
   fetchedAt: number | null;
@@ -617,6 +640,7 @@ const fetchProviderAccountQuota = async (
         result.data.resetCredits ??= previous.resetCredits;
       }
     }
+    keepExtraUsageSignal(result.data, previous);
     let expiresAt = now + Math.max(baseMs, cacheDuration(result.errors));
     if (account.provider === "claude") {
       noteClaudeUsageResult(result.errors);
@@ -965,12 +989,14 @@ export const recordProviderAccountLiveLimits = (
     ) {
       poll.readings.push({ limits, observedAt: now });
     }
+    const data = mergeLiveLimits(entry?.quota.data, limits, now);
+    keepExtraUsageSignal(data, cached?.quota.data);
     const quota: AccountQuota = {
       fetchedAt: now,
       error: null,
       errorStatus: null,
       source: "traffic",
-      data: mergeLiveLimits(entry?.quota.data, limits, now),
+      data,
     };
     cache.set(key, {
       quota,
@@ -990,6 +1016,43 @@ export const recordProviderAccountLiveLimits = (
       ...errorLogFields(error),
     });
   }
+};
+
+// Keeps the last extra-usage state a Claude response reported; a response
+// billed to plan limits clears it. Memory and buffered snapshots only.
+export const recordClaudeExtraUsage = (
+  account: ProviderAccountRecord,
+  reading: ClaudeExtraUsageState | "plan" | null,
+  now: number
+): void => {
+  if (
+    reading === null ||
+    !isTrackingAccount(account) ||
+    account.provider !== "claude"
+  ) {
+    return;
+  }
+  const key = quotaKey(account);
+  const entry = cache.get(key);
+  const previous: ClaudeTrackingData =
+    entry?.quota.data.provider === "claude"
+      ? entry.quota.data
+      : { provider: "claude" };
+  if (reading === "plan" && !previous.extraUsageSignal) return;
+  const { extraUsageSignal: _replaced, ...rest } = previous;
+  const data: ClaudeTrackingData =
+    reading === "plan"
+      ? rest
+      : { ...rest, extraUsageSignal: { state: reading, observedAt: now } };
+  const quota: AccountQuota = entry
+    ? { ...entry.quota, data }
+    : { fetchedAt: null, error: null, errorStatus: null, source: null, data };
+  cache.set(key, {
+    quota,
+    credential: entry?.credential ?? credentialBinding(account),
+    expiresAt: entry?.expiresAt ?? now,
+  });
+  snapshots?.recordQuota(account, quota, quotaSignature(data));
 };
 
 // A fresh process (every deploy) starts with no snapshots; loading them right

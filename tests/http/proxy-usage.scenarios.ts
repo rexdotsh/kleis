@@ -36,6 +36,8 @@ const { requireProxyApiKey } =
 const { proxyRoutes, flushProxyUsage, flushProxyFailureLogs } =
   await import("../../src/http/routes/proxy");
 const { adminUsageRoutes } = await import("../../src/http/routes/admin-usage");
+const { getCachedProviderAccountQuota } =
+  await import("../../src/domain/providers/provider-account-tracking");
 const { namespaceCodexKey } =
   await import("../../src/providers/proxies/codex-proxy");
 
@@ -1606,6 +1608,116 @@ test("allowed Claude quota resets cannot turn a throttle into subscription exhau
       expect(response.status).toBe(429);
       expect([...response.headers]).toEqual([...headers]);
       expect(await response.text()).toBe(body);
+    }
+  } finally {
+    warn.mockRestore();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Claude extra-usage errors reach the client once, unretried, and flag the account", async () => {
+  const originalFetch = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const thirdParty =
+    "Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.";
+  const outOfExtraUsage =
+    "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.";
+  const longContext = "Extra usage is required for long context requests.";
+  let forwarded = 0;
+  try {
+    for (const entry of [
+      {
+        status: 400,
+        type: "invalid_request_error",
+        message: thirdParty,
+        state: "third_party",
+      },
+      {
+        status: 400,
+        type: "invalid_request_error",
+        message: outOfExtraUsage,
+        state: "exhausted",
+      },
+      {
+        status: 429,
+        type: "rate_limit_error",
+        message: longContext,
+        state: "long_context",
+        headers: {
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-reset": String(
+            Math.floor(Date.now() / 1000) + 3600
+          ),
+        },
+      },
+    ]) {
+      globalThis.fetch = (async () => {
+        forwarded++;
+        return Response.json(
+          {
+            type: "error",
+            error: { type: entry.type, message: entry.message },
+          },
+          {
+            status: entry.status,
+            headers: { "retry-after": "30", ...entry.headers },
+          }
+        );
+      }) as typeof fetch;
+      const before = forwarded;
+      const seenAfter = Date.now();
+      const response = await request();
+      expect(forwarded - before).toBe(1);
+      expect(response.status).toBe(entry.status);
+      expect(response.headers.has("retry-after")).toBe(false);
+      expect(response.headers.get("x-should-retry")).toBe("false");
+      const body = (await response.json()) as {
+        error: { type: string; code: string; message: string };
+      };
+      expect(body.error).toMatchObject({
+        type: entry.type,
+        code: `extra_usage_${entry.state}`,
+        account: account.label,
+      });
+      expect(body.error.message).toContain(entry.message);
+      const data = getCachedProviderAccountQuota(account)?.data;
+      const signal = data?.provider === "claude" ? data.extraUsageSignal : null;
+      expect(signal?.state).toBe(entry.state);
+      expect(signal?.observedAt).toBeGreaterThanOrEqual(seenAfter);
+    }
+
+    for (const entry of [
+      {
+        headers: {
+          "anthropic-ratelimit-unified-status": "allowed",
+          "anthropic-ratelimit-unified-overage-in-use": "true",
+        },
+        state: "in_use",
+      },
+      {
+        headers: {
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-overage-status": "allowed_warning",
+        },
+        state: "in_use",
+      },
+      {
+        headers: { "anthropic-ratelimit-unified-status": "allowed" },
+        state: undefined,
+      },
+    ]) {
+      globalThis.fetch = (async () =>
+        Response.json(
+          { type: "message", content: [] },
+          { headers: entry.headers }
+        )) as typeof fetch;
+      const response = await request();
+      expect(response.status).toBe(200);
+      await response.text();
+      const data = getCachedProviderAccountQuota(account)?.data;
+      expect(
+        data?.provider === "claude" ? data.extraUsageSignal?.state : null
+      ).toBe(entry.state);
     }
   } finally {
     warn.mockRestore();

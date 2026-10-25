@@ -20,6 +20,7 @@ import {
   accountWindows,
   actionMutationAttributes,
   disclosureHeadingHtml,
+  extraUsageIssue,
   fact,
   formFoot,
   formRow,
@@ -204,7 +205,7 @@ function limitFacts(account) {
   const windows = accountWindows(account);
   const wait = state.limitsUpdating.get(account.id);
   const stale = wait && !wait.timedOut ? " stale" : "";
-  if (!quota)
+  if (!quota || (!quota.fetchedAt && !quota.error))
     return [
       fact("Rate limits", '<span class="muted">\u2014</span>', [
         "waiting for the first sync",
@@ -238,6 +239,18 @@ function limitFacts(account) {
   else if (!facts.length)
     facts.push(fact("Rate limits", '<span class="muted">None reported</span>'));
   return facts;
+}
+
+function extraUsageFacts(account) {
+  const signal = extraUsageIssue(account);
+  if (!signal) return [];
+  return [
+    fact(
+      "Extra usage",
+      `<span class="${signal.severity}">${escapeHtml(signal.value)}</span>`,
+      [escapeHtml(signal.detail), escapeHtml(signal.when)]
+    ),
+  ];
 }
 
 function tokenFact(account) {
@@ -388,6 +401,7 @@ function accountDetailHtml(account) {
   return `<div class="detail${entering}" data-detail-for="${account.id}" data-flip="detail:${account.id}">
     <div class="facts">${[
       ...limitFacts(account),
+      ...extraUsageFacts(account),
       tokenFact(account),
       usageFact(accountUsageForId(account.id), state.accountUsageWindowMs),
       tokensFact(accountUsageForId(account.id)),

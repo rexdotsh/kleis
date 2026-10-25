@@ -7,7 +7,10 @@ import {
   MISSING_PROVIDER_ACCOUNT_ID,
 } from "../../db/repositories/request-usage";
 import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
-import { recordProviderAccountLiveLimits } from "../../domain/providers/provider-account-tracking";
+import {
+  recordClaudeExtraUsage,
+  recordProviderAccountLiveLimits,
+} from "../../domain/providers/provider-account-tracking";
 import {
   findPinnedProviderAccounts,
   getRoutableProviderAccount,
@@ -17,6 +20,11 @@ import {
   readClaudeLiveLimits,
   readCodexLiveLimits,
 } from "../../providers/account-tracking/live-limits";
+import {
+  createClaudeExtraUsageResponse,
+  readClaudeExtraUsageBilling,
+  readClaudeExtraUsageError,
+} from "../../providers/proxies/claude-extra-usage";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { isEventStreamResponse } from "../../providers/proxies/response";
 import {
@@ -505,6 +513,24 @@ const proxyRequest = async (
       ? readCodexLiveLimits(attempt.response.headers)
       : readClaudeLiveLimits(attempt.response.headers);
   recordProviderAccountLiveLimits(account, liveLimits);
+
+  if (route.provider === "claude") {
+    const extraUsageError = readClaudeExtraUsageError(errorPayload);
+    recordClaudeExtraUsage(
+      account,
+      extraUsageError ?? readClaudeExtraUsageBilling(attempt.response),
+      respondedAt
+    );
+    if (extraUsageError) {
+      usageRecorder.recordFinal(attempt.response.status);
+      return createClaudeExtraUsageResponse({
+        response: attempt.response,
+        error: extraUsageError,
+        errorPayload,
+        accountLabel: account.label,
+      });
+    }
+  }
 
   const usageLimitResponse = attempt.transformResponse
     ? rewriteUsageLimitResponse({
