@@ -1,8 +1,7 @@
 import { isObjectRecord } from "../../utils/object";
 
-// Claude Code 2.1.310 gzips bodies of 4096+ UTF-16 code units sent to
-// api.anthropic.com with Bun's fetch `compress: "gzip"` (cjt, lKt and _Bo
-// in its bundle).
+// Claude Code 2.1.310 gzips api.anthropic.com bodies of 4096+ UTF-16 units
+// with Bun's fetch `compress: "gzip"` (cjt, lKt and _Bo in its bundle).
 const GZIP_HOST = "api.anthropic.com";
 const GZIP_MIN_BODY_LENGTH = 4096;
 const GZIP_REJECTION_STATUSES = new Set([400, 403, 415]);
