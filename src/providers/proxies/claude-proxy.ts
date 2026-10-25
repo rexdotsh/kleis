@@ -4,6 +4,7 @@ import {
   ANTHROPIC_API_BASE_URL,
   CLAUDE_CLI_USER_AGENT,
   CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER,
+  CLAUDE_REQUEST_CLASSES,
   CLAUDE_REQUIRED_BETA_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
 } from "../constants";
@@ -387,12 +388,67 @@ const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {
   return [...new Set([...required, ...incoming])].join(",");
 };
 
+// Claude Code 2.1.86+ and OpenCode send a session header.
+// https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#2186
+// https://github.com/anomalyco/opencode/blob/a517687fde98a7329ada3ae644a01a9fc6c4e99e/packages/core/src/session/model-request.ts#L282-L291
+const CLAUDE_SESSION_HEADERS = [
+  "x-claude-code-session-id",
+  "x-opencode-session-id",
+  "x-session-affinity",
+  "x-session-id",
+] as const;
+
+export const readClaudeSessionHeader = (headers: Headers): string | undefined =>
+  CLAUDE_SESSION_HEADERS.map((name) => headers.get(name)?.trim()).find(Boolean);
+
+const sha256Hex = (value: string): string =>
+  new Bun.CryptoHasher("sha256").update(value).digest("hex");
+
+// Claude Code's session and prompt IDs are version 4 UUIDs.
+const hashUuid = (value: string): string => {
+  const hex = sha256Hex(value);
+  const variant = "89ab".charAt(Number.parseInt(hex.charAt(16), 16) % 4);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+};
+
+const readMessageContent = (message: unknown): unknown[] => {
+  if (!isObjectRecord(message)) {
+    return [];
+  }
+  return typeof message.content === "string"
+    ? [{ type: "text", text: message.content }]
+    : Array.isArray(message.content)
+      ? message.content
+      : [];
+};
+
+const readMessageText = (message: unknown): string =>
+  readMessageContent(message)
+    .filter(isTextBlock)
+    .map((block) => block.text)
+    .join("\n");
+
+const isUserPrompt = (message: unknown): boolean =>
+  isObjectRecord(message) &&
+  message.role === "user" &&
+  readMessageContent(message).some(
+    (block) => !(isObjectRecord(block) && block.type === "tool_result")
+  );
+
+// A user turn that isn't only tool results starts a new prompt. Its text is
+// part of the key so a prompt after compaction never reuses an earlier ID.
+const readPromptKey = (messages: unknown[]): string => {
+  const prompts = messages.filter(isUserPrompt);
+  return `${prompts.length}:${readMessageText(prompts.at(-1))}`;
+};
+
 type ClaudeProxyPreparationInput = {
   requestUrl: URL;
   headers: Headers;
   bodyText: string;
   bodyJson: unknown;
   accessToken: string;
+  apiKeyId?: string;
   providerAccountId?: string;
   metadata: ClaudeAccountMetadata | null;
   onTokenUsage?: ((usage: TokenUsage) => void) | null;
@@ -409,9 +465,35 @@ type ClaudeProxyPreparationResult = {
 export const prepareClaudeProxyRequest = (
   input: ClaudeProxyPreparationInput
 ): ClaudeProxyPreparationResult => {
+  const messages =
+    isObjectRecord(input.bodyJson) && Array.isArray(input.bodyJson.messages)
+      ? input.bodyJson.messages
+      : [];
+  const sessionKey = `${input.apiKeyId ?? ""}:${input.providerAccountId ?? ""}`;
+  const clientSession = readClaudeSessionHeader(input.headers);
+  const sessionId = hashUuid(
+    `${sessionKey}:${
+      clientSession
+        ? `session:${clientSession}`
+        : `message:${readMessageText(messages[0])}`
+    }`
+  );
+  const userId = JSON.stringify({
+    device_id: sha256Hex(`device:${sessionKey}`),
+    account_uuid: input.metadata?.accountUuid ?? "",
+    session_id: sessionId,
+  });
+
   const { payload, toolNames } = mapClaudeRequestToolNames(input.bodyJson);
   let transformedPayload = isObjectRecord(payload)
-    ? { ...payload, system: withClaudeSystemIdentity(payload.system) }
+    ? {
+        ...payload,
+        system: withClaudeSystemIdentity(payload.system),
+        metadata: {
+          ...(isObjectRecord(payload.metadata) ? payload.metadata : {}),
+          user_id: userId,
+        },
+      }
     : payload;
   const cache = { found: false };
   if (isObjectRecord(transformedPayload)) {
@@ -436,6 +518,8 @@ export const prepareClaudeProxyRequest = (
       ? [...CLAUDE_REQUIRED_BETA_HEADERS, CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER]
       : CLAUDE_REQUIRED_BETA_HEADERS
   );
+  const requestClass =
+    input.headers.get("x-claude-code-request-class")?.trim() ?? "";
 
   // OAuth sessions require Claude Code identity headers.
   // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L525-L538
@@ -448,6 +532,16 @@ export const prepareClaudeProxyRequest = (
   input.headers.set("accept", "application/json");
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
   input.headers.set("x-app", "cli");
+  input.headers.set(
+    "x-claude-code-prompt-id",
+    hashUuid(`${sessionId}:${readPromptKey(messages)}`)
+  );
+  input.headers.set(
+    "x-claude-code-request-class",
+    CLAUDE_REQUEST_CLASSES.has(requestClass) ? requestClass : "main"
+  );
+  input.headers.set("x-claude-code-session-id", sessionId);
+  input.headers.set("x-client-request-id", crypto.randomUUID());
 
   return {
     upstreamUrl: buildUpstreamUrl(input.requestUrl.search),

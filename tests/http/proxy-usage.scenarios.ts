@@ -1945,13 +1945,140 @@ test("Claude TTL rewrites leave the rest of the body byte-identical", async () =
   expect(upgraded.body).toBe(explicit.body);
 });
 
-test("Claude requests without cache_control are forwarded unchanged without the TTL beta", async () => {
-  const body = JSON.stringify({
+test("Claude requests without cache_control keep their content without the TTL beta", async () => {
+  const body = {
     model: "claude-fake",
     system: [{ type: "text", text: CLAUDE_SYSTEM_IDENTITY }],
     messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-  });
-  const forwarded = await forwardClaude(body);
-  expect(forwarded.body).toBe(body);
+  };
+  const forwarded = await forwardClaude(JSON.stringify(body));
+  const { metadata: _metadata, ...content } = JSON.parse(forwarded.body);
+  expect(content).toEqual(body);
   expect(forwarded.extendedBeta).toBe(false);
+});
+
+const userTurn = (text: string) => ({
+  role: "user",
+  content: [{ type: "text", text }],
+});
+const toolTurns = [
+  {
+    role: "assistant",
+    content: [{ type: "tool_use", id: "toolu_fake", name: "read", input: {} }],
+  },
+  {
+    role: "user",
+    content: [{ type: "tool_result", tool_use_id: "toolu_fake", content: "" }],
+  },
+];
+
+const sendClaude = async (
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {}
+) => {
+  const original = globalThis.fetch;
+  let forwarded = {
+    headers: {} as Record<string, string>,
+    body: {} as {
+      tools?: unknown;
+      system?: unknown;
+      metadata?: { user_id: string };
+    },
+  };
+  globalThis.fetch = (async (_input, init) => {
+    forwarded = {
+      headers: Object.fromEntries(new Headers(init?.headers)),
+      body: JSON.parse(String(init?.body)) as typeof forwarded.body,
+    };
+    return Response.json({ type: "message", content: [], usage });
+  }) as typeof fetch;
+  try {
+    const response = await app.request("/anthropic/v1/messages", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: "claude-opus-5-5", ...body }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+  return forwarded;
+};
+
+test("Claude forwards a client request class only when Claude Code sends it", async () => {
+  for (const [requestClass, expected] of [
+    ["sdk", "main"],
+    ["subagent", "subagent"],
+  ] as const) {
+    const { headers } = await sendClaude(
+      { messages: [userTurn("hi")] },
+      { "x-claude-code-request-class": requestClass }
+    );
+    expect(headers["x-claude-code-request-class"]).toBe(expected);
+  }
+});
+
+test("Claude session, prompt and request-class headers are stable within a conversation", async () => {
+  const conversation = async (headers: Record<string, string>) => {
+    const turns = [
+      [
+        {
+          role: "user",
+          content: [{ type: "text", text: "hi", cache_control: breakpoint }],
+        },
+      ],
+      [userTurn("hi"), ...toolTurns],
+      [
+        userTurn("hi"),
+        ...toolTurns,
+        { role: "assistant", content: "ok" },
+        userTurn("next"),
+      ],
+    ];
+    const sent = [];
+    for (const messages of turns) {
+      sent.push(await sendClaude({ messages }, headers));
+    }
+    const ids = sent.map(({ headers: forwarded }) => ({
+      session: forwarded["x-claude-code-session-id"],
+      prompt: forwarded["x-claude-code-prompt-id"],
+      requestClass: forwarded["x-claude-code-request-class"],
+    }));
+    expect(new Set(ids.map((id) => id.session)).size).toBe(1);
+    expect(ids.map((id) => id.requestClass)).toEqual(["main", "main", "main"]);
+    expect(ids[1]?.prompt).toBe(ids[0]?.prompt);
+    expect(ids[2]?.prompt).not.toBe(ids[0]?.prompt);
+    for (const { body } of sent) {
+      expect(JSON.parse(body.metadata?.user_id ?? "")).toEqual({
+        device_id: expect.stringMatching(/^[0-9a-f]{64}$/),
+        account_uuid: "",
+        session_id: ids[0]?.session,
+      });
+    }
+    return ids[0]?.session;
+  };
+
+  const sessions = [
+    await conversation({ "x-opencode-session-id": "ses_fake_1" }),
+    await conversation({ "x-opencode-session-id": "ses_fake_2" }),
+    await conversation({}),
+  ];
+  expect(new Set(sessions).size).toBe(3);
+  expect(sessions).not.toContain("ses_fake_1");
+});
+
+test("Claude prompt IDs change for a new prompt after compaction", async () => {
+  const promptId = async (messages: unknown[]) =>
+    (
+      await sendClaude(
+        { messages },
+        { "x-opencode-session-id": "ses_fake_compacted" }
+      )
+    ).headers["x-claude-code-prompt-id"];
+  const reply = { role: "assistant", content: "ok" };
+  const before = await promptId([userTurn("first"), reply, userTurn("second")]);
+  const after = await promptId([userTurn("summary"), reply, userTurn("third")]);
+  expect(after).not.toBe(before);
 });
