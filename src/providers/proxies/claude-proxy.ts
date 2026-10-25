@@ -5,6 +5,7 @@ import {
   CLAUDE_CLI_USER_AGENT,
   CLAUDE_EXTENDED_CACHE_TTL_BETA_HEADER,
   CLAUDE_REQUIRED_BETA_HEADERS,
+  CLAUDE_STAINLESS_HEADERS,
   CLAUDE_SYSTEM_IDENTITY,
 } from "../constants";
 import { requireProxyEndpointRoute } from "../proxy-endpoints";
@@ -387,6 +388,12 @@ const mergeBetaHeaders = (headers: Headers, required: readonly string[]) => {
   return [...new Set([...required, ...incoming])].join(",");
 };
 
+const STAINLESS_OS_NAMES: Record<string, string> = {
+  darwin: "MacOS",
+  linux: "Linux",
+  win32: "Windows",
+};
+
 type ClaudeProxyPreparationInput = {
   requestUrl: URL;
   headers: Headers;
@@ -441,6 +448,7 @@ export const prepareClaudeProxyRequest = (
   // https://github.com/badlogic/pi-mono/blob/5c0ec26c28c918c5301f218e8c13fcc540d8e3a4/packages/ai/src/providers/anthropic.ts#L525-L538
   input.headers.set("authorization", `Bearer ${input.accessToken}`);
   input.headers.set("anthropic-beta", mergedBetas);
+  input.headers.set("anthropic-dangerous-direct-browser-access", "true");
   input.headers.set("anthropic-version", "2023-06-01");
   input.headers.set("content-type", "application/json");
   // Claude Code's SDK uses JSON Accept even for SSE responses.
@@ -448,6 +456,14 @@ export const prepareClaudeProxyRequest = (
   input.headers.set("accept", "application/json");
   input.headers.set("user-agent", CLAUDE_CLI_USER_AGENT);
   input.headers.set("x-app", "cli");
+  input.headers.set("x-stainless-arch", process.arch);
+  input.headers.set(
+    "x-stainless-os",
+    STAINLESS_OS_NAMES[process.platform] ?? `Other:${process.platform}`
+  );
+  for (const [name, value] of Object.entries(CLAUDE_STAINLESS_HEADERS)) {
+    input.headers.set(name, value);
+  }
 
   return {
     upstreamUrl: buildUpstreamUrl(input.requestUrl.search),
