@@ -18,6 +18,7 @@ import {
   readCodexLiveLimits,
 } from "../../providers/account-tracking/live-limits";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
+import { sendClaudeRequestBody } from "../../providers/proxies/claude-request-gzip";
 import { isEventStreamResponse } from "../../providers/proxies/response";
 import {
   encodeCodexRequestBody,
@@ -123,15 +124,12 @@ export const readPromptCacheMissTotals = () => promptCacheTracker.missTotals();
 export const flushProxyFailureLogs = (): Promise<void> =>
   Promise.resolve(upstreamFailureLogger.flush());
 
-type BunFetchRequestInit = RequestInit & {
-  timeout?: number | false;
-};
-
 const fetchProxyUpstream = async (input: {
   url: string;
   method: string;
   headers: Headers;
   body: BodyInit;
+  compress?: "gzip" | undefined;
   signal: AbortSignal;
   useCodexSseHeaderTimeout: boolean;
 }): Promise<Response> => {
@@ -144,6 +142,7 @@ const fetchProxyUpstream = async (input: {
     body: input.body,
     timeout: false,
     signal: input.signal,
+    ...(input.compress ? { compress: input.compress } : {}),
   };
   if (headerTimeout) {
     requestInit.signal = AbortSignal.any([input.signal, headerTimeout.signal]);
@@ -446,13 +445,19 @@ const proxyRequest = async (
           onTokenUsage: usageRecorder.onTokenUsage,
           onStreamEnd,
         });
-        const response = await fetchProxyUpstream({
+        const response = await sendClaudeRequestBody({
           url: claudeProxy.upstreamUrl,
-          method: context.req.method,
-          headers: attemptHeaders,
-          body: claudeProxy.bodyText,
-          signal: context.req.raw.signal,
-          useCodexSseHeaderTimeout: false,
+          bodyText: claudeProxy.bodyText,
+          send: (body, compress) =>
+            fetchProxyUpstream({
+              url: claudeProxy.upstreamUrl,
+              method: context.req.method,
+              headers: attemptHeaders,
+              body,
+              compress,
+              signal: context.req.raw.signal,
+              useCodexSseHeaderTimeout: false,
+            }),
         });
         return { response, transformResponse: claudeProxy.transformResponse };
       };
