@@ -89,6 +89,16 @@ test.each([
   }
 );
 
+test.each([
+  ["generated", upstreamRegistry],
+  ["merged", { ...upstreamRegistry, kleis: { models: {} } }],
+])("the %s aggregate provider declares an npm package", (_name, registry) => {
+  const provider = build({ upstreamRegistry: registry }).kleis as {
+    npm?: unknown;
+  };
+  expect(typeof provider.npm).toBe("string");
+});
+
 test("preserves existing aggregate models when appending proxy models", () => {
   const existing = {
     id: "gpt-99-test",
