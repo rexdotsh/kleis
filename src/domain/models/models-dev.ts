@@ -269,9 +269,12 @@ export const buildProxyModelsRegistry = (
     mappings,
     modelScopes,
   });
+  // OpenCode 2.2+ drops providers without a string `npm`; each model's own
+  // provider.npm still decides the SDK.
   const generatedProvider = {
     id: KLEIS_PROVIDER_ID,
     name: KLEIS_PROVIDER_NAME,
+    npm: "@ai-sdk/openai-compatible",
     env: [PROXY_API_KEY_ENV],
     models: generatedModels,
   };
