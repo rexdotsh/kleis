@@ -135,6 +135,25 @@ const isCodexInstruction = (item: unknown): boolean =>
 
 const isCodexTask = (item: unknown): boolean => !isCodexInstruction(item);
 
+// Clients move cache_control breakpoints between turns and may send a lone
+// text block as a string, so neither changes the hash. Only the first
+// message is read, so the cost does not grow with the conversation.
+const hashClaudeFirstMessage = (messages: unknown): bigint | null => {
+  const message = Array.isArray(messages) ? messages[0] : undefined;
+  if (!isObjectRecord(message)) {
+    return null;
+  }
+  const content =
+    typeof message.content === "string"
+      ? [{ type: "text", text: message.content }]
+      : message.content;
+  return Bun.hash.wyhash(
+    JSON.stringify({ ...message, content }, (key, value: unknown) =>
+      key === "cache_control" ? undefined : value
+    )
+  );
+};
+
 // A conversation is one session's turns with the same model, system prompt,
 // tools and first task item, so subagents and side requests in that session
 // keep their own. Codex requests are read as sent upstream.
@@ -154,7 +173,7 @@ export const readPromptCacheRequest = (
         input.headers.get(name)?.trim()
       ).find(Boolean)
     : readCodexSessionHeader(input.headers);
-  if (!session) {
+  if (!(session || claude)) {
     return null;
   }
   const body = claude
@@ -164,7 +183,12 @@ export const readPromptCacheRequest = (
     return null;
   }
 
-  const sessionHash = hashJson([input.apiKeyId, provider, session]);
+  const first = claude
+    ? hashClaudeFirstMessage(body.messages)
+    : hashJson(firstItem(body.input, isCodexTask));
+  if (!(session || first !== null)) {
+    return null;
+  }
   const system = hashJson(
     claude
       ? body.system
@@ -176,6 +200,14 @@ export const readPromptCacheRequest = (
         ]
   );
   const tools = hashJson(body.tools);
+  // Pi sends no session header to Anthropic, so a Claude conversation
+  // without one is its own session, keyed by what starts it.
+  // https://github.com/earendil-works/pi/blob/4b535d57ea8863dbba44b89872146523da271786/packages/ai/src/api/anthropic-messages.ts#L1066-L1070
+  const sessionHash = hashJson(
+    session
+      ? [input.apiKeyId, provider, session]
+      : [input.apiKeyId, provider, `${system}`, `${tools}`, `${first}`]
+  );
   const requestClass = input.headers.get(CLAUDE_CODE_REQUEST_CLASS_HEADER);
   return {
     conversation: hashJson([
@@ -183,7 +215,7 @@ export const readPromptCacheRequest = (
       input.model,
       `${system}`,
       `${tools}`,
-      claude ? firstItem(body.messages) : firstItem(body.input, isCodexTask),
+      `${first}`,
     ]),
     session: sessionHash,
     provider,

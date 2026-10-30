@@ -35,6 +35,31 @@ const isFixedNameTool = (tool: JsonObject): boolean =>
 const mapList = (value: unknown, map: (item: unknown) => unknown): unknown =>
   Array.isArray(value) ? value.map(map) : value;
 
+// The inline-tools beta defines tools by value inside `tool_addition` blocks.
+// https://github.com/earendil-works/pi/blob/4b535d57ea8863dbba44b89872146523da271786/packages/ai/src/api/anthropic-messages.ts#L1381-L1394
+const readInlineTools = (messages: unknown): unknown[] => {
+  const tools: unknown[] = [];
+  if (!Array.isArray(messages)) {
+    return tools;
+  }
+  for (const message of messages) {
+    if (!(isObjectRecord(message) && Array.isArray(message.content))) {
+      continue;
+    }
+    for (const block of message.content) {
+      if (
+        isObjectRecord(block) &&
+        block.type === "tool_addition" &&
+        isObjectRecord(block.tool) &&
+        block.tool.type === "tool_definition"
+      ) {
+        tools.push(block.tool.definition);
+      }
+    }
+  }
+  return tools;
+};
+
 export const mapClaudeRequestToolNames = (
   payload: unknown
 ): { payload: unknown; toolNames: ClaudeToolNames } => {
@@ -45,7 +70,7 @@ export const mapClaudeRequestToolNames = (
 
   const tools: unknown[] = Array.isArray(payload.tools) ? payload.tools : [];
   const fixedNames = new Set<unknown>();
-  for (const tool of tools) {
+  for (const tool of [...tools, ...readInlineTools(payload.messages)]) {
     if (isObjectRecord(tool) && isFixedNameTool(tool)) {
       fixedNames.add(tool.name);
     }
@@ -77,6 +102,25 @@ export const mapClaudeRequestToolNames = (
       ? rename(item, "tool_name")
       : item;
 
+  // MCP tool and toolset references keep their server-side names.
+  const mapToolChange = (block: JsonObject): JsonObject => {
+    const { tool } = block;
+    if (!isObjectRecord(tool)) {
+      return block;
+    }
+    if (tool.type === "tool_reference") {
+      return withField(block, "tool", rename(tool, "name"));
+    }
+    if (tool.type === "tool_definition") {
+      return withField(
+        block,
+        "tool",
+        withField(tool, "definition", mapTool(tool.definition))
+      );
+    }
+    return block;
+  };
+
   const mapBlock = (block: unknown): unknown => {
     if (!isObjectRecord(block)) {
       return block;
@@ -91,6 +135,9 @@ export const mapClaudeRequestToolNames = (
         "content",
         mapList(block.content, mapToolResultItem)
       );
+    }
+    if (block.type === "tool_addition" || block.type === "tool_removal") {
+      return mapToolChange(block);
     }
     return block;
   };
