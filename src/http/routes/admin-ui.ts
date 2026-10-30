@@ -1,6 +1,8 @@
 import { type Context, Hono } from "hono";
 import { readdirSync } from "node:fs";
 
+import { createEtag, respondWithEtag } from "../utils/etag";
+
 const ADMIN_ROOT = "./public/admin";
 const REVALIDATE = "no-cache";
 const IMMUTABLE = "public, max-age=31536000, immutable";
@@ -30,36 +32,12 @@ const readAsset = async (relativePath: string): Promise<Asset> => {
   const body = await file.arrayBuffer();
   const asset = {
     body,
-    etag: `"${Bun.hash(body).toString(36)}"`,
+    etag: createEtag(body),
     sha256: sha256(body),
     lastModified,
   };
   assets.set(relativePath, asset);
   return asset;
-};
-
-const matchesEtag = (header: string | undefined, etag: string): boolean =>
-  header?.split(",").some((value) => value.trim() === etag) ?? false;
-
-const respond = (
-  context: Context,
-  body: ArrayBuffer | string,
-  etag: string,
-  contentType: string,
-  cacheControl: string,
-  extraHeaders: Record<string, string> = {}
-): Response => {
-  const headers = {
-    "Cache-Control": cacheControl,
-    ETag: etag,
-    ...extraHeaders,
-  };
-  if (matchesEtag(context.req.header("if-none-match"), etag)) {
-    return new Response(null, { status: 304, headers });
-  }
-  return new Response(body, {
-    headers: { "Content-Type": contentType, ...headers },
-  });
 };
 
 const serveAsset =
@@ -71,7 +49,7 @@ const serveAsset =
   ) =>
   async (context: Context): Promise<Response> => {
     const asset = await readAsset(relativePath);
-    return respond(
+    return respondWithEtag(
       context,
       asset.body,
       asset.etag,
@@ -129,7 +107,7 @@ const serveServiceWorker = async (context: Context): Promise<Response> => {
   const version = sha256(JSON.stringify(files) + worker.sha256).slice(0, 16);
   const shell = JSON.stringify({ version, files });
   const body = `self.KLEIS_SHELL = ${shell};\n${new TextDecoder().decode(worker.body)}`;
-  return respond(context, body, `"${version}"`, JAVASCRIPT, REVALIDATE);
+  return respondWithEtag(context, body, `"${version}"`, JAVASCRIPT, REVALIDATE);
 };
 
 const serveAdminIndex = serveAsset(

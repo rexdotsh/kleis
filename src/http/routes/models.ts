@@ -7,6 +7,7 @@ import {
   buildProxyModelsRegistry,
   fetchModelsDevRegistry,
 } from "../../domain/models/models-dev";
+import { createEtag, respondWithEtag } from "../utils/etag";
 import {
   canForceRefreshModelsRegistry,
   shouldForceRefreshModelsRegistry,
@@ -24,6 +25,14 @@ type ApiKeyScopes = {
   providerScopes: readonly string[] | null;
   modelScopes: readonly string[] | null;
 };
+
+type Catalog = { body: string; etag: string };
+
+// Each catalog is ~6 MB and takes ~80 ms to build and serialize. Entries are
+// keyed by every input of the build, and a registry refresh replaces the
+// upstream object, which drops its catalogs.
+const MAX_CACHED_CATALOGS = 16;
+const catalogsByRegistry = new WeakMap<object, Map<string, Catalog>>();
 
 const rejectUnauthorizedRefresh = (context: Context): Response | null => {
   if (!shouldForceRefreshModelsRegistry(new URL(context.req.url))) {
@@ -81,15 +90,41 @@ const buildRegistryForRequest = async (
     listConfiguredProviders(db),
   ]);
 
-  const registry = buildProxyModelsRegistry({
-    upstreamRegistry,
-    baseOrigin: resolveBaseOriginWithPath(requestUrl),
+  const baseOrigin = resolveBaseOriginWithPath(requestUrl);
+  const cacheKey = JSON.stringify([
+    baseOrigin,
     configuredProviders,
-    ...(apiKeyScopes ? { apiKeyScopes } : {}),
-  });
-  return context.json(registry, {
-    headers: { "Cache-Control": "no-store" },
-  });
+    apiKeyScopes?.providerScopes ?? null,
+    apiKeyScopes?.modelScopes ?? null,
+  ]);
+  let catalogs = catalogsByRegistry.get(upstreamRegistry);
+  if (!catalogs) {
+    catalogs = new Map();
+    catalogsByRegistry.set(upstreamRegistry, catalogs);
+  }
+  let catalog = catalogs.get(cacheKey);
+  if (!catalog) {
+    const body = JSON.stringify(
+      buildProxyModelsRegistry({
+        upstreamRegistry,
+        baseOrigin,
+        configuredProviders,
+        ...(apiKeyScopes ? { apiKeyScopes } : {}),
+      })
+    );
+    catalog = { body, etag: createEtag(body) };
+    if (catalogs.size >= MAX_CACHED_CATALOGS) {
+      catalogs.clear();
+    }
+    catalogs.set(cacheKey, catalog);
+  }
+  return respondWithEtag(
+    context,
+    catalog.body,
+    catalog.etag,
+    "application/json",
+    "no-cache"
+  );
 };
 
 export const modelsRoutes = new Hono()
