@@ -2017,3 +2017,223 @@ test("Claude client SDK, session and tracing headers never reach Anthropic", asy
     Object.entries(client).filter(([name, value]) => headers[name] === value)
   ).toEqual([]);
 });
+
+const daybreakCatalogFetch =
+  (forwarded: { accountId: string | null; body: unknown }[]) =>
+  async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const accountId = new Headers(init?.headers).get("ChatGPT-Account-Id");
+    if (url.startsWith("https://models.dev/")) {
+      return Response.json({
+        openai: {
+          models: Object.fromEntries(
+            [
+              "gpt-99-test",
+              "gpt-daybreak-blue-latest",
+              "gpt-daybreak-red-latest",
+            ].map((id) => [id, { id, name: id }])
+          ),
+        },
+      });
+    }
+    if (url.includes("/backend-api/codex/models")) {
+      const standard = { cyber: ["standard"] };
+      return Response.json({
+        models: [
+          { slug: "gpt-99-test", available_access_programs: standard },
+          ...(accountId?.startsWith("fake-daybreak")
+            ? [
+                {
+                  slug: "gpt-daybreak-blue-latest",
+                  available_access_programs: { cyber: ["daybreak_blue"] },
+                },
+              ]
+            : []),
+        ],
+      });
+    }
+    forwarded.push({
+      accountId,
+      body: JSON.parse(String(init?.body)) as unknown,
+    });
+    return Response.json({ output: [] });
+  };
+
+const addDaybreakAccount = (accountId = "fake-daybreak-account") =>
+  upsertProviderAccount(db, {
+    provider: "codex",
+    accountId,
+    label: "Fake Daybreak",
+    accessToken: "fake-daybreak-token",
+    refreshToken: "fake-daybreak-refresh",
+    expiresAt: Date.now() + 3_600_000,
+    metadata: null,
+    now: Date.now(),
+  });
+
+test("Daybreak models route only to a key's account whose Codex catalog lists them", async () => {
+  const daybreak = await addDaybreakAccount();
+  const key = await createApiKey(
+    db,
+    { accountScopes: [codexAccount.id, daybreak.id] },
+    Date.now()
+  );
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const original = globalThis.fetch;
+  const forwarded: { accountId: string | null; body: unknown }[] = [];
+  globalThis.fetch = daybreakCatalogFetch(forwarded) as typeof fetch;
+  try {
+    for (const { model, status, upstream } of [
+      {
+        model: "gpt-daybreak-blue-latest",
+        status: 200,
+        upstream: {
+          accountId: "fake-daybreak-account",
+          body: { access_programs: { cyber: "daybreak_blue" } },
+        },
+      },
+      { model: "gpt-daybreak-red-latest", status: 403, upstream: null },
+      {
+        model: "gpt-99-test",
+        status: 200,
+        upstream: { accountId: "fake-codex-account", body: {} },
+      },
+    ]) {
+      forwarded.length = 0;
+      const response = await authenticated.request("/openai/v1/responses", {
+        method: "POST",
+        headers: { authorization: `Bearer ${key.key}` },
+        body: JSON.stringify({ model }),
+      });
+      expect(response.status).toBe(status);
+      await response.text();
+      expect(forwarded).toHaveLength(upstream ? 1 : 0);
+      if (upstream) {
+        expect(forwarded[0]).toMatchObject(upstream);
+      }
+      if (model === "gpt-99-test") {
+        expect(forwarded[0]?.body).not.toHaveProperty("access_programs");
+      }
+    }
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a Daybreak request waits on a hanging catalog refresh at most once", async () => {
+  const daybreak = await addDaybreakAccount("fake-daybreak-stale");
+  const key = await createApiKey(
+    db,
+    { accountScopes: [daybreak.id] },
+    Date.now()
+  );
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const original = globalThis.fetch;
+  const forwarded: { accountId: string | null; body: unknown }[] = [];
+  const catalogs = daybreakCatalogFetch(forwarded);
+  let hangCatalogs = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+    hangCatalogs && String(input).includes("/backend-api/codex/models")
+      ? new Promise<Response>(() => undefined)
+      : catalogs(input, init)) as typeof fetch;
+  const send = async () => {
+    const response = await authenticated.request("/openai/v1/responses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key.key}` },
+      body: JSON.stringify({ model: "gpt-daybreak-blue-latest" }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+  };
+  try {
+    await send();
+    setSystemTime(new Date(Date.now() + 11 * 60_000));
+    hangCatalogs = true;
+    forwarded.length = 0;
+    const startedAt = performance.now();
+    await send();
+    expect(performance.now() - startedAt).toBeLessThan(7500);
+    expect(forwarded).toMatchObject([
+      { body: { access_programs: { cyber: "daybreak_blue" } } },
+    ]);
+    await flushProxyUsage();
+  } finally {
+    setSystemTime();
+    globalThis.fetch = original;
+  }
+}, 20_000);
+
+const discoveredModelIds = async (
+  models: Hono,
+  key: Awaited<ReturnType<typeof createApiKey>>
+) => {
+  const response = await models.request(
+    `http://localhost/api/${key.modelsDiscoveryToken}/api.json`
+  );
+  expect(response.status).toBe(200);
+  const registry = (await response.json()) as {
+    kleis: { models: Record<string, unknown> };
+  };
+  return Object.keys(registry.kleis.models).sort();
+};
+
+test("model discovery offers Daybreak models only once an account the key routes to is known to have them", async () => {
+  const { modelsRoutes } = await import("../../src/http/routes/models");
+  const daybreak = await addDaybreakAccount("fake-daybreak-cold");
+  const pinned = await createApiKey(
+    db,
+    { accountScopes: [daybreak.id] },
+    Date.now()
+  );
+  const unpinned = await createApiKey(db, {}, Date.now());
+  const models = new Hono().route("/", modelsRoutes);
+  const original = globalThis.fetch;
+  globalThis.fetch = daybreakCatalogFetch([]) as typeof fetch;
+  try {
+    // A cold catalog is read in the background, never awaited.
+    expect(await discoveredModelIds(models, pinned)).toEqual(["gpt-99-test"]);
+    let listed: string[] = [];
+    for (let attempt = 0; attempt < 50; attempt++) {
+      listed = await discoveredModelIds(models, pinned);
+      if (listed.length > 1) break;
+      await Bun.sleep(10);
+    }
+    expect(listed).toEqual(["gpt-99-test", "gpt-daybreak-blue-latest"]);
+    expect(await discoveredModelIds(models, unpinned)).toEqual(["gpt-99-test"]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a Claude-only key's model discovery never waits on Codex catalogs", async () => {
+  const { modelsRoutes } = await import("../../src/http/routes/models");
+  const codex = await addDaybreakAccount("fake-uncached-account");
+  const claudeOnly = await createApiKey(
+    db,
+    { providerScopes: ["claude"], accountScopes: [codex.id] },
+    Date.now()
+  );
+  const models = new Hono().route("/", modelsRoutes);
+  const original = globalThis.fetch;
+  const catalogs = daybreakCatalogFetch([]);
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+    String(input).includes("/backend-api/codex/models")
+      ? new Promise<Response>(() => undefined)
+      : catalogs(input, init)) as typeof fetch;
+  try {
+    const response = await Promise.race([
+      models.request(
+        `http://localhost/api/${claudeOnly.modelsDiscoveryToken}/api.json`
+      ),
+      Bun.sleep(1000).then(() => null),
+    ]);
+    expect(response?.status).toBe(200);
+  } finally {
+    globalThis.fetch = original;
+  }
+});

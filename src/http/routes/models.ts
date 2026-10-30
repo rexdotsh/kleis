@@ -7,6 +7,7 @@ import {
   buildProxyModelsRegistry,
   fetchModelsDevRegistry,
 } from "../../domain/models/models-dev";
+import { listAccessibleCodexModels } from "../../domain/providers/codex-model-access";
 import {
   canForceRefreshModelsRegistry,
   shouldForceRefreshModelsRegistry,
@@ -23,6 +24,7 @@ const SCOPED_MODELS_NOT_FOUND = {
 type ApiKeyScopes = {
   providerScopes: readonly string[] | null;
   modelScopes: readonly string[] | null;
+  accountScopes: readonly string[] | null;
 };
 
 const rejectUnauthorizedRefresh = (context: Context): Response | null => {
@@ -70,21 +72,36 @@ const parseModelsTokenParam = (value: string | undefined): string | null => {
   return token;
 };
 
+const loadConfiguredProviders = async (apiKeyScopes?: ApiKeyScopes) => {
+  const configuredProviders = await listConfiguredProviders(db);
+  const accessibleCodexModels = await listAccessibleCodexModels(db, {
+    configuredProviders,
+    providerScopes: apiKeyScopes?.providerScopes ?? null,
+    accountScopes: apiKeyScopes?.accountScopes ?? null,
+  });
+  return {
+    configuredProviders,
+    accessibleCodexModels: new Set(accessibleCodexModels),
+  };
+};
+
 const buildRegistryForRequest = async (
   context: Context,
   apiKeyScopes?: ApiKeyScopes
 ) => {
   const requestUrl = resolveExternalRequestUrl(context.req.raw);
   const forceRefresh = shouldForceRefreshModelsRegistry(requestUrl);
-  const [upstreamRegistry, configuredProviders] = await Promise.all([
-    fetchModelsDevRegistry({ forceRefresh }),
-    listConfiguredProviders(db),
-  ]);
+  const [upstreamRegistry, { configuredProviders, accessibleCodexModels }] =
+    await Promise.all([
+      fetchModelsDevRegistry({ forceRefresh }),
+      loadConfiguredProviders(apiKeyScopes),
+    ]);
 
   const registry = buildProxyModelsRegistry({
     upstreamRegistry,
     baseOrigin: resolveBaseOriginWithPath(requestUrl),
     configuredProviders,
+    accessibleCodexModels,
     ...(apiKeyScopes ? { apiKeyScopes } : {}),
   });
   return context.json(registry, {

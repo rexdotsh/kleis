@@ -7,9 +7,15 @@ import {
   MISSING_PROVIDER_ACCOUNT_ID,
 } from "../../db/repositories/request-usage";
 import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
+import { isAccessGatedCodexModel } from "../../domain/models/models-dev";
+import {
+  codexDaybreakAccessProgram,
+  readCodexModelPrograms,
+} from "../../domain/providers/codex-model-access";
 import { recordProviderAccountLiveLimits } from "../../domain/providers/provider-account-tracking";
 import {
   findPinnedProviderAccounts,
+  findRoutingCandidates,
   getRoutableProviderAccount,
   refreshProviderAccountAfterAuthFailure,
 } from "../../domain/providers/provider-service";
@@ -315,10 +321,33 @@ const proxyRequest = async (
   });
 
   const now = Date.now();
+  const accessGatedModel =
+    route.provider === "codex" &&
+    parsedModel.upstreamModel &&
+    isAccessGatedCodexModel(parsedModel.upstreamModel)
+      ? parsedModel.upstreamModel
+      : null;
+  // Each candidate's catalog is read once; injection reuses the chosen one's.
+  const accessPrograms = new Map<string, readonly string[]>();
   let account: Awaited<ReturnType<typeof getRoutableProviderAccount>>;
   try {
     account = await getRoutableProviderAccount(db, route.provider, now, {
       allowedAccountIds: accountScopeIds,
+      ...(accessGatedModel
+        ? {
+            accepts: async (candidate: ProviderAccountRecord) => {
+              const programs = await readCodexModelPrograms(
+                db,
+                candidate,
+                accessGatedModel
+              );
+              if (programs) {
+                accessPrograms.set(candidate.id, programs);
+              }
+              return programs !== null;
+            },
+          }
+        : {}),
     });
   } catch {
     usageRecorder.recordImmediate(502);
@@ -329,6 +358,24 @@ const proxyRequest = async (
       ),
       502
     );
+  }
+
+  if (!account && accessGatedModel) {
+    const candidates = await findRoutingCandidates(
+      db,
+      route.provider,
+      accountScopeIds
+    );
+    if (candidates.some((candidate) => candidate.enabled)) {
+      usageRecorder.recordImmediate(403);
+      return context.json(
+        proxyErrorResponse(
+          `No ${route.provider} account for this API key has access to ${accessGatedModel}`,
+          "model_access_missing"
+        ),
+        403
+      );
+    }
   }
 
   if (!account) {
@@ -353,6 +400,24 @@ const proxyRequest = async (
     endpoint: route.endpoint,
     providerAccountId,
   });
+
+  if (
+    accessGatedModel &&
+    route.operation !== "compact" &&
+    isObjectRecord(requestBodyJson) &&
+    requestBodyJson.access_programs === undefined
+  ) {
+    const program = codexDaybreakAccessProgram(
+      accessPrograms.get(account.id) ?? []
+    );
+    if (program) {
+      requestBodyJson = {
+        ...requestBodyJson,
+        access_programs: { cyber: program },
+      };
+      requestBody = JSON.stringify(requestBodyJson);
+    }
+  }
 
   const headers = createUpstreamProxyHeaders(context.req.raw.headers);
   let sendAttempt: (account: ProviderAccountRecord) => Promise<ProxyAttempt>;

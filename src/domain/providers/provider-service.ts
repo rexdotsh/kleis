@@ -681,11 +681,18 @@ export const getRoutableProviderAccount = async (
   now: number,
   input?: {
     allowedAccountIds?: readonly string[] | null;
+    // Restricts routing to candidates that can serve the request.
+    accepts?: (account: ProviderAccountRecord) => Promise<boolean>;
   }
 ): Promise<ProviderAccountRecord | null> => {
-  const account = (
+  const candidates = (
     await findRoutingCandidates(database, provider, input?.allowedAccountIds)
-  ).find((candidate) => candidate.enabled);
+  ).filter((candidate) => candidate.enabled);
+  const accepts = input?.accepts;
+  const accepted = accepts
+    ? await Promise.all(candidates.map((candidate) => accepts(candidate)))
+    : null;
+  const account = candidates.find((_, index) => accepted?.[index] ?? true);
   if (!account) {
     return null;
   }
