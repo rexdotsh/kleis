@@ -2017,3 +2017,142 @@ test("Claude client SDK, session and tracing headers never reach Anthropic", asy
     Object.entries(client).filter(([name, value]) => headers[name] === value)
   ).toEqual([]);
 });
+
+const daybreakCatalogFetch =
+  (forwarded: { accountId: string | null; body: unknown }[]) =>
+  async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const accountId = new Headers(init?.headers).get("ChatGPT-Account-Id");
+    if (url.startsWith("https://models.dev/")) {
+      return Response.json({
+        openai: {
+          models: Object.fromEntries(
+            [
+              "gpt-99-test",
+              "gpt-daybreak-blue-latest",
+              "gpt-daybreak-red-latest",
+            ].map((id) => [id, { id, name: id }])
+          ),
+        },
+      });
+    }
+    if (url.includes("/backend-api/codex/models")) {
+      const standard = { cyber: ["standard"] };
+      return Response.json({
+        models: [
+          { slug: "gpt-99-test", available_access_programs: standard },
+          ...(accountId === "fake-daybreak-account"
+            ? [
+                {
+                  slug: "gpt-daybreak-blue-latest",
+                  available_access_programs: { cyber: ["daybreak_blue"] },
+                },
+              ]
+            : []),
+        ],
+      });
+    }
+    forwarded.push({
+      accountId,
+      body: JSON.parse(String(init?.body)) as unknown,
+    });
+    return Response.json({ output: [] });
+  };
+
+const addDaybreakAccount = () =>
+  upsertProviderAccount(db, {
+    provider: "codex",
+    accountId: "fake-daybreak-account",
+    label: "Fake Daybreak",
+    accessToken: "fake-daybreak-token",
+    refreshToken: "fake-daybreak-refresh",
+    expiresAt: Date.now() + 3_600_000,
+    metadata: null,
+    now: Date.now(),
+  });
+
+test("Daybreak models route only to a key's account whose Codex catalog lists them", async () => {
+  const daybreak = await addDaybreakAccount();
+  const key = await createApiKey(
+    db,
+    { accountScopes: [codexAccount.id, daybreak.id] },
+    Date.now()
+  );
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const original = globalThis.fetch;
+  const forwarded: { accountId: string | null; body: unknown }[] = [];
+  globalThis.fetch = daybreakCatalogFetch(forwarded) as typeof fetch;
+  try {
+    for (const { model, status, upstream } of [
+      {
+        model: "gpt-daybreak-blue-latest",
+        status: 200,
+        upstream: {
+          accountId: "fake-daybreak-account",
+          body: { access_programs: { cyber: "daybreak_blue" } },
+        },
+      },
+      { model: "gpt-daybreak-red-latest", status: 403, upstream: null },
+      {
+        model: "gpt-99-test",
+        status: 200,
+        upstream: { accountId: "fake-codex-account", body: {} },
+      },
+    ]) {
+      forwarded.length = 0;
+      const response = await authenticated.request("/openai/v1/responses", {
+        method: "POST",
+        headers: { authorization: `Bearer ${key.key}` },
+        body: JSON.stringify({ model }),
+      });
+      expect(response.status).toBe(status);
+      await response.text();
+      expect(forwarded).toHaveLength(upstream ? 1 : 0);
+      if (upstream) {
+        expect(forwarded[0]).toMatchObject(upstream);
+      }
+      if (model === "gpt-99-test") {
+        expect(forwarded[0]?.body).not.toHaveProperty("access_programs");
+      }
+    }
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("model discovery offers Daybreak models only when an account the key routes to has them", async () => {
+  const { modelsRoutes } = await import("../../src/http/routes/models");
+  const daybreak = await addDaybreakAccount();
+  const pinned = await createApiKey(
+    db,
+    { accountScopes: [daybreak.id] },
+    Date.now()
+  );
+  const unpinned = await createApiKey(db, {}, Date.now());
+  const models = new Hono().route("/", modelsRoutes);
+  const original = globalThis.fetch;
+  globalThis.fetch = daybreakCatalogFetch([]) as typeof fetch;
+  try {
+    for (const { key, expected } of [
+      {
+        key: pinned,
+        expected: ["gpt-99-test", "gpt-daybreak-blue-latest"],
+      },
+      { key: unpinned, expected: ["gpt-99-test"] },
+    ]) {
+      const response = await models.request(
+        `http://localhost/api/${key.modelsDiscoveryToken}/api.json`
+      );
+      expect(response.status).toBe(200);
+      const registry = (await response.json()) as {
+        kleis: { models: Record<string, unknown> };
+      };
+      expect(Object.keys(registry.kleis.models).sort()).toEqual(expected);
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});

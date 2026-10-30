@@ -19,6 +19,8 @@ Each provider has its own proxy adapter because none of them behave the same way
 
 Each API key also gets a scoped discovery URL at `GET /api/<models-discovery-token>/api.json`, so model discovery can match that key's provider/model scopes.
 
+The Daybreak models (`gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest`) are listed and routed only when a Codex account the key uses (its pinned accounts, or the primary) has them in its own ChatGPT Codex model catalog, which OpenAI fills in once the account is approved for Daybreak. Requests for them go to that account and get the `access_programs.cyber` value its catalog advertises, unless the client sets one.
+
 There's also minute-bucketed request analytics across both API keys and provider accounts (non-blocking on the proxy path), and a small admin panel for managing accounts, keys, and token refreshes.
 
 ### Proxy routes

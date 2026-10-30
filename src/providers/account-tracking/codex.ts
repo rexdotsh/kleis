@@ -238,6 +238,32 @@ const decodeCodexThreadUsage = (value: unknown): CodexThreadUsageEntry[] => {
   return decodeArray(input.threads, decodeThread);
 };
 
+const decodeCodexCatalogModel = (value: unknown) => {
+  const input = readObject(value);
+  const slug = readString(input?.slug);
+  return slug
+    ? {
+        slug,
+        cyberAccessPrograms: decodeArray(
+          readObject(input?.available_access_programs)?.cyber,
+          readString
+        ),
+      }
+    : null;
+};
+
+export type CodexCatalogModel = NonNullable<
+  ReturnType<typeof decodeCodexCatalogModel>
+>;
+
+const decodeCodexModels = (value: unknown): CodexCatalogModel[] => {
+  const input = requireObject(value, "Codex models response is malformed");
+  if (!Array.isArray(input.models)) {
+    throw new Error("Codex models response is malformed");
+  }
+  return decodeArray(input.models, decodeCodexCatalogModel);
+};
+
 export const decodeCodexResetResult = (value: unknown) => {
   const input = requireObject(
     value,
@@ -258,13 +284,7 @@ type CodexTrackingOperation =
   | "accounts/check"
   | "usage/thread_usage/query";
 
-const requestCodex = async <T>(
-  operation: CodexTrackingOperation,
-  accessToken: string,
-  accountId: string | null,
-  decode: (value: unknown) => T,
-  options?: { body?: Record<string, unknown>; timeoutMs?: number }
-): Promise<T> => {
+const codexHeaders = (accessToken: string, accountId: string | null) => {
   const headers = new Headers({
     Authorization: `Bearer ${accessToken}`,
     Accept: "application/json",
@@ -273,6 +293,17 @@ const requestCodex = async <T>(
   if (accountId) {
     headers.set(CODEX_ACCOUNT_ID_HEADER, accountId);
   }
+  return headers;
+};
+
+const requestCodex = async <T>(
+  operation: CodexTrackingOperation,
+  accessToken: string,
+  accountId: string | null,
+  decode: (value: unknown) => T,
+  options?: { body?: Record<string, unknown>; timeoutMs?: number }
+): Promise<T> => {
+  const headers = codexHeaders(accessToken, accountId);
   if (options?.body) {
     headers.set("Content-Type", "application/json");
   }
@@ -331,6 +362,24 @@ export const fetchCodexThreadUsage = async (
       body: { thread_ids: threadIds },
       timeoutMs: CODEX_THREAD_TIMEOUT_MS,
     }
+  );
+
+// The account's own model catalog, as Codex signed in with ChatGPT reads it.
+// The endpoint omits models whose minimal_client_version is newer than this.
+// https://github.com/openai/codex/blob/f752c97f7d0be0cbef5cece327f52a16ad6fb1c6/codex-rs/codex-api/src/endpoint/models.rs#L37-L45
+const CODEX_MODELS_CLIENT_VERSION = "0.166.0";
+
+export const fetchCodexModels = async (
+  accessToken: string,
+  accountId: string | null
+): Promise<CodexCatalogModel[]> =>
+  decodeCodexModels(
+    await fetchTrackingJson({
+      url: `${CODEX_TRACKING_BASE_URL}/codex/models?client_version=${CODEX_MODELS_CLIENT_VERSION}`,
+      headers: codexHeaders(accessToken, accountId),
+      timeoutMs: CODEX_USAGE_TIMEOUT_MS,
+      errorPrefix: "Codex models request failed",
+    })
   );
 
 export const consumeCodexResetCredit = async (input: {

@@ -7,6 +7,8 @@ import {
   buildProxyModelsRegistry,
   fetchModelsDevRegistry,
 } from "../../domain/models/models-dev";
+import { listAccessibleCodexModels } from "../../domain/providers/codex-model-access";
+import { findRoutingCandidates } from "../../domain/providers/provider-service";
 import {
   canForceRefreshModelsRegistry,
   shouldForceRefreshModelsRegistry,
@@ -23,6 +25,7 @@ const SCOPED_MODELS_NOT_FOUND = {
 type ApiKeyScopes = {
   providerScopes: readonly string[] | null;
   modelScopes: readonly string[] | null;
+  accountScopes: readonly string[] | null;
 };
 
 const rejectUnauthorizedRefresh = (context: Context): Response | null => {
@@ -70,21 +73,37 @@ const parseModelsTokenParam = (value: string | undefined): string | null => {
   return token;
 };
 
+const loadConfiguredProviders = async (
+  accountScopes: readonly string[] | null
+) => {
+  const configuredProviders = await listConfiguredProviders(db);
+  // Gated models are offered when an account the key routes to can use them.
+  const accessibleCodexModels = configuredProviders.includes("codex")
+    ? await listAccessibleCodexModels(
+        db,
+        await findRoutingCandidates(db, "codex", accountScopes)
+      )
+    : new Set<string>();
+  return { configuredProviders, accessibleCodexModels };
+};
+
 const buildRegistryForRequest = async (
   context: Context,
   apiKeyScopes?: ApiKeyScopes
 ) => {
   const requestUrl = resolveExternalRequestUrl(context.req.raw);
   const forceRefresh = shouldForceRefreshModelsRegistry(requestUrl);
-  const [upstreamRegistry, configuredProviders] = await Promise.all([
-    fetchModelsDevRegistry({ forceRefresh }),
-    listConfiguredProviders(db),
-  ]);
+  const [upstreamRegistry, { configuredProviders, accessibleCodexModels }] =
+    await Promise.all([
+      fetchModelsDevRegistry({ forceRefresh }),
+      loadConfiguredProviders(apiKeyScopes?.accountScopes ?? null),
+    ]);
 
   const registry = buildProxyModelsRegistry({
     upstreamRegistry,
     baseOrigin: resolveBaseOriginWithPath(requestUrl),
     configuredProviders,
+    accessibleCodexModels,
     ...(apiKeyScopes ? { apiKeyScopes } : {}),
   });
   return context.json(registry, {

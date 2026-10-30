@@ -21,6 +21,8 @@ type BuildProxyModelsRegistryInput = {
   baseOrigin: string;
   configuredProviders: readonly Provider[];
   apiKeyScopes?: ApiKeyScopes;
+  // Access-gated Codex models the account serving these requests can use.
+  accessibleCodexModels?: ReadonlySet<string>;
 };
 
 type ProxyMapping = (typeof proxyProviderMappings)[number];
@@ -38,6 +40,11 @@ const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
 ]);
 const CODEX_DISALLOWED_OPENAI_MODEL_IDS = new Set(["gpt-5.5-pro", "gpt-5.6"]);
 const CODEX_DYNAMIC_GPT_VERSION_THRESHOLD = { major: 5, minor: 4 };
+
+// Daybreak (Trusted Access for Cyber) models appear in a ChatGPT account's
+// Codex model catalog only when the account is approved for them.
+export const isAccessGatedCodexModel = (modelId: string): boolean =>
+  modelId.toLowerCase().startsWith("gpt-daybreak-");
 
 const parseRegistry = (value: unknown): ModelsDevRegistry => {
   if (!isObjectRecord(value)) {
@@ -119,13 +126,17 @@ const cloneJsonValue = <T>(value: T): T => {
 
 const isModelSupportedByProxyProvider = (
   internalProvider: ProxyMapping["internalProvider"],
-  modelId: string
+  modelId: string,
+  accessibleCodexModels: ReadonlySet<string>
 ): boolean => {
   if (internalProvider !== "codex") {
     return true;
   }
 
   const normalizedModelId = modelId.toLowerCase();
+  if (isAccessGatedCodexModel(normalizedModelId)) {
+    return accessibleCodexModels.has(normalizedModelId);
+  }
   if (CODEX_DISALLOWED_OPENAI_MODEL_IDS.has(normalizedModelId)) {
     return false;
   }
@@ -183,6 +194,7 @@ const mergeKleisProviderModels = (input: {
   baseOrigin: string;
   mappings: readonly ProxyMapping[];
   modelScopes: readonly string[] | null;
+  accessibleCodexModels: ReadonlySet<string>;
 }): JsonObject => {
   const models: JsonObject = {};
 
@@ -203,7 +215,11 @@ const mergeKleisProviderModels = (input: {
       getObjectProperty(sourceProvider, "models") ?? {}
     )) {
       if (
-        !isModelSupportedByProxyProvider(mapping.internalProvider, modelId) ||
+        !isModelSupportedByProxyProvider(
+          mapping.internalProvider,
+          modelId,
+          input.accessibleCodexModels
+        ) ||
         !isModelInScope({
           model: modelId,
           route,
@@ -268,6 +284,7 @@ export const buildProxyModelsRegistry = (
     baseOrigin: normalizeOrigin(input.baseOrigin),
     mappings,
     modelScopes,
+    accessibleCodexModels: input.accessibleCodexModels ?? new Set(),
   });
   // OpenCode 2.2+ drops providers without a string `npm`; each model's own
   // provider.npm still decides the SDK.
