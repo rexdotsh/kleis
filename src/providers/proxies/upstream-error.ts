@@ -1,4 +1,5 @@
 import { isObjectRecord } from "../../utils/object";
+import { tryParseJson } from "./response";
 
 const ERROR_CODES = new Set([
   "api_error",
@@ -63,17 +64,20 @@ export const readStreamErrorStatus = (payload: unknown): number => {
 
 const MAX_ERROR_BYTES = 8192;
 const ERROR_READ_TIMEOUT_MS = 100;
+const MAX_BUFFERED_ERROR_BYTES = 64 * 1024;
+const BUFFERED_ERROR_DEADLINE_MS = 3000;
+
+const isJsonContent = (response: Response): boolean => {
+  const contentType = (
+    response.headers.get("content-type") ?? ""
+  ).toLowerCase();
+  return !contentType || contentType.includes("application/json");
+};
 
 export const readUpstreamErrorPayload = async (
   response: Response
 ): Promise<unknown> => {
-  const contentType = (
-    response.headers.get("content-type") ?? ""
-  ).toLowerCase();
-  if (
-    !response.body ||
-    (contentType && !contentType.includes("application/json"))
-  ) {
+  if (!response.body || !isJsonContent(response)) {
     return null;
   }
   const reader = response.clone().body?.getReader();
@@ -109,6 +113,85 @@ export const readUpstreamErrorPayload = async (
     // Cancelling one tee branch waits for the other branch to finish.
     reader.cancel().catch(() => undefined);
   }
+};
+
+// Reads an error body to the end, bounded by size, a deadline and the
+// request's abort signal; upstream reads have no timeout of their own. The
+// returned response replays the same bytes. A body over the size bound is
+// passed on unparsed. One that stalls is cut off at the deadline and passed on
+// with the bytes that arrived, parsed if they already form the whole JSON.
+export const bufferUpstreamError = async (
+  response: Response,
+  signal: AbortSignal
+): Promise<{ response: Response; payload: unknown }> => {
+  signal.throwIfAborted();
+  const reader = response.body?.getReader();
+  if (!reader) {
+    return { response, payload: null };
+  }
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  let complete = false;
+  let stalled = false;
+  const cancel = (): void => {
+    reader.cancel(signal.reason).catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), BUFFERED_ERROR_DEADLINE_MS);
+  });
+  try {
+    while (bytes <= MAX_BUFFERED_ERROR_BYTES) {
+      const result = await Promise.race([reader.read(), deadline]);
+      if (!result) {
+        stalled = true;
+        reader.cancel().catch(() => undefined);
+        break;
+      }
+      if (result.done) {
+        complete = true;
+        break;
+      }
+      chunks.push(result.value);
+      bytes += result.value.byteLength;
+    }
+  } finally {
+    clearTimeout(timer);
+    signal.removeEventListener("abort", cancel);
+  }
+  signal.throwIfAborted();
+  const init = {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  };
+  if (!complete && !stalled) {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller): void {
+        for (const chunk of chunks) controller.enqueue(chunk);
+      },
+      async pull(controller): Promise<void> {
+        const result = await reader.read();
+        if (result.done) controller.close();
+        else controller.enqueue(result.value);
+      },
+      cancel: (reason) => reader.cancel(reason),
+    });
+    return { response: new Response(body, init), payload: null };
+  }
+  const body = new Uint8Array(bytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return {
+    response: new Response(body, init),
+    payload: isJsonContent(response)
+      ? tryParseJson(new TextDecoder().decode(body))
+      : null,
+  };
 };
 
 export const readUpstreamResponseError = async (
