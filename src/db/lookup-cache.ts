@@ -12,6 +12,8 @@ export const invalidateLookupCaches = (): void => {
   generation++;
 };
 
+export const lookupCacheGeneration = (): number => generation;
+
 export const createLookupCache = <V>(ttlMs: number) => {
   const entriesByDatabase = new WeakMap<object, Map<string, Entry<V>>>();
   const pendingByDatabase = new WeakMap<object, Map<string, Promise<V>>>();

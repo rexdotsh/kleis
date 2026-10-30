@@ -103,6 +103,47 @@ test("rotating swaps the secret on the same key and keeps its usage", async () =
   expect(await db.select().from(apiKeys)).toHaveLength(1);
 });
 
+test("a request authenticated before a rotation is rejected once its body arrives", async () => {
+  const key = await createApiKey(db, {}, Date.now());
+  const encoder = new TextEncoder();
+  const { promise: bodyRequested, resolve: onBodyRequested } =
+    Promise.withResolvers<undefined>();
+  const { promise: bodyReleased, resolve: releaseBody } =
+    Promise.withResolvers<undefined>();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      onBodyRequested(undefined);
+      await bodyReleased;
+      controller.enqueue(encoder.encode(JSON.stringify({ model: "gpt-fake" })));
+      controller.close();
+    },
+  });
+  const original = globalThis.fetch;
+  let forwarded = 0;
+  globalThis.fetch = (async (...args: Parameters<typeof fetch>) => {
+    forwarded++;
+    return original(...args);
+  }) as typeof fetch;
+  try {
+    const pending = proxy.request(
+      new Request("http://localhost/openai/v1/responses", {
+        method: "POST",
+        headers: { authorization: `Bearer ${key.key}` },
+        body,
+      })
+    );
+    await bodyRequested;
+    expect((await rotate(key.id, "{}")).status).toBe(200);
+    releaseBody(undefined);
+
+    const response = await pending;
+    expect(response.status).toBe(401);
+    expect(forwarded).toBe(0);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("rotating a revoked key or sending unknown fields changes nothing", async () => {
   const revoked = await createApiKey(db, {}, Date.now());
   await revokeApiKey(db, revoked.id, Date.now());

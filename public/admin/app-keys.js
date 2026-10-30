@@ -232,12 +232,15 @@ async function rotateKeyAction(request, id) {
   );
   if (!confirmed) return;
 
-  await request(`/admin/keys/${id}/rotate`, {
+  const data = await request(`/admin/keys/${id}/rotate`, {
     method: "POST",
     body: "{}",
   });
+  const key = keyById(id);
+  if (key) Object.assign(key, data.key);
   state.expandedKeyId = id;
   state.revealedKeyIds.add(id);
+  renderKeys();
   toast("API key rotated");
   await loadKeys();
 }
