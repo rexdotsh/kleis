@@ -2017,3 +2017,226 @@ test("Claude client SDK, session and tracing headers never reach Anthropic", asy
     Object.entries(client).filter(([name, value]) => headers[name] === value)
   ).toEqual([]);
 });
+
+// Pi's inline-tools beta request after a tool change: the top-level tools stay
+// frozen and later changes are blocks in a mid-conversation system message.
+// https://github.com/earendil-works/pi/blob/4b535d57ea8863dbba44b89872146523da271786/packages/ai/src/api/anthropic-messages.ts#L1256-L1263
+// https://github.com/earendil-works/pi/blob/4b535d57ea8863dbba44b89872146523da271786/packages/ai/src/api/anthropic-messages.ts#L1381-L1394
+const piToolChangeTurn = {
+  tools: [
+    { name: "read", input_schema: { type: "object" } },
+    {
+      name: "__pi_deferred_placeholder__",
+      input_schema: { type: "object" },
+      defer_loading: true,
+    },
+  ],
+  messages: [
+    userTurn("hi"),
+    {
+      role: "system",
+      content: [
+        {
+          type: "tool_removal",
+          tool: { type: "tool_reference", name: "read" },
+        },
+        {
+          type: "tool_addition",
+          tool: {
+            type: "tool_definition",
+            definition: { name: "grep", input_schema: { type: "object" } },
+          },
+        },
+      ],
+    },
+  ],
+};
+
+test("Claude inline tool changes use upstream tool names and calls to added tools reach the client by its name", async () => {
+  const toolUse = { type: "tool_use", id: "toolu_fake", name: "mcp_Grep" };
+  const replies = {
+    json: () =>
+      Response.json({
+        type: "message",
+        content: [{ ...toolUse, input: {} }],
+        usage,
+      }),
+    sse: () =>
+      new Response(
+        event({ type: "message_start", message: { usage } }) +
+          event({
+            type: "content_block_start",
+            index: 0,
+            content_block: { ...toolUse, input: {} },
+          }) +
+          event({ type: "message_stop" }),
+        { headers: { "content-type": "text/event-stream" } }
+      ),
+  };
+  const original = globalThis.fetch;
+  try {
+    for (const [kind, reply] of Object.entries(replies)) {
+      let forwarded: typeof piToolChangeTurn = { tools: [], messages: [] };
+      globalThis.fetch = (async (_input, init) => {
+        forwarded = JSON.parse(String(init?.body)) as typeof forwarded;
+        return reply();
+      }) as typeof fetch;
+      const response = await app.request("/anthropic/v1/messages", {
+        method: "POST",
+        body: JSON.stringify(piToolChangeTurn),
+      });
+      const text = await response.text();
+      await flushProxyUsage();
+
+      expect({ kind, changes: forwarded.messages[1]?.content }).toEqual({
+        kind,
+        changes: [
+          {
+            type: "tool_removal",
+            tool: { type: "tool_reference", name: forwarded.tools[0]?.name },
+          },
+          {
+            type: "tool_addition",
+            tool: {
+              type: "tool_definition",
+              definition: {
+                name: "mcp_Grep",
+                input_schema: { type: "object" },
+              },
+            },
+          },
+        ],
+      });
+      expect({ kind, text }).toMatchObject({
+        kind,
+        text: expect.stringContaining('"name":"grep"'),
+      });
+      expect(text).not.toContain("mcp_Grep");
+    }
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("calls to a tool kept only in a compaction block reach the client by its name", async () => {
+  const original = globalThis.fetch;
+  const send = async (
+    body: unknown,
+    reply: (forwarded: typeof piToolChangeTurn) => unknown
+  ) => {
+    let forwarded: typeof piToolChangeTurn = { tools: [], messages: [] };
+    globalThis.fetch = (async (_input, init) => {
+      forwarded = JSON.parse(String(init?.body)) as typeof forwarded;
+      return Response.json(reply(forwarded));
+    }) as typeof fetch;
+    const response = await app.request("/anthropic/v1/messages", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    const text = await response.text();
+    await flushProxyUsage();
+    return { forwarded, text };
+  };
+  try {
+    const added = await send(piToolChangeTurn, () => ({ content: [], usage }));
+    // Anthropic summarizes the addition with the definition it received.
+    const addition = added.forwarded.messages[1]?.content[1] as {
+      tool: { definition: { name: string } };
+    };
+    const compaction = {
+      type: "compaction",
+      content: "Summary.",
+      tool_changes: [addition],
+    };
+    const turn = {
+      tools: piToolChangeTurn.tools,
+      messages: [
+        { role: "assistant", content: [compaction] },
+        userTurn("again"),
+      ],
+    };
+    const { forwarded, text } = await send(turn, () => ({
+      type: "message",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_fake",
+          name: addition.tool.definition.name,
+          input: {},
+        },
+      ],
+      usage,
+    }));
+
+    expect(forwarded.messages[0]).toEqual(turn.messages[0]);
+    expect(
+      (JSON.parse(text) as { content: { name: string }[] }).content[0]?.name
+    ).toBe("grep");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("turns of a Claude conversation without a session header are tracked as one conversation", async () => {
+  const original = globalThis.fetch;
+  const info = spyOn(console, "info").mockImplementation(() => undefined);
+  const replies = [
+    { input_tokens: 500, cache_read_input_tokens: 20_000 },
+    { input_tokens: 500, cache_creation_input_tokens: 20_000 },
+  ];
+  // Pi moves the breakpoint to the newest message and sends a lone text
+  // block as a string once it no longer carries one.
+  const turns = [
+    [
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: "SECRET prompt",
+            cache_control: { type: "ephemeral" },
+          },
+        ],
+      },
+    ],
+    [
+      { role: "user", content: "SECRET prompt" },
+      { role: "assistant", content: [{ type: "text", text: "ok" }] },
+      userTurn("next"),
+    ],
+  ];
+  try {
+    for (const [index, messages] of turns.entries()) {
+      const reply = replies[index];
+      globalThis.fetch = (async () =>
+        Response.json({
+          type: "message",
+          content: [],
+          usage: reply,
+        })) as typeof fetch;
+      const response = await app.request("/anthropic/v1/messages", {
+        method: "POST",
+        body: JSON.stringify({
+          system: "SECRET system",
+          tools: piToolChangeTurn.tools,
+          messages,
+        }),
+      });
+      await response.text();
+    }
+    await flushProxyUsage();
+    const lines = info.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes('"prompt_cache_miss"'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).not.toContain("SECRET");
+    // Turns split into two conversations of one session give session_unknown.
+    expect(JSON.parse(lines[0] ?? "{}")).toMatchObject({
+      reason: "unknown",
+      repaidTokens: 20_000,
+    });
+  } finally {
+    info.mockRestore();
+    globalThis.fetch = original;
+  }
+});
