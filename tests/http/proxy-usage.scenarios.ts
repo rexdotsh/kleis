@@ -2123,6 +2123,51 @@ test("Daybreak models route only to a key's account whose Codex catalog lists th
   }
 });
 
+test("a Daybreak request waits on a hanging catalog refresh at most once", async () => {
+  const daybreak = await addDaybreakAccount("fake-daybreak-stale");
+  const key = await createApiKey(
+    db,
+    { accountScopes: [daybreak.id] },
+    Date.now()
+  );
+  const authenticated = new Hono();
+  authenticated.use("*", requireProxyApiKey);
+  authenticated.route("/", proxyRoutes);
+  const original = globalThis.fetch;
+  const forwarded: { accountId: string | null; body: unknown }[] = [];
+  const catalogs = daybreakCatalogFetch(forwarded);
+  let hangCatalogs = false;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+    hangCatalogs && String(input).includes("/backend-api/codex/models")
+      ? new Promise<Response>(() => undefined)
+      : catalogs(input, init)) as typeof fetch;
+  const send = async () => {
+    const response = await authenticated.request("/openai/v1/responses", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key.key}` },
+      body: JSON.stringify({ model: "gpt-daybreak-blue-latest" }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+  };
+  try {
+    await send();
+    setSystemTime(new Date(Date.now() + 11 * 60_000));
+    hangCatalogs = true;
+    forwarded.length = 0;
+    const startedAt = performance.now();
+    await send();
+    expect(performance.now() - startedAt).toBeLessThan(7500);
+    expect(forwarded).toMatchObject([
+      { body: { access_programs: { cyber: "daybreak_blue" } } },
+    ]);
+    await flushProxyUsage();
+  } finally {
+    setSystemTime();
+    globalThis.fetch = original;
+  }
+}, 20_000);
+
 const discoveredModelIds = async (
   models: Hono,
   key: Awaited<ReturnType<typeof createApiKey>>

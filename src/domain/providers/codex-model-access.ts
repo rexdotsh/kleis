@@ -140,13 +140,15 @@ const getCodexModelAccess = async (
   }
 };
 
-export const codexAccountCanUseModel = async (
+// The cyber access programs the account's catalog advertises for a gated
+// model, or null when the account cannot use it.
+export const readCodexModelPrograms = async (
   database: Database,
   account: ProviderAccountRecord,
   model: string
-): Promise<boolean> =>
-  (await getCodexModelAccess(database, account))?.has(model.toLowerCase()) ??
-  false;
+): Promise<readonly string[] | null> =>
+  (await getCodexModelAccess(database, account))?.get(model.toLowerCase()) ??
+  null;
 
 // Sorted gated Codex models that an account a key routes to (its pinned
 // Codex accounts, or the primary) can use, from cached catalogs only.
@@ -184,17 +186,9 @@ export const listAccessibleCodexModels = async (
 
 // Codex sends the Daybreak program a model advertises, Blue before Red.
 // https://github.com/openai/codex/blob/f752c97f7d0be0cbef5cece327f52a16ad6fb1c6/codex-rs/protocol/src/openai_models/access_programs.rs#L21-L29
-export const codexDaybreakAccessProgram = async (
-  database: Database,
-  account: ProviderAccountRecord,
-  model: string
-): Promise<string | null> => {
-  const programs =
-    (await getCodexModelAccess(database, account))?.get(model.toLowerCase()) ??
-    [];
-  return (
-    ["daybreak_blue", "daybreak_red"].find((program) =>
-      programs.includes(program)
-    ) ?? null
-  );
-};
+export const codexDaybreakAccessProgram = (
+  programs: readonly string[]
+): string | null =>
+  ["daybreak_blue", "daybreak_red"].find((program) =>
+    programs.includes(program)
+  ) ?? null;

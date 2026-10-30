@@ -9,8 +9,8 @@ import {
 import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
 import { isAccessGatedCodexModel } from "../../domain/models/models-dev";
 import {
-  codexAccountCanUseModel,
   codexDaybreakAccessProgram,
+  readCodexModelPrograms,
 } from "../../domain/providers/codex-model-access";
 import { recordProviderAccountLiveLimits } from "../../domain/providers/provider-account-tracking";
 import {
@@ -327,14 +327,25 @@ const proxyRequest = async (
     isAccessGatedCodexModel(parsedModel.upstreamModel)
       ? parsedModel.upstreamModel
       : null;
+  // Each candidate's catalog is read once; injection reuses the chosen one's.
+  const accessPrograms = new Map<string, readonly string[]>();
   let account: Awaited<ReturnType<typeof getRoutableProviderAccount>>;
   try {
     account = await getRoutableProviderAccount(db, route.provider, now, {
       allowedAccountIds: accountScopeIds,
       ...(accessGatedModel
         ? {
-            accepts: (candidate: ProviderAccountRecord) =>
-              codexAccountCanUseModel(db, candidate, accessGatedModel),
+            accepts: async (candidate: ProviderAccountRecord) => {
+              const programs = await readCodexModelPrograms(
+                db,
+                candidate,
+                accessGatedModel
+              );
+              if (programs) {
+                accessPrograms.set(candidate.id, programs);
+              }
+              return programs !== null;
+            },
           }
         : {}),
     });
@@ -396,10 +407,8 @@ const proxyRequest = async (
     isObjectRecord(requestBodyJson) &&
     requestBodyJson.access_programs === undefined
   ) {
-    const program = await codexDaybreakAccessProgram(
-      db,
-      account,
-      accessGatedModel
+    const program = codexDaybreakAccessProgram(
+      accessPrograms.get(account.id) ?? []
     );
     if (program) {
       requestBodyJson = {
