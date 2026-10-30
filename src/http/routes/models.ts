@@ -8,7 +8,6 @@ import {
   fetchModelsDevRegistry,
 } from "../../domain/models/models-dev";
 import { listAccessibleCodexModels } from "../../domain/providers/codex-model-access";
-import { findRoutingCandidates } from "../../domain/providers/provider-service";
 import {
   canForceRefreshModelsRegistry,
   shouldForceRefreshModelsRegistry,
@@ -73,18 +72,17 @@ const parseModelsTokenParam = (value: string | undefined): string | null => {
   return token;
 };
 
-const loadConfiguredProviders = async (
-  accountScopes: readonly string[] | null
-) => {
+const loadConfiguredProviders = async (apiKeyScopes?: ApiKeyScopes) => {
   const configuredProviders = await listConfiguredProviders(db);
-  // Gated models are offered when an account the key routes to can use them.
-  const accessibleCodexModels = configuredProviders.includes("codex")
-    ? await listAccessibleCodexModels(
-        db,
-        await findRoutingCandidates(db, "codex", accountScopes)
-      )
-    : new Set<string>();
-  return { configuredProviders, accessibleCodexModels };
+  const accessibleCodexModels = await listAccessibleCodexModels(db, {
+    configuredProviders,
+    providerScopes: apiKeyScopes?.providerScopes ?? null,
+    accountScopes: apiKeyScopes?.accountScopes ?? null,
+  });
+  return {
+    configuredProviders,
+    accessibleCodexModels: new Set(accessibleCodexModels),
+  };
 };
 
 const buildRegistryForRequest = async (
@@ -96,7 +94,7 @@ const buildRegistryForRequest = async (
   const [upstreamRegistry, { configuredProviders, accessibleCodexModels }] =
     await Promise.all([
       fetchModelsDevRegistry({ forceRefresh }),
-      loadConfiguredProviders(apiKeyScopes?.accountScopes ?? null),
+      loadConfiguredProviders(apiKeyScopes),
     ]);
 
   const registry = buildProxyModelsRegistry({

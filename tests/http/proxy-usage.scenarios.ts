@@ -2041,7 +2041,7 @@ const daybreakCatalogFetch =
       return Response.json({
         models: [
           { slug: "gpt-99-test", available_access_programs: standard },
-          ...(accountId === "fake-daybreak-account"
+          ...(accountId?.startsWith("fake-daybreak")
             ? [
                 {
                   slug: "gpt-daybreak-blue-latest",
@@ -2059,10 +2059,10 @@ const daybreakCatalogFetch =
     return Response.json({ output: [] });
   };
 
-const addDaybreakAccount = () =>
+const addDaybreakAccount = (accountId = "fake-daybreak-account") =>
   upsertProviderAccount(db, {
     provider: "codex",
-    accountId: "fake-daybreak-account",
+    accountId,
     label: "Fake Daybreak",
     accessToken: "fake-daybreak-token",
     refreshToken: "fake-daybreak-refresh",
@@ -2123,9 +2123,23 @@ test("Daybreak models route only to a key's account whose Codex catalog lists th
   }
 });
 
-test("model discovery offers Daybreak models only when an account the key routes to has them", async () => {
+const discoveredModelIds = async (
+  models: Hono,
+  key: Awaited<ReturnType<typeof createApiKey>>
+) => {
+  const response = await models.request(
+    `http://localhost/api/${key.modelsDiscoveryToken}/api.json`
+  );
+  expect(response.status).toBe(200);
+  const registry = (await response.json()) as {
+    kleis: { models: Record<string, unknown> };
+  };
+  return Object.keys(registry.kleis.models).sort();
+};
+
+test("model discovery offers Daybreak models only once an account the key routes to is known to have them", async () => {
   const { modelsRoutes } = await import("../../src/http/routes/models");
-  const daybreak = await addDaybreakAccount();
+  const daybreak = await addDaybreakAccount("fake-daybreak-cold");
   const pinned = await createApiKey(
     db,
     { accountScopes: [daybreak.id] },
@@ -2136,22 +2150,44 @@ test("model discovery offers Daybreak models only when an account the key routes
   const original = globalThis.fetch;
   globalThis.fetch = daybreakCatalogFetch([]) as typeof fetch;
   try {
-    for (const { key, expected } of [
-      {
-        key: pinned,
-        expected: ["gpt-99-test", "gpt-daybreak-blue-latest"],
-      },
-      { key: unpinned, expected: ["gpt-99-test"] },
-    ]) {
-      const response = await models.request(
-        `http://localhost/api/${key.modelsDiscoveryToken}/api.json`
-      );
-      expect(response.status).toBe(200);
-      const registry = (await response.json()) as {
-        kleis: { models: Record<string, unknown> };
-      };
-      expect(Object.keys(registry.kleis.models).sort()).toEqual(expected);
+    // A cold catalog is read in the background, never awaited.
+    expect(await discoveredModelIds(models, pinned)).toEqual(["gpt-99-test"]);
+    let listed: string[] = [];
+    for (let attempt = 0; attempt < 50; attempt++) {
+      listed = await discoveredModelIds(models, pinned);
+      if (listed.length > 1) break;
+      await Bun.sleep(10);
     }
+    expect(listed).toEqual(["gpt-99-test", "gpt-daybreak-blue-latest"]);
+    expect(await discoveredModelIds(models, unpinned)).toEqual(["gpt-99-test"]);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a Claude-only key's model discovery never waits on Codex catalogs", async () => {
+  const { modelsRoutes } = await import("../../src/http/routes/models");
+  const codex = await addDaybreakAccount("fake-uncached-account");
+  const claudeOnly = await createApiKey(
+    db,
+    { providerScopes: ["claude"], accountScopes: [codex.id] },
+    Date.now()
+  );
+  const models = new Hono().route("/", modelsRoutes);
+  const original = globalThis.fetch;
+  const catalogs = daybreakCatalogFetch([]);
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+    String(input).includes("/backend-api/codex/models")
+      ? new Promise<Response>(() => undefined)
+      : catalogs(input, init)) as typeof fetch;
+  try {
+    const response = await Promise.race([
+      models.request(
+        `http://localhost/api/${claudeOnly.modelsDiscoveryToken}/api.json`
+      ),
+      Bun.sleep(1000).then(() => null),
+    ]);
+    expect(response?.status).toBe(200);
   } finally {
     globalThis.fetch = original;
   }
