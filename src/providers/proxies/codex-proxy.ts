@@ -106,11 +106,15 @@ export const transformCodexBodyJson = (
     return null;
   }
 
-  // ChatGPT rejects output limits and requires stateless storage.
+  // ChatGPT rejects output limits and cache lifetimes, and requires stateless
+  // storage. It applies 24h cache retention on its own.
   // https://github.com/anomalyco/opencode/blob/d9987ef9c896383eb47b9103f6c93fa772a44b83/packages/core/src/plugin/provider/openai.ts#L311-L317
+  // https://github.com/earendil-works/pi/blob/f09d01b85e0384647fcab6779d35ab9dabe04be3/packages/ai/src/api/openai-responses.ts#L361-L369
   const {
     max_completion_tokens: _maxCompletionTokens,
     max_output_tokens: _maxOutputTokens,
+    prompt_cache_retention: _promptCacheRetention,
+    prompt_cache_options: _promptCacheOptions,
     ...body
   } = bodyJson;
 
@@ -146,8 +150,6 @@ const transformCodexCompactionBodyJson = (
     "parallel_tool_calls",
     "tools",
     "prompt_cache_key",
-    "prompt_cache_retention",
-    "prompt_cache_options",
   ] as const;
   const compactBody: JsonObject = {};
   for (const field of allowedFields) {

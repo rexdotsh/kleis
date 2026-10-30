@@ -29,12 +29,7 @@ const CLAUDE_TTL_MS = HOUR_MS;
 // OpenAI keeps prefixes for at least 5 minutes, often far longer, so a Codex
 // gap past the TTL only possibly expired the cache.
 // https://platform.openai.com/docs/guides/prompt-caching#cache-lifetime
-const CODEX_TTL_MS: Record<string, number> = {
-  "30m": 30 * MINUTE_MS,
-  "12h": 720 * MINUTE_MS,
-  "24h": 1440 * MINUTE_MS,
-};
-const CODEX_DEFAULT_TTL_MS = 5 * MINUTE_MS;
+const CODEX_TTL_MS = 5 * MINUTE_MS;
 // Claude Code 2.1.86+ and OpenCode send a session header.
 // https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md#2186
 // https://github.com/anomalyco/opencode/blob/a517687fde98a7329ada3ae644a01a9fc6c4e99e/packages/core/src/session/model-request.ts#L282-L291
@@ -115,16 +110,6 @@ type PromptCacheMissTotal = Pick<
 const hashJson = (value: unknown): bigint =>
   Bun.hash.wyhash(JSON.stringify(value) ?? "");
 
-const codexTtlMs = (body: Record<string, unknown>): number => {
-  const ttl = isObjectRecord(body.prompt_cache_options)
-    ? body.prompt_cache_options.ttl
-    : body.prompt_cache_retention;
-  return (
-    (typeof ttl === "string" ? CODEX_TTL_MS[ttl] : undefined) ??
-    CODEX_DEFAULT_TTL_MS
-  );
-};
-
 const firstItem = (
   items: unknown,
   include: (item: unknown) => boolean = () => true
@@ -191,7 +176,7 @@ export const readPromptCacheRequest = (
     model: input.model,
     system,
     tools,
-    ttlMs: claude ? CLAUDE_TTL_MS : codexTtlMs(body),
+    ttlMs: claude ? CLAUDE_TTL_MS : CODEX_TTL_MS,
     isClassifiedMain: requestClass === "main",
     isMain:
       (requestClass ?? "main") === "main" &&
