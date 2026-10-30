@@ -416,6 +416,40 @@ test("Codex compaction keeps tools and generation settings but drops response-on
   }
 });
 
+test("Codex drops the cache lifetime fields the ChatGPT backend rejects", async () => {
+  const original = globalThis.fetch;
+  let forwarded: Record<string, unknown> = {};
+  globalThis.fetch = (async (_input, init) => {
+    forwarded = JSON.parse(String(init?.body));
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  try {
+    for (const path of [
+      "/openai/v1/responses",
+      "/openai/v1/responses/compact",
+    ]) {
+      const response = await app.request(path, {
+        method: "POST",
+        body: JSON.stringify({
+          model: "gpt-fake",
+          instructions: "Keep context",
+          input: [{ role: "user", content: "hi" }],
+          prompt_cache_retention: "24h",
+          prompt_cache_options: { ttl: "30m" },
+        }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(forwarded.input).toEqual([{ role: "user", content: "hi" }]);
+      expect(forwarded).not.toHaveProperty("prompt_cache_retention");
+      expect(forwarded).not.toHaveProperty("prompt_cache_options");
+    }
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("Codex session headers and prompt cache keys are namespaced independently and never invented", async () => {
   const original = globalThis.fetch;
   let forwarded = { headers: new Headers(), body: {} as unknown };
