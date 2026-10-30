@@ -28,6 +28,18 @@ const toUpstreamToolName = (name: string): string => {
   return `${upstream.slice(0, MAX_TOOL_NAME_LENGTH - DIGEST_LENGTH - 1)}_${digest}`;
 };
 
+// Digest-shortened names can't be inverted and give null.
+const fromUpstreamToolName = (upstream: string): string | null => {
+  if (!upstream.startsWith(CLAUDE_TOOL_PREFIX)) {
+    return null;
+  }
+  const rest = upstream.slice(CLAUDE_TOOL_PREFIX.length);
+  const name = rest.startsWith("_")
+    ? rest.slice(1)
+    : `${rest.charAt(0).toLowerCase()}${rest.slice(1)}`;
+  return toUpstreamToolName(name) === upstream ? name : null;
+};
+
 // Anthropic-defined tools (web_search, bash, computer, ...) keep their names.
 const isFixedNameTool = (tool: JsonObject): boolean =>
   typeof tool.type === "string" && tool.type !== "custom";
@@ -35,29 +47,48 @@ const isFixedNameTool = (tool: JsonObject): boolean =>
 const mapList = (value: unknown, map: (item: unknown) => unknown): unknown =>
   Array.isArray(value) ? value.map(map) : value;
 
+const readToolDefinition = (block: unknown): unknown =>
+  isObjectRecord(block) &&
+  block.type === "tool_addition" &&
+  isObjectRecord(block.tool) &&
+  block.tool.type === "tool_definition"
+    ? block.tool.definition
+    : undefined;
+
 // The inline-tools beta defines tools by value inside `tool_addition` blocks.
 // https://github.com/earendil-works/pi/blob/4b535d57ea8863dbba44b89872146523da271786/packages/ai/src/api/anthropic-messages.ts#L1381-L1394
-const readInlineTools = (messages: unknown): unknown[] => {
-  const tools: unknown[] = [];
+// A compaction block's `tool_changes` carries the definitions it summarized
+// as Anthropic received them, so with upstream names.
+const readInlineTools = (
+  messages: unknown
+): { inline: unknown[]; compacted: unknown[] } => {
+  const inline: unknown[] = [];
+  const compacted: unknown[] = [];
   if (!Array.isArray(messages)) {
-    return tools;
+    return { inline, compacted };
   }
   for (const message of messages) {
     if (!(isObjectRecord(message) && Array.isArray(message.content))) {
       continue;
     }
     for (const block of message.content) {
-      if (
+      const definition = readToolDefinition(block);
+      if (definition !== undefined) {
+        inline.push(definition);
+      } else if (
         isObjectRecord(block) &&
-        block.type === "tool_addition" &&
-        isObjectRecord(block.tool) &&
-        block.tool.type === "tool_definition"
+        block.type === "compaction" &&
+        Array.isArray(block.tool_changes)
       ) {
-        tools.push(block.tool.definition);
+        compacted.push(
+          ...block.tool_changes
+            .map(readToolDefinition)
+            .filter((tool) => tool !== undefined)
+        );
       }
     }
   }
-  return tools;
+  return { inline, compacted };
 };
 
 export const mapClaudeRequestToolNames = (
@@ -69,8 +100,9 @@ export const mapClaudeRequestToolNames = (
   }
 
   const tools: unknown[] = Array.isArray(payload.tools) ? payload.tools : [];
+  const { inline, compacted } = readInlineTools(payload.messages);
   const fixedNames = new Set<unknown>();
-  for (const tool of [...tools, ...readInlineTools(payload.messages)]) {
+  for (const tool of [...tools, ...inline, ...compacted]) {
     if (isObjectRecord(tool) && isFixedNameTool(tool)) {
       fixedNames.add(tool.name);
     }
@@ -155,5 +187,21 @@ export const mapClaudeRequestToolNames = (
   let mapped = withField(payload, "tools", mapList(payload.tools, mapTool));
   mapped = withField(mapped, "tool_choice", toolChoice);
   mapped = withField(mapped, "messages", mapList(payload.messages, mapMessage));
+
+  // Compaction blocks go upstream unchanged; their tools only need mapping back.
+  for (const tool of compacted) {
+    if (
+      !isObjectRecord(tool) ||
+      isFixedNameTool(tool) ||
+      typeof tool.name !== "string" ||
+      toolNames.has(tool.name)
+    ) {
+      continue;
+    }
+    const name = fromUpstreamToolName(tool.name);
+    if (name !== null) {
+      toolNames.set(tool.name, name);
+    }
+  }
   return { payload: mapped, toolNames };
 };

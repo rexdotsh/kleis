@@ -2118,6 +2118,65 @@ test("Claude inline tool changes use upstream tool names and calls to added tool
   }
 });
 
+test("calls to a tool kept only in a compaction block reach the client by its name", async () => {
+  const original = globalThis.fetch;
+  const send = async (
+    body: unknown,
+    reply: (forwarded: typeof piToolChangeTurn) => unknown
+  ) => {
+    let forwarded: typeof piToolChangeTurn = { tools: [], messages: [] };
+    globalThis.fetch = (async (_input, init) => {
+      forwarded = JSON.parse(String(init?.body)) as typeof forwarded;
+      return Response.json(reply(forwarded));
+    }) as typeof fetch;
+    const response = await app.request("/anthropic/v1/messages", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    const text = await response.text();
+    await flushProxyUsage();
+    return { forwarded, text };
+  };
+  try {
+    const added = await send(piToolChangeTurn, () => ({ content: [], usage }));
+    // Anthropic summarizes the addition with the definition it received.
+    const addition = added.forwarded.messages[1]?.content[1] as {
+      tool: { definition: { name: string } };
+    };
+    const compaction = {
+      type: "compaction",
+      content: "Summary.",
+      tool_changes: [addition],
+    };
+    const turn = {
+      tools: piToolChangeTurn.tools,
+      messages: [
+        { role: "assistant", content: [compaction] },
+        userTurn("again"),
+      ],
+    };
+    const { forwarded, text } = await send(turn, () => ({
+      type: "message",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_fake",
+          name: addition.tool.definition.name,
+          input: {},
+        },
+      ],
+      usage,
+    }));
+
+    expect(forwarded.messages[0]).toEqual(turn.messages[0]);
+    expect(
+      (JSON.parse(text) as { content: { name: string }[] }).content[0]?.name
+    ).toBe("grep");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("turns of a Claude conversation without a session header are tracked as one conversation", async () => {
   const original = globalThis.fetch;
   const info = spyOn(console, "info").mockImplementation(() => undefined);
