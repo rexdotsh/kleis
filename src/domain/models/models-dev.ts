@@ -3,6 +3,7 @@ import { isModelInScope } from "../../http/proxy-routing";
 import { proxyProviderMappings } from "../../providers/proxy-provider";
 import { readResponseJson } from "../../utils/response-json";
 import { normalizeStringList } from "../../utils/string-list";
+import { DependencyError } from "../../utils/dependency-error";
 import {
   getObjectProperty,
   isObjectRecord,
@@ -103,7 +104,7 @@ export const fetchModelsDevRegistry = async (options?: {
       return cachedModelsDevRegistry;
     }
 
-    throw error;
+    throw new DependencyError("models.dev", error);
   }
 };
 

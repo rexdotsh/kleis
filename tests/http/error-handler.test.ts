@@ -101,6 +101,7 @@ test("database errors keep the actual cause without SQL parameters", async () =>
     expect(await response.json()).toMatchObject({ message: cause.message });
     const line = String(log.mock.calls[0]?.[0]);
     expect(JSON.parse(line)).toMatchObject({
+      dependency: "db",
       errorMessage: cause.message,
       errorStack: cause.stack,
     });
