@@ -52,9 +52,7 @@ const keyIdParamsSchema = z.strictObject({
   id: z.uuid(),
 });
 
-const rotateApiKeyBodySchema = z.strictObject({
-  revokeOld: z.boolean(),
-});
+const rotateApiKeyBodySchema = z.strictObject({});
 
 const apiKeyNotFoundBody = {
   error: "not_found",
@@ -263,15 +261,23 @@ export const adminKeysRoutes = new Hono()
     zValidator("json", rotateApiKeyBodySchema),
     async (context) => {
       const { id } = context.req.valid("param");
-      const { revokeOld } = context.req.valid("json");
-      const existing = await findApiKeyById(db, id);
-      if (!existing) {
+      const key = await rotateApiKey(db, id);
+      if (key) {
+        return context.json({
+          key: toApiKeyView(resolveExternalRequestUrl(context.req.raw), key),
+        });
+      }
+
+      if (!(await findApiKeyById(db, id))) {
         return context.json(apiKeyNotFoundBody, 404);
       }
-      const key = await rotateApiKey(db, existing, revokeOld, Date.now());
+
       return context.json(
-        { key: toApiKeyView(resolveExternalRequestUrl(context.req.raw), key) },
-        201
+        {
+          error: "conflict",
+          message: "Revoked API keys cannot be rotated",
+        },
+        409
       );
     }
   )

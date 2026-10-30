@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 
 import { db } from "../../db";
+import { lookupCacheGeneration } from "../../db/lookup-cache";
 import {
   findActiveApiKeyByValue,
   type ApiKeyRecord,
@@ -13,9 +14,24 @@ import {
   resolveProxyRoute,
 } from "../proxy-routing";
 
+const invalidApiKeyResponse = (context: Context): Response =>
+  context.json(
+    {
+      error: "unauthorized",
+      message: "Invalid or expired API key",
+    },
+    401
+  );
+
+type AuthenticatedApiKey = {
+  apiKey: ApiKeyRecord;
+  token: string;
+  generation: number;
+};
+
 const authenticateApiKey = async (
   context: Context
-): Promise<ApiKeyRecord | Response> => {
+): Promise<AuthenticatedApiKey | Response> => {
   const token =
     parseBearerToken(context.req.header("authorization")) ??
     context.req.header("x-api-key")?.trim() ??
@@ -30,32 +46,43 @@ const authenticateApiKey = async (
     );
   }
 
+  const generation = lookupCacheGeneration();
   const apiKey = await findActiveApiKeyByValue(db, token, Date.now());
-  return (
-    apiKey ??
-    context.json(
-      {
-        error: "unauthorized",
-        message: "Invalid or expired API key",
-      },
-      401
-    )
-  );
+  return apiKey
+    ? { apiKey, token, generation }
+    : invalidApiKeyResponse(context);
+};
+
+// A rotation or revoke during the lookup or a slow body upload bumps the
+// generation, so the key is looked up again before the request is forwarded.
+const reauthenticateIfChanged = async (
+  auth: AuthenticatedApiKey
+): Promise<ApiKeyRecord | null> => {
+  let { apiKey, generation } = auth;
+  while (generation !== lookupCacheGeneration()) {
+    generation = lookupCacheGeneration();
+    const current = await findActiveApiKeyByValue(db, auth.token, Date.now());
+    if (!current) {
+      return null;
+    }
+    apiKey = current;
+  }
+  return apiKey;
 };
 
 export const requireApiKey = createMiddleware(async (context, next) => {
-  const apiKey = await authenticateApiKey(context);
-  if (apiKey instanceof Response) {
-    return apiKey;
+  const auth = await authenticateApiKey(context);
+  if (auth instanceof Response) {
+    return auth;
   }
-  context.set("apiKey", apiKey);
+  context.set("apiKey", auth.apiKey);
   await next();
 });
 
 export const requireProxyApiKey = createMiddleware(async (context, next) => {
-  const apiKey = await authenticateApiKey(context);
-  if (apiKey instanceof Response) {
-    return apiKey;
+  const auth = await authenticateApiKey(context);
+  if (auth instanceof Response) {
+    return auth;
   }
 
   const route = resolveProxyRoute(context.req.path);
@@ -82,6 +109,11 @@ export const requireProxyApiKey = createMiddleware(async (context, next) => {
       );
     }
     context.set("proxyRequestBody", requestBody);
+  }
+
+  const apiKey = await reauthenticateIfChanged(auth);
+  if (!apiKey) {
+    return invalidApiKeyResponse(context);
   }
 
   if (route && apiKey.providerScopes?.length) {

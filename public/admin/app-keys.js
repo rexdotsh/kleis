@@ -223,27 +223,25 @@ async function rotateKeyAction(request, id) {
   }
 
   const label = existing.label || maskKey(existing.key);
+  const expired = existing.expiresAt && existing.expiresAt <= Date.now();
   const confirmed = await request.confirm(
     "Rotate API key?",
-    `Create a new key with the same settings as "${label}".`,
+    `The current secret for "${label}" stops working immediately; usage history is kept.${expired ? " The key stays expired until you change its expiry." : ""}`,
     "Rotate",
-    {
-      extrasHtml:
-        '<label class="scope-check confirm-check"><input id="rotate-revoke-old" type="checkbox"> Revoke the old key afterwards</label>',
-    }
+    { danger: true }
   );
   if (!confirmed) return;
 
-  const revokeOld = $("#rotate-revoke-old")?.checked ?? false;
   const data = await request(`/admin/keys/${id}/rotate`, {
     method: "POST",
-    body: JSON.stringify({ revokeOld }),
+    body: "{}",
   });
-  state.expandedKeyId = data.key.id;
-  state.revealedKeyIds.add(data.key.id);
-  toast(
-    revokeOld ? "API key rotated and previous key revoked" : "API key rotated"
-  );
+  const key = keyById(id);
+  if (key) Object.assign(key, data.key);
+  state.expandedKeyId = id;
+  state.revealedKeyIds.add(id);
+  renderKeys();
+  toast("API key rotated");
   await loadKeys();
 }
 
