@@ -18,6 +18,7 @@ import {
   readCodexLiveLimits,
 } from "../../providers/account-tracking/live-limits";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
+import { rewriteClaudeVersionTooOldResponse } from "../../providers/proxies/claude-version-response";
 import { isEventStreamResponse } from "../../providers/proxies/response";
 import {
   encodeCodexRequestBody,
@@ -524,6 +525,18 @@ const proxyRequest = async (
   if (usageLimitResponse) {
     usageRecorder.recordFinal(attempt.response.status);
     return usageLimitResponse;
+  }
+  const versionTooOldResponse =
+    route.provider === "claude" && !attempt.response.ok
+      ? rewriteClaudeVersionTooOldResponse({
+          response: attempt.response,
+          errorPayload,
+          providerAccountId: account.id,
+        })
+      : null;
+  if (versionTooOldResponse) {
+    usageRecorder.recordFinal(attempt.response.status);
+    return versionTooOldResponse;
   }
 
   let responseToClient = attempt.response;
