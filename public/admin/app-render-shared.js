@@ -678,8 +678,45 @@ const isRateLimitedWithData = (quota) =>
 const syncFailureText = (quota) =>
   isRateLimited(quota) ? "Rate limited" : "Sync failed";
 
+const EXTRA_USAGE_SIGNALS = {
+  in_use: {
+    severity: "warn",
+    text: "drawing from extra usage",
+    value: "In use",
+    detail: "a request was billed to it",
+  },
+  exhausted: {
+    severity: "err",
+    text: "out of extra usage",
+    value: "Used up",
+    detail: "Anthropic refused a request",
+  },
+  third_party: {
+    severity: "err",
+    text: "third-party traffic needs extra usage",
+    value: "Required",
+    detail: "for third-party traffic",
+  },
+  long_context: {
+    severity: "warn",
+    text: "long context needs extra usage",
+    value: "Required",
+    detail: "for long context",
+  },
+};
+
+// The last extra-usage state a proxied Claude response reported.
+function extraUsageIssue(account) {
+  const signal = account.quota?.data?.extraUsageSignal;
+  const known = signal && EXTRA_USAGE_SIGNALS[signal.state];
+  if (!known) return null;
+  return { ...known, when: `seen ${relativeTime(signal.observedAt)}` };
+}
+
 function accountIssues(account) {
   const issues = [];
+  const extraUsage = extraUsageIssue(account);
+  if (extraUsage) issues.push(extraUsage);
   if (tokenStatus(account.expiresAt).class === "expired") {
     issues.push({
       severity: "err",
@@ -807,6 +844,7 @@ export {
   isRateLimitedWithData,
   syncFailureText,
   accountIssues,
+  extraUsageIssue,
   providerStatusMap,
   isAccountServing,
 };

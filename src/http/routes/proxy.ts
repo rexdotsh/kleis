@@ -7,7 +7,10 @@ import {
   MISSING_PROVIDER_ACCOUNT_ID,
 } from "../../db/repositories/request-usage";
 import type { ProviderAccountRecord } from "../../db/repositories/provider-accounts";
-import { recordProviderAccountLiveLimits } from "../../domain/providers/provider-account-tracking";
+import {
+  recordClaudeExtraUsage,
+  recordProviderAccountLiveLimits,
+} from "../../domain/providers/provider-account-tracking";
 import {
   findPinnedProviderAccounts,
   getRoutableProviderAccount,
@@ -17,6 +20,13 @@ import {
   readClaudeLiveLimits,
   readCodexLiveLimits,
 } from "../../providers/account-tracking/live-limits";
+import {
+  type ClaudeResponseArrival,
+  createClaudeExtraUsageResponse,
+  markClaudeResponseArrival,
+  readClaudeExtraUsageBilling,
+  readClaudeExtraUsageError,
+} from "../../providers/proxies/claude-extra-usage";
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { isEventStreamResponse } from "../../providers/proxies/response";
 import {
@@ -28,6 +38,7 @@ import {
 } from "../../providers/proxies/codex-proxy";
 import { tryProxyCodexWebSocket } from "../../providers/proxies/codex-websocket";
 import {
+  bufferUpstreamError,
   readUpstreamErrorFields,
   readUpstreamErrorPayload,
 } from "../../providers/proxies/upstream-error";
@@ -96,12 +107,16 @@ const logUpstreamResponse = async (
   response: Response,
   route: ProxyRoute,
   providerAccountId: string,
-  startedAt: number
+  startedAt: number,
+  bufferedPayload: unknown
 ): Promise<unknown> => {
   if (response.ok) {
     return null;
   }
-  const payload = await readUpstreamErrorPayload(response);
+  const payload =
+    bufferedPayload === undefined
+      ? await readUpstreamErrorPayload(response)
+      : bufferedPayload;
   upstreamFailureLogger.log({
     provider: route.provider,
     providerAccountId,
@@ -172,6 +187,9 @@ type UsageRecorderInput = {
 type ProxyAttempt = {
   response: Response;
   transformResponse: ((response: Response) => Promise<Response>) | null;
+  // Set, possibly to null, when the attempt already read the error body.
+  errorPayload?: unknown;
+  arrival?: ClaudeResponseArrival;
 };
 
 const createUsageRecorder = (input: UsageRecorderInput) => {
@@ -454,7 +472,23 @@ const proxyRequest = async (
           signal: context.req.raw.signal,
           useCodexSseHeaderTimeout: false,
         });
-        return { response, transformResponse: claudeProxy.transformResponse };
+        const arrival = markClaudeResponseArrival();
+        const { transformResponse } = claudeProxy;
+        // Extra-usage errors come as 400 or 429 and are classified from the
+        // whole body, not the logger's best-effort read.
+        if (response.status !== 400 && response.status !== 429) {
+          return { response, transformResponse, arrival };
+        }
+        const buffered = await bufferUpstreamError(
+          response,
+          context.req.raw.signal
+        );
+        return {
+          response: buffered.response,
+          errorPayload: buffered.payload,
+          transformResponse,
+          arrival,
+        };
       };
       break;
     }
@@ -498,13 +532,32 @@ const proxyRequest = async (
     attempt.response,
     route,
     account.id,
-    startedAt
+    startedAt,
+    attempt.errorPayload
   );
   const liveLimits =
     route.provider === "codex"
       ? readCodexLiveLimits(attempt.response.headers)
       : readClaudeLiveLimits(attempt.response.headers);
   recordProviderAccountLiveLimits(account, liveLimits);
+
+  if (route.provider === "claude") {
+    const extraUsageError = readClaudeExtraUsageError(errorPayload);
+    recordClaudeExtraUsage(
+      account,
+      extraUsageError ?? readClaudeExtraUsageBilling(attempt.response),
+      attempt.arrival ?? markClaudeResponseArrival()
+    );
+    if (extraUsageError) {
+      usageRecorder.recordFinal(attempt.response.status);
+      return createClaudeExtraUsageResponse({
+        response: attempt.response,
+        error: extraUsageError,
+        errorPayload,
+        accountLabel: account.label,
+      });
+    }
+  }
 
   const usageLimitResponse = attempt.transformResponse
     ? rewriteUsageLimitResponse({
