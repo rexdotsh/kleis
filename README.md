@@ -69,6 +69,11 @@ TURSO_CONNECTION_URL=libsql://<your-db>.<region>.turso.io
 TURSO_AUTH_TOKEN=<your-turso-token>
 ```
 
+Kleis refreshes every saved account at least once a week, including
+accounts that no API key routes to, because a refresh token left unused
+for months can stop working. `GET /cron/refresh-provider-accounts` with
+`Authorization: Bearer $CRON_SECRET` force-refreshes all of them on demand.
+
 Codex uses HTTP/SSE by default. The lower-latency WebSocket transport is
 experimental and can be enabled with `CODEX_WEBSOCKET_ENABLED=true`.
 
