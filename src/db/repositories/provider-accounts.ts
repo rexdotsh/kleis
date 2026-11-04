@@ -8,6 +8,7 @@ import {
   type ProviderAccountMetadata,
 } from "../../providers/metadata";
 import { invalidateLookupCaches } from "../lookup-cache";
+import { errorLogFields } from "../../utils/log";
 
 // Every write clears the proxy's routing lookups once it completes.
 const withInvalidation =
@@ -473,19 +474,24 @@ export const markProviderAccountNeedsReauthorization = withInvalidation(
     accessToken: string,
     now: number
   ): Promise<void> => {
-    await database
-      .update(providerAccounts)
-      .set({
-        lastRefreshAt: now,
-        lastRefreshStatus: "reauthorize",
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(providerAccounts.id, id),
-          eq(providerAccounts.accessToken, accessToken)
-        )
-      );
+    try {
+      await database
+        .update(providerAccounts)
+        .set({
+          lastRefreshAt: now,
+          lastRefreshStatus: "reauthorize",
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(providerAccounts.id, id),
+            eq(providerAccounts.accessToken, accessToken)
+          )
+        );
+    } catch (error) {
+      // The query error lists its parameters, including the access token.
+      throw new Error(errorLogFields(error).errorMessage);
+    }
   }
 );
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { Hono } from "hono";
 
@@ -211,4 +211,39 @@ test("a Claude token imports without a refresh token", async () => {
   });
   expect((await sendMessage()).status).toBe(200);
   expect(messageTokens).toEqual(["Bearer fake-setup-token"]);
+});
+
+test("a failed reauthorization flag keeps the token out of the limits", async () => {
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const error = spyOn(console, "error").mockImplementation(() => undefined);
+  await db.run(sql`CREATE TRIGGER reject_reauthorization_flag
+    BEFORE UPDATE ON provider_accounts
+    WHEN NEW.last_refresh_status = 'reauthorize'
+    BEGIN SELECT RAISE(ABORT, 'flag write blocked'); END`);
+  const account = await upsertProviderAccount(db, {
+    provider: "claude",
+    accountId: null,
+    label: "Fake Claude",
+    accessToken: "fake-secret-access",
+    refreshToken: null,
+    expiresAt: Date.now() - 1000,
+    metadata: null,
+    now: Date.now(),
+  });
+  try {
+    const response = await app.request("/admin/accounts/quotas");
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(
+      (JSON.parse(body) as { quotas: Record<string, { error: string }> })
+        .quotas[account.id]?.error
+    ).toContain("flag write blocked");
+    const logs = [...warn.mock.calls, ...error.mock.calls].join("\n");
+    expect(`${body}\n${logs}`).not.toContain("fake-secret-access");
+  } finally {
+    await db.run(sql`DROP TRIGGER reject_reauthorization_flag`);
+    warn.mockRestore();
+    error.mockRestore();
+  }
 });

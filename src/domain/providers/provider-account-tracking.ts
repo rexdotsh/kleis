@@ -163,7 +163,11 @@ const errorMessage = (error: unknown): string => {
   if (error instanceof DOMException && error.name === "TimeoutError") {
     return "Account tracking request timed out";
   }
-  return error instanceof Error ? error.message : "Account tracking failed";
+  // Shown in the admin UI and stored, so database errors lose their query
+  // parameters.
+  return error instanceof Error
+    ? errorLogFields(error).errorMessage
+    : "Account tracking failed";
 };
 
 const errorStatus = (error: unknown): number | null =>
