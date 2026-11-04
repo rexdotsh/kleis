@@ -3072,8 +3072,7 @@ describe("proxy contract: codex", () => {
 describe("proxy contract: claude", () => {
   const legacyClaudeMetadata: ClaudeAccountMetadata = {
     provider: "claude",
-    oauthMode: "max",
-    oauthHost: "claude.ai",
+    scope: null,
   };
 
   const claudeUsageRequestBody = {

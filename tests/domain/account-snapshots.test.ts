@@ -627,8 +627,6 @@ describe("account snapshots", () => {
     const id = await insertAccount("claude", {
       metadata: {
         provider: "claude",
-        oauthMode: "max",
-        oauthHost: "claude.ai",
         organizationUuid: "org-uuid",
         organizationName: "Example Org",
       },
@@ -693,8 +691,6 @@ describe("account snapshots", () => {
       .set({
         metadataJson: JSON.stringify({
           provider: "claude",
-          oauthMode: "max",
-          oauthHost: "claude.ai",
           organizationUuid: "other-org",
           organizationName: "Other Org",
         }),

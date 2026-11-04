@@ -12,6 +12,8 @@ import {
   listProviderStatuses,
   setPrimaryProviderAccount,
   setProviderAccountsEnabled,
+  tryAcquireProviderAccountRefreshLock,
+  updateProviderAccountTokens,
   upsertProviderAccount,
 } from "../../src/db/repositories/provider-accounts";
 import { providerAccounts } from "../../src/db/schema";
@@ -82,6 +84,40 @@ describe("provider account enablement", () => {
     client?.close();
     anchor.close();
   });
+
+  test.each([
+    ["another lock owner", "other-lock", "refresh-codex", 60_000],
+    ["a changed refresh token", "held-lock", "stale-refresh", 60_000],
+    ["an expired lease", "held-lock", "refresh-codex", -1],
+  ] as const)(
+    "rejects credential writes with %s",
+    async (_name, token, expected, leaseMs) => {
+      const now = Date.now();
+      await tryAcquireProviderAccountRefreshLock(database, "codex-primary", {
+        token: "held-lock",
+        now,
+        expiresAt: now + leaseMs,
+      });
+      expect(
+        await updateProviderAccountTokens(database, "codex-primary", {
+          accessToken: "stale-access",
+          refreshToken: "stale-refresh",
+          expiresAt: now + 3_600_000,
+          refreshLockToken: token,
+          expectedRefreshToken: expected,
+          lastRefreshStatus: "success",
+          now,
+        })
+      ).toBeNull();
+      const current = await database.query.providerAccounts.findFirst({
+        where: eq(providerAccounts.id, "codex-primary"),
+      });
+      expect(current).toMatchObject({
+        accessToken: "access-codex",
+        refreshToken: "refresh-codex",
+      });
+    }
+  );
 
   test("hides Codex tokens in errors when the credential update fails", async () => {
     await client?.execute(`CREATE TRIGGER reject_codex_refresh

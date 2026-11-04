@@ -29,11 +29,11 @@ import {
   hasTokenFailure,
   icon,
   isAccountServing,
-  isOnHold,
   isRateLimited,
   isRateLimitedWithData,
   kbd,
   limitSeverity,
+  longDate,
   needsReauthorization,
   providerName,
   providerStatusMap,
@@ -99,7 +99,7 @@ function resetCountdown(timestamp, now = Date.now()) {
 
 function limitMetersHtml(account, windows) {
   if (!windows.length) {
-    if (account.quota?.error) {
+    if (account.quota?.error && !needsReauthorization(account)) {
       return `<span class="warn">${syncFailureText(account.quota)}</span>`;
     }
     return account.quota
@@ -121,7 +121,7 @@ function limitMetersHtml(account, windows) {
 
 function limitSummaryText(account, windows) {
   if (!windows.length) {
-    return account.quota?.error
+    return account.quota?.error && !needsReauthorization(account)
       ? `<span class="warn">${syncFailureText(account.quota).toLowerCase()}</span>`
       : "";
   }
@@ -146,12 +146,12 @@ function accountRowHtml(account, serving, grouped = false) {
   let dot = "off";
   if (serving)
     dot = issues[0]?.severity || (account.isPrimary ? "primary" : "");
-  const tokenNote =
-    tokenStatus(account.expiresAt).class === "expired"
-      ? "Token expired"
-      : hasTokenFailure(account)
-        ? "Reauthorize"
-        : "";
+  let tokenNote = "";
+  if (account.provider === "claude" && needsReauthorization(account))
+    tokenNote = "Needs reauthorization";
+  else if (tokenStatus(account.expiresAt).class === "expired")
+    tokenNote = "Token expired";
+  else if (hasTokenFailure(account)) tokenNote = "Reauthorize";
   const windows = mainWindows(account);
   const reset = bindingWindow(windows);
   const resetSeverity = reset ? limitSeverity(reset.percent) : "";
@@ -240,15 +240,32 @@ function limitFacts(account) {
   return facts;
 }
 
+// Claude sign-ins last a year and are never refreshed.
+function signInFact(account) {
+  const expired = tokenStatus(account.expiresAt).class === "expired";
+  let value = "Active";
+  if (account.enabled === false) value = "Disabled";
+  else if (needsReauthorization(account))
+    value = '<span class="err">Needs reauthorization</span>';
+  else if (reauthorizeDeadline(account))
+    value = '<span class="warn">Ends soon</span>';
+  let expiry = "no expiry recorded";
+  if (account.expiresAt) {
+    expiry = expired
+      ? `expired ${relativeTime(account.expiresAt)}`
+      : `signed in until ${longDate(account.expiresAt)}`;
+  }
+  return fact("Sign-in", value, [escapeHtml(expiry)]);
+}
+
 function tokenFact(account) {
+  if (account.provider === "claude") return signInFact(account);
   const expired = tokenStatus(account.expiresAt).class === "expired";
   const refreshFailed =
     account.lastRefreshStatus && account.lastRefreshStatus !== "success";
   let value = "Active";
   if (account.enabled === false) value = "Disabled";
   else if (expired) value = '<span class="err">Expired</span>';
-  else if (isOnHold(account))
-    value = '<span class="err">Account on hold</span>';
   else if (needsReauthorization(account)) {
     value = '<span class="err">Needs reauthorization</span>';
   }
@@ -264,13 +281,7 @@ function tokenFact(account) {
   } else if (account.lastRefreshAt) {
     refresh = `refreshed ${escapeHtml(relativeTime(account.lastRefreshAt))}`;
   }
-  const deadline = reauthorizeDeadline(account);
-  return fact("Token", value, [
-    escapeHtml(expiry),
-    refresh,
-    deadline &&
-      `<span class="warn">reauthorize by ${escapeHtml(shortDate(deadline))}</span>`,
-  ]);
+  return fact("Token", value, [escapeHtml(expiry), refresh]);
 }
 
 // Personal Claude organizations are named after the email, which is already
@@ -300,14 +311,11 @@ function accountFact(account) {
   if (account.provider === "claude") {
     const extra = data?.subscription?.extraUsage;
     const plan = data?.plan?.label || profile?.plan?.label;
-    const signIn = metadata.oauthMode === "console" ? "Console" : "claude.ai";
     const checked = account.profile?.fetchedAt
       ? `checked ${relativeTime(account.profile.fetchedAt)}`
       : "";
-    return fact(plan ? "Plan" : "Sign-in", escapeHtml(plan || signIn), [
-      escapeHtml(
-        [plan && signIn, plan && checked].filter(Boolean).join(" \u00b7 ")
-      ),
+    return fact("Plan", escapeHtml(plan || "Unknown"), [
+      plan && escapeHtml(checked),
       email,
       organizationLine(
         metadata.workspaceName ||
@@ -399,7 +407,7 @@ function accountDetailHtml(account) {
     <div class="actions">
       ${(needsReauthorization(account) || reauthorizeDeadline(account)) && supportsOAuth ? button("Reauthorize", "reauthorize-account", "A", "btn btn-primary btn-sm") : ""}
       ${account.isPrimary ? "" : button("Make primary", "set-primary", "P")}
-      ${button("Refresh token", "refresh-account", "R")}
+      ${account.provider === "claude" ? "" : button("Refresh token", "refresh-account", "R")}
       ${button("Edit", "edit-account", "E")}
       ${button("Remove", "delete-account", "Del", "btn btn-ghost btn-sm btn-remove")}
       <div class="right">${synced}<span class="collapse-hint">Collapse <span class="kbd">esc</span></span></div>
@@ -543,7 +551,11 @@ function accountMenuItems(account) {
       action: "set-primary",
       shortcut: "P",
     },
-    { label: "Refresh token", action: "refresh-account", shortcut: "R" },
+    account.provider !== "claude" && {
+      label: "Refresh token",
+      action: "refresh-account",
+      shortcut: "R",
+    },
     supportsOAuth && {
       label: "Reauthorize",
       action: "reauthorize-account",
@@ -565,11 +577,12 @@ function reauthorizeReason(account) {
   if (tokenStatus(account.expiresAt).class === "expired") {
     return `expired ${relativeTime(account.expiresAt)}`;
   }
-  if (isOnHold(account)) return "on hold";
   if (account.lastRefreshStatus && account.lastRefreshStatus !== "success") {
-    return "refresh failed";
+    return account.provider === "claude" ? "rejected" : "refresh failed";
   }
   if (status === 401 || status === 403) return `rejected (${status})`;
+  const deadline = reauthorizeDeadline(account);
+  if (deadline) return `ends ${shortDate(deadline)}`;
   return "no expiry recorded";
 }
 
@@ -588,14 +601,19 @@ function renderReauthorizeList() {
     el.innerHTML = '<p class="muted list-note">No accounts to reauthorize.</p>';
     return;
   }
-  const flagged = accounts.filter(needsReauthorization);
-  const others = accounts.filter((account) => !needsReauthorization(account));
+  const due = (account) =>
+    needsReauthorization(account) || Boolean(reauthorizeDeadline(account));
+  const flagged = accounts.filter(due);
+  const others = accounts.filter((account) => !due(account));
   const shown = state.showAllReauthorize ? [...flagged, ...others] : flagged;
   const rows = shown.map((account) => {
     const reason = flagged.includes(account)
       ? reauthorizeReason(account)
       : providerName(account.provider);
-    return `<button class="row reauth" type="button" aria-label="Reauthorize ${escapeHtml(accountName(account))}" data-action="reauthorize-account" data-account-id="${account.id}" ${mutationAttributes("reauthorize-account", account.id)}><span class="name"><span class="dot ${flagged.includes(account) ? "err" : ""}"></span><span class="ellipsis">${escapeHtml(accountName(account))}</span></span><span class="small ${flagged.includes(account) ? "err" : "muted"}">${escapeHtml(reason)}</span>${icon("chev")}</button>`;
+    let severity = "";
+    if (needsReauthorization(account)) severity = "err";
+    else if (flagged.includes(account)) severity = "warn";
+    return `<button class="row reauth" type="button" aria-label="Reauthorize ${escapeHtml(accountName(account))}" data-action="reauthorize-account" data-account-id="${account.id}" ${mutationAttributes("reauthorize-account", account.id)}><span class="name"><span class="dot ${severity}"></span><span class="ellipsis">${escapeHtml(accountName(account))}</span></span><span class="small ${severity || "muted"}">${escapeHtml(reason)}</span>${icon("chev")}</button>`;
   });
   if (others.length) {
     rows.push(

@@ -4,7 +4,6 @@ import {
   listProviderAccounts,
   type ProviderAccountRecord,
 } from "../../db/repositories/provider-accounts";
-import { CLAUDE_ACCOUNT_ON_HOLD } from "../../providers/http";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
 import {
   type AccountQuota,
@@ -12,14 +11,15 @@ import {
 } from "./provider-account-tracking";
 
 const accountCache = createLookupCache<ProviderAccountRecord[]>(15_000);
-const REAUTHORIZE_WARNING_MS = 7 * 24 * 60 * 60_000;
+// Claude sign-ins are never refreshed, so they are flagged a month before
+// they end.
+const CLAUDE_REAUTHORIZE_WARNING_MS = 30 * 24 * 60 * 60_000;
 
 const emptyCounts = () => ({
   total: 0,
   enabled: 0,
   healthy: 0,
   needsReauth: 0,
-  onHold: 0,
   limited: 0,
 });
 
@@ -93,10 +93,6 @@ export const summarizeProviderAccountHealth = async (database: Database) => {
   for (const account of accounts) {
     const counts = summary[account.provider];
     const quota = getCachedProviderAccountQuota(account);
-    const deadline =
-      account.metadata?.provider === "claude"
-        ? account.metadata.refreshTokenExpiresAt
-        : null;
     const needsReauth =
       !(account.expiresAt > now) ||
       Boolean(
@@ -104,17 +100,14 @@ export const summarizeProviderAccountHealth = async (database: Database) => {
       ) ||
       quota?.errorStatus === 401 ||
       quota?.errorStatus === 403 ||
-      (typeof deadline === "number" && deadline - now < REAUTHORIZE_WARNING_MS);
-    const onHold = account.lastRefreshStatus === CLAUDE_ACCOUNT_ON_HOLD;
+      (account.provider === "claude" &&
+        account.expiresAt - now < CLAUDE_REAUTHORIZE_WARNING_MS);
     const limited = hasExhaustedLimits(quota, now);
     counts.total++;
     counts.enabled += Number(account.enabled);
     counts.needsReauth += Number(needsReauth);
-    counts.onHold += Number(onHold);
     counts.limited += Number(limited);
-    counts.healthy += Number(
-      account.enabled && !needsReauth && !onHold && !limited
-    );
+    counts.healthy += Number(account.enabled && !needsReauth && !limited);
   }
   return summary;
 };

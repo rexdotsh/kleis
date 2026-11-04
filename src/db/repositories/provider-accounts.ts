@@ -154,7 +154,7 @@ type UpsertProviderAccountInput = {
   accountId: string | null;
   label?: string | null;
   accessToken: string;
-  refreshToken: string;
+  refreshToken: string | null;
   expiresAt: number;
   metadata: ProviderAccountMetadata | null;
   now: number;
@@ -286,7 +286,7 @@ export const replaceProviderAccountCredentials = withInvalidation(
       provider: Provider;
       accountId: string | null;
       accessToken: string;
-      refreshToken: string;
+      refreshToken: string | null;
       expiresAt: number;
       metadata: ProviderAccountMetadata | null;
       now: number;
@@ -461,6 +461,31 @@ export const recordProviderAccountRefreshFailure = withInvalidation(
         updatedAt: now,
       })
       .where(whereClause);
+  }
+);
+
+// Only flags the credential that failed, so a reauthorization that already
+// replaced it stays healthy.
+export const markProviderAccountNeedsReauthorization = withInvalidation(
+  async (
+    database: Database,
+    id: string,
+    accessToken: string,
+    now: number
+  ): Promise<void> => {
+    await database
+      .update(providerAccounts)
+      .set({
+        lastRefreshAt: now,
+        lastRefreshStatus: "reauthorize",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(providerAccounts.id, id),
+          eq(providerAccounts.accessToken, accessToken)
+        )
+      );
   }
 );
 

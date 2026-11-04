@@ -11,6 +11,7 @@ import { recordProviderAccountLiveLimits } from "../../domain/providers/provider
 import {
   findPinnedProviderAccounts,
   getRoutableProviderAccount,
+  ProviderAccountNeedsReauthorizationError,
   refreshProviderAccountAfterAuthFailure,
 } from "../../domain/providers/provider-service";
 import {
@@ -320,13 +321,15 @@ const proxyRequest = async (
     account = await getRoutableProviderAccount(db, route.provider, now, {
       allowedAccountIds: accountScopeIds,
     });
-  } catch {
+  } catch (error) {
     usageRecorder.recordImmediate(502);
     return context.json(
-      proxyErrorResponse(
-        `Failed to refresh ${route.provider} account token`,
-        "token_refresh_failed"
-      ),
+      error instanceof ProviderAccountNeedsReauthorizationError
+        ? proxyErrorResponse(error.message, "account_reauthorization_required")
+        : proxyErrorResponse(
+            `Failed to refresh ${route.provider} account token`,
+            "token_refresh_failed"
+          ),
       502
     );
   }

@@ -113,10 +113,6 @@ async function reauthorizeAccountAction(request, id) {
     account.provider === "codex" ? "block" : "none";
   $("#oauth-claude-opts").style.display =
     account.provider === "claude" ? "block" : "none";
-  if (account.provider === "claude") {
-    $("#oauth-claude-mode").value = account.metadata?.oauthMode || "max";
-    $("#oauth-claude-mode").disabled = true;
-  }
   syncConnectControls();
   switchToTab("oauth");
   toast(`Reauthorizing ${account.label || account.provider}`);
@@ -138,8 +134,6 @@ async function startOAuthAction(request) {
     const body = {};
     if (provider === "codex")
       body.options = { mode: $("#oauth-codex-mode").value };
-    else if (provider === "claude")
-      body.options = { mode: $("#oauth-claude-mode").value };
 
     if (state.reauthorizeAccountId) {
       const target = accountById(state.reauthorizeAccountId);
@@ -166,7 +160,6 @@ async function startOAuthAction(request) {
     };
     $("#oauth-provider").disabled = true;
     $("#oauth-codex-mode").disabled = true;
-    $("#oauth-claude-mode").disabled = true;
     $("#btn-oauth-clear-target").disabled = true;
     syncConnectControls();
     renderOAuthFlow(data, provider);

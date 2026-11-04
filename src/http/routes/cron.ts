@@ -16,7 +16,10 @@ export const cronRoutes = new Hono().get(
   requireCronAuth,
   async (context) => {
     const startedAt = Date.now();
-    const accounts = await listProviderAccounts(db);
+    // Claude sign-ins last a year and are never refreshed.
+    const accounts = (await listProviderAccounts(db)).filter(
+      (account) => account.provider !== "claude"
+    );
     const failed: Array<{
       id: string;
       provider: string;

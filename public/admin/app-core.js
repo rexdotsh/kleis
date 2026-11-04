@@ -387,7 +387,6 @@ function clearReauthorization() {
   $("#oauth-reauthorize-target").style.display = "none";
   $("#oauth-provider").disabled = false;
   $("#oauth-codex-mode").disabled = false;
-  $("#oauth-claude-mode").disabled = false;
   $("#btn-oauth-clear-target").disabled = false;
   syncConnectControls();
 }

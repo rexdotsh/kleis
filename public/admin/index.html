@@ -432,7 +432,8 @@
             <div class="connect-main">
               <div class="sh"><h2>Connect an account</h2></div>
               <p class="muted">
-                Sign in once. Kleis keeps the token and refreshes it for you.
+                Sign in once. Kleis keeps the token and routes requests through
+                it.
               </p>
               <div
                 id="oauth-reauthorize-target"
@@ -514,35 +515,10 @@
                 </div>
               </div>
               <div id="oauth-claude-opts" class="field" style="display:none">
-                <span class="field-label" id="oauth-claude-mode-label"
-                  >Sign in with</span
-                >
-                <div
-                  class="seg seg-full"
-                  role="radiogroup"
-                  aria-labelledby="oauth-claude-mode-label"
-                  data-select="oauth-claude-mode"
-                >
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked="false"
-                    data-value="max"
-                  >
-                    claude.ai</button
-                  ><button
-                    type="button"
-                    role="radio"
-                    aria-checked="false"
-                    data-value="console"
-                  >
-                    Console
-                  </button>
+                <div class="field-hint">
+                  Signs in on claude.ai for one year. Kleis never refreshes
+                  Claude sign-ins, so reauthorize before the year is up.
                 </div>
-                <select id="oauth-claude-mode" hidden>
-                  <option value="max">claude.ai</option>
-                  <option value="console">Console</option>
-                </select>
               </div>
               <button
                 id="btn-oauth-start"
@@ -581,7 +557,7 @@
                   </div>
                   <div class="field">
                     <label class="field-label" for="import-refresh-token">
-                      Refresh token
+                      Refresh token (Codex only)
                     </label>
                     <input
                       id="import-refresh-token"
@@ -603,7 +579,9 @@
                       placeholder="1767225600000"
                     />
                     <div class="field-hint">
-                      If omitted, defaults to one hour from now.
+                      Required for Claude; a token from
+                      <code>claude setup-token</code> lasts a year from when it
+                      was made. Codex defaults to one hour from now.
                     </div>
                   </div>
                   <div class="field">

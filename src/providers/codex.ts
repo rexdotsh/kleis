@@ -510,6 +510,9 @@ export const codexAdapter: ProviderAdapter = {
     account: ProviderAccountRecord,
     now: number
   ): Promise<ProviderTokenResult> {
+    if (!account.refreshToken) {
+      throw new Error("Codex account has no refresh token; reauthorize it");
+    }
     const tokens = await refreshCodexTokens(account.refreshToken);
     return buildTokenResult(tokens, now, account);
   },

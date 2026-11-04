@@ -41,14 +41,14 @@ test("opt-in health reports only aggregate account issues without contacting pro
       { provider: "codex", usedPercent: 100, resetAt: now + day },
       { provider: "codex", authError: 401 },
       { provider: "claude", deadline: now + day },
-      { provider: "claude", status: "account_on_hold" },
+      { provider: "claude", status: "reauthorize" },
       { provider: "claude", authError: 403 },
       { provider: "claude", usedPercent: 100, resetAt: now + day },
       {
         provider: "claude",
         usedPercent: 100,
         resetAt: now - day,
-        deadline: now + 30 * day,
+        deadline: now + 31 * day,
       },
     ];
     const fixturesById = new Map<string, (typeof fixtures)[number]>();
@@ -63,17 +63,21 @@ test("opt-in health reports only aggregate account issues without contacting pro
         accessToken: `secret-access-${id}`,
         refreshToken: `secret-refresh-${id}`,
         enabled: fixture.enabled ?? true,
-        expiresAt: now + (fixture.expired ? -day : day),
+        expiresAt:
+          fixture.deadline ??
+          now +
+            (fixture.expired
+              ? -day
+              : fixture.provider === "claude"
+                ? 365 * day
+                : day),
         lastRefreshStatus: fixture.status ?? "success",
         metadataJson: JSON.stringify(
           fixture.provider === "claude"
             ? {
                 provider: "claude",
-                oauthMode: "max",
-                oauthHost: "claude.ai",
                 email: `${id}@example.com`,
                 organizationName: `private-organization-${id}`,
-                refreshTokenExpiresAt: fixture.deadline,
               }
             : {
                 provider: "codex",
@@ -147,7 +151,6 @@ test("opt-in health reports only aggregate account issues without contacting pro
           enabled: 5,
           healthy: 1,
           needsReauth: 3,
-          onHold: 0,
           limited: 1,
         },
         claude: {
@@ -155,7 +158,6 @@ test("opt-in health reports only aggregate account issues without contacting pro
           enabled: 5,
           healthy: 1,
           needsReauth: 3,
-          onHold: 1,
           limited: 1,
         },
       },
