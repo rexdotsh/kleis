@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { eq, sql } from "drizzle-orm";
+import { DrizzleQueryError } from "drizzle-orm/errors";
 import { migrate } from "drizzle-orm/libsql/migrator";
 import { Hono } from "hono";
 
@@ -213,37 +214,90 @@ test("a Claude token imports without a refresh token", async () => {
   expect(messageTokens).toEqual(["Bearer fake-setup-token"]);
 });
 
-test("a failed reauthorization flag keeps the token out of the limits", async () => {
-  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
-  const error = spyOn(console, "error").mockImplementation(() => undefined);
-  await db.run(sql`CREATE TRIGGER reject_reauthorization_flag
-    BEFORE UPDATE ON provider_accounts
-    WHEN NEW.last_refresh_status = 'reauthorize'
-    BEGIN SELECT RAISE(ABORT, 'flag write blocked'); END`);
-  const account = await upsertProviderAccount(db, {
-    provider: "claude",
-    accountId: null,
-    label: "Fake Claude",
-    accessToken: "fake-secret-access",
-    refreshToken: null,
-    expiresAt: Date.now() - 1000,
-    metadata: null,
-    now: Date.now(),
-  });
-  try {
-    const response = await app.request("/admin/accounts/quotas");
-    const body = await response.text();
+// Each row makes the reauthorization flag write fail and returns its undo.
+const flagWriteFailures: [
+  string,
+  () => Promise<() => Promise<void>>,
+  string,
+][] = [
+  [
+    "a database error",
+    async () => {
+      await db.run(sql`CREATE TRIGGER reject_reauthorization_flag
+        BEFORE UPDATE ON provider_accounts
+        WHEN NEW.last_refresh_status = 'reauthorize'
+        BEGIN SELECT RAISE(ABORT, 'flag write blocked'); END`);
+      return async () => {
+        await db.run(sql`DROP TRIGGER reject_reauthorization_flag`);
+      };
+    },
+    "flag write blocked",
+  ],
+  ...(
+    [
+      ["a driver rejection without an error", undefined],
+      [
+        "a nested query error",
+        new DrizzleQueryError("update provider_accounts", [
+          "fake-secret-access",
+        ]),
+      ],
+    ] as const
+  ).map(
+    ([name, rejection]) =>
+      [
+        name,
+        () => {
+          const client = db.$client;
+          const execute = client.execute.bind(client);
+          const failing: typeof execute = (statement, ...rest) =>
+            typeof statement === "object" &&
+            statement.sql.includes('set "last_refresh_at"')
+              ? // oxlint-disable-next-line typescript/prefer-promise-reject-errors
+                Promise.reject(rejection)
+              : execute(statement, ...rest);
+          client.execute = failing as typeof client.execute;
+          return Promise.resolve(() => {
+            client.execute = execute as typeof client.execute;
+            return Promise.resolve();
+          });
+        },
+        "Database query failed",
+      ] as const
+  ),
+];
 
-    expect(response.status).toBe(200);
-    expect(
-      (JSON.parse(body) as { quotas: Record<string, { error: string }> })
-        .quotas[account.id]?.error
-    ).toContain("flag write blocked");
-    const logs = [...warn.mock.calls, ...error.mock.calls].join("\n");
-    expect(`${body}\n${logs}`).not.toContain("fake-secret-access");
-  } finally {
-    await db.run(sql`DROP TRIGGER reject_reauthorization_flag`);
-    warn.mockRestore();
-    error.mockRestore();
+test.each(flagWriteFailures)(
+  "a reauthorization flag that fails with %s keeps the token out of the limits",
+  async (_name, failFlagWrite, shownError) => {
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    const error = spyOn(console, "error").mockImplementation(() => undefined);
+    const account = await upsertProviderAccount(db, {
+      provider: "claude",
+      accountId: null,
+      label: "Fake Claude",
+      accessToken: "fake-secret-access",
+      refreshToken: null,
+      expiresAt: Date.now() - 1000,
+      metadata: null,
+      now: Date.now(),
+    });
+    const undo = await failFlagWrite();
+    try {
+      const response = await app.request("/admin/accounts/quotas");
+      const body = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(
+        (JSON.parse(body) as { quotas: Record<string, { error: string }> })
+          .quotas[account.id]?.error
+      ).toContain(shownError);
+      const logs = [...warn.mock.calls, ...error.mock.calls].join("\n");
+      expect(`${body}\n${logs}`).not.toContain("fake-secret-access");
+    } finally {
+      await undo();
+      warn.mockRestore();
+      error.mockRestore();
+    }
   }
-});
+);
