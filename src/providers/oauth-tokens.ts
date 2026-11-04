@@ -35,28 +35,22 @@ export const buildOAuthTokenFields = (
     now: number;
     fallbackRefreshToken?: string | null;
     defaultExpiresIn?: number;
-    expirySkewMs?: number;
-    minimumLifetimeMs?: number;
   }
-): Pick<ProviderTokenResult, "accessToken" | "refreshToken" | "expiresAt"> => {
+): Pick<ProviderTokenResult, "accessToken" | "expiresAt"> & {
+  refreshToken: string;
+} => {
   const refreshToken =
     readOAuthText(tokens.refresh_token) ?? input.fallbackRefreshToken;
   if (!refreshToken) {
     throw new Error(`${providerLabel} OAuth response is missing refresh_token`);
   }
   const expiresIn = tokens.expires_in ?? input.defaultExpiresIn;
-  const lifetimeMs =
-    typeof expiresIn === "number"
-      ? expiresIn * 1000 - (input.expirySkewMs ?? 0)
-      : 0;
+  const lifetimeMs = typeof expiresIn === "number" ? expiresIn * 1000 : 0;
   // Keep rotated credentials even when the upstream lifetime is unusable.
   const expiresAt =
     input.now +
-    Math.max(
-      lifetimeMs > 0 && Number.isFinite(input.now + lifetimeMs)
-        ? lifetimeMs
-        : 60_000,
-      input.minimumLifetimeMs ?? 0
-    );
+    (lifetimeMs > 0 && Number.isFinite(input.now + lifetimeMs)
+      ? lifetimeMs
+      : 60_000);
   return { accessToken: tokens.access_token, refreshToken, expiresAt };
 };

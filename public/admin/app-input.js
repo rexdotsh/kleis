@@ -419,6 +419,8 @@ function runRowShortcut(tab, key) {
       !resetOfferFor(accountById(id))?.canUse
     )
       return false;
+    if (action === "refresh-account" && accountById(id)?.provider === "claude")
+      return false;
     setConfirmAnchor(row.querySelector(".more") ?? row);
     runAction(accountActions[action](id, null));
     return true;

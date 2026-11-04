@@ -21,19 +21,12 @@ const codexMetadataSchema = z.object({
 const claudeMetadataSchema = z.object({
   provider: z.literal("claude"),
   scope: z.string().nullable().default(null),
-  oauthMode: z.enum(["max", "console"]),
-  oauthHost: z.enum([
-    "claude.ai",
-    "console.anthropic.com",
-    "platform.claude.com",
-  ]),
   accountUuid: optionalText,
   email: optionalText,
   organizationUuid: optionalText,
   organizationName: optionalText,
   workspaceId: optionalText,
   workspaceName: optionalText,
-  refreshTokenExpiresAt: optionalTimestamp,
 });
 
 export const providerAccountMetadataSchema = z.discriminatedUnion("provider", [
@@ -61,12 +54,7 @@ export const parseImportedProviderAccountMetadata = (input: {
           chatgptAccountId: input.accountId,
           email: null,
         }
-      : {
-          provider: "claude",
-          scope: null,
-          oauthMode: "max",
-          oauthHost: "claude.ai",
-        };
+      : { provider: "claude", scope: null };
   if (!input.metadata) {
     return defaults;
   }

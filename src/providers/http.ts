@@ -20,7 +20,7 @@ const OAUTH_ERROR_CODES = new Set([
   "deviceauth_authorization_pending",
 ]);
 
-export const CLAUDE_ACCOUNT_ON_HOLD = "account_on_hold";
+const CLAUDE_ACCOUNT_ON_HOLD = "account_on_hold";
 
 export class OAuthError extends Error {
   constructor(
@@ -71,12 +71,9 @@ export const readOAuthErrorCode = async (
   );
 };
 
-export const classifyOAuthRefreshError = (
-  error: unknown,
-  unknownFailureStatus: "indeterminate" | "failed"
-) => {
+export const classifyOAuthRefreshError = (error: unknown) => {
   if (!(error instanceof OAuthError)) {
-    return unknownFailureStatus;
+    return "failed";
   }
   if (error.status === 429) {
     return "rate_limited";
@@ -93,9 +90,6 @@ export const classifyOAuthRefreshError = (
       error.code === "refresh_token_invalidated")
   ) {
     return "reauthorize";
-  }
-  if (error.code === CLAUDE_ACCOUNT_ON_HOLD) {
-    return CLAUDE_ACCOUNT_ON_HOLD;
   }
   return "transient";
 };

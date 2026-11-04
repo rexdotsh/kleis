@@ -163,7 +163,11 @@ const errorMessage = (error: unknown): string => {
   if (error instanceof DOMException && error.name === "TimeoutError") {
     return "Account tracking request timed out";
   }
-  return error instanceof Error ? error.message : "Account tracking failed";
+  // Shown in the admin UI and stored, so database errors lose their query
+  // parameters.
+  return error instanceof Error
+    ? errorLogFields(error).errorMessage
+    : "Account tracking failed";
 };
 
 const errorStatus = (error: unknown): number | null =>
@@ -454,6 +458,14 @@ const updateCodexProfile = async (
   }
 };
 
+// Tokens without user:profile, such as those from `claude setup-token`, can
+// only call the API: Claude answers the usage and profile lookups with 403.
+const canReadClaudeUsage = (account: TrackingAccount): boolean => {
+  const scope =
+    account.metadata?.provider === "claude" ? account.metadata.scope : null;
+  return scope === null || scope.split(" ").includes("user:profile");
+};
+
 const fetchAccountData = async (
   database: Database,
   account: TrackingAccount,
@@ -463,8 +475,16 @@ const fetchAccountData = async (
   data: TrackingData;
   errors: unknown[];
   live?: LiveReading[];
+  usageUnreadable?: boolean;
 }> => {
   if (account.provider === "claude") {
+    if (!canReadClaudeUsage(account)) {
+      return {
+        data: { provider: "claude" },
+        errors: [],
+        usageUnreadable: true,
+      };
+    }
     const plan = getClaudeProfile(account).then(
       (profile) => profile?.plan ?? null
     );
@@ -496,7 +516,9 @@ const fetchAccountData = async (
     } catch (error) {
       return {
         data: { provider: "claude", plan: await plan },
-        errors: [error],
+        ...(errorStatus(error) === 403
+          ? { errors: [], usageUnreadable: true }
+          : { errors: [error] }),
       };
     }
   }
@@ -576,7 +598,11 @@ const fetchProviderAccountQuota = async (
     return quota;
   };
   const baseMs = stored.provider === "claude" ? CLAUDE_CACHE_MS : CACHE_MS;
-  if (stored.provider === "claude" && claudeRateLimit.until > now) {
+  if (
+    stored.provider === "claude" &&
+    claudeRateLimit.until > now &&
+    canReadClaudeUsage(stored)
+  ) {
     const paused = new AccountTrackingHttpError(
       "Claude subscription usage request failed (429)",
       429,
@@ -606,6 +632,21 @@ const fetchProviderAccountQuota = async (
       }
       return readings;
     });
+    if (result.usageUnreadable) {
+      const known = latest();
+      return publish(
+        known
+          ? { ...known, error: null, errorStatus: null }
+          : {
+              fetchedAt: null,
+              error: null,
+              errorStatus: null,
+              source: null,
+              data: result.data,
+            },
+        now + PROFILE_CACHE_MS
+      );
+    }
     const previous = latest()?.data;
     if (result.data.provider === "claude") {
       // A read without the resets block was not evaluated for resets, so the

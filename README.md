@@ -84,7 +84,8 @@ Admin panel lives at `http://localhost:3003/admin/`.
 ## OAuth flows
 
 - Codex: browser callback code flow or headless device flow.
-- Claude: authorization code flow (`claude.ai` or `console.anthropic.com` mode).
+- Claude: authorization code flow on `claude.ai` for a one-year sign-in. Kleis
+  never refreshes Claude tokens; reauthorize the account before the year is up.
 
 After connecting accounts, set one primary account per provider.
 
@@ -125,7 +126,7 @@ stops accepting connections, and exits once its in-flight streams finish (up to
 
 Set `ADMIN_TOKEN`, `CRON_SECRET`, `TURSO_CONNECTION_URL`, and `TURSO_AUTH_TOKEN` in your Vercel project, then deploy. Migrations run on build. Bun runtime.
 
-`vercel.json` includes a daily cron that calls `GET /cron/refresh-provider-accounts` to force-refresh all saved provider accounts.
+`vercel.json` includes a daily cron that calls `GET /cron/refresh-provider-accounts` to force-refresh all saved Codex accounts.
 
 Build pre-bundles everything into `dist/index.js` because Vercel's `@vercel/node` esbuild pass can't resolve extensionless TypeScript imports ([vercel/vercel#14910](https://github.com/vercel/vercel/issues/14910)) unless you use an experimental flag, which... breaks serving files from the `public` directory. Filed [vercel/vercel#15216](https://github.com/vercel/vercel/pull/15216) to fix this.
 

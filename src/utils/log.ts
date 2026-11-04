@@ -57,9 +57,21 @@ export const logError = (event: string, fields: LogFields = {}): void => {
 export const errorLogFields = (
   error: unknown
 ): { errorName: string; errorMessage: string; errorStack?: string } => {
-  // Drizzle's wrapper includes SQL parameters; the cause retains the DB error.
-  if (error instanceof DrizzleQueryError && error.cause) {
-    return errorLogFields(error.cause);
+  // Drizzle's query errors list their SQL parameters, which can hold
+  // credentials, so only the database error beneath them is ever reported.
+  if (error instanceof DrizzleQueryError) {
+    const seen = new Set<unknown>();
+    let cause: unknown = error;
+    while (cause instanceof DrizzleQueryError && !seen.has(cause)) {
+      seen.add(cause);
+      cause = cause.cause;
+    }
+    return cause instanceof Error && !(cause instanceof DrizzleQueryError)
+      ? errorLogFields(cause)
+      : {
+          errorName: "DrizzleQueryError",
+          errorMessage: "Database query failed",
+        };
   }
   if (error instanceof Error) {
     return {

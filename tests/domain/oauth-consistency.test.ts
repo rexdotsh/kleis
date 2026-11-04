@@ -33,8 +33,6 @@ test("Claude reauthorization rejects a different or unverified known user/organi
   const id = crypto.randomUUID();
   const metadata = {
     provider: "claude",
-    oauthMode: "max",
-    oauthHost: "claude.ai",
     accountUuid: "user-a",
     organizationUuid: "org-a",
   };
@@ -84,7 +82,7 @@ test("Claude reauthorization rejects a different or unverified known user/organi
       Response.json({
         access_token: "different-access",
         refresh_token: "different-refresh",
-        expires_in: 3600,
+        expires_in: 365 * 86_400,
         ...variant,
       })) as typeof fetch;
 
@@ -116,7 +114,7 @@ test("Claude reauthorization rejects a different or unverified known user/organi
     Response.json({
       access_token: "same-identity-access",
       refresh_token: "same-identity-refresh",
-      expires_in: 3600,
+      expires_in: 365 * 86_400,
       account: { uuid: "user-a" },
       organization: { uuid: "org-a" },
     })) as typeof fetch;
@@ -133,7 +131,8 @@ test("Claude reauthorization rejects a different or unverified known user/organi
     label: "Selected account",
     isPrimary: true,
     enabled: false,
-    refreshToken: "same-identity-refresh",
+    accessToken: "same-identity-access",
+    refreshToken: null,
   });
 });
 
@@ -287,7 +286,7 @@ test("a mismatched callback leaves either provider's OAuth flow usable exactly o
       return Response.json({
         access_token: "new-access",
         refresh_token: "new-refresh",
-        expires_in: 3600,
+        expires_in: 365 * 86_400,
       });
     }) as typeof fetch;
 
@@ -306,7 +305,7 @@ test("a mismatched callback leaves either provider's OAuth flow usable exactly o
     const input = { state: started.state, code: `code#${started.state}` };
     expect(
       await completeProviderOAuth(database, provider, input, Date.now())
-    ).toMatchObject({ accessToken: "new-access", refreshToken: "new-refresh" });
+    ).toMatchObject({ accessToken: "new-access" });
     await expect(
       completeProviderOAuth(database, provider, input, Date.now())
     ).rejects.toThrow("missing or expired");

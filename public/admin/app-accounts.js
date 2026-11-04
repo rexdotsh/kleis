@@ -406,8 +406,18 @@ async function importAccountAction(request) {
   const label = trimmedOrNull($("#import-label").value);
   const metadataRaw = $("#import-metadata").value.trim();
 
-  if (!accessToken || !refreshToken) {
-    toast("Access and refresh tokens are required", "error");
+  const isClaude = provider === "claude";
+  if (!accessToken || (!isClaude && !refreshToken)) {
+    toast(
+      isClaude
+        ? "Access token is required"
+        : "Access and refresh tokens are required",
+      "error"
+    );
+    return;
+  }
+  if (isClaude && !expiresAtRaw) {
+    toast("Expires at is required for Claude tokens", "error");
     return;
   }
 
@@ -427,7 +437,8 @@ async function importAccountAction(request) {
     return;
   }
 
-  const body = { accessToken, refreshToken, expiresAt };
+  const body = { accessToken, expiresAt };
+  if (!isClaude) body.refreshToken = refreshToken;
   if (accountId) body.accountId = accountId;
   if (label) body.label = label;
   if (metadata) body.metadata = metadata;

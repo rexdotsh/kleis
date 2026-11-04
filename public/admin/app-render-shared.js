@@ -45,6 +45,11 @@ const shortDateFormat = new Intl.DateTimeFormat("en-US", {
   month: "short",
   day: "numeric",
 });
+const longDateFormat = new Intl.DateTimeFormat("en-GB", {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+});
 
 function formatCount(value) {
   return countFormat.format(usageNumber(value));
@@ -52,6 +57,10 @@ function formatCount(value) {
 
 function shortDate(timestamp) {
   return shortDateFormat.format(timestamp);
+}
+
+function longDate(timestamp) {
+  return longDateFormat.format(timestamp);
 }
 
 function formatCompact(n) {
@@ -641,16 +650,16 @@ function limitSeverity(percent) {
   return percent >= 80 ? "warn" : "";
 }
 
-const ACCOUNT_ON_HOLD = "account_on_hold";
-const REAUTHORIZE_WARNING_MS = 7 * DAY_MS;
-const isOnHold = (account) => account.lastRefreshStatus === ACCOUNT_ON_HOLD;
+const REAUTHORIZE_WARNING_MS = 30 * DAY_MS;
 
-// Claude sign-ins last about a month; within a week of the end the account
-// needs a new sign-in before the refresh token stops working.
+// Claude sign-ins are never refreshed, so a month before the token expires
+// the account needs a new sign-in.
 function reauthorizeDeadline(account) {
-  const at = account.metadata?.refreshTokenExpiresAt;
-  return typeof at === "number" && at - Date.now() < REAUTHORIZE_WARNING_MS
-    ? at
+  const left = account.expiresAt - Date.now();
+  return account.provider === "claude" &&
+    left > 0 &&
+    left < REAUTHORIZE_WARNING_MS
+    ? account.expiresAt
     : null;
 }
 
@@ -680,17 +689,12 @@ const syncFailureText = (quota) =>
 
 function accountIssues(account) {
   const issues = [];
+  const claude = account.provider === "claude";
   if (tokenStatus(account.expiresAt).class === "expired") {
     issues.push({
       severity: "err",
-      text: "token expired, reauthorize",
+      text: claude ? "needs reauthorization" : "token expired, reauthorize",
       when: `expired ${relativeTime(account.expiresAt)}`,
-    });
-  } else if (isOnHold(account)) {
-    issues.push({
-      severity: "err",
-      text: "account on hold",
-      when: account.lastRefreshAt ? relativeTime(account.lastRefreshAt) : "",
     });
   } else if (
     account.lastRefreshStatus &&
@@ -698,19 +702,23 @@ function accountIssues(account) {
   ) {
     issues.push({
       severity: "err",
-      text: `token refresh failed (${account.lastRefreshStatus})`,
+      text: claude
+        ? "needs reauthorization"
+        : `token refresh failed (${account.lastRefreshStatus})`,
       when: account.lastRefreshAt ? relativeTime(account.lastRefreshAt) : "",
     });
   }
+  // A dead token also fails limit syncs; that is not a separate issue.
+  const tokenDead = issues.length > 0;
   const deadline = reauthorizeDeadline(account);
-  if (deadline && tokenStatus(account.expiresAt).class !== "expired") {
+  if (deadline) {
     issues.push({
       severity: "warn",
       text: "sign-in ends soon, reauthorize",
       when: `by ${shortDate(deadline)}`,
     });
   }
-  const quota = account.quota;
+  const quota = tokenDead ? null : account.quota;
   if (quota?.errorStatus === 401 || quota?.errorStatus === 403) {
     issues.push({
       severity: "err",
@@ -778,6 +786,7 @@ export {
   accountName,
   keyName,
   shortDate,
+  longDate,
   hasTraffic,
   actionMutationAttributes,
   untilText,
@@ -799,7 +808,6 @@ export {
   CODEX_PLAN_LABELS,
   accountWindows,
   limitSeverity,
-  isOnHold,
   reauthorizeDeadline,
   needsReauthorization,
   hasTokenFailure,

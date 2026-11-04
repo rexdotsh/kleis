@@ -56,8 +56,6 @@ const providers = {
     items: ["grant_fake_a", "grant_fake_b"],
     metadata: {
       provider: "claude",
-      oauthMode: "max",
-      oauthHost: "claude.ai",
       organizationUuid: "00000000-0000-4000-8000-000000000001",
     },
     spend: claimClaudeReset,
