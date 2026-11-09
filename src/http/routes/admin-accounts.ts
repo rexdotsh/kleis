@@ -652,19 +652,30 @@ export const adminAccountsRoutes = new Hono()
         );
       }
 
-      const account = await importProviderAccount(
-        db,
-        provider,
-        {
-          accessToken: body.accessToken,
-          refreshToken: body.refreshToken ?? null,
-          expiresAt,
-          accountId,
-          label: body.label ?? null,
-          metadata,
-        },
-        now
-      );
+      let account: ProviderAccountRecord;
+      try {
+        account = await importProviderAccount(
+          db,
+          provider,
+          {
+            accessToken: body.accessToken,
+            refreshToken: body.refreshToken ?? null,
+            expiresAt,
+            accountId,
+            label: body.label ?? null,
+            metadata,
+          },
+          now
+        );
+      } catch (error) {
+        if (error instanceof ProviderAccountReauthorizationConflict) {
+          return context.json(
+            { error: "conflict", message: error.message },
+            409
+          );
+        }
+        throw error;
+      }
 
       return context.json({
         account: toAdminAccountView(account),

@@ -177,6 +177,13 @@ export const upsertProviderAccount = withInvalidation(
     const updateExisting = async (
       account: ProviderAccountRecord
     ): Promise<ProviderAccountRecord> => {
+      // Team members share a workspace ID, so a known, different user is
+      // another person's sign-in.
+      const storedUser = signedInUser(account);
+      const incomingUser = signedInUser(input);
+      if (storedUser && incomingUser && storedUser !== incomingUser) {
+        throw accountIdConflict();
+      }
       await database
         .update(providerAccounts)
         .set({
@@ -298,6 +305,24 @@ export class ProviderAccountReauthorizationConflict extends Error {
   }
 }
 
+// The unique (provider, accountId) index allows one row per ChatGPT
+// workspace, so another member of a connected workspace cannot be added.
+const accountIdConflict = () =>
+  new ProviderAccountReauthorizationConflict(
+    "Another Kleis account already uses this provider account ID"
+  );
+
+const signedInUser = ({
+  metadata,
+}: {
+  metadata: ProviderAccountMetadata | null;
+}): string | null | undefined => {
+  if (metadata?.provider === "codex") {
+    return metadata.chatgptUserId;
+  }
+  return metadata?.provider === "claude" ? metadata.accountUuid : null;
+};
+
 // Adds a new account and never takes over an existing row, even one with the
 // same account ID.
 export const addProviderAccount = withInvalidation(
@@ -312,14 +337,8 @@ export const addProviderAccount = withInvalidation(
         input.provider,
         input.accountId
       )) !== null;
-    // The unique (provider, accountId) index allows one row per ChatGPT
-    // workspace, so another member of a connected workspace cannot be added.
-    const conflict = () =>
-      new ProviderAccountReauthorizationConflict(
-        "Another Kleis account already uses this provider account ID"
-      );
     if (await accountIdTaken()) {
-      throw conflict();
+      throw accountIdConflict();
     }
 
     const { created, insertValues, attemptInsert } = await tryInsertAccount(
@@ -330,7 +349,7 @@ export const addProviderAccount = withInvalidation(
       return created;
     }
     if (await accountIdTaken()) {
-      throw conflict();
+      throw accountIdConflict();
     }
     return attemptInsert({
       ...insertValues,

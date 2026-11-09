@@ -255,3 +255,35 @@ test("concurrent Claude sign-ins for one identity add one account", async () => 
   expect(responses.map((response) => response.status)).toEqual([200, 200]);
   expect(await db.select().from(providerAccounts)).toHaveLength(1);
 });
+
+test.each([
+  ["another user", "fake-user-b", 409, "fake-old-access"],
+  ["the same user", "fake-user-a", 200, "fake-imported-access"],
+  ["an unknown user", null, 200, "fake-imported-access"],
+] as const)(
+  "importing %s of a connected Codex workspace only replaces their own sign-in",
+  async (_name, chatgptUserId, status, storedAccessToken) => {
+    await insertExisting(existingCodex("fake-team", "fake-user-a"));
+
+    const response = await postJson("/admin/accounts/codex/import", {
+      accessToken: "fake-imported-access",
+      refreshToken: "fake-imported-refresh",
+      expiresAt: Date.now() + 3_600_000,
+      accountId: "fake-team",
+      metadata: { chatgptUserId },
+    });
+
+    expect(response.status).toBe(status);
+    const accounts = await db.select().from(providerAccounts);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]).toMatchObject({
+      id: EXISTING_ID,
+      accessToken: storedAccessToken,
+    });
+    if (status === 409) {
+      expect(accounts[0]?.metadataJson).toBe(
+        existingCodex("fake-team", "fake-user-a").metadataJson
+      );
+    }
+  }
+);
