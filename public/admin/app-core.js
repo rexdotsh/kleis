@@ -399,7 +399,9 @@ function updateOAuthProviderUI() {
   $("#oauth-claude-opts").style.display = p === "claude" ? "block" : "none";
 }
 
-function cancelOAuthFlow() {
+// Starting over keeps the account being reauthorized, so the next sign-in
+// still renews it.
+function restartOAuthFlow() {
   state.oauthRequestSeq++;
   $("#btn-oauth-start").dataset.mutationTarget = String(state.oauthRequestSeq);
   state.activeOAuth = null;
@@ -407,6 +409,14 @@ function cancelOAuthFlow() {
   $("#oauth-flow-active").innerHTML = "";
   setButtonBusy($("#btn-oauth-start"), false);
   $("#btn-oauth-start").style.display = "";
+  $("#oauth-provider").disabled = Boolean(state.reauthorizeAccountId);
+  $("#oauth-codex-mode").disabled = false;
+  $("#btn-oauth-clear-target").disabled = false;
+  syncConnectControls();
+}
+
+function cancelOAuthFlow() {
+  restartOAuthFlow();
   clearReauthorization();
 }
 
@@ -573,6 +583,7 @@ export {
   syncConnectControls,
   clearReauthorization,
   updateOAuthProviderUI,
+  restartOAuthFlow,
   cancelOAuthFlow,
   invalidateSessionRequests,
   logout,

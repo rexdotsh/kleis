@@ -279,6 +279,50 @@ export class ProviderAccountReauthorizationConflict extends Error {
   }
 }
 
+type OAuthIdentityInput = {
+  provider: Provider;
+  accountId: string | null;
+  metadata: ProviderAccountMetadata | null;
+};
+
+// Who a sign-in belongs to: the Claude user and organization, or the ChatGPT
+// account. Older Claude rows kept the user UUID in accountId.
+const oauthIdentity = ({
+  provider,
+  accountId,
+  metadata,
+}: OAuthIdentityInput): (string | null | undefined)[] =>
+  provider === "claude"
+    ? [
+        (metadata?.provider === "claude" ? metadata.accountUuid : null) ||
+          accountId,
+        metadata?.provider === "claude" ? metadata.organizationUuid : null,
+      ]
+    : [
+        accountId ||
+          (metadata?.provider === "codex" ? metadata.chatgptAccountId : null),
+      ];
+
+// Only an identity with every part known can match an account.
+export const findProviderAccountsWithIdentity = async (
+  database: Database,
+  input: OAuthIdentityInput
+): Promise<ProviderAccountRecord[]> => {
+  const identity = oauthIdentity(input);
+  if (identity.some((part) => !part)) {
+    return [];
+  }
+  const rows = await database
+    .select()
+    .from(providerAccounts)
+    .where(eq(providerAccounts.provider, input.provider));
+  return rows
+    .map(toProviderAccountRecord)
+    .filter((account) =>
+      oauthIdentity(account).every((part, index) => part === identity[index])
+    );
+};
+
 export const replaceProviderAccountCredentials = withInvalidation(
   async (
     database: Database,
@@ -297,36 +341,12 @@ export const replaceProviderAccountCredentials = withInvalidation(
     if (!existing || existing.provider !== input.provider) {
       return null;
     }
-    const previous = existing.metadata;
-    const incoming = input.metadata;
-    const identities =
-      input.provider === "claude"
-        ? [
-            [
-              (previous?.provider === "claude" ? previous.accountUuid : null) ||
-                existing.accountId,
-              (incoming?.provider === "claude" ? incoming.accountUuid : null) ||
-                input.accountId,
-            ],
-            [
-              previous?.provider === "claude"
-                ? previous.organizationUuid
-                : null,
-              incoming?.provider === "claude"
-                ? incoming.organizationUuid
-                : null,
-            ],
-          ]
-        : [
-            [
-              existing.accountId ||
-                (previous?.provider === "codex"
-                  ? previous.chatgptAccountId
-                  : null),
-              input.accountId,
-            ],
-          ];
-    if (identities.some(([known, received]) => known && known !== received)) {
+    const received = oauthIdentity(input);
+    if (
+      oauthIdentity(existing).some(
+        (known, index) => known && known !== received[index]
+      )
+    ) {
       throw new ProviderAccountReauthorizationConflict(
         "OAuth account identity does not match the selected account"
       );

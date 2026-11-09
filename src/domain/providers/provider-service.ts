@@ -3,6 +3,7 @@ import {
   extendProviderAccountRefreshLock,
   findProviderAccountById,
   findProviderAccountsByIds,
+  findProviderAccountsWithIdentity,
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
   markProviderAccountNeedsReauthorization,
@@ -18,7 +19,10 @@ import type { Provider } from "../../db/schema";
 import type { ProviderAccountMetadata } from "../../providers/metadata";
 import { classifyOAuthRefreshError, OAuthError } from "../../providers/http";
 import { getProviderAdapter } from "../../providers/registry";
-import type { ProviderOAuthStartResult } from "../../providers/types";
+import type {
+  ProviderOAuthStartResult,
+  ProviderTokenResult,
+} from "../../providers/types";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { sleep } from "../../utils/sleep";
 import { createLookupCache } from "../../db/lookup-cache";
@@ -451,6 +455,21 @@ const storedRefreshToken = (
   return token;
 };
 
+// A new sign-in for an account Kleis already has renews that account, so its
+// label, keys and usage stay attached. More than one match adds a new account.
+const findAccountToRenew = async (
+  database: Database,
+  provider: Provider,
+  tokens: ProviderTokenResult
+): Promise<string | undefined> => {
+  const matches = await findProviderAccountsWithIdentity(database, {
+    provider,
+    accountId: tokens.accountId,
+    metadata: tokens.metadata,
+  });
+  return matches.length === 1 ? matches[0]?.id : undefined;
+};
+
 export const completeProviderOAuth = async (
   database: Database,
   provider: Provider,
@@ -474,10 +493,13 @@ export const completeProviderOAuth = async (
     throw new Error("Provider OAuth response is missing required tokens");
   }
 
-  if (tokens.replaceAccountId) {
+  const replaceAccountId =
+    tokens.replaceAccountId ??
+    (await findAccountToRenew(database, provider, tokens));
+  if (replaceAccountId) {
     const updated = await replaceProviderAccountCredentials(
       database,
-      tokens.replaceAccountId,
+      replaceAccountId,
       {
         provider,
         accountId: tokens.accountId,
