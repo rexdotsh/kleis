@@ -5,6 +5,7 @@ import {
   findProviderAccountsByIds,
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
+  markProviderAccountNeedsReauthorization,
   recordProviderAccountRefreshFailure,
   replaceProviderAccountCredentials,
   releaseProviderAccountRefreshLock,
@@ -15,11 +16,7 @@ import {
 } from "../../db/repositories/provider-accounts";
 import type { Provider } from "../../db/schema";
 import type { ProviderAccountMetadata } from "../../providers/metadata";
-import {
-  CLAUDE_ACCOUNT_ON_HOLD,
-  classifyOAuthRefreshError,
-  OAuthError,
-} from "../../providers/http";
+import { classifyOAuthRefreshError, OAuthError } from "../../providers/http";
 import { getProviderAdapter } from "../../providers/registry";
 import type { ProviderOAuthStartResult } from "../../providers/types";
 import { errorLogFields, logWarn } from "../../utils/log";
@@ -30,9 +27,6 @@ const REFRESH_LOCK_LEASE_MS = 45_000;
 const REFRESH_LOCK_HEARTBEAT_MS = 5000;
 const REFRESH_WAIT_TIMEOUT_MS = 20_000;
 const AUTH_FAILURE_REFRESH_WAIT_TIMEOUT_MS = 30_000;
-const CLAUDE_REFRESH_WAIT_TIMEOUT_MS = 30_000;
-const CLAUDE_TRANSIENT_REFRESH_COOLDOWN_MS = 30_000;
-const CLAUDE_ON_HOLD_REFRESH_COOLDOWN_MS = 30 * 60_000;
 const REFRESH_WAIT_POLL_INTERVAL_MS = 150;
 // A token rejected this soon after it was issued is reported as the upstream
 // 401 instead of being rotated, so a persistent 401 rotates at most once a
@@ -217,9 +211,12 @@ const refreshProviderAccountWithLock = async (
     );
     try {
       const adapter = getProviderAdapter(account.provider);
+      if (!adapter.refreshAccount) {
+        throw new Error(`${account.provider} accounts cannot be refreshed`);
+      }
       const tokens = await adapter.refreshAccount(account, refreshNow);
       const accessToken = tokens.accessToken.trim();
-      const refreshToken = tokens.refreshToken.trim();
+      const refreshToken = tokens.refreshToken?.trim();
       if (!accessToken || !refreshToken) {
         throw new Error("Provider refresh response is missing required tokens");
       }
@@ -231,7 +228,9 @@ const refreshProviderAccountWithLock = async (
         accountId: tokens.accountId,
         metadata: tokens.metadata,
         refreshLockToken: lockToken,
-        expectedRefreshToken: account.refreshToken,
+        ...(account.refreshToken
+          ? { expectedRefreshToken: account.refreshToken }
+          : {}),
         lastRefreshStatus: "success" as const,
         now: refreshNow,
       };
@@ -255,17 +254,12 @@ const refreshProviderAccountWithLock = async (
         ) {
           return current;
         }
-        throw new Error(
-          `${account.provider === "claude" ? "Claude" : "Codex"} refresh lost its credential lock`
-        );
+        throw new Error("Codex refresh lost its credential lock");
       }
 
       return updated;
     } catch (error) {
-      const status = classifyOAuthRefreshError(
-        error,
-        account.provider === "claude" ? "indeterminate" : "failed"
-      );
+      const status = classifyOAuthRefreshError(error);
       logWarn("provider_oauth_refresh_failed", {
         provider: account.provider,
         providerAccountId: account.id,
@@ -327,11 +321,14 @@ const refreshRejectedProviderAccount = async (
   failedAccessToken: string
 ): Promise<ProviderAccountRecord | null> => {
   const account = await findProviderAccountById(database, accountId);
-  if (
-    !account ||
-    account.accessToken !== failedAccessToken ||
-    isRecentlyIssued(account)
-  ) {
+  if (!account || account.accessToken !== failedAccessToken) {
+    return account;
+  }
+  if (account.provider === "claude") {
+    await flagClaudeReauthorization(database, account);
+    return account;
+  }
+  if (isRecentlyIssued(account)) {
     return account;
   }
   assertProviderRefreshAllowed(account);
@@ -391,16 +388,6 @@ export const startProviderOAuth = async (
         "Provider account to reauthorize was not found"
       );
     }
-    if (
-      provider === "claude" &&
-      target.metadata?.provider === "claude" &&
-      target.metadata.oauthMode !==
-        (input.options?.mode === "console" ? "console" : "max")
-    ) {
-      throw new ProviderReauthorizationTargetError(
-        "Claude account OAuth mode does not match"
-      );
-    }
   }
   const adapter = getProviderAdapter(provider);
   return await adapter.startOAuth({
@@ -417,34 +404,51 @@ export class ProviderReauthorizationTargetError extends Error {
   }
 }
 
+export class ProviderAccountNeedsReauthorizationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderAccountNeedsReauthorizationError";
+  }
+}
+
 const assertProviderRefreshAllowed = (account: ProviderAccountRecord): void => {
   if (account.lastRefreshStatus === "reauthorize") {
-    throw new Error(
-      `${account.provider === "claude" ? "Claude" : "Codex"} account needs reauthorization`
+    throw new ProviderAccountNeedsReauthorizationError(
+      "Codex account needs reauthorization"
     );
   }
-  if (account.provider !== "claude") {
-    return;
-  }
-  // A hold can be lifted, so refreshes resume after a long pause.
-  if (
-    account.lastRefreshStatus === CLAUDE_ACCOUNT_ON_HOLD &&
-    account.lastRefreshAt !== null &&
-    Date.now() - account.lastRefreshAt < CLAUDE_ON_HOLD_REFRESH_COOLDOWN_MS
-  ) {
-    throw new Error(
-      "Claude account is on hold (account_on_hold); see https://claude.ai/restricted"
+};
+
+// Claude sign-ins are never refreshed: a refresh swaps the year-long token for
+// an 8-hour one and revokes it. A rejected or expired sign-in needs a new one.
+const flagClaudeReauthorization = async (
+  database: Database,
+  account: ProviderAccountRecord
+): Promise<void> => {
+  if (account.lastRefreshStatus !== "reauthorize") {
+    await markProviderAccountNeedsReauthorization(
+      database,
+      account.id,
+      account.accessToken,
+      Date.now()
     );
   }
-  if (
-    (account.lastRefreshStatus === "rate_limited" ||
-      account.lastRefreshStatus === "transient" ||
-      account.lastRefreshStatus === "indeterminate") &&
-    account.lastRefreshAt !== null &&
-    Date.now() - account.lastRefreshAt < CLAUDE_TRANSIENT_REFRESH_COOLDOWN_MS
-  ) {
-    throw new Error("Claude OAuth refresh is temporarily unavailable");
+};
+
+// Codex needs its refresh token; Claude's is never stored, since using it
+// would revoke the sign-in.
+const storedRefreshToken = (
+  provider: Provider,
+  refreshToken: string | null | undefined
+): string | null => {
+  if (provider === "claude") {
+    return null;
   }
+  const token = refreshToken?.trim();
+  if (!token) {
+    throw new Error("Codex accounts require a refresh token");
+  }
+  return token;
 };
 
 export const completeProviderOAuth = async (
@@ -465,8 +469,8 @@ export const completeProviderOAuth = async (
   });
 
   const accessToken = tokens.accessToken.trim();
-  const refreshToken = tokens.refreshToken.trim();
-  if (!accessToken || !refreshToken) {
+  const refreshToken = storedRefreshToken(provider, tokens.refreshToken);
+  if (!accessToken) {
     throw new Error("Provider OAuth response is missing required tokens");
   }
 
@@ -507,7 +511,7 @@ export const importProviderAccount = (
   provider: Provider,
   input: {
     accessToken: string;
-    refreshToken: string;
+    refreshToken?: string | null;
     expiresAt: number;
     accountId: string | null;
     label?: string | null;
@@ -516,12 +520,10 @@ export const importProviderAccount = (
   now: number
 ): Promise<ProviderAccountRecord> => {
   const accessToken = input.accessToken.trim();
-  const refreshToken = input.refreshToken.trim();
-  if (!accessToken || !refreshToken) {
-    throw new Error(
-      "Provider account import requires access and refresh tokens"
-    );
+  if (!accessToken) {
+    throw new Error("Provider account import requires an access token");
   }
+  const refreshToken = storedRefreshToken(provider, input.refreshToken);
 
   return upsertProviderAccount(database, {
     provider,
@@ -557,6 +559,15 @@ const refreshProviderAccountOnce = async (
   if (!account) {
     return null;
   }
+  if (account.provider === "claude") {
+    if (account.expiresAt > Date.now()) {
+      return account;
+    }
+    await flagClaudeReauthorization(database, account);
+    throw new ProviderAccountNeedsReauthorizationError(
+      "Claude sign-in has expired; reauthorize the account in Kleis"
+    );
+  }
   assertProviderRefreshAllowed(account);
 
   const lockToken = await claimRefreshLock(database, account.id);
@@ -573,10 +584,7 @@ const refreshProviderAccountOnce = async (
     database,
     account.id,
     now,
-    forceRefresh,
-    account.provider === "claude"
-      ? CLAUDE_REFRESH_WAIT_TIMEOUT_MS
-      : REFRESH_WAIT_TIMEOUT_MS
+    forceRefresh
   );
   if (!waited) {
     return null;
@@ -590,12 +598,6 @@ const refreshProviderAccountOnce = async (
     return waited;
   }
 
-  if (
-    account.provider === "claude" &&
-    hasActiveProviderAccountRefreshLock(waited, Date.now())
-  ) {
-    throw new Error("Claude account refresh is already in progress");
-  }
   assertProviderRefreshAllowed(waited);
 
   const retryLockToken = await claimRefreshLock(database, account.id);

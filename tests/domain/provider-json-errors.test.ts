@@ -23,17 +23,15 @@ beforeEach(async () => {
   database = drizzle(client, { schema });
   await migrate(database, { migrationsFolder: "./drizzle/migrations" });
   const now = Date.now();
-  for (const provider of ["claude", "codex"] as const) {
-    await database.insert(schema.providerAccounts).values({
-      id: `fake-${provider}`,
-      provider,
-      accessToken: "fake-access",
-      refreshToken: "fake-refresh",
-      expiresAt: now - 1,
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
+  await database.insert(schema.providerAccounts).values({
+    id: "fake-codex",
+    provider: "codex",
+    accessToken: "fake-access",
+    refreshToken: "fake-refresh",
+    expiresAt: now - 1,
+    createdAt: now,
+    updatedAt: now,
+  });
   globalThis.fetch = (() =>
     Promise.resolve(new Response(secret))) as typeof fetch;
 });
@@ -43,45 +41,43 @@ afterEach(() => {
   client.close();
 });
 
-test.each(["claude", "codex"] as const)(
-  "%s malformed token responses cannot leak through refresh or HTTP logs",
-  async (provider) => {
-    const app = new Hono();
-    installErrorHandler(app);
-    app.get("/refresh", async () => {
-      await refreshProviderAccount(database, `fake-${provider}`, Date.now(), {
-        force: true,
-      });
-      return new Response(null, { status: 204 });
+test("Codex malformed token responses cannot leak through refresh or HTTP logs", async () => {
+  const app = new Hono();
+  installErrorHandler(app);
+  app.get("/refresh", async () => {
+    await refreshProviderAccount(database, "fake-codex", Date.now(), {
+      force: true,
     });
-    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
-    const log = spyOn(console, "error").mockImplementation(() => undefined);
-    try {
-      const response = await app.request("/refresh");
-      expect(response.status).toBe(500);
-      const message = `${provider === "claude" ? "Claude" : "Codex"} token response is not valid JSON (HTTP 200, 18 bytes)`;
-      expect(await response.json()).toMatchObject({ message });
-      expect(warn).toHaveBeenCalledTimes(1);
-      expect(log).toHaveBeenCalledTimes(1);
-      for (const [event, calls] of [
-        ["provider_oauth_refresh_failed", warn.mock.calls],
-        ["http_request_failed", log.mock.calls],
-      ] as const) {
-        const line = String(calls[0]?.[0]);
-        expect(JSON.parse(line)).toMatchObject({
-          event,
-          errorName: "SyntaxError",
-          errorMessage: message,
-          errorStack: expect.stringContaining(message),
-        });
-        expect(line).not.toContain(secret);
-      }
-    } finally {
-      warn.mockRestore();
-      log.mockRestore();
+    return new Response(null, { status: 204 });
+  });
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const log = spyOn(console, "error").mockImplementation(() => undefined);
+  try {
+    const response = await app.request("/refresh");
+    expect(response.status).toBe(500);
+    const message =
+      "Codex token response is not valid JSON (HTTP 200, 18 bytes)";
+    expect(await response.json()).toMatchObject({ message });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledTimes(1);
+    for (const [event, calls] of [
+      ["provider_oauth_refresh_failed", warn.mock.calls],
+      ["http_request_failed", log.mock.calls],
+    ] as const) {
+      const line = String(calls[0]?.[0]);
+      expect(JSON.parse(line)).toMatchObject({
+        event,
+        errorName: "SyntaxError",
+        errorMessage: message,
+        errorStack: expect.stringContaining(message),
+      });
+      expect(line).not.toContain(secret);
     }
+  } finally {
+    warn.mockRestore();
+    log.mockRestore();
   }
-);
+});
 
 test.each(["claude", "codex"] as const)(
   "%s code exchange uses content-free JSON parse failures",

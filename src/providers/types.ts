@@ -25,7 +25,7 @@ export type ProviderOAuthCompleteInput = {
 
 export type ProviderTokenResult = {
   accessToken: string;
-  refreshToken: string;
+  refreshToken: string | null;
   expiresAt: number;
   accountId: string | null;
   replaceAccountId?: string;
@@ -39,7 +39,7 @@ export type ProviderAdapter = {
   completeOAuth(
     input: ProviderOAuthCompleteInput
   ): Promise<ProviderTokenResult>;
-  refreshAccount(
+  refreshAccount?(
     account: ProviderAccountRecord,
     now: number
   ): Promise<ProviderTokenResult>;

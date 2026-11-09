@@ -124,8 +124,6 @@ describe("Claude saved resets", () => {
       expiresAt: now + 24 * 60 * MINUTE,
       metadataJson: JSON.stringify({
         provider: "claude",
-        oauthMode: "max",
-        oauthHost: "claude.ai",
         organizationUuid: ORGANIZATION,
       }),
       createdAt: now,

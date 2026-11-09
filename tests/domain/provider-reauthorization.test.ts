@@ -10,7 +10,11 @@ import {
   listProviderAccounts,
   replaceProviderAccountCredentials,
 } from "../../src/db/repositories/provider-accounts";
-import { apiKeys, providerAccounts } from "../../src/db/schema";
+import {
+  apiKeys,
+  providerAccounts,
+  requestUsageBuckets,
+} from "../../src/db/schema";
 import * as schema from "../../src/db/schema";
 import {
   completeProviderOAuth,
@@ -62,34 +66,34 @@ describe("OAuth account reauthorization", () => {
     client.close();
   });
 
-  test("replaces selected Claude credentials without changing the account or its status", async () => {
+  test("replaces selected Claude credentials and keeps the account and its usage", async () => {
+    await database.insert(requestUsageBuckets).values({
+      bucketStart: 0,
+      apiKeyId: "fake-key",
+      providerAccountId: claudeId,
+      provider: "claude",
+      endpoint: "messages",
+      requestCount: 3,
+      lastRequestAt: 0,
+    });
+    await database
+      .update(providerAccounts)
+      .set({ lastRefreshStatus: "reauthorize" })
+      .where(eq(providerAccounts.id, claudeId));
     const start = await startProviderOAuth(
       database,
       "claude",
-      { options: { mode: "max", replaceAccountId: claudeId } },
+      { options: { replaceAccountId: claudeId } },
       Date.now()
     );
-    const authorization = new URL(start.authorizationUrl);
-    expect(authorization.searchParams.get("redirect_uri")).toBe(
-      "https://platform.claude.com/oauth/code/callback"
-    );
-    expect(authorization.searchParams.get("scope")).toContain(
-      "user:sessions:claude_code"
-    );
-    globalThis.fetch = ((url, init) => {
-      expect(url).toBe("https://platform.claude.com/v1/oauth/token");
-      expect(JSON.parse(String(init?.body))).toMatchObject({
-        grant_type: "authorization_code",
-        redirect_uri: "https://platform.claude.com/oauth/code/callback",
-      });
-      return Promise.resolve(
+    globalThis.fetch = (() =>
+      Promise.resolve(
         Response.json({
           access_token: "new-claude-access",
           refresh_token: "new-claude-refresh",
-          expires_in: 3600,
+          expires_in: 365 * 86_400,
         })
-      );
-    }) as typeof fetch;
+      )) as typeof fetch;
 
     const replaced = await completeProviderOAuth(
       database,
@@ -104,8 +108,12 @@ describe("OAuth account reauthorization", () => {
       isPrimary: true,
       enabled: false,
       accessToken: "new-claude-access",
-      refreshToken: "new-claude-refresh",
+      refreshToken: null,
+      lastRefreshStatus: "success",
     });
+    expect(await database.select().from(requestUsageBuckets)).toMatchObject([
+      { providerAccountId: claudeId, requestCount: 3 },
+    ]);
     expect(
       (await listProviderAccounts(database)).filter(
         (a) => a.provider === "claude"
@@ -121,49 +129,6 @@ describe("OAuth account reauthorization", () => {
     ).rejects.toThrow("missing or expired");
   });
 
-  test("keeps Max and Console logins separate even for the same Claude user", async () => {
-    globalThis.fetch = (() =>
-      Promise.resolve(
-        Response.json({
-          access_token: crypto.randomUUID(),
-          refresh_token: crypto.randomUUID(),
-          expires_in: 3600,
-          account: { uuid: "shared-user" },
-          organization: { uuid: "same-organization" },
-        })
-      )) as typeof fetch;
-
-    for (const mode of ["max", "console"] as const) {
-      const started = await startProviderOAuth(
-        database,
-        "claude",
-        { options: { mode } },
-        Date.now()
-      );
-      await completeProviderOAuth(
-        database,
-        "claude",
-        { state: started.state, code: "auth-code" },
-        Date.now()
-      );
-    }
-
-    const connected = (await listProviderAccounts(database)).filter(
-      (account) => account.provider === "claude" && account.id !== claudeId
-    );
-    expect(connected).toHaveLength(2);
-    expect(
-      connected
-        .map((account) =>
-          account.metadata?.provider === "claude"
-            ? account.metadata.oauthMode
-            : null
-        )
-        .sort()
-    ).toEqual(["console", "max"]);
-    expect(connected.every((account) => account.accountId === null)).toBe(true);
-  });
-
   test("reauthorizes a Claude row with a legacy user ID without changing its identity", async () => {
     await database
       .update(providerAccounts)
@@ -173,7 +138,7 @@ describe("OAuth account reauthorization", () => {
       database,
       "claude",
       {
-        options: { mode: "max", replaceAccountId: claudeId },
+        options: { replaceAccountId: claudeId },
       },
       Date.now()
     );
@@ -182,7 +147,7 @@ describe("OAuth account reauthorization", () => {
         Response.json({
           access_token: "new-access",
           refresh_token: "new-refresh",
-          expires_in: 3600,
+          expires_in: 365 * 86_400,
           account: { uuid: "legacy-user-id" },
         })
       )) as typeof fetch;
@@ -199,7 +164,7 @@ describe("OAuth account reauthorization", () => {
     expect(reauthorized).toMatchObject({
       id: claudeId,
       accountId: "legacy-user-id",
-      refreshToken: "new-refresh",
+      accessToken: "new-access",
     });
   });
 

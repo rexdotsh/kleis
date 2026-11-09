@@ -60,8 +60,6 @@ const validBody = { resetId: "grant_fake_1" };
 test("the Claude reset claim route checks the account and body before anything is sent", async () => {
   const claude = await addAccount("claude", {
     provider: "claude",
-    oauthMode: "max",
-    oauthHost: "claude.ai",
   });
   const codex = await addAccount("codex", {
     provider: "codex",

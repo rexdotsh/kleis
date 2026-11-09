@@ -77,7 +77,7 @@ const oauthCompleteBodySchema = z.strictObject({
 
 const importAccountBodySchema = z.strictObject({
   accessToken: z.string().trim().min(1),
-  refreshToken: z.string().trim().min(1),
+  refreshToken: z.string().trim().min(1).nullable().optional(),
   expiresAt: z.int().positive(),
   accountId: z.string().trim().min(1).max(200).nullable().optional(),
   label: z.string().trim().min(1).max(160).nullable().optional(),
@@ -487,6 +487,16 @@ export const adminAccountsRoutes = new Hono()
     zValidator("param", accountIdParamsSchema),
     async (context) => {
       const { id } = context.req.valid("param");
+      if ((await findProviderAccountById(db, id))?.provider === "claude") {
+        return context.json(
+          {
+            error: "bad_request",
+            message:
+              "Claude sign-ins are never refreshed; reauthorize the account to renew it",
+          },
+          400
+        );
+      }
       let account: Awaited<ReturnType<typeof refreshProviderAccount>>;
       try {
         account = await refreshProviderAccount(db, id, Date.now(), {
@@ -632,12 +642,22 @@ export const adminAccountsRoutes = new Hono()
         );
       }
 
+      if (provider === "codex" && !body.refreshToken) {
+        return context.json(
+          {
+            error: "bad_request",
+            message: "Codex accounts require a refresh token",
+          },
+          400
+        );
+      }
+
       const account = await importProviderAccount(
         db,
         provider,
         {
           accessToken: body.accessToken,
-          refreshToken: body.refreshToken,
+          refreshToken: body.refreshToken ?? null,
           expiresAt,
           accountId,
           label: body.label ?? null,

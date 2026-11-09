@@ -37,7 +37,7 @@ All require `Authorization: Bearer <kleis_api_key>`:
 
 **Codex**: OpenAI browser (PKCE) or headless (device) flow. Injects Codex-specific headers (`ChatGPT-Account-Id`, `originator`). Strips unsupported params.
 
-**Claude**: Anthropic PKCE flow (max or console mode). Full Claude Code identity emulation: system prompt rewriting, tool name prefixing/stripping (`mcp_` prefix), beta header injection, user-agent spoofing. Handles both streaming SSE transformation and non-streaming JSON rewriting.
+**Claude**: Anthropic PKCE flow on claude.ai that requests a one-year access token. Claude accounts are never refreshed (a refresh revokes the year-long token); an expired or rejected token is flagged for reauthorization. Full Claude Code identity emulation: system prompt rewriting, tool name prefixing/stripping (`mcp_` prefix), beta header injection, user-agent spoofing. Handles both streaming SSE transformation and non-streaming JSON rewriting.
 
 ## Model Registry
 
