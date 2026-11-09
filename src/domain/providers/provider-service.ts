@@ -1,5 +1,6 @@
 import type { Database } from "../../db";
 import {
+  addProviderAccount,
   extendProviderAccountRefreshLock,
   findProviderAccountById,
   findProviderAccountsByIds,
@@ -7,6 +8,7 @@ import {
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
   markProviderAccountNeedsReauthorization,
+  oauthIdentityKey,
   recordProviderAccountRefreshFailure,
   replaceProviderAccountCredentials,
   releaseProviderAccountRefreshLock,
@@ -470,6 +472,31 @@ const findAccountToRenew = async (
   return matches.length === 1 ? matches[0]?.id : undefined;
 };
 
+const identityLocks = new Map<string, Promise<unknown>>();
+
+// Serializes the find-then-write for one sign-in identity so concurrent
+// completions renew one account instead of each adding it. The lock is per
+// process; separate processes can still race.
+const withIdentityLock = async <T>(
+  key: string,
+  run: () => Promise<T>
+): Promise<T> => {
+  const previous = identityLocks.get(key);
+  const { promise: done, resolve: release } =
+    Promise.withResolvers<undefined>();
+  const tail = (previous ?? Promise.resolve()).then(() => done);
+  identityLocks.set(key, tail);
+  try {
+    await previous;
+    return await run();
+  } finally {
+    release(undefined);
+    if (identityLocks.get(key) === tail) {
+      identityLocks.delete(key);
+    }
+  }
+};
+
 export const completeProviderOAuth = async (
   database: Database,
   provider: Provider,
@@ -493,38 +520,45 @@ export const completeProviderOAuth = async (
     throw new Error("Provider OAuth response is missing required tokens");
   }
 
-  const replaceAccountId =
-    tokens.replaceAccountId ??
-    (await findAccountToRenew(database, provider, tokens));
-  if (replaceAccountId) {
-    const updated = await replaceProviderAccountCredentials(
-      database,
-      replaceAccountId,
-      {
-        provider,
-        accountId: tokens.accountId,
-        accessToken,
-        refreshToken,
-        expiresAt: assertExpiresAt(tokens.expiresAt, Date.now()),
-        metadata: tokens.metadata,
-        now: Date.now(),
-      }
-    );
-    if (!updated) {
-      throw new Error("Provider account to reauthorize no longer exists");
-    }
-    return updated;
-  }
-
-  return upsertProviderAccount(database, {
+  const identityKey = oauthIdentityKey({
     provider,
     accountId: tokens.accountId,
-    label: tokens.label ?? null,
-    accessToken,
-    refreshToken,
-    expiresAt: assertExpiresAt(tokens.expiresAt, now),
     metadata: tokens.metadata,
-    now,
+  });
+  return withIdentityLock(identityKey, async () => {
+    const replaceAccountId =
+      tokens.replaceAccountId ??
+      (await findAccountToRenew(database, provider, tokens));
+    if (replaceAccountId) {
+      const updated = await replaceProviderAccountCredentials(
+        database,
+        replaceAccountId,
+        {
+          provider,
+          accountId: tokens.accountId,
+          accessToken,
+          refreshToken,
+          expiresAt: assertExpiresAt(tokens.expiresAt, Date.now()),
+          metadata: tokens.metadata,
+          now: Date.now(),
+        }
+      );
+      if (!updated) {
+        throw new Error("Provider account to reauthorize no longer exists");
+      }
+      return updated;
+    }
+
+    return addProviderAccount(database, {
+      provider,
+      accountId: tokens.accountId,
+      label: tokens.label ?? null,
+      accessToken,
+      refreshToken,
+      expiresAt: assertExpiresAt(tokens.expiresAt, now),
+      metadata: tokens.metadata,
+      now,
+    });
   });
 };
 

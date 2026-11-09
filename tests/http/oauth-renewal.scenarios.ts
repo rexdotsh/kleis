@@ -17,17 +17,27 @@ const { apiKeys, providerAccounts, requestUsageBuckets } =
   await import("../../src/db/schema");
 const { createApiKey, findApiKeyById } =
   await import("../../src/db/repositories/api-keys");
+const { installErrorHandler } = await import("../../src/http/error-handler");
 const { adminAccountsRoutes } =
   await import("../../src/http/routes/admin-accounts");
 await migrate(db, { migrationsFolder: "./drizzle/migrations" });
 
-const app = new Hono().route("/admin/accounts", adminAccountsRoutes);
+const app = new Hono();
+installErrorHandler(app);
+app.route("/admin/accounts", adminAccountsRoutes);
 
 const EXISTING_ID = "2c8d0f5e-7d43-4b8e-9f0a-3a4b5c6d7e8f";
 const originalFetch = globalThis.fetch;
 
-const codexIdToken = (accountId: string) =>
-  `header.${Buffer.from(JSON.stringify({ chatgpt_account_id: accountId })).toString("base64url")}.signature`;
+const codexIdToken = (accountId: string, userId?: string) =>
+  `header.${Buffer.from(
+    JSON.stringify({
+      chatgpt_account_id: accountId,
+      ...(userId
+        ? { "https://api.openai.com/auth": { chatgpt_user_id: userId } }
+        : {}),
+    })
+  ).toString("base64url")}.signature`;
 
 const claudeTokens = (user: string, org: string) => ({
   access_token: "fake-new-access",
@@ -36,11 +46,11 @@ const claudeTokens = (user: string, org: string) => ({
   organization: { uuid: org },
 });
 
-const codexTokens = (accountId: string) => ({
+const codexTokens = (accountId: string, userId: string) => ({
   access_token: "fake-new-access",
   refresh_token: "fake-new-refresh",
   expires_in: 3600,
-  id_token: codexIdToken(accountId),
+  id_token: codexIdToken(accountId, userId),
 });
 
 const existingClaude = {
@@ -55,12 +65,21 @@ const existingClaude = {
   }),
 };
 
-const existingCodex = {
+const existingCodex = (
+  accountId: string | null,
+  chatgptUserId: string | null
+) => ({
   provider: "codex" as const,
-  accountId: "fake-chatgpt-account",
+  accountId,
   refreshToken: "fake-old-refresh",
-  metadataJson: null,
-};
+  metadataJson: JSON.stringify({
+    provider: "codex",
+    scope: null,
+    chatgptAccountId: "fake-team",
+    email: null,
+    chatgptUserId,
+  }),
+});
 
 beforeEach(async () => {
   await db.delete(providerAccounts);
@@ -79,81 +98,107 @@ const postJson = (path: string, body: unknown) =>
     body: JSON.stringify(body),
   });
 
-const signIn = async (
+const startSignIn = async (
   provider: "claude" | "codex",
-  tokenResponse: Record<string, unknown>
+  options: Record<string, unknown> = {}
 ) => {
+  const start = await postJson(`/admin/accounts/${provider}/oauth/start`, {
+    options: provider === "codex" ? { mode: "browser", ...options } : options,
+  });
+  const { state } = (await start.json()) as { state: string };
+  return () =>
+    postJson(`/admin/accounts/${provider}/oauth/complete`, {
+      state,
+      code: `fake-code#${state}`,
+    });
+};
+
+const mockTokenResponse = (tokenResponse: Record<string, unknown>) => {
   globalThis.fetch = (async () =>
     Response.json(tokenResponse)) as unknown as typeof fetch;
-  const start = await postJson(
-    `/admin/accounts/${provider}/oauth/start`,
-    provider === "codex" ? { options: { mode: "browser" } } : {}
-  );
-  const { state } = (await start.json()) as { state: string };
-  return postJson(`/admin/accounts/${provider}/oauth/complete`, {
-    state,
-    code: `fake-code#${state}`,
+};
+
+type Existing = typeof existingClaude | ReturnType<typeof existingCodex>;
+
+const insertExisting = async (existing: Existing) => {
+  const now = Date.now();
+  await db.insert(providerAccounts).values({
+    ...existing,
+    id: EXISTING_ID,
+    label: "Fake custom label",
+    isPrimary: true,
+    accessToken: "fake-old-access",
+    expiresAt: now + 60_000,
+    lastRefreshStatus: "reauthorize",
+    createdAt: now,
+    updatedAt: now,
   });
+  const key = await createApiKey(
+    db,
+    { label: "fake key", accountScopes: [EXISTING_ID] },
+    now
+  );
+  await db.insert(requestUsageBuckets).values({
+    bucketStart: 0,
+    apiKeyId: key.id,
+    providerAccountId: EXISTING_ID,
+    provider: existing.provider,
+    endpoint: "fake-endpoint",
+    requestCount: 3,
+    lastRequestAt: 0,
+  });
+  return key;
 };
 
 test.each([
   [
     "a Claude sign-in for the same user and organization",
     existingClaude,
-    "claude",
     claudeTokens("fake-user", "fake-org"),
-    true,
+    "renews",
   ],
   [
     "a Claude sign-in for another organization",
     existingClaude,
-    "claude",
     claudeTokens("fake-user", "fake-other-org"),
-    false,
+    "adds",
   ],
   [
-    "a Codex sign-in for the same ChatGPT account",
-    existingCodex,
-    "codex",
-    codexTokens("fake-chatgpt-account"),
-    true,
+    "a Codex sign-in for the same workspace and user",
+    existingCodex("fake-team", "fake-user-a"),
+    codexTokens("fake-team", "fake-user-a"),
+    "renews",
+  ],
+  [
+    "a Codex sign-in for another user of the workspace",
+    existingCodex(null, "fake-user-a"),
+    codexTokens("fake-team", "fake-user-b"),
+    "adds",
+  ],
+  [
+    "a Codex sign-in for another user of a workspace that holds the ID",
+    existingCodex("fake-team", "fake-user-a"),
+    codexTokens("fake-team", "fake-user-b"),
+    "conflicts",
+  ],
+  [
+    "a Codex sign-in for a workspace whose row has no user",
+    existingCodex("fake-team", null),
+    codexTokens("fake-team", "fake-user-a"),
+    "conflicts",
   ],
 ] as const)(
   "%s renews the existing account only when the identity matches",
-  async (_name, existing, provider, tokenResponse, renews) => {
-    const now = Date.now();
-    await db.insert(providerAccounts).values({
-      ...existing,
-      id: EXISTING_ID,
-      label: "Fake custom label",
-      isPrimary: true,
-      accessToken: "fake-old-access",
-      expiresAt: now + 60_000,
-      lastRefreshStatus: "reauthorize",
-      createdAt: now,
-      updatedAt: now,
-    });
-    const key = await createApiKey(
-      db,
-      { label: "fake key", accountScopes: [EXISTING_ID] },
-      now
-    );
-    await db.insert(requestUsageBuckets).values({
-      bucketStart: 0,
-      apiKeyId: key.id,
-      providerAccountId: EXISTING_ID,
-      provider,
-      endpoint: "fake-endpoint",
-      requestCount: 3,
-      lastRequestAt: 0,
-    });
+  async (_name, existing, tokenResponse, outcome) => {
+    const key = await insertExisting(existing);
+    mockTokenResponse(tokenResponse);
 
-    const response = await signIn(provider, tokenResponse);
+    const response = await (await startSignIn(existing.provider))();
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(outcome === "conflicts" ? 409 : 200);
     const accounts = await db.select().from(providerAccounts);
     const existingRow = accounts.find((row) => row.id === EXISTING_ID);
-    if (renews) {
+    if (outcome === "renews") {
       expect(accounts).toHaveLength(1);
       expect(existingRow).toMatchObject({
         label: "Fake custom label",
@@ -162,8 +207,11 @@ test.each([
         lastRefreshStatus: "success",
       });
     } else {
-      expect(accounts).toHaveLength(2);
-      expect(existingRow?.accessToken).toBe("fake-old-access");
+      expect(accounts).toHaveLength(outcome === "adds" ? 2 : 1);
+      expect(existingRow).toMatchObject({
+        accessToken: "fake-old-access",
+        metadataJson: existing.metadataJson,
+      });
     }
     expect((await findApiKeyById(db, key.id))?.accountScopes).toEqual([
       EXISTING_ID,
@@ -176,3 +224,34 @@ test.each([
     ).toMatchObject([{ requestCount: 3 }]);
   }
 );
+
+test("reauthorizing a Codex row without a user records the user", async () => {
+  await insertExisting(existingCodex("fake-team", null));
+  mockTokenResponse(codexTokens("fake-team", "fake-user-a"));
+
+  const complete = await startSignIn("codex", {
+    replaceAccountId: EXISTING_ID,
+  });
+  const response = await complete();
+
+  expect(response.status).toBe(200);
+  const accounts = await db.select().from(providerAccounts);
+  expect(accounts).toHaveLength(1);
+  expect(accounts[0]?.accessToken).toBe("fake-new-access");
+  expect(JSON.parse(accounts[0]?.metadataJson ?? "{}")).toMatchObject({
+    chatgptAccountId: "fake-team",
+    chatgptUserId: "fake-user-a",
+  });
+});
+
+test("concurrent Claude sign-ins for one identity add one account", async () => {
+  mockTokenResponse(claudeTokens("fake-user", "fake-org"));
+  const completes = [await startSignIn("claude"), await startSignIn("claude")];
+
+  const responses = await Promise.all(
+    completes.map(async (complete) => complete())
+  );
+
+  expect(responses.map((response) => response.status)).toEqual([200, 200]);
+  expect(await db.select().from(providerAccounts)).toHaveLength(1);
+});

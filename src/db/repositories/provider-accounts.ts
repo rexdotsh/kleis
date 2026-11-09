@@ -203,54 +203,12 @@ export const upsertProviderAccount = withInvalidation(
       return updateExisting(existing);
     }
 
-    const [primary, providerAccount] = await database.batch([
-      database.query.providerAccounts.findFirst({
-        where: and(
-          eq(providerAccounts.provider, input.provider),
-          eq(providerAccounts.isPrimary, true)
-        ),
-      }),
-      database.query.providerAccounts.findFirst({
-        where: eq(providerAccounts.provider, input.provider),
-      }),
-    ]);
-    const insertValues: typeof providerAccounts.$inferInsert = {
-      id: crypto.randomUUID(),
-      provider: input.provider,
-      label: input.label ?? null,
-      accountId: input.accountId,
-      isPrimary: !primary,
-      enabled: providerAccount?.enabled ?? true,
-      accessToken: input.accessToken,
-      refreshToken: input.refreshToken,
-      refreshLockToken: null,
-      refreshLockExpiresAt: null,
-      expiresAt: input.expiresAt,
-      metadataJson: serializeProviderAccountMetadata(input.metadata),
-      lastRefreshAt: null,
-      lastRefreshStatus: null,
-      createdAt: input.now,
-      updatedAt: input.now,
-    };
-
-    const attemptInsert = async (
-      values: typeof providerAccounts.$inferInsert
-    ): Promise<ProviderAccountRecord> => {
-      await database.insert(providerAccounts).values(values);
-      const created = await findProviderAccountById(database, values.id);
-      if (!created) {
-        throw new Error("Failed to load created provider account");
-      }
-
+    const { created, insertValues, attemptInsert } = await tryInsertAccount(
+      database,
+      input
+    );
+    if (created) {
       return created;
-    };
-
-    try {
-      return await attemptInsert(insertValues);
-    } catch (error) {
-      if (!isUniqueConstraintError(error)) {
-        throw error;
-      }
     }
 
     if (input.accountId) {
@@ -272,12 +230,115 @@ export const upsertProviderAccount = withInvalidation(
   }
 );
 
+// Returns no account when the insert hit a unique index.
+const tryInsertAccount = async (
+  database: Database,
+  input: UpsertProviderAccountInput
+) => {
+  const [primary, providerAccount] = await database.batch([
+    database.query.providerAccounts.findFirst({
+      where: and(
+        eq(providerAccounts.provider, input.provider),
+        eq(providerAccounts.isPrimary, true)
+      ),
+    }),
+    database.query.providerAccounts.findFirst({
+      where: eq(providerAccounts.provider, input.provider),
+    }),
+  ]);
+  const insertValues: typeof providerAccounts.$inferInsert = {
+    id: crypto.randomUUID(),
+    provider: input.provider,
+    label: input.label ?? null,
+    accountId: input.accountId,
+    isPrimary: !primary,
+    enabled: providerAccount?.enabled ?? true,
+    accessToken: input.accessToken,
+    refreshToken: input.refreshToken,
+    refreshLockToken: null,
+    refreshLockExpiresAt: null,
+    expiresAt: input.expiresAt,
+    metadataJson: serializeProviderAccountMetadata(input.metadata),
+    lastRefreshAt: null,
+    lastRefreshStatus: null,
+    createdAt: input.now,
+    updatedAt: input.now,
+  };
+
+  const attemptInsert = async (
+    values: typeof providerAccounts.$inferInsert
+  ): Promise<ProviderAccountRecord> => {
+    await database.insert(providerAccounts).values(values);
+    const created = await findProviderAccountById(database, values.id);
+    if (!created) {
+      throw new Error("Failed to load created provider account");
+    }
+
+    return created;
+  };
+
+  try {
+    return {
+      created: await attemptInsert(insertValues),
+      insertValues,
+      attemptInsert,
+    };
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+  }
+  return { created: null, insertValues, attemptInsert };
+};
+
 export class ProviderAccountReauthorizationConflict extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ProviderAccountReauthorizationConflict";
   }
 }
+
+// Adds a new account and never takes over an existing row, even one with the
+// same account ID.
+export const addProviderAccount = withInvalidation(
+  async (
+    database: Database,
+    input: UpsertProviderAccountInput
+  ): Promise<ProviderAccountRecord> => {
+    const accountIdTaken = async () =>
+      input.accountId !== null &&
+      (await findProviderAccountByProviderAndAccountId(
+        database,
+        input.provider,
+        input.accountId
+      )) !== null;
+    // The unique (provider, accountId) index allows one row per ChatGPT
+    // workspace, so another member of a connected workspace cannot be added.
+    const conflict = () =>
+      new ProviderAccountReauthorizationConflict(
+        "Another Kleis account already uses this provider account ID"
+      );
+    if (await accountIdTaken()) {
+      throw conflict();
+    }
+
+    const { created, insertValues, attemptInsert } = await tryInsertAccount(
+      database,
+      input
+    );
+    if (created) {
+      return created;
+    }
+    if (await accountIdTaken()) {
+      throw conflict();
+    }
+    return attemptInsert({
+      ...insertValues,
+      id: crypto.randomUUID(),
+      isPrimary: false,
+    });
+  }
+);
 
 type OAuthIdentityInput = {
   provider: Provider;
@@ -286,7 +347,8 @@ type OAuthIdentityInput = {
 };
 
 // Who a sign-in belongs to: the Claude user and organization, or the ChatGPT
-// account. Older Claude rows kept the user UUID in accountId.
+// workspace and user, since team members share a workspace ID. Older Claude
+// rows kept the user UUID in accountId.
 const oauthIdentity = ({
   provider,
   accountId,
@@ -301,7 +363,11 @@ const oauthIdentity = ({
     : [
         accountId ||
           (metadata?.provider === "codex" ? metadata.chatgptAccountId : null),
+        metadata?.provider === "codex" ? metadata.chatgptUserId : null,
       ];
+
+export const oauthIdentityKey = (input: OAuthIdentityInput): string =>
+  JSON.stringify([input.provider, ...oauthIdentity(input)]);
 
 // Only an identity with every part known can match an account.
 export const findProviderAccountsWithIdentity = async (
