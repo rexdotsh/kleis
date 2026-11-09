@@ -12,6 +12,7 @@ import {
   recordProviderAccountRefreshFailure,
   replaceProviderAccountCredentials,
   releaseProviderAccountRefreshLock,
+  signedInUser,
   tryAcquireProviderAccountRefreshLock,
   updateProviderAccountTokens,
   upsertProviderAccount,
@@ -226,6 +227,13 @@ const refreshProviderAccountWithLock = async (
       if (!accessToken || !refreshToken) {
         throw new Error("Provider refresh response is missing required tokens");
       }
+      const storedUser = signedInUser(account);
+      const refreshedUser = signedInUser(tokens);
+      if (storedUser && refreshedUser && storedUser !== refreshedUser) {
+        throw new ProviderAccountNeedsReauthorizationError(
+          "Provider refresh returned a different user; reauthorize the account"
+        );
+      }
 
       const updateInput = {
         accessToken,
@@ -265,7 +273,10 @@ const refreshProviderAccountWithLock = async (
 
       return updated;
     } catch (error) {
-      const status = classifyOAuthRefreshError(error);
+      const status =
+        error instanceof ProviderAccountNeedsReauthorizationError
+          ? "reauthorize"
+          : classifyOAuthRefreshError(error);
       logWarn("provider_oauth_refresh_failed", {
         provider: account.provider,
         providerAccountId: account.id,

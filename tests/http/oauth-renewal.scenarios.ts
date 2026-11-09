@@ -287,3 +287,29 @@ test.each([
     }
   }
 );
+
+test("concurrent imports of two users into a row without a user keep one", async () => {
+  await insertExisting(existingCodex("fake-team", null));
+  const importUser = (chatgptUserId: string) =>
+    postJson("/admin/accounts/codex/import", {
+      accessToken: `fake-access-${chatgptUserId}`,
+      refreshToken: "fake-imported-refresh",
+      expiresAt: Date.now() + 3_600_000,
+      accountId: "fake-team",
+      metadata: { chatgptUserId },
+    });
+
+  const responses = await Promise.all([
+    importUser("fake-user-a"),
+    importUser("fake-user-b"),
+  ]);
+
+  const statuses = responses.map((response) => response.status);
+  expect(statuses.toSorted((left, right) => left - right)).toEqual([200, 409]);
+  const winner = statuses[0] === 200 ? "fake-user-a" : "fake-user-b";
+  const [stored] = await db.select().from(providerAccounts);
+  expect(stored?.accessToken).toBe(`fake-access-${winner}`);
+  expect(JSON.parse(stored?.metadataJson ?? "{}")).toMatchObject({
+    chatgptUserId: winner,
+  });
+});

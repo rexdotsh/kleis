@@ -125,16 +125,13 @@ const findProviderAccountByProviderAndAccountId = async (
   database: Database,
   provider: Provider,
   accountId: string
-): Promise<ProviderAccountRecord | null> => {
-  const row = await database.query.providerAccounts.findFirst({
+): Promise<typeof providerAccounts.$inferSelect | null> =>
+  (await database.query.providerAccounts.findFirst({
     where: and(
       eq(providerAccounts.provider, provider),
       eq(providerAccounts.accountId, accountId)
     ),
-  });
-
-  return row ? toProviderAccountRecord(row) : null;
-};
+  })) ?? null;
 
 const isUniqueConstraintError = (error: unknown): boolean => {
   let current = error;
@@ -175,19 +172,21 @@ export const upsertProviderAccount = withInvalidation(
       : null;
 
     const updateExisting = async (
-      account: ProviderAccountRecord
+      row: typeof providerAccounts.$inferSelect,
+      retried = false
     ): Promise<ProviderAccountRecord> => {
       // Team members share a workspace ID, so a known, different user is
       // another person's sign-in.
-      const storedUser = signedInUser(account);
+      const storedUser = signedInUser(toProviderAccountRecord(row));
       const incomingUser = signedInUser(input);
       if (storedUser && incomingUser && storedUser !== incomingUser) {
         throw accountIdConflict();
       }
-      await database
+      // The write only lands on the metadata the user check read.
+      const result = await database
         .update(providerAccounts)
         .set({
-          label: input.label === undefined ? account.label : input.label,
+          label: input.label === undefined ? row.label : input.label,
           accessToken: input.accessToken,
           refreshToken: input.refreshToken,
           refreshLockToken: null,
@@ -198,9 +197,27 @@ export const upsertProviderAccount = withInvalidation(
           metadataJson: serializeProviderAccountMetadata(input.metadata),
           updatedAt: input.now,
         })
-        .where(eq(providerAccounts.id, account.id));
+        .where(
+          and(
+            eq(providerAccounts.id, row.id),
+            row.metadataJson === null
+              ? isNull(providerAccounts.metadataJson)
+              : eq(providerAccounts.metadataJson, row.metadataJson)
+          )
+        );
+      if (result.rowsAffected === 0) {
+        const current = await database.query.providerAccounts.findFirst({
+          where: eq(providerAccounts.id, row.id),
+        });
+        if (!current || retried) {
+          throw new ProviderAccountReauthorizationConflict(
+            "Provider account changed during the import"
+          );
+        }
+        return updateExisting(current, true);
+      }
 
-      const updated = await findProviderAccountById(database, account.id);
+      const updated = await findProviderAccountById(database, row.id);
       if (!updated) {
         throw new Error("Failed to load updated provider account");
       }
@@ -312,7 +329,7 @@ const accountIdConflict = () =>
     "Another Kleis account already uses this provider account ID"
   );
 
-const signedInUser = ({
+export const signedInUser = ({
   metadata,
 }: {
   metadata: ProviderAccountMetadata | null;
