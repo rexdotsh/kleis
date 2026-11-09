@@ -125,16 +125,13 @@ const findProviderAccountByProviderAndAccountId = async (
   database: Database,
   provider: Provider,
   accountId: string
-): Promise<ProviderAccountRecord | null> => {
-  const row = await database.query.providerAccounts.findFirst({
+): Promise<typeof providerAccounts.$inferSelect | null> =>
+  (await database.query.providerAccounts.findFirst({
     where: and(
       eq(providerAccounts.provider, provider),
       eq(providerAccounts.accountId, accountId)
     ),
-  });
-
-  return row ? toProviderAccountRecord(row) : null;
-};
+  })) ?? null;
 
 const isUniqueConstraintError = (error: unknown): boolean => {
   let current = error;
@@ -175,12 +172,21 @@ export const upsertProviderAccount = withInvalidation(
       : null;
 
     const updateExisting = async (
-      account: ProviderAccountRecord
+      row: typeof providerAccounts.$inferSelect,
+      retried = false
     ): Promise<ProviderAccountRecord> => {
-      await database
+      // Team members share a workspace ID, so a known, different user is
+      // another person's sign-in.
+      const storedUser = signedInUser(toProviderAccountRecord(row));
+      const incomingUser = signedInUser(input);
+      if (storedUser && incomingUser && storedUser !== incomingUser) {
+        throw accountIdConflict();
+      }
+      // The write only lands on the metadata the user check read.
+      const result = await database
         .update(providerAccounts)
         .set({
-          label: input.label === undefined ? account.label : input.label,
+          label: input.label === undefined ? row.label : input.label,
           accessToken: input.accessToken,
           refreshToken: input.refreshToken,
           refreshLockToken: null,
@@ -191,9 +197,27 @@ export const upsertProviderAccount = withInvalidation(
           metadataJson: serializeProviderAccountMetadata(input.metadata),
           updatedAt: input.now,
         })
-        .where(eq(providerAccounts.id, account.id));
+        .where(
+          and(
+            eq(providerAccounts.id, row.id),
+            row.metadataJson === null
+              ? isNull(providerAccounts.metadataJson)
+              : eq(providerAccounts.metadataJson, row.metadataJson)
+          )
+        );
+      if (result.rowsAffected === 0) {
+        const current = await database.query.providerAccounts.findFirst({
+          where: eq(providerAccounts.id, row.id),
+        });
+        if (!current || retried) {
+          throw new ProviderAccountReauthorizationConflict(
+            "Provider account changed during the import"
+          );
+        }
+        return updateExisting(current, true);
+      }
 
-      const updated = await findProviderAccountById(database, account.id);
+      const updated = await findProviderAccountById(database, row.id);
       if (!updated) {
         throw new Error("Failed to load updated provider account");
       }
@@ -203,54 +227,12 @@ export const upsertProviderAccount = withInvalidation(
       return updateExisting(existing);
     }
 
-    const [primary, providerAccount] = await database.batch([
-      database.query.providerAccounts.findFirst({
-        where: and(
-          eq(providerAccounts.provider, input.provider),
-          eq(providerAccounts.isPrimary, true)
-        ),
-      }),
-      database.query.providerAccounts.findFirst({
-        where: eq(providerAccounts.provider, input.provider),
-      }),
-    ]);
-    const insertValues: typeof providerAccounts.$inferInsert = {
-      id: crypto.randomUUID(),
-      provider: input.provider,
-      label: input.label ?? null,
-      accountId: input.accountId,
-      isPrimary: !primary,
-      enabled: providerAccount?.enabled ?? true,
-      accessToken: input.accessToken,
-      refreshToken: input.refreshToken,
-      refreshLockToken: null,
-      refreshLockExpiresAt: null,
-      expiresAt: input.expiresAt,
-      metadataJson: serializeProviderAccountMetadata(input.metadata),
-      lastRefreshAt: null,
-      lastRefreshStatus: null,
-      createdAt: input.now,
-      updatedAt: input.now,
-    };
-
-    const attemptInsert = async (
-      values: typeof providerAccounts.$inferInsert
-    ): Promise<ProviderAccountRecord> => {
-      await database.insert(providerAccounts).values(values);
-      const created = await findProviderAccountById(database, values.id);
-      if (!created) {
-        throw new Error("Failed to load created provider account");
-      }
-
+    const { created, insertValues, attemptInsert } = await tryInsertAccount(
+      database,
+      input
+    );
+    if (created) {
       return created;
-    };
-
-    try {
-      return await attemptInsert(insertValues);
-    } catch (error) {
-      if (!isUniqueConstraintError(error)) {
-        throw error;
-      }
     }
 
     if (input.accountId) {
@@ -272,12 +254,176 @@ export const upsertProviderAccount = withInvalidation(
   }
 );
 
+// Returns no account when the insert hit a unique index.
+const tryInsertAccount = async (
+  database: Database,
+  input: UpsertProviderAccountInput
+) => {
+  const [primary, providerAccount] = await database.batch([
+    database.query.providerAccounts.findFirst({
+      where: and(
+        eq(providerAccounts.provider, input.provider),
+        eq(providerAccounts.isPrimary, true)
+      ),
+    }),
+    database.query.providerAccounts.findFirst({
+      where: eq(providerAccounts.provider, input.provider),
+    }),
+  ]);
+  const insertValues: typeof providerAccounts.$inferInsert = {
+    id: crypto.randomUUID(),
+    provider: input.provider,
+    label: input.label ?? null,
+    accountId: input.accountId,
+    isPrimary: !primary,
+    enabled: providerAccount?.enabled ?? true,
+    accessToken: input.accessToken,
+    refreshToken: input.refreshToken,
+    refreshLockToken: null,
+    refreshLockExpiresAt: null,
+    expiresAt: input.expiresAt,
+    metadataJson: serializeProviderAccountMetadata(input.metadata),
+    lastRefreshAt: null,
+    lastRefreshStatus: null,
+    createdAt: input.now,
+    updatedAt: input.now,
+  };
+
+  const attemptInsert = async (
+    values: typeof providerAccounts.$inferInsert
+  ): Promise<ProviderAccountRecord> => {
+    await database.insert(providerAccounts).values(values);
+    const created = await findProviderAccountById(database, values.id);
+    if (!created) {
+      throw new Error("Failed to load created provider account");
+    }
+
+    return created;
+  };
+
+  try {
+    return {
+      created: await attemptInsert(insertValues),
+      insertValues,
+      attemptInsert,
+    };
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) {
+      throw error;
+    }
+  }
+  return { created: null, insertValues, attemptInsert };
+};
+
 export class ProviderAccountReauthorizationConflict extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ProviderAccountReauthorizationConflict";
   }
 }
+
+// The unique (provider, accountId) index allows one row per ChatGPT
+// workspace, so another member of a connected workspace cannot be added.
+const accountIdConflict = () =>
+  new ProviderAccountReauthorizationConflict(
+    "Another Kleis account already uses this provider account ID"
+  );
+
+export const signedInUser = ({
+  metadata,
+}: {
+  metadata: ProviderAccountMetadata | null;
+}): string | null | undefined => {
+  if (metadata?.provider === "codex") {
+    return metadata.chatgptUserId;
+  }
+  return metadata?.provider === "claude" ? metadata.accountUuid : null;
+};
+
+// Adds a new account and never takes over an existing row, even one with the
+// same account ID.
+export const addProviderAccount = withInvalidation(
+  async (
+    database: Database,
+    input: UpsertProviderAccountInput
+  ): Promise<ProviderAccountRecord> => {
+    const accountIdTaken = async () =>
+      input.accountId !== null &&
+      (await findProviderAccountByProviderAndAccountId(
+        database,
+        input.provider,
+        input.accountId
+      )) !== null;
+    if (await accountIdTaken()) {
+      throw accountIdConflict();
+    }
+
+    const { created, insertValues, attemptInsert } = await tryInsertAccount(
+      database,
+      input
+    );
+    if (created) {
+      return created;
+    }
+    if (await accountIdTaken()) {
+      throw accountIdConflict();
+    }
+    return attemptInsert({
+      ...insertValues,
+      id: crypto.randomUUID(),
+      isPrimary: false,
+    });
+  }
+);
+
+type OAuthIdentityInput = {
+  provider: Provider;
+  accountId: string | null;
+  metadata: ProviderAccountMetadata | null;
+};
+
+// Who a sign-in belongs to: the Claude user and organization, or the ChatGPT
+// workspace and user, since team members share a workspace ID. Older Claude
+// rows kept the user UUID in accountId.
+const oauthIdentity = ({
+  provider,
+  accountId,
+  metadata,
+}: OAuthIdentityInput): (string | null | undefined)[] =>
+  provider === "claude"
+    ? [
+        (metadata?.provider === "claude" ? metadata.accountUuid : null) ||
+          accountId,
+        metadata?.provider === "claude" ? metadata.organizationUuid : null,
+      ]
+    : [
+        accountId ||
+          (metadata?.provider === "codex" ? metadata.chatgptAccountId : null),
+        metadata?.provider === "codex" ? metadata.chatgptUserId : null,
+      ];
+
+export const oauthIdentityKey = (input: OAuthIdentityInput): string =>
+  JSON.stringify([input.provider, ...oauthIdentity(input)]);
+
+// Only an identity with every part known can match an account.
+export const findProviderAccountsWithIdentity = async (
+  database: Database,
+  input: OAuthIdentityInput
+): Promise<ProviderAccountRecord[]> => {
+  const identity = oauthIdentity(input);
+  if (identity.some((part) => !part)) {
+    return [];
+  }
+  const rows = await database
+    .select()
+    .from(providerAccounts)
+    .where(eq(providerAccounts.provider, input.provider));
+  return rows
+    .map(toProviderAccountRecord)
+    .filter((account) =>
+      oauthIdentity(account).every((part, index) => part === identity[index])
+    );
+};
 
 export const replaceProviderAccountCredentials = withInvalidation(
   async (
@@ -297,36 +443,12 @@ export const replaceProviderAccountCredentials = withInvalidation(
     if (!existing || existing.provider !== input.provider) {
       return null;
     }
-    const previous = existing.metadata;
-    const incoming = input.metadata;
-    const identities =
-      input.provider === "claude"
-        ? [
-            [
-              (previous?.provider === "claude" ? previous.accountUuid : null) ||
-                existing.accountId,
-              (incoming?.provider === "claude" ? incoming.accountUuid : null) ||
-                input.accountId,
-            ],
-            [
-              previous?.provider === "claude"
-                ? previous.organizationUuid
-                : null,
-              incoming?.provider === "claude"
-                ? incoming.organizationUuid
-                : null,
-            ],
-          ]
-        : [
-            [
-              existing.accountId ||
-                (previous?.provider === "codex"
-                  ? previous.chatgptAccountId
-                  : null),
-              input.accountId,
-            ],
-          ];
-    if (identities.some(([known, received]) => known && known !== received)) {
+    const received = oauthIdentity(input);
+    if (
+      oauthIdentity(existing).some(
+        (known, index) => known && known !== received[index]
+      )
+    ) {
       throw new ProviderAccountReauthorizationConflict(
         "OAuth account identity does not match the selected account"
       );

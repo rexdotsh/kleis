@@ -1,14 +1,18 @@
 import type { Database } from "../../db";
 import {
+  addProviderAccount,
   extendProviderAccountRefreshLock,
   findProviderAccountById,
   findProviderAccountsByIds,
+  findProviderAccountsWithIdentity,
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
   markProviderAccountNeedsReauthorization,
+  oauthIdentityKey,
   recordProviderAccountRefreshFailure,
   replaceProviderAccountCredentials,
   releaseProviderAccountRefreshLock,
+  signedInUser,
   tryAcquireProviderAccountRefreshLock,
   updateProviderAccountTokens,
   upsertProviderAccount,
@@ -18,7 +22,10 @@ import type { Provider } from "../../db/schema";
 import type { ProviderAccountMetadata } from "../../providers/metadata";
 import { classifyOAuthRefreshError, OAuthError } from "../../providers/http";
 import { getProviderAdapter } from "../../providers/registry";
-import type { ProviderOAuthStartResult } from "../../providers/types";
+import type {
+  ProviderOAuthStartResult,
+  ProviderTokenResult,
+} from "../../providers/types";
 import { errorLogFields, logWarn } from "../../utils/log";
 import { sleep } from "../../utils/sleep";
 import { createLookupCache } from "../../db/lookup-cache";
@@ -220,6 +227,13 @@ const refreshProviderAccountWithLock = async (
       if (!accessToken || !refreshToken) {
         throw new Error("Provider refresh response is missing required tokens");
       }
+      const storedUser = signedInUser(account);
+      const refreshedUser = signedInUser(tokens);
+      if (storedUser && refreshedUser && storedUser !== refreshedUser) {
+        throw new ProviderAccountNeedsReauthorizationError(
+          "Provider refresh returned a different user; reauthorize the account"
+        );
+      }
 
       const updateInput = {
         accessToken,
@@ -259,7 +273,10 @@ const refreshProviderAccountWithLock = async (
 
       return updated;
     } catch (error) {
-      const status = classifyOAuthRefreshError(error);
+      const status =
+        error instanceof ProviderAccountNeedsReauthorizationError
+          ? "reauthorize"
+          : classifyOAuthRefreshError(error);
       logWarn("provider_oauth_refresh_failed", {
         provider: account.provider,
         providerAccountId: account.id,
@@ -451,6 +468,46 @@ const storedRefreshToken = (
   return token;
 };
 
+// A new sign-in for an account Kleis already has renews that account, so its
+// label, keys and usage stay attached. More than one match adds a new account.
+const findAccountToRenew = async (
+  database: Database,
+  provider: Provider,
+  tokens: ProviderTokenResult
+): Promise<string | undefined> => {
+  const matches = await findProviderAccountsWithIdentity(database, {
+    provider,
+    accountId: tokens.accountId,
+    metadata: tokens.metadata,
+  });
+  return matches.length === 1 ? matches[0]?.id : undefined;
+};
+
+const identityLocks = new Map<string, Promise<unknown>>();
+
+// Serializes the find-then-write for one sign-in identity so concurrent
+// completions renew one account instead of each adding it. The lock is per
+// process; separate processes can still race.
+const withIdentityLock = async <T>(
+  key: string,
+  run: () => Promise<T>
+): Promise<T> => {
+  const previous = identityLocks.get(key);
+  const { promise: done, resolve: release } =
+    Promise.withResolvers<undefined>();
+  const tail = (previous ?? Promise.resolve()).then(() => done);
+  identityLocks.set(key, tail);
+  try {
+    await previous;
+    return await run();
+  } finally {
+    release(undefined);
+    if (identityLocks.get(key) === tail) {
+      identityLocks.delete(key);
+    }
+  }
+};
+
 export const completeProviderOAuth = async (
   database: Database,
   provider: Provider,
@@ -474,35 +531,45 @@ export const completeProviderOAuth = async (
     throw new Error("Provider OAuth response is missing required tokens");
   }
 
-  if (tokens.replaceAccountId) {
-    const updated = await replaceProviderAccountCredentials(
-      database,
-      tokens.replaceAccountId,
-      {
-        provider,
-        accountId: tokens.accountId,
-        accessToken,
-        refreshToken,
-        expiresAt: assertExpiresAt(tokens.expiresAt, Date.now()),
-        metadata: tokens.metadata,
-        now: Date.now(),
-      }
-    );
-    if (!updated) {
-      throw new Error("Provider account to reauthorize no longer exists");
-    }
-    return updated;
-  }
-
-  return upsertProviderAccount(database, {
+  const identityKey = oauthIdentityKey({
     provider,
     accountId: tokens.accountId,
-    label: tokens.label ?? null,
-    accessToken,
-    refreshToken,
-    expiresAt: assertExpiresAt(tokens.expiresAt, now),
     metadata: tokens.metadata,
-    now,
+  });
+  return withIdentityLock(identityKey, async () => {
+    const replaceAccountId =
+      tokens.replaceAccountId ??
+      (await findAccountToRenew(database, provider, tokens));
+    if (replaceAccountId) {
+      const updated = await replaceProviderAccountCredentials(
+        database,
+        replaceAccountId,
+        {
+          provider,
+          accountId: tokens.accountId,
+          accessToken,
+          refreshToken,
+          expiresAt: assertExpiresAt(tokens.expiresAt, Date.now()),
+          metadata: tokens.metadata,
+          now: Date.now(),
+        }
+      );
+      if (!updated) {
+        throw new Error("Provider account to reauthorize no longer exists");
+      }
+      return updated;
+    }
+
+    return addProviderAccount(database, {
+      provider,
+      accountId: tokens.accountId,
+      label: tokens.label ?? null,
+      accessToken,
+      refreshToken,
+      expiresAt: assertExpiresAt(tokens.expiresAt, now),
+      metadata: tokens.metadata,
+      now,
+    });
   });
 };
 

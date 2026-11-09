@@ -12,6 +12,7 @@ import {
   mutationAttributes,
   persistToken,
   readPersistedToken,
+  restartOAuthFlow,
   runAction,
   setButtonBusy,
   state,
@@ -167,7 +168,7 @@ async function startOAuthAction(request) {
     if (!request.isCurrent() || requestSeq !== state.oauthRequestSeq) return;
     toast(e.message, "error");
     flow.innerHTML = `<div class="flow"><p class="err">${escapeHtml(e.message)}</p><button id="btn-oauth-retry" class="btn btn-ghost" type="button">Start over</button></div>`;
-    $("#btn-oauth-retry").addEventListener?.("click", cancelOAuthFlow);
+    $("#btn-oauth-retry").addEventListener?.("click", restartOAuthFlow);
   }
 }
 
@@ -199,7 +200,7 @@ async function completeOAuthAction(request) {
   } catch (e) {
     if (!request.isCurrent() || requestSeq !== state.oauthRequestSeq) return;
     const error = $("#oauth-flow-error");
-    error.textContent = `${e.message}. If this code was consumed or the flow expired, cancel and start over.`;
+    error.textContent = `${e.message}. If this code was consumed or the flow expired, start over.`;
     error.hidden = false;
   }
 }
@@ -226,7 +227,7 @@ function renderOAuthLoading(provider, isDevice) {
   const name = target ? accountName(target) : null;
   const container = $("#oauth-flow-active");
   container.innerHTML = `<div class="flow" aria-busy="true"><p class="flow-title">${name ? `Reauthorizing <strong>${escapeHtml(name)}</strong>` : `Signing in to ${escapeHtml(providerName(provider))}`}</p><div class="field"><span class="field-label">1 \u00b7 Open this link and approve</span><div class="input-row"><span class="bone flow-url-skeleton"></span><button class="btn btn-ghost btn-sm" type="button" disabled>Copy</button></div></div><div class="field"><span class="field-label">2 \u00b7 ${isDevice ? "Enter this code on that page" : "Paste the code you get back"}</span>${isDevice ? '<div class="device-code"><span class="bone"></span></div>' : '<div class="field-input flow-input-skeleton"><span class="bone"></span></div>'}</div><div class="flow-actions"><button class="btn btn-primary btn-block" type="button" disabled>${isDevice ? "I\u2019ve approved it" : "Connect account"}</button><button id="btn-oauth-loading-cancel" class="btn btn-ghost" type="button">Start over</button></div></div>`;
-  $("#btn-oauth-loading-cancel").addEventListener?.("click", cancelOAuthFlow);
+  $("#btn-oauth-loading-cancel").addEventListener?.("click", restartOAuthFlow);
 }
 
 function renderOAuthFlow(data, provider) {
@@ -265,7 +266,7 @@ function renderOAuthFlow(data, provider) {
   </div>`;
 
   $("#btn-oauth-complete").addEventListener("click", completeOAuth);
-  $("#btn-oauth-cancel").addEventListener("click", cancelOAuthFlow);
+  $("#btn-oauth-cancel").addEventListener("click", restartOAuthFlow);
   const copyUrl = $("#btn-oauth-copy-url");
   copyUrl.addEventListener("click", () =>
     copyToClipboard(data.authorizationUrl, copyUrl)
