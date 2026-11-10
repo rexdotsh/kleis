@@ -38,18 +38,19 @@ export const toProviderAccountRecord = ({
   metadata: parseProviderAccountMetadata(metadataJson),
 });
 
-export const listProviderAccounts = async (
-  database: Database
-): Promise<ProviderAccountRecord[]> => {
-  const rows = await database
+export const selectProviderAccounts = (database: Database) =>
+  database
     .select()
     .from(providerAccounts)
     .orderBy(
       desc(providerAccounts.isPrimary),
       desc(providerAccounts.createdAt)
     );
-  return rows.map(toProviderAccountRecord);
-};
+
+export const listProviderAccounts = async (
+  database: Database
+): Promise<ProviderAccountRecord[]> =>
+  (await selectProviderAccounts(database)).map(toProviderAccountRecord);
 
 export const listConfiguredProviders = async (
   database: Database

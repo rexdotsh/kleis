@@ -50,6 +50,9 @@ const sessionState = () => ({
   setupKeyId: null,
   activeOAuth: null,
   reauthorizeAccountId: null,
+  // Reauthorize link URLs created this session, by account. The server only
+  // returns a link's token when it is created.
+  sharedReauthLinks: new Map(),
   dashboardWindowMs: DEFAULT_KEY_USAGE_WINDOW_MS,
   dashboardData: null,
   dashboardError: null,

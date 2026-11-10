@@ -421,6 +421,13 @@ export class ProviderReauthorizationTargetError extends Error {
   }
 }
 
+export class ProviderReauthorizationClaimedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderReauthorizationClaimedError";
+  }
+}
+
 export class ProviderAccountNeedsReauthorizationError extends Error {
   constructor(message: string) {
     super(message);
@@ -508,12 +515,21 @@ const withIdentityLock = async <T>(
   }
 };
 
+// A completion that may write only after claiming something single-use, such
+// as a reauthorize link. A claim whose write fails is released.
+type ReauthorizationClaim = {
+  accountId: string;
+  claim: () => Promise<boolean>;
+  release: () => Promise<void>;
+};
+
 export const completeProviderOAuth = async (
   database: Database,
   provider: Provider,
   input: {
     state: string;
     code?: string;
+    claim?: ReauthorizationClaim;
   },
   now: number
 ): Promise<ProviderAccountRecord> => {
@@ -530,6 +546,12 @@ export const completeProviderOAuth = async (
   if (!accessToken) {
     throw new Error("Provider OAuth response is missing required tokens");
   }
+  const { claim } = input;
+  if (claim && tokens.replaceAccountId !== claim.accountId) {
+    throw new ProviderReauthorizationTargetError(
+      "Sign-in flow does not reauthorize this account"
+    );
+  }
 
   const identityKey = oauthIdentityKey({
     provider,
@@ -541,20 +563,32 @@ export const completeProviderOAuth = async (
       tokens.replaceAccountId ??
       (await findAccountToRenew(database, provider, tokens));
     if (replaceAccountId) {
-      const updated = await replaceProviderAccountCredentials(
-        database,
-        replaceAccountId,
-        {
-          provider,
-          accountId: tokens.accountId,
-          accessToken,
-          refreshToken,
-          expiresAt: assertExpiresAt(tokens.expiresAt, Date.now()),
-          metadata: tokens.metadata,
-          now: Date.now(),
-        }
-      );
+      if (claim && !(await claim.claim())) {
+        throw new ProviderReauthorizationClaimedError(
+          "This sign-in can no longer be completed"
+        );
+      }
+      let updated: ProviderAccountRecord | null;
+      try {
+        updated = await replaceProviderAccountCredentials(
+          database,
+          replaceAccountId,
+          {
+            provider,
+            accountId: tokens.accountId,
+            accessToken,
+            refreshToken,
+            expiresAt: assertExpiresAt(tokens.expiresAt, Date.now()),
+            metadata: tokens.metadata,
+            now: Date.now(),
+          }
+        );
+      } catch (error) {
+        await claim?.release();
+        throw error;
+      }
       if (!updated) {
+        await claim?.release();
         throw new Error("Provider account to reauthorize no longer exists");
       }
       return updated;

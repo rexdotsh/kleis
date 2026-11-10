@@ -1972,6 +1972,11 @@ input[type="checkbox"].toggle:checked::after {
   overflow-wrap: anywhere;
   user-select: all;
 }
+.reauth-link-hint {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
 
 #toast-container {
   position: fixed;

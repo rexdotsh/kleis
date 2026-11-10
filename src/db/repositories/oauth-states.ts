@@ -51,3 +51,10 @@ export const consumeOAuthState = async (
 
   return row ?? null;
 };
+
+export const deleteOAuthState = async (
+  database: Database,
+  state: string
+): Promise<void> => {
+  await database.delete(oauthStates).where(eq(oauthStates.state, state));
+};

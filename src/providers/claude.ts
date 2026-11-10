@@ -77,6 +77,13 @@ const exchangeCodeForTokens = async (input: {
   return readOAuthTokenResponse<ClaudeTokenResponse>(response, "Claude");
 };
 
+export class ClaudeShortSignInError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ClaudeShortSignInError";
+  }
+}
+
 const readSignInExpiry = (tokens: ClaudeTokenResponse, now: number): number => {
   const expiresIn = tokens.expires_in;
   if (
@@ -88,7 +95,7 @@ const readSignInExpiry = (tokens: ClaudeTokenResponse, now: number): number => {
       typeof expiresIn === "number" && Number.isFinite(expiresIn)
         ? `${Math.floor(expiresIn / 86_400)} days`
         : "no expiry";
-    throw new Error(
+    throw new ClaudeShortSignInError(
       `Claude granted a sign-in of ${granted} instead of one year, so the account was not saved. Start the sign-in again.`
     );
   }
