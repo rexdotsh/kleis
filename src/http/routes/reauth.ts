@@ -197,10 +197,15 @@ export const reauthRoutes = new Hono()
       const flow = await startReauthLink(db, token, Date.now());
       return await context.html(signInPage(token, flow, flow.authorizationUrl));
     } catch (error) {
-      if (error instanceof ReauthLinkError) {
-        return context.html(invalidPage(error.message), 404);
+      if (!(error instanceof ReauthLinkError)) {
+        throw error;
       }
-      throw error;
+      const target = error.linkUsable
+        ? await describeReauthLink(db, token, Date.now())
+        : null;
+      return target
+        ? context.html(errorPage(token, target, error), 409)
+        : context.html(invalidPage(error.message), 404);
     }
   })
   .post("/reauth/:token/complete", async (context) => {

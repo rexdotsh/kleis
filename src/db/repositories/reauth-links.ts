@@ -25,7 +25,8 @@ const isOpen = (now: number) =>
     gt(reauthLinks.expiresAt, now)
   );
 
-// Creating a link revokes the account's previous one in the same transaction.
+// Creating a link revokes every earlier link of the account, used or not, in
+// the same transaction.
 export const createReauthLink = async (
   database: Database,
   input: { providerAccountId: string; token: string; expiresAt: number },
@@ -38,7 +39,6 @@ export const createReauthLink = async (
       .where(
         and(
           eq(reauthLinks.providerAccountId, input.providerAccountId),
-          isNull(reauthLinks.usedAt),
           isNull(reauthLinks.revokedAt)
         )
       ),
@@ -90,50 +90,38 @@ export const findOpenReauthLink = async (
     : null;
 };
 
-export const setReauthLinkOAuthState = async (
+// Swaps in a new sign-in flow only if the link still holds `previous`, so
+// concurrent starts can't both replace the same flow.
+export const swapReauthLinkOAuthState = async (
   database: Database,
   linkId: string,
+  previous: string | null,
   state: string,
   now: number
 ): Promise<boolean> => {
   const result = await database
     .update(reauthLinks)
     .set({ oauthState: state })
-    .where(and(eq(reauthLinks.id, linkId), isOpen(now)));
-  return result.rowsAffected > 0;
-};
-
-// Only one completion can claim the link; the claim is the used_at time.
-export const claimReauthLink = async (
-  database: Database,
-  linkId: string,
-  now: number
-): Promise<boolean> => {
-  const result = await database
-    .update(reauthLinks)
-    .set({ usedAt: now })
-    .where(and(eq(reauthLinks.id, linkId), isOpen(now)));
-  return result.rowsAffected > 0;
-};
-
-// Reopens a claimed link whose sign-in was not saved, unless the admin has
-// created a newer link meanwhile.
-export const releaseReauthLink = async (
-  database: Database,
-  linkId: string,
-  claimedAt: number
-): Promise<void> => {
-  await database
-    .update(reauthLinks)
-    .set({ usedAt: null })
     .where(
       and(
         eq(reauthLinks.id, linkId),
-        eq(reauthLinks.usedAt, claimedAt),
-        sql`not exists (select 1 from "reauth_links" as "other" where "other"."provider_account_id" = "reauth_links"."provider_account_id" and "other"."used_at" is null and "other"."revoked_at" is null)`
+        isOpen(now),
+        sql`${reauthLinks.oauthState} is ${previous}`
       )
     );
+  return result.rowsAffected > 0;
 };
+
+export const findOpenReauthLinkOAuthState = async (
+  database: Database,
+  linkId: string,
+  now: number
+): Promise<{ oauthState: string | null } | null> =>
+  (await database
+    .select({ oauthState: reauthLinks.oauthState })
+    .from(reauthLinks)
+    .where(and(eq(reauthLinks.id, linkId), isOpen(now)))
+    .get()) ?? null;
 
 // Returns whether the link is now revoked; it is once it reaches the cap.
 export const recordReauthLinkFailure = async (

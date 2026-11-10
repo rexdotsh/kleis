@@ -27,8 +27,8 @@ import {
   ResetSpendError,
 } from "../../domain/providers/reset-spends";
 import {
+  reauthLinkUnsupportedReason,
   shareReauthLink,
-  supportsReauthLink,
 } from "../../domain/providers/reauth-links";
 import {
   listProviderAccountsWithReauthLinks,
@@ -549,12 +549,10 @@ export const adminAccountsRoutes = new Hono()
       if (!account) {
         return context.json(accountNotFoundBody, 404);
       }
-      if (!supportsReauthLink(account)) {
+      const unsupported = reauthLinkUnsupportedReason(account);
+      if (unsupported) {
         return context.json(
-          {
-            error: "bad_request",
-            message: "Reauthorize links are only available for Claude accounts",
-          },
+          { error: "bad_request", message: unsupported },
           400
         );
       }

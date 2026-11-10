@@ -5,12 +5,11 @@ import {
   type ProviderAccountRecord,
 } from "../../db/repositories/provider-accounts";
 import {
-  claimReauthLink,
   createReauthLink,
   findOpenReauthLink,
+  findOpenReauthLinkOAuthState,
   recordReauthLinkFailure,
-  releaseReauthLink,
-  setReauthLinkOAuthState,
+  swapReauthLinkOAuthState,
   type ReauthLinkSummary,
 } from "../../db/repositories/reauth-links";
 import { ClaudeShortSignInError } from "../../providers/claude";
@@ -26,9 +25,29 @@ import {
 const REAUTH_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const REAUTH_LINK_MAX_FAILED_ATTEMPTS = 10;
 const REAUTH_TOKEN_PATTERN = /^[\w-]{43}$/u;
+const REAUTH_LINK_START_ATTEMPTS = 5;
 
-export const supportsReauthLink = (account: ProviderAccountRecord): boolean =>
-  account.provider === "claude";
+// A link only renews the same Claude user and organization, so the account
+// must have both on record.
+export const reauthLinkUnsupportedReason = (
+  account: ProviderAccountRecord
+): string | null => {
+  if (account.provider !== "claude") {
+    return "Reauthorize links are only available for Claude accounts";
+  }
+  const { metadata } = account;
+  if (
+    metadata?.provider !== "claude" ||
+    !metadata.accountUuid ||
+    !metadata.organizationUuid
+  ) {
+    return "This account has no stored Claude user and organization, so a link can't check who signs in. Reauthorize it from the admin instead.";
+  }
+  return null;
+};
+
+const supportsReauthLink = (account: ProviderAccountRecord): boolean =>
+  reauthLinkUnsupportedReason(account) === null;
 
 // What the public page may show about the account: the provider and its label.
 // Claude labels default to the account's email, so an email label is hidden.
@@ -95,8 +114,8 @@ export const describeReauthLink = async (
     : null;
 };
 
-// Each start replaces the link's previous sign-in flow, so a link holds at
-// most one.
+// Each start replaces the link's previous sign-in flow and deletes it, so a
+// link holds at most one, even when starts race.
 export const startReauthLink = async (
   database: Database,
   token: string,
@@ -113,14 +132,36 @@ export const startReauthLink = async (
     { options: { replaceAccountId: account.id } },
     now
   );
-  if (!(await setReauthLinkOAuthState(database, link.id, flow.state, now))) {
-    await deleteOAuthState(database, flow.state);
+  let previous = link.oauthState;
+  for (let attempt = 0; attempt < REAUTH_LINK_START_ATTEMPTS; attempt++) {
+    if (
+      await swapReauthLinkOAuthState(
+        database,
+        link.id,
+        previous,
+        flow.state,
+        now
+      )
+    ) {
+      if (previous) {
+        await deleteOAuthState(database, previous);
+      }
+      return { ...toTarget(account), authorizationUrl: flow.authorizationUrl };
+    }
+    const current = await findOpenReauthLinkOAuthState(database, link.id, now);
+    if (!current) {
+      break;
+    }
+    previous = current.oauthState;
+  }
+  await deleteOAuthState(database, flow.state);
+  if (!(await findOpenReauthLinkOAuthState(database, link.id, now))) {
     throw unavailable();
   }
-  if (link.oauthState) {
-    await deleteOAuthState(database, link.oauthState);
-  }
-  return { ...toTarget(account), authorizationUrl: flow.authorizationUrl };
+  throw new ReauthLinkError(
+    "Another sign-in was started with this link at the same time. Get a new sign-in link.",
+    true
+  );
 };
 
 const failureMessage = (error: unknown): string => {
@@ -150,7 +191,6 @@ export const completeReauthLink = async (
   if (!link.oauthState) {
     throw new ReauthLinkError("Get a sign-in link first.", true);
   }
-  let claimedAt = 0;
   try {
     const updated = await completeProviderOAuth(
       database,
@@ -158,22 +198,7 @@ export const completeReauthLink = async (
       {
         state: link.oauthState,
         code,
-        claim: {
-          accountId: account.id,
-          claim: () => {
-            claimedAt = Date.now();
-            return claimReauthLink(database, link.id, claimedAt);
-          },
-          release: () =>
-            releaseReauthLink(database, link.id, claimedAt).catch(
-              (error: unknown) => {
-                logWarn("reauth_link_release_failed", {
-                  providerAccountId: account.id,
-                  ...errorLogFields(error),
-                });
-              }
-            ),
-        },
+        reauthLink: { id: link.id, accountId: account.id },
       },
       now
     );

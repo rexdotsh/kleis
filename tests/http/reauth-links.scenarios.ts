@@ -13,8 +13,13 @@ if (
 }
 
 const { db } = await import("../../src/db");
-const { apiKeys, providerAccounts, reauthLinks, requestUsageBuckets } =
-  await import("../../src/db/schema");
+const {
+  apiKeys,
+  oauthStates,
+  providerAccounts,
+  reauthLinks,
+  requestUsageBuckets,
+} = await import("../../src/db/schema");
 const { createApiKey, findApiKeyById } =
   await import("../../src/db/repositories/api-keys");
 const { installErrorHandler } = await import("../../src/http/error-handler");
@@ -45,12 +50,44 @@ const claudeTokens = (
   organization: { uuid: org },
 });
 
+let exchanged = false;
+
 const mockTokenResponse = (body: Record<string, unknown>, status = 200) => {
-  globalThis.fetch = (async () =>
-    Response.json(body, { status })) as unknown as typeof fetch;
+  globalThis.fetch = (async () => {
+    exchanged = true;
+    return Response.json(body, { status });
+  }) as unknown as typeof fetch;
+};
+
+// Fault injection: runs `inject` before the nth provider_accounts read that
+// follows the token exchange.
+let interceptAccountRead: (() => Promise<void>) | null = null;
+const client = db.$client;
+const originalExecute = client.execute.bind(client);
+client.execute = (async (statement: Parameters<typeof client.execute>[0]) => {
+  const text = typeof statement === "string" ? statement : statement.sql;
+  if (interceptAccountRead && text.includes('from "provider_accounts"')) {
+    await interceptAccountRead();
+  }
+  return originalExecute(statement);
+}) as typeof client.execute;
+
+const beforeAccountReadAfterExchange = (
+  nth: number,
+  inject: () => Promise<void>
+) => {
+  let reads = 0;
+  interceptAccountRead = async () => {
+    if (!exchanged || ++reads < nth) return;
+    interceptAccountRead = null;
+    await inject();
+  };
 };
 
 beforeEach(async () => {
+  exchanged = false;
+  interceptAccountRead = null;
+  await db.delete(oauthStates);
   await db.delete(reauthLinks);
   await db.delete(providerAccounts);
   await db.delete(apiKeys);
@@ -367,3 +404,71 @@ test.each([["Fake Team Seat"], ["fake-owner@example.com"]])(
     }
   }
 );
+
+test("a link can't be shared or completed without the account's Claude user and organization", async () => {
+  await insertAccount();
+  const token = await shareLink();
+  const state = await startLink(token);
+  await db
+    .update(providerAccounts)
+    .set({ metadataJson: JSON.stringify({ provider: "claude", scope: null }) });
+  mockTokenResponse(claudeTokens("fake-stranger", "fake-stranger-org"));
+
+  await completeLink(token, state);
+
+  expect((await storedAccount())?.accessToken).toBe("fake-old-access");
+  const share = await app.request(`/admin/accounts/${ACCOUNT_ID}/reauth-link`, {
+    method: "POST",
+  });
+  expect(share.status).toBe(400);
+});
+
+test("a saved sign-in uses up its link even when reading the account back fails", async () => {
+  await insertAccount();
+  const token = await shareLink();
+  const state = await startLink(token);
+  mockTokenResponse(claudeTokens("fake-user-uuid", "fake-org-uuid"));
+  beforeAccountReadAfterExchange(2, () =>
+    Promise.reject(new Error("fake read failure"))
+  );
+
+  await completeLink(token, state);
+
+  expect((await storedAccount())?.accessToken).toBe("fake-new-access");
+  expect((await app.request(`/reauth/${token}`)).status).toBe(404);
+});
+
+test("a link superseded during a failed completion stays revoked", async () => {
+  await insertAccount();
+  const token = await shareLink();
+  const state = await startLink(token);
+  mockTokenResponse(claudeTokens("fake-other-user", "fake-org-uuid"));
+  beforeAccountReadAfterExchange(1, async () => {
+    await shareLink();
+    await app.request(`/admin/accounts/${ACCOUNT_ID}/reauth-link`, {
+      method: "DELETE",
+    });
+  });
+
+  await completeLink(token, state);
+
+  expect((await app.request(`/reauth/${token}`)).status).toBe(404);
+});
+
+test("concurrent starts leave one sign-in flow and no expired ones", async () => {
+  await insertAccount();
+  const token = await shareLink();
+  await db.insert(oauthStates).values({
+    state: "fake-expired-state",
+    provider: "claude",
+    expiresAt: Date.now() - 1,
+  });
+
+  await Promise.all(
+    Array.from({ length: 20 }, async () => postForm(`/reauth/${token}/start`))
+  );
+
+  const [link] = await db.select().from(reauthLinks);
+  const states = await db.select().from(oauthStates);
+  expect(states.map((row) => row.state)).toEqual([link?.oauthState]);
+});
