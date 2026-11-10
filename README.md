@@ -95,11 +95,6 @@ keeping its account ID, primary setting, and API-key account scopes. Starting
 a new OAuth flow from the Connect tab creates a separate account when the
 provider does not return a stable account identifier.
 
-To let a Claude account's owner sign it in again without you, select **Share
-reauthorize link** and send them the link. It works for one successful sign-in
-within 7 days, only for the same Claude account and organization, and creating
-a new link revokes the previous one.
-
 ---
 
 ## OpenCode configuration
