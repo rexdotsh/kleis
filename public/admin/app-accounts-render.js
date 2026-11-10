@@ -258,6 +258,25 @@ function signInFact(account) {
   return fact("Sign-in", value, [escapeHtml(expiry)]);
 }
 
+function reauthLinkFact(account) {
+  const link = account.reauthLink;
+  if (!link) return "";
+  return fact("Reauthorize link", "Active", [
+    escapeHtml(`expires ${longDate(link.expiresAt)}`),
+    escapeHtml(`created ${relativeTime(link.createdAt)}`),
+  ]);
+}
+
+// The URL is only known right after it is created.
+function reauthLinkLine(account) {
+  const url = account.reauthLink && state.sharedReauthLinks.get(account.id);
+  if (!url) return "";
+  const button = (label, action) =>
+    `<button class="btn btn-ghost btn-sm" data-action="${action}" data-account-id="${account.id}" type="button">${label}</button>`;
+  return `<div class="key-line"><code>${escapeHtml(url)}</code>${button("Copy", "copy-reauth-link")}${button("Hide", "hide-reauth-link")}</div>
+    <p class="reauth-link-hint">Shown once. Send it to the account's owner; it works for one sign-in until ${escapeHtml(longDate(account.reauthLink.expiresAt))}.</p>`;
+}
+
 function tokenFact(account) {
   if (account.provider === "claude") return signInFact(account);
   const expired = tokenStatus(account.expiresAt).class === "expired";
@@ -385,7 +404,7 @@ function accountDetailHtml(account) {
   const supportsOAuth =
     account.provider === "codex" || account.provider === "claude";
   const button = (label, action, shortcut, cls = "btn btn-ghost btn-sm") =>
-    `<button class="${cls}" data-action="${action}" data-account-id="${account.id}" ${actionMutationAttributes(action, account.id)} type="button">${label}${kbd(shortcut)}</button>`;
+    `<button class="${cls}" data-action="${action}" data-account-id="${account.id}" ${actionMutationAttributes(action, account.id)} type="button">${label}${shortcut ? kbd(shortcut) : ""}</button>`;
   const wait = state.limitsUpdating.get(account.id);
   let synced = account.quota?.fetchedAt
     ? `<span>${limitsSourceText(account.quota)}${wait?.timedOut ? " \u00b7 couldn't confirm the new limits yet" : ""}</span>`
@@ -394,9 +413,11 @@ function accountDetailHtml(account) {
   const entering =
     state.enteringDetail === `account:${account.id}` ? " entering" : "";
   return `<div class="detail${entering}" data-detail-for="${account.id}" data-flip="detail:${account.id}">
+    ${reauthLinkLine(account)}
     <div class="facts">${[
       ...limitFacts(account),
       tokenFact(account),
+      reauthLinkFact(account),
       usageFact(accountUsageForId(account.id), state.accountUsageWindowMs),
       tokensFact(accountUsageForId(account.id)),
       accountFact(account),
@@ -406,6 +427,8 @@ function accountDetailHtml(account) {
     ${hasTraffic(accountUsageForId(account.id)) ? `<div class="usage-slot usage-grid" data-usage-for="account:${account.id}">${usageSlotHtml("account", account.id)}</div>` : ""}
     <div class="actions">
       ${(needsReauthorization(account) || reauthorizeDeadline(account)) && supportsOAuth ? button("Reauthorize", "reauthorize-account", "A", "btn btn-primary btn-sm") : ""}
+      ${account.provider === "claude" ? button("Share reauthorize link", "share-reauth-link", "L") : ""}
+      ${account.reauthLink ? button("Revoke link", "revoke-reauth-link") : ""}
       ${account.isPrimary ? "" : button("Make primary", "set-primary", "P")}
       ${account.provider === "claude" ? "" : button("Refresh token", "refresh-account", "R")}
       ${button("Edit", "edit-account", "E")}
@@ -560,6 +583,15 @@ function accountMenuItems(account) {
       label: "Reauthorize",
       action: "reauthorize-account",
       shortcut: "A",
+    },
+    account.provider === "claude" && {
+      label: "Share reauthorize link",
+      action: "share-reauth-link",
+      shortcut: "L",
+    },
+    account.reauthLink && {
+      label: "Revoke reauthorize link",
+      action: "revoke-reauth-link",
     },
     { label: "Edit", action: "edit-account", shortcut: "E" },
     "separator",

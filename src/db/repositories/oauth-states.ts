@@ -1,15 +1,19 @@
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, lte } from "drizzle-orm";
 
 import type { Database } from "../index";
 import { oauthStates, type Provider } from "../schema";
 
 type OAuthStateRecord = typeof oauthStates.$inferSelect;
 
+// Expired states are cleared whenever a new one is created.
 export const createOAuthState = async (
   database: Database,
   input: OAuthStateRecord
 ): Promise<void> => {
-  await database.insert(oauthStates).values(input);
+  await database.batch([
+    database.delete(oauthStates).where(lte(oauthStates.expiresAt, Date.now())),
+    database.insert(oauthStates).values(input),
+  ]);
 };
 
 export const findOAuthState = async (
@@ -50,4 +54,11 @@ export const consumeOAuthState = async (
     .returning();
 
   return row ?? null;
+};
+
+export const deleteOAuthState = async (
+  database: Database,
+  state: string
+): Promise<void> => {
+  await database.delete(oauthStates).where(eq(oauthStates.state, state));
 };

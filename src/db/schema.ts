@@ -190,6 +190,34 @@ export const resetSpends = sqliteTable(
   ]
 );
 
+// A link an account's owner can open to sign the account in again without an
+// admin. Only the SHA-256 of the token is stored. oauth_state is the sign-in
+// flow the link last started; completion only ever uses that flow.
+export const reauthLinks = sqliteTable(
+  "reauth_links",
+  {
+    id: text("id").primaryKey(),
+    providerAccountId: text("provider_account_id")
+      .notNull()
+      .references(() => providerAccounts.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    oauthState: text("oauth_state"),
+    failedAttempts: integer("failed_attempts", { mode: "number" })
+      .notNull()
+      .default(0),
+    expiresAt: integer("expires_at", { mode: "number" }).notNull(),
+    usedAt: integer("used_at", { mode: "number" }),
+    revokedAt: integer("revoked_at", { mode: "number" }),
+    createdAt: integer("created_at", { mode: "number" }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("reauth_links_token_hash_unique").on(table.tokenHash),
+    uniqueIndex("reauth_links_open_unique")
+      .on(table.providerAccountId)
+      .where(sql`${table.usedAt} is null and ${table.revokedAt} is null`),
+  ]
+);
+
 // The last known profile and limits per account, kept out of
 // provider_accounts so these frequent writes never clear the proxy's routing
 // lookups. account_identity is the provider account ID the data belongs to.

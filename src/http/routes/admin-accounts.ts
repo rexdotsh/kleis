@@ -26,6 +26,14 @@ import {
   ResetSpendConflict,
   ResetSpendError,
 } from "../../domain/providers/reset-spends";
+import {
+  reauthLinkUnsupportedReason,
+  shareReauthLink,
+} from "../../domain/providers/reauth-links";
+import {
+  listProviderAccountsWithReauthLinks,
+  revokeReauthLink,
+} from "../../db/repositories/reauth-links";
 import { listProviderAccountDailyTokens } from "../../db/repositories/account-daily-tokens";
 import {
   getProviderAccountUsageDetail,
@@ -53,6 +61,7 @@ import {
 import { normalizeEditableText, resolvePatchedValue } from "../../utils/patch";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
+import { resolveExternalRequestUrl } from "../utils/request-origin";
 
 const accountIdParamsSchema = z.strictObject({
   id: z.string().trim().min(1).max(120),
@@ -196,8 +205,8 @@ const toAdminAccountView = (account: ProviderAccountRecord) => ({
 
 export const adminAccountsRoutes = new Hono()
   .get("/", async (context) => {
-    const [accounts] = await Promise.all([
-      listProviderAccounts(db),
+    const [{ accounts, reauthLinks }] = await Promise.all([
+      listProviderAccountsWithReauthLinks(db, Date.now()),
       providerAccountSnapshotsRestored(),
     ]);
     const quotas = peekProviderAccountQuotas(db, accounts);
@@ -205,6 +214,7 @@ export const adminAccountsRoutes = new Hono()
     return context.json({
       accounts: accounts.map((account) => ({
         ...toAdminAccountView(account),
+        reauthLink: reauthLinks.get(account.id) ?? null,
         quota: quotas.get(account.id) ?? null,
         profile: profiles.get(account.id) ?? null,
         claudeResets: describeClaudeResets(account),
@@ -528,6 +538,38 @@ export const adminAccountsRoutes = new Hono()
         account: toAdminAccountView(account),
         refreshed: true,
       });
+    }
+  )
+  .post(
+    "/:id/reauth-link",
+    zValidator("param", accountIdParamsSchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const account = await findProviderAccountById(db, id);
+      if (!account) {
+        return context.json(accountNotFoundBody, 404);
+      }
+      const unsupported = reauthLinkUnsupportedReason(account);
+      if (unsupported) {
+        return context.json(
+          { error: "bad_request", message: unsupported },
+          400
+        );
+      }
+      const { token, ...link } = await shareReauthLink(db, account, Date.now());
+      const origin = resolveExternalRequestUrl(context.req.raw).origin;
+      return context.json({
+        reauthLink: { ...link, url: `${origin}/reauth/${token}` },
+      });
+    }
+  )
+  .delete(
+    "/:id/reauth-link",
+    zValidator("param", accountIdParamsSchema),
+    async (context) => {
+      const { id } = context.req.valid("param");
+      const revoked = await revokeReauthLink(db, id, Date.now());
+      return context.json({ revoked });
     }
   )
   .post(

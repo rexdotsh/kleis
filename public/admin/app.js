@@ -124,7 +124,7 @@ function menuHtml(kind, id) {
     .map((item) => {
       if (item === "separator") return "<hr>";
       const shortcut = item.shortcut === "Del" ? "Backspace" : item.shortcut;
-      return `<button class="menu-item${item.danger ? " danger" : ""}" type="button" role="menuitem" aria-label="${escapeHtml(item.label)}" data-action="${item.action}" data-${kind}-id="${id}" ${actionMutationAttributes(item.action, id)} data-shortcut="${shortcut}"><span>${item.label}</span><span class="kbd">${item.shortcut}</span></button>`;
+      return `<button class="menu-item${item.danger ? " danger" : ""}" type="button" role="menuitem" aria-label="${escapeHtml(item.label)}" data-action="${item.action}" data-${kind}-id="${id}" ${actionMutationAttributes(item.action, id)}${shortcut ? ` data-shortcut="${shortcut}"` : ""}><span>${item.label}</span>${item.shortcut ? `<span class="kbd">${item.shortcut}</span>` : ""}</button>`;
     })
     .join("");
 }
@@ -179,7 +179,7 @@ $("#menu").addEventListener("keydown", (event) => {
   }
   const shortcut = items.find(
     (item) =>
-      item.dataset.shortcut.toLowerCase() === event.key.toLowerCase() ||
+      item.dataset.shortcut?.toLowerCase() === event.key.toLowerCase() ||
       (item.dataset.shortcut === "Backspace" && event.key === "Delete")
   );
   if (shortcut) {

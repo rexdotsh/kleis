@@ -14,6 +14,7 @@ import { cronRoutes } from "./http/routes/cron";
 import { healthRoutes } from "./http/routes/health";
 import { createLimitsRoutes } from "./http/routes/limits";
 import { modelsRoutes } from "./http/routes/models";
+import { reauthRoutes } from "./http/routes/reauth";
 import {
   flushProxyFailureLogs,
   flushProxyUsage,
@@ -41,6 +42,7 @@ app.route("/", healthRoutes);
 app.route("/", modelsRoutes);
 app.route("/", cronRoutes);
 app.route("/", adminUiRoutes);
+app.route("/", reauthRoutes);
 
 const adminApi = new Hono();
 adminApi.use("/*", requireAdminAuth);

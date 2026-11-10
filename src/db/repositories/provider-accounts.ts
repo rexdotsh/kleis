@@ -1,7 +1,23 @@
-import { and, desc, eq, gt, inArray, isNull, lte, or } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNull,
+  lte,
+  or,
+  sql,
+} from "drizzle-orm";
 
 import type { Database } from "../index";
-import { providerAccounts, providers, type Provider } from "../schema";
+import {
+  providerAccounts,
+  providers,
+  reauthLinks,
+  type Provider,
+} from "../schema";
 import {
   parseProviderAccountMetadata,
   serializeProviderAccountMetadata,
@@ -38,18 +54,19 @@ export const toProviderAccountRecord = ({
   metadata: parseProviderAccountMetadata(metadataJson),
 });
 
-export const listProviderAccounts = async (
-  database: Database
-): Promise<ProviderAccountRecord[]> => {
-  const rows = await database
+export const selectProviderAccounts = (database: Database) =>
+  database
     .select()
     .from(providerAccounts)
     .orderBy(
       desc(providerAccounts.isPrimary),
       desc(providerAccounts.createdAt)
     );
-  return rows.map(toProviderAccountRecord);
-};
+
+export const listProviderAccounts = async (
+  database: Database
+): Promise<ProviderAccountRecord[]> =>
+  (await selectProviderAccounts(database)).map(toProviderAccountRecord);
 
 export const listConfiguredProviders = async (
   database: Database
@@ -425,6 +442,18 @@ export const findProviderAccountsWithIdentity = async (
     );
 };
 
+const openReauthLink = (linkId: string, accountId: string, now: number) =>
+  and(
+    eq(reauthLinks.id, linkId),
+    eq(reauthLinks.providerAccountId, accountId),
+    isNull(reauthLinks.usedAt),
+    isNull(reauthLinks.revokedAt),
+    gt(reauthLinks.expiresAt, now)
+  );
+
+// With a reauthorize link, the credential write and the link's use commit in
+// one transaction: the write needs the link open, and the link is only marked
+// used when the account holds the credentials just written.
 export const replaceProviderAccountCredentials = withInvalidation(
   async (
     database: Database,
@@ -437,46 +466,83 @@ export const replaceProviderAccountCredentials = withInvalidation(
       expiresAt: number;
       metadata: ProviderAccountMetadata | null;
       now: number;
+      reauthLinkId?: string;
     }
-  ): Promise<ProviderAccountRecord | null> => {
+  ): Promise<ProviderAccountRecord | "reauth_link_unavailable" | null> => {
     const existing = await findProviderAccountById(database, id);
     if (!existing || existing.provider !== input.provider) {
       return null;
     }
+    const known = oauthIdentity(existing);
+    if (input.reauthLinkId && known.some((part) => !part)) {
+      throw new ProviderAccountReauthorizationConflict(
+        "The account has no stored user and organization to check the sign-in against"
+      );
+    }
     const received = oauthIdentity(input);
-    if (
-      oauthIdentity(existing).some(
-        (known, index) => known && known !== received[index]
-      )
-    ) {
+    if (known.some((part, index) => part && part !== received[index])) {
       throw new ProviderAccountReauthorizationConflict(
         "OAuth account identity does not match the selected account"
       );
     }
 
-    let result: { rowsAffected: number };
+    const unchanged = and(
+      eq(providerAccounts.id, id),
+      eq(providerAccounts.provider, input.provider),
+      eq(providerAccounts.updatedAt, existing.updatedAt)
+    );
+    const write = database.update(providerAccounts).set({
+      accountId: input.accountId ?? existing.accountId,
+      accessToken: input.accessToken,
+      refreshToken: input.refreshToken,
+      expiresAt: input.expiresAt,
+      metadataJson: serializeProviderAccountMetadata(input.metadata),
+      refreshLockToken: null,
+      refreshLockExpiresAt: null,
+      lastRefreshAt: input.now,
+      lastRefreshStatus: "success",
+      updatedAt: input.now,
+    });
+    const { reauthLinkId } = input;
+    let written: { rowsAffected: number };
     try {
-      result = await database
-        .update(providerAccounts)
-        .set({
-          accountId: input.accountId ?? existing.accountId,
-          accessToken: input.accessToken,
-          refreshToken: input.refreshToken,
-          expiresAt: input.expiresAt,
-          metadataJson: serializeProviderAccountMetadata(input.metadata),
-          refreshLockToken: null,
-          refreshLockExpiresAt: null,
-          lastRefreshAt: input.now,
-          lastRefreshStatus: "success",
-          updatedAt: input.now,
-        })
-        .where(
-          and(
-            eq(providerAccounts.id, id),
-            eq(providerAccounts.provider, input.provider),
-            eq(providerAccounts.updatedAt, existing.updatedAt)
-          )
-        );
+      if (reauthLinkId) {
+        [written] = await database.batch([
+          write.where(
+            and(
+              unchanged,
+              exists(
+                database
+                  .select({ one: sql`1` })
+                  .from(reauthLinks)
+                  .where(openReauthLink(reauthLinkId, id, input.now))
+              )
+            )
+          ),
+          database
+            .update(reauthLinks)
+            .set({ usedAt: input.now })
+            .where(
+              and(
+                openReauthLink(reauthLinkId, id, input.now),
+                exists(
+                  database
+                    .select({ one: sql`1` })
+                    .from(providerAccounts)
+                    .where(
+                      and(
+                        eq(providerAccounts.id, id),
+                        eq(providerAccounts.accessToken, input.accessToken),
+                        eq(providerAccounts.updatedAt, input.now)
+                      )
+                    )
+                )
+              )
+            ),
+        ]);
+      } else {
+        written = await write.where(unchanged);
+      }
     } catch (error) {
       if (isUniqueConstraintError(error)) {
         throw new ProviderAccountReauthorizationConflict(
@@ -489,7 +555,17 @@ export const replaceProviderAccountCredentials = withInvalidation(
       }
       throw error;
     }
-    if (result.rowsAffected === 0) {
+    if (written.rowsAffected === 0) {
+      if (
+        reauthLinkId &&
+        !(await database
+          .select({ id: reauthLinks.id })
+          .from(reauthLinks)
+          .where(openReauthLink(reauthLinkId, id, Date.now()))
+          .get())
+      ) {
+        return "reauth_link_unavailable";
+      }
       throw new ProviderAccountReauthorizationConflict(
         "Provider account changed during reauthorization"
       );

@@ -421,6 +421,13 @@ export class ProviderReauthorizationTargetError extends Error {
   }
 }
 
+export class ProviderReauthorizationClaimedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderReauthorizationClaimedError";
+  }
+}
+
 export class ProviderAccountNeedsReauthorizationError extends Error {
   constructor(message: string) {
     super(message);
@@ -514,6 +521,8 @@ export const completeProviderOAuth = async (
   input: {
     state: string;
     code?: string;
+    // The single-use link the sign-in uses up, for the account it renews.
+    reauthLink?: { id: string; accountId: string };
   },
   now: number
 ): Promise<ProviderAccountRecord> => {
@@ -529,6 +538,12 @@ export const completeProviderOAuth = async (
   const refreshToken = storedRefreshToken(provider, tokens.refreshToken);
   if (!accessToken) {
     throw new Error("Provider OAuth response is missing required tokens");
+  }
+  const { reauthLink } = input;
+  if (reauthLink && tokens.replaceAccountId !== reauthLink.accountId) {
+    throw new ProviderReauthorizationTargetError(
+      "Sign-in flow does not reauthorize this account"
+    );
   }
 
   const identityKey = oauthIdentityKey({
@@ -552,8 +567,14 @@ export const completeProviderOAuth = async (
           expiresAt: assertExpiresAt(tokens.expiresAt, Date.now()),
           metadata: tokens.metadata,
           now: Date.now(),
+          ...(reauthLink ? { reauthLinkId: reauthLink.id } : {}),
         }
       );
+      if (updated === "reauth_link_unavailable") {
+        throw new ProviderReauthorizationClaimedError(
+          "This sign-in can no longer be completed"
+        );
+      }
       if (!updated) {
         throw new Error("Provider account to reauthorize no longer exists");
       }

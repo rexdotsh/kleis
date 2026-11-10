@@ -15,6 +15,7 @@ import {
 } from "./app-core.js";
 import { renderKeys } from "./app-keys-render.js";
 import {
+  accountName,
   normalizeUsage,
   providerLabel,
   showLoading,
@@ -98,6 +99,10 @@ async function loadAccounts() {
         : state.accountsById.get(account.id)?.codexResets,
     }));
     state.accountsById = usageMapFromList(state.accounts, "id");
+    for (const id of state.sharedReauthLinks.keys()) {
+      if (!state.accountsById.get(id)?.reauthLink)
+        state.sharedReauthLinks.delete(id);
+    }
     settleLimitsUpdating();
     pruneUsageDetails("account", state.accountsById);
     pruneUsageDetails("daily", state.accountsById);
@@ -310,6 +315,44 @@ async function deleteAccountAction(request, id) {
   await loadAccounts();
 }
 
+async function shareReauthLinkAction(request, id) {
+  const account = accountById(id);
+  if (account?.provider !== "claude") {
+    toast("Reauthorize links are only available for Claude accounts", "error");
+    return;
+  }
+  const confirmed = await request.confirm(
+    "Share reauthorize link?",
+    `Anyone with the link can sign "${accountName(account)}" in again, once, within 7 days. They must use the same Claude account and organization.${account.reauthLink ? " The current link stops working." : ""}`,
+    "Create link"
+  );
+  if (!confirmed) return;
+
+  const data = await request(`/admin/accounts/${id}/reauth-link`, {
+    method: "POST",
+  });
+  state.sharedReauthLinks.set(id, data.reauthLink.url);
+  state.expandedAccountId = id;
+  toast("Reauthorize link created");
+  await loadAccounts();
+}
+
+async function revokeReauthLinkAction(request, id) {
+  const account = accountById(id);
+  const confirmed = await request.confirm(
+    "Revoke reauthorize link?",
+    `The link for "${account ? accountName(account) : id}" stops working immediately.`,
+    "Revoke",
+    { danger: true }
+  );
+  if (!confirmed) return;
+
+  await request(`/admin/accounts/${id}/reauth-link`, { method: "DELETE" });
+  state.sharedReauthLinks.delete(id);
+  toast("Reauthorize link revoked");
+  await loadAccounts();
+}
+
 async function refreshAccountAction(request, id) {
   await request(`/admin/accounts/${id}/refresh`, { method: "POST" });
   toast("Token refreshed");
@@ -466,6 +509,8 @@ const setPrimary = mutation("set-primary", setPrimaryAction);
 const toggleProvider = mutation("toggle-provider", toggleProviderAction);
 const deleteAccount = mutation("delete-account", deleteAccountAction);
 const refreshAccount = mutation("refresh-account", refreshAccountAction);
+const shareReauthLink = mutation("share-reauth-link", shareReauthLinkAction);
+const revokeReauthLink = mutation("revoke-reauth-link", revokeReauthLinkAction);
 const redeemResetCredit = mutation(
   "redeem-reset-credit",
   redeemResetCreditAction
@@ -491,6 +536,8 @@ export {
   toggleProvider,
   deleteAccount,
   refreshAccount,
+  shareReauthLink,
+  revokeReauthLink,
   redeemResetCredit,
   saveAccountEdits,
   importAccount,

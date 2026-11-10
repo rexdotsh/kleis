@@ -141,6 +141,13 @@
       "when": 1793783575337,
       "tag": "0019_flimsy_scourge",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1794318304818,
+      "tag": "0020_mighty_strong_guy",
+      "breakpoints": true
     }
   ]
 }

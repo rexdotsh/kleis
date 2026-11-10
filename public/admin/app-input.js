@@ -4,7 +4,9 @@ import {
   loadAccountUsage,
   redeemResetCredit,
   refreshAccount,
+  revokeReauthLink,
   saveAccountEdits,
+  shareReauthLink,
   setPrimary,
   startEditAccount,
 } from "./app-accounts.js";
@@ -62,6 +64,17 @@ const accountActions = {
   "set-primary": (id) => setPrimary(id),
   "refresh-account": (id) => refreshAccount(id),
   "reauthorize-account": (id) => reauthorizeAccount(id),
+  "share-reauth-link": (id) => shareReauthLink(id),
+  "revoke-reauth-link": (id) => revokeReauthLink(id),
+  "copy-reauth-link": (id, button) => {
+    const url = state.sharedReauthLinks.get(id);
+    if (url) runAction(copyToClipboard(url, button, "Link copied"));
+    else toast("Link unavailable", "error");
+  },
+  "hide-reauth-link": (id) => {
+    state.sharedReauthLinks.delete(id);
+    renderAccounts();
+  },
   "redeem-reset-credit": (id) => redeemResetCredit(id),
   "delete-account": (id) => deleteAccount(id),
   "toggle-free-tier": (_id, button) => toggleFreeTier(button),
@@ -391,6 +404,7 @@ const ACCOUNT_SHORTCUTS = {
   p: "set-primary",
   r: "refresh-account",
   a: "reauthorize-account",
+  l: "share-reauth-link",
   e: "edit-account",
   Backspace: "delete-account",
   Delete: "delete-account",
@@ -420,6 +434,11 @@ function runRowShortcut(tab, key) {
     )
       return false;
     if (action === "refresh-account" && accountById(id)?.provider === "claude")
+      return false;
+    if (
+      action === "share-reauth-link" &&
+      accountById(id)?.provider !== "claude"
+    )
       return false;
     setConfirmAnchor(row.querySelector(".more") ?? row);
     runAction(accountActions[action](id, null));
