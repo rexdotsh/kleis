@@ -26,6 +26,7 @@ import {
   restoreProviderAccountSnapshots,
   warmProviderAccountQuotas,
 } from "./domain/providers/provider-account-tracking";
+import { scheduleWeeklyProviderAccountRefresh } from "./domain/providers/weekly-refresh";
 import { gracefulShutdown } from "./http/graceful-shutdown";
 import { resolveRequestIdleTimeout } from "./http/utils/request-timeout";
 import { errorLogFields, logWarn } from "./utils/log";
@@ -74,6 +75,8 @@ setTimeout(() => {
       logWarn("quota_warmup_failed", errorLogFields(error));
     });
 }, QUOTA_WARMUP_DELAY_MS).unref();
+
+scheduleWeeklyProviderAccountRefresh(db);
 
 export default {
   idleTimeout: 255,
