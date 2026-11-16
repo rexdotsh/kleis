@@ -424,10 +424,8 @@ const proxyRequest = async (
             useCodexSseHeaderTimeout:
               readBooleanField(codexProxy.bodyJson, "stream") === true,
           });
-        const body = encodeCodexRequestBody(
-          attemptHeaders,
-          codexProxy.bodyText
-        );
+        let body: string | Uint8Array<ArrayBuffer> | null =
+          encodeCodexRequestBody(attemptHeaders, codexProxy.bodyText);
         const response = await send(body);
         if (
           typeof body === "string" ||
@@ -436,6 +434,9 @@ const proxyRequest = async (
           return { response, transformResponse: codexProxy.transformResponse };
         }
 
+        const compressedBytes = body.byteLength;
+        // Large bodies: don't keep the rejected frame alive during the retry.
+        body = null;
         await response.body?.cancel().catch(() => undefined);
         const fallbackBody = encodeCodexFallbackRequestBody(
           attemptHeaders,
@@ -447,7 +448,7 @@ const proxyRequest = async (
           endpoint: route.endpoint,
           status: retryResponse.status,
           bodyBytes: Buffer.byteLength(codexProxy.bodyText),
-          compressedBytes: body.byteLength,
+          compressedBytes,
           retryBytes: fallbackBody.byteLength,
           retryEncoding: attemptHeaders.get("content-encoding") ?? "identity",
         });
