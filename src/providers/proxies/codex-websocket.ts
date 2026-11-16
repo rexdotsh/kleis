@@ -43,6 +43,9 @@ const CONNECTION_LIMIT_RETRIES = 5;
 const STREAM_FAILURE_RETRIES = 5;
 const MAX_TRACKED_FAILURE_SESSIONS = 1000;
 const CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
+const PREVIOUS_RESPONSE_NOT_FOUND_CODE = "previous_response_not_found";
+// https://github.com/openai/codex/blob/95946faafcd8f068e28610e8ae6a4c03060c1448/codex-rs/codex-api/src/endpoint/responses_websocket.rs#L669-L673
+const MAX_MESSAGE_BYTES_HEADER = "x-codex-websocket-max-message-bytes";
 const MAX_RELAY_QUEUE_FRAMES = 8192;
 const MAX_RELAY_QUEUE_BYTES = 4 * 1024 * 1024;
 const textEncoder = new TextEncoder();
@@ -55,6 +58,12 @@ type WebSocketLike = {
   close(code?: number, reason?: string): void;
   terminate?: () => void;
   send(data: string, callback?: (error?: Error) => void): void;
+  once?: (
+    type: "upgrade",
+    listener: (response: {
+      headers: Record<string, string | string[] | undefined>;
+    }) => void
+  ) => unknown;
   addEventListener(type: WebSocketEventType, listener: WebSocketListener): void;
   removeEventListener(
     type: WebSocketEventType,
@@ -107,6 +116,12 @@ const fallbackSocketKeys = new Map<string, ReturnType<typeof setTimeout>>();
 const streamFailureCounts = new Map<string, number>();
 const pendingSocketKeys = new Set<string>();
 const suppressContinuationStoreKeys = new Set<string>();
+const maxMessageBytesBySocket = new WeakMap<WebSocketLike, number>();
+
+const exceedsMaxMessageBytes = (
+  socket: WebSocketLike,
+  messageBytes: number
+): boolean => messageBytes > (maxMessageBytesBySocket.get(socket) ?? Infinity);
 
 const resolveCodexWebSocketUrl = (): string => {
   const url = new URL(CODEX_RESPONSE_ENDPOINT);
@@ -314,6 +329,12 @@ const connectWebSocket = (
     // ws throws when it emits "error" with no listener, and the relay detaches
     // its own listeners before terminating a socket or caching it while idle.
     socket.addEventListener("error", ignoreSocketError);
+    socket.once?.("upgrade", (response) => {
+      const limit = Number(response.headers[MAX_MESSAGE_BYTES_HEADER]);
+      if (Number.isSafeInteger(limit) && limit > 0) {
+        maxMessageBytesBySocket.set(socket, limit);
+      }
+    });
 
     socket.addEventListener("open", onOpen);
     socket.addEventListener("error", onError);
@@ -719,6 +740,28 @@ const isConnectionLimitPayload = (payload: Record<string, unknown>): boolean =>
   isObjectRecord(payload.error) &&
   payload.error.code === CONNECTION_LIMIT_REACHED_CODE;
 
+const isPreviousResponseNotFoundPayload = (
+  payload: Record<string, unknown>
+): boolean => {
+  if (!isErrorPayload(payload)) {
+    return false;
+  }
+  const response = isObjectRecord(payload.response) ? payload.response : null;
+  const error = isObjectRecord(payload.error)
+    ? payload.error
+    : isObjectRecord(response?.error)
+      ? response.error
+      : null;
+  return error?.code === PREVIOUS_RESPONSE_NOT_FOUND_CODE;
+};
+
+const serializeRequest = (
+  body: Record<string, unknown>
+): { text: string; bytes: number } => {
+  const text = JSON.stringify({ ...body, type: "response.create" });
+  return { text, bytes: textEncoder.encode(text).byteLength };
+};
+
 const isSessionConcurrencyError = (error: unknown): boolean =>
   error instanceof Error &&
   (error.message === "Codex WebSocket session is busy" ||
@@ -788,22 +831,25 @@ export const tryProxyCodexWebSocket = async (
 
   let acquired: Awaited<ReturnType<typeof acquireSocket>> | null = null;
   const fullBody = withoutTransportFields(body);
-  let requestBody: Record<string, unknown>;
+  let continued: boolean;
   let requestPayloadText: string;
   let requestBytes: number;
   try {
     acquired = await acquireSocket(headers, cacheKey, input.signal);
-    requestBody = buildRequestBody(fullBody, acquired.cached);
-    requestPayloadText = JSON.stringify({
-      ...requestBody,
-      type: "response.create",
-    });
-    requestBytes = textEncoder.encode(requestPayloadText).byteLength;
+    const requestBody = buildRequestBody(fullBody, acquired.cached);
+    continued = requestBody !== fullBody;
+    ({ text: requestPayloadText, bytes: requestBytes } =
+      serializeRequest(requestBody));
   } catch (error) {
     acquired?.release(false);
     if (!input.signal?.aborted && !isSessionConcurrencyError(error)) {
       recordSessionStreamFailure(cacheKey);
     }
+    return null;
+  }
+  // The server rejects messages over its limit, so this turn goes over HTTP.
+  if (exceedsMaxMessageBytes(acquired.socket, requestBytes)) {
+    acquired.release(true);
     return null;
   }
 
@@ -826,7 +872,7 @@ export const tryProxyCodexWebSocket = async (
   let failure: unknown = null;
   let emittedPayload = false;
   let connectionLimitAttempts = 0;
-  let retryingConnectionLimit = false;
+  let reconnecting = false;
   let responseIdleTimer: ReturnType<typeof setTimeout> | null = null;
   let clearStreamKeepAlive: (() => void) | null = null;
   let payloadCount = 0;
@@ -947,20 +993,8 @@ export const tryProxyCodexWebSocket = async (
     }
   };
 
-  const retryConnectionLimit = async (): Promise<void> => {
-    if (settled || retryingConnectionLimit) {
-      return;
-    }
-    if (connectionLimitAttempts >= CONNECTION_LIMIT_RETRIES) {
-      fail(
-        "connection_limit_retries_exhausted",
-        new Error(CONNECTION_LIMIT_REACHED_CODE)
-      );
-      return;
-    }
-
-    connectionLimitAttempts++;
-    retryingConnectionLimit = true;
+  const resendOnNewSocket = async (failedStage: string): Promise<void> => {
+    reconnecting = true;
     // Invalidate events already dispatched (or still queued) from the socket
     // being replaced; they must not fail the retried stream.
     socketEpoch++;
@@ -984,12 +1018,51 @@ export const tryProxyCodexWebSocket = async (
         active.cached.connectedAt = Date.now();
       }
       attachSocketListeners();
+      if (exceedsMaxMessageBytes(nextSocket, requestBytes)) {
+        fail(
+          "websocket_message_too_large",
+          new Error("Codex WebSocket request exceeds the message size limit")
+        );
+        return;
+      }
       sendRequest();
     } catch (error) {
-      fail("connection_limit_retry_failed", error);
+      fail(failedStage, error);
     } finally {
-      retryingConnectionLimit = false;
+      reconnecting = false;
     }
+  };
+
+  const retryConnectionLimit = async (): Promise<void> => {
+    if (settled || reconnecting) {
+      return;
+    }
+    if (connectionLimitAttempts >= CONNECTION_LIMIT_RETRIES) {
+      fail(
+        "connection_limit_retries_exhausted",
+        new Error(CONNECTION_LIMIT_REACHED_CODE)
+      );
+      return;
+    }
+
+    connectionLimitAttempts++;
+    await resendOnNewSocket("connection_limit_retry_failed");
+  };
+
+  // Codex retries a turn whose previous response is gone with the full request:
+  // https://github.com/openai/codex/blob/95946faafcd8f068e28610e8ae6a4c03060c1448/codex-rs/codex-api/src/endpoint/responses_websocket.rs#L790-L801
+  // Kleis does so once, on a new connection, as the old one just failed it.
+  const resendWithoutContinuation = async (): Promise<void> => {
+    if (settled || reconnecting) {
+      return;
+    }
+    continued = false;
+    if (active.cached) {
+      active.cached.continuation = null;
+    }
+    ({ text: requestPayloadText, bytes: requestBytes } =
+      serializeRequest(fullBody));
+    await resendOnNewSocket("continuation_resend_failed");
   };
 
   const fail = (stage: string, error: unknown, fields = {}): void => {
@@ -1178,6 +1251,16 @@ export const tryProxyCodexWebSocket = async (
     if (!emittedPayload && isConnectionLimitPayload(payload)) {
       retryConnectionLimit().catch((error: unknown) => {
         fail("connection_limit_retry_failed", error);
+      });
+      return { bytes: frameBytes, queued: false };
+    }
+    if (
+      !emittedPayload &&
+      continued &&
+      isPreviousResponseNotFoundPayload(payload)
+    ) {
+      resendWithoutContinuation().catch((error: unknown) => {
+        fail("continuation_resend_failed", error);
       });
       return { bytes: frameBytes, queued: false };
     }

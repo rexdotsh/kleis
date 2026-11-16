@@ -174,7 +174,7 @@ type ManualCodexWebSocket = {
 
 const installManualCodexWebSocketMock = (
   sentBodies: unknown[],
-  options: { autoOpen?: boolean } = {}
+  options: { autoOpen?: boolean; maxMessageBytes?: number } = {}
 ): ManualCodexWebSocket[] => {
   const sockets: ManualCodexWebSocket[] = [];
 
@@ -190,8 +190,20 @@ const installManualCodexWebSocketMock = (
     constructor() {
       sockets.push(this);
       if (options.autoOpen ?? true) {
-        queueMicrotask(() => this.dispatch("open", {}));
+        queueMicrotask(() => {
+          this.dispatch("upgrade", {
+            headers: {
+              "x-codex-websocket-max-message-bytes":
+                options.maxMessageBytes?.toString(),
+            },
+          });
+          this.dispatch("open", {});
+        });
       }
+    }
+
+    once(type: string, listener: (event: unknown) => void): void {
+      this.addEventListener(type, listener);
     }
 
     addEventListener(type: string, listener: (event: unknown) => void): void {
@@ -2601,6 +2613,85 @@ describe("proxy contract: codex", () => {
     const text = await response?.text();
     expect(text).toContain("response.completed");
     expect(sentBodies).toHaveLength(2);
+  });
+
+  test("resends a continued turn once in full when its previous response is not found", async () => {
+    const sentBodies: unknown[] = [];
+    const sockets = installManualCodexWebSocketMock(sentBodies);
+    const headers = new Headers({ "x-session-affinity": "fake-session" });
+    const firstInput = [
+      { role: "user", content: [{ type: "input_text", text: "First" }] },
+    ];
+    const secondInput = [
+      ...firstInput,
+      { role: "user", content: [{ type: "input_text", text: "Second" }] },
+    ];
+    const send = (input: unknown[]) =>
+      tryProxyCodexWebSocket({
+        headers,
+        bodyJson: { model: "gpt-fake", stream: true, input },
+        accountKey: "fake-key:fake-account",
+      });
+    const complete = (socket: ManualCodexWebSocket | undefined, id: string) =>
+      socket?.dispatch("message", {
+        data: JSON.stringify({
+          type: "response.completed",
+          response: { id, status: "completed" },
+        }),
+      });
+
+    const first = send(firstInput);
+    await waitFor(() => sentBodies.length === 1);
+    complete(sockets[0], "resp_fake_1");
+    await (await first)?.text();
+
+    const second = send(secondInput);
+    await waitFor(() => sentBodies.length === 2);
+    sockets[0]?.dispatch("message", {
+      data: JSON.stringify({
+        type: "error",
+        status: 400,
+        error: {
+          type: "invalid_request_error",
+          code: "previous_response_not_found",
+          param: "previous_response_id",
+        },
+      }),
+    });
+    await waitFor(() => sentBodies.length === 3);
+    complete(sockets[1], "resp_fake_2");
+
+    const response = await second;
+    expect(response?.status).toBe(200);
+    expect(await response?.text()).toContain("resp_fake_2");
+    expect(sentBodies.slice(1)).toMatchObject([
+      { previous_response_id: "resp_fake_1", input: secondInput.slice(1) },
+      { input: secondInput },
+    ]);
+    expect(sentBodies[2]).not.toHaveProperty("previous_response_id");
+  });
+
+  test("sends a turn over the server's message size limit over HTTP", async () => {
+    const sentBodies: unknown[] = [];
+    installManualCodexWebSocketMock(sentBodies, { maxMessageBytes: 1024 });
+
+    const response = await tryProxyCodexWebSocket({
+      headers: new Headers(),
+      bodyJson: {
+        model: "gpt-fake",
+        stream: true,
+        input: [
+          {
+            role: "user",
+            content: [{ type: "input_text", text: "x".repeat(2048) }],
+          },
+        ],
+      },
+      accountKey: "fake-key:fake-account",
+    });
+
+    expect(response).toBeNull();
+    expect(sentBodies).toHaveLength(0);
   });
 
   test("survives a socket close racing a connection limit retry", async () => {
