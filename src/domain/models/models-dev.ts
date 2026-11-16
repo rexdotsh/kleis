@@ -30,14 +30,11 @@ const KLEIS_PROVIDER_NAME = "Kleis";
 const PROXY_API_KEY_ENV = "KLEIS_API_KEY";
 const MODELS_DEV_URL = "https://models.dev/api.json";
 const MODELS_DEV_CACHE_TTL_MS = 5 * 60 * 1000;
-// Match OpenCode's ChatGPT OAuth model gate.
-// https://github.com/anomalyco/opencode/blob/68b28bdb98bbe9ca5046e5c8485417c9b9460537/packages/core/src/plugin/provider/openai.ts#L22-L25
-const CODEX_ALLOWED_OPENAI_MODEL_IDS = new Set([
-  "gpt-5.3-codex-spark",
-  "gpt-5.5",
-]);
-const CODEX_DISALLOWED_OPENAI_MODEL_IDS = new Set(["gpt-5.5-pro", "gpt-5.6"]);
-const CODEX_DYNAMIC_GPT_VERSION_THRESHOLD = { major: 5, minor: 4 };
+// Match OpenCode's ChatGPT OAuth model gate: Codex rejects gpt-5.5 and older
+// models, including gpt-5.3-codex-spark, for ChatGPT accounts.
+// https://github.com/anomalyco/opencode/blob/8bb7fab26e593d3fdb69226f667221e666c4d006/packages/core/src/plugin/provider/openai.ts#L28-L29
+const CODEX_DISALLOWED_OPENAI_MODEL_IDS = new Set(["gpt-5.6"]);
+const CODEX_DYNAMIC_GPT_VERSION_THRESHOLD = { major: 5, minor: 5 };
 
 const parseRegistry = (value: unknown): ModelsDevRegistry => {
   if (!isObjectRecord(value)) {
@@ -128,10 +125,6 @@ const isModelSupportedByProxyProvider = (
   const normalizedModelId = modelId.toLowerCase();
   if (CODEX_DISALLOWED_OPENAI_MODEL_IDS.has(normalizedModelId)) {
     return false;
-  }
-
-  if (CODEX_ALLOWED_OPENAI_MODEL_IDS.has(normalizedModelId)) {
-    return true;
   }
 
   const gptVersion = normalizedModelId.match(/^gpt-(\d+)(?:\.(\d+))?/u);
