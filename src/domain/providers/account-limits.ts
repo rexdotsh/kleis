@@ -17,6 +17,7 @@ export type AccountLimits = {
   id: string;
   provider: ProviderAccountRecord["provider"];
   label: string | null;
+  enabled: boolean;
   fetchedAt: number | null;
   windows: LimitWindow[];
   savedResets: number | null;
@@ -133,6 +134,7 @@ export const describeAccountLimits = (
     id: account.id,
     provider: account.provider,
     label: account.label,
+    enabled: account.enabled,
     fetchedAt,
     windows: windows
       .map(([label, window]) => toWindow(label, window, fetchedAt))

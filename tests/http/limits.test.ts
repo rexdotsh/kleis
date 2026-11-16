@@ -8,7 +8,11 @@ import {
   createApiKey,
   type CreateApiKeyInput,
 } from "../../src/db/repositories/api-keys";
-import { listProviderAccounts } from "../../src/db/repositories/provider-accounts";
+import {
+  listProviderAccounts,
+  setPrimaryProviderAccount,
+  setProviderAccountsEnabled,
+} from "../../src/db/repositories/provider-accounts";
 import * as schema from "../../src/db/schema";
 import { recordProviderAccountLiveLimits } from "../../src/domain/providers/provider-account-tracking";
 import { createLimitsRoutes } from "../../src/http/routes/limits";
@@ -101,5 +105,84 @@ test("a key reads cached limits of only the accounts it may route to", async () 
   } finally {
     upstream.mockRestore();
     client.close();
+  }
+});
+
+test("routed follows the account the key's next request would use", async () => {
+  // libSQL transactions open new connections. Keep shared memory alive
+  // until every connection in this test has finished.
+  const anchor = createClient({ url: "file::memory:?cache=shared" });
+  const client = createClient({ url: "file::memory:?cache=shared" });
+  const database = drizzle(client, { schema });
+  try {
+    await migrate(database, { migrationsFolder: "./drizzle/migrations" });
+    await database.delete(schema.providerAccounts);
+    const now = Date.now();
+    for (const [id, isPrimary] of [
+      ["codex-a", true],
+      ["codex-b", false],
+    ] as const) {
+      await database.insert(schema.providerAccounts).values({
+        id,
+        provider: "codex",
+        isPrimary,
+        accessToken: `access-${id}`,
+        refreshToken: `refresh-${id}`,
+        expiresAt: now + 60 * 60_000,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    const pinned = await createApiKey(
+      database,
+      { providerScopes: ["codex"], accountScopes: ["codex-a", "codex-b"] },
+      now
+    );
+    const unpinned = await createApiKey(
+      database,
+      { providerScopes: ["codex"] },
+      now
+    );
+    const read = async (apiKey: typeof pinned) => {
+      const app = new Hono();
+      app.use("*", async (context, next) => {
+        context.set("apiKey", apiKey);
+        await next();
+      });
+      app.route("/", createLimitsRoutes(database));
+      const { accounts } = (await (await app.request("/")).json()) as {
+        accounts: { id: string; enabled: boolean; routed: boolean }[];
+      };
+      return accounts
+        .map(({ id, enabled, routed }) => ({ id, enabled, routed }))
+        .sort((left, right) => left.id.localeCompare(right.id));
+    };
+
+    expect(await read(pinned)).toEqual([
+      { id: "codex-a", enabled: true, routed: true },
+      { id: "codex-b", enabled: true, routed: false },
+    ]);
+    expect(await read(unpinned)).toEqual([
+      { id: "codex-a", enabled: true, routed: true },
+    ]);
+
+    await setPrimaryProviderAccount(database, "codex-b", now);
+    expect(await read(pinned)).toEqual([
+      { id: "codex-a", enabled: true, routed: false },
+      { id: "codex-b", enabled: true, routed: true },
+    ]);
+    expect(await read(unpinned)).toEqual([
+      { id: "codex-b", enabled: true, routed: true },
+    ]);
+
+    await setProviderAccountsEnabled(database, "codex", false, now);
+    expect(await read(pinned)).toEqual([
+      { id: "codex-a", enabled: false, routed: false },
+      { id: "codex-b", enabled: false, routed: false },
+    ]);
+    expect(await read(unpinned)).toEqual([]);
+  } finally {
+    client.close();
+    anchor.close();
   }
 });

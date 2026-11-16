@@ -765,6 +765,13 @@ export const findRoutingCandidates = async (
   return primary ? [primary] : [];
 };
 
+// The account a request routes to; an expired or rejected one is still
+// chosen, and its refresh or reauthorization error fails the request.
+export const selectRoutedAccount = (
+  candidates: readonly ProviderAccountRecord[]
+): ProviderAccountRecord | null =>
+  candidates.find((candidate) => candidate.enabled) ?? null;
+
 export const getRoutableProviderAccount = async (
   database: Database,
   provider: Provider,
@@ -773,9 +780,9 @@ export const getRoutableProviderAccount = async (
     allowedAccountIds?: readonly string[] | null;
   }
 ): Promise<ProviderAccountRecord | null> => {
-  const account = (
+  const account = selectRoutedAccount(
     await findRoutingCandidates(database, provider, input?.allowedAccountIds)
-  ).find((candidate) => candidate.enabled);
+  );
   if (!account) {
     return null;
   }
