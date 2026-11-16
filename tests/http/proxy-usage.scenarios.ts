@@ -850,6 +850,198 @@ test("Codex HTTP-200 SSE rate limits count as failed requests", async () => {
   }
 });
 
+const bareBadRequest = () =>
+  Response.json({ detail: "Bad Request" }, { status: 400 });
+const codexComplete = event({
+  type: "response.completed",
+  response: { usage: { input_tokens: 3, output_tokens: 2 } },
+});
+const codexHistory = [
+  { role: "user", content: [{ type: "input_text", text: "earlier" }] },
+  { type: "function_call", call_id: "c1", name: "read", arguments: "{}" },
+];
+
+test("Codex retries a bare upstream 400 once with only the last input item padded", async () => {
+  const original = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const padding = `\n${" ".repeat(1024)}`;
+  const escapedPadding = JSON.stringify(padding).slice(1, -1);
+  let upstream: { headers: Headers; body: string }[] = [];
+  globalThis.fetch = (async (_input, init) => {
+    upstream.push({
+      headers: new Headers(init?.headers),
+      body: String(init?.body),
+    });
+    return upstream.length === 1
+      ? bareBadRequest()
+      : new Response(codexComplete, {
+          headers: { "content-type": "text/event-stream" },
+        });
+  }) as typeof fetch;
+  try {
+    for (const [last, padded] of [
+      [
+        { type: "function_call_output", call_id: "c1", output: "done" },
+        {
+          type: "function_call_output",
+          call_id: "c1",
+          output: `done${padding}`,
+        },
+      ],
+      [
+        {
+          type: "function_call_output",
+          call_id: "c1",
+          output: [
+            { type: "input_text", text: "a" },
+            { type: "input_image", image_url: "data:fake" },
+          ],
+        },
+        {
+          type: "function_call_output",
+          call_id: "c1",
+          output: [
+            { type: "input_text", text: `a${padding}` },
+            { type: "input_image", image_url: "data:fake" },
+          ],
+        },
+      ],
+      [
+        { role: "user", content: "continue" },
+        { role: "user", content: `continue${padding}` },
+      ],
+      [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "ok" }],
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: `ok${padding}` }],
+        },
+      ],
+    ]) {
+      upstream = [];
+      warn.mockClear();
+      await db.delete(requestUsageBuckets);
+      const response = await app.request("/openai/v1/responses", {
+        method: "POST",
+        headers: { "session-id": "s1" },
+        body: JSON.stringify({
+          model: "gpt-fake",
+          instructions: "Keep context",
+          input: [...codexHistory, last],
+          prompt_cache_key: "k1",
+          stream: true,
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(codexComplete);
+      expect(upstream).toHaveLength(2);
+      const [first, retry] = upstream;
+      expect(JSON.parse(retry?.body ?? "")).toEqual({
+        ...JSON.parse(first?.body ?? ""),
+        input: [...codexHistory, padded],
+      });
+      expect(retry?.body.replace(escapedPadding, "")).toBe(first?.body);
+      expect(Object.fromEntries(retry?.headers ?? [])).toEqual(
+        Object.fromEntries(first?.headers ?? [])
+      );
+      expect(
+        warn.mock.calls.map((call) => JSON.parse(String(call[0])))
+      ).toMatchObject([
+        {
+          event: "codex_bad_request_padded_retry",
+          providerAccountId: codexAccount.id,
+          status: 200,
+          requestBodyBytes: Buffer.byteLength(first?.body ?? ""),
+        },
+      ]);
+      await flushProxyUsage();
+      expect(await db.select().from(requestUsageBuckets)).toMatchObject([
+        { requestCount: 1, successCount: 1, clientErrorCount: 0 },
+      ]);
+    }
+  } finally {
+    warn.mockRestore();
+    globalThis.fetch = original;
+  }
+});
+
+test("Codex passes other 400 bodies through without retrying", async () => {
+  const original = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  let calls = 0;
+  let body: unknown = null;
+  globalThis.fetch = (async () => {
+    calls++;
+    return Response.json(body, { status: 400 });
+  }) as typeof fetch;
+  try {
+    for (const entry of [
+      {
+        error: {
+          type: "invalid_request_error",
+          code: null,
+          message: "Bad Request",
+        },
+      },
+      { detail: "Bad Request", code: "fake" },
+      { detail: "Unsupported parameter" },
+    ]) {
+      calls = 0;
+      body = entry;
+      const response = await app.request("/openai/v1/responses", {
+        method: "POST",
+        body: JSON.stringify({
+          model: "gpt-fake",
+          input: [{ role: "user", content: "hi" }],
+        }),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual(entry);
+      expect(calls).toBe(1);
+    }
+    await flushProxyUsage();
+    await flushProxyFailureLogs();
+  } finally {
+    warn.mockRestore();
+    globalThis.fetch = original;
+  }
+});
+
+test("Codex returns the second bare 400 after one padded retry", async () => {
+  const original = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls++;
+    return bareBadRequest();
+  }) as typeof fetch;
+  try {
+    const response = await app.request("/openai/v1/responses", {
+      method: "POST",
+      body: JSON.stringify({
+        model: "gpt-fake",
+        input: [{ role: "user", content: "hi" }],
+        stream: true,
+      }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ detail: "Bad Request" });
+    expect(calls).toBe(2);
+    await flushProxyUsage();
+    expect(await db.select().from(requestUsageBuckets)).toMatchObject([
+      { requestCount: 1, successCount: 0, clientErrorCount: 1 },
+    ]);
+  } finally {
+    warn.mockRestore();
+    globalThis.fetch = original;
+  }
+});
+
 test("route auth replay records only final stream with refreshed account", async () => {
   const original = globalThis.fetch;
   let calls = 0;

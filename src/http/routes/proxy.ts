@@ -22,7 +22,9 @@ import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy"
 import { isEventStreamResponse } from "../../providers/proxies/response";
 import {
   encodeCodexRequestBody,
+  isCodexBareBadRequest,
   namespaceCodexKey,
+  padCodexLastInputItem,
   prepareCodexProxyRequest,
   readCodexPromptCacheKey,
   readCodexSessionId,
@@ -45,7 +47,7 @@ import {
   type TokenUsage,
 } from "../../usage/token-usage";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
-import { hashLogId } from "../../utils/log";
+import { hashLogId, logWarn } from "../../utils/log";
 import { sendWithAuthReplay } from "../auth-replay";
 import { createUpstreamProxyHeaders } from "../proxy-headers";
 import { createUpstreamFailureLogger } from "../upstream-failure-log";
@@ -414,20 +416,40 @@ const proxyRequest = async (
           }
         }
 
-        const response = await fetchProxyUpstream({
-          url: codexProxy.upstreamUrl,
-          method: context.req.method,
-          headers: attemptHeaders,
-          body: encodeCodexRequestBody(
-            attemptHeaders,
-            codexProxy.bodyText,
-            clientSentZstd
-          ),
-          signal: context.req.raw.signal,
-          useCodexSseHeaderTimeout:
-            readBooleanField(codexProxy.bodyJson, "stream") === true,
+        const fetchCodex = (bodyText: string): Promise<Response> =>
+          fetchProxyUpstream({
+            url: codexProxy.upstreamUrl,
+            method: context.req.method,
+            headers: attemptHeaders,
+            body: encodeCodexRequestBody(
+              attemptHeaders,
+              bodyText,
+              clientSentZstd
+            ),
+            signal: context.req.raw.signal,
+            useCodexSseHeaderTimeout:
+              readBooleanField(codexProxy.bodyJson, "stream") === true,
+          });
+        const { transformResponse } = codexProxy;
+        const response = await fetchCodex(codexProxy.bodyText);
+        if (response.status !== 400 || route.operation === "compact") {
+          return { response, transformResponse };
+        }
+        const paddedBody = padCodexLastInputItem(codexProxy.bodyJson);
+        if (
+          !paddedBody ||
+          !isCodexBareBadRequest(await readUpstreamErrorPayload(response))
+        ) {
+          return { response, transformResponse };
+        }
+        await response.body?.cancel().catch(() => undefined);
+        const retryResponse = await fetchCodex(JSON.stringify(paddedBody));
+        logWarn("codex_bad_request_padded_retry", {
+          providerAccountId: attemptAccount.id,
+          status: retryResponse.status,
+          requestBodyBytes: Buffer.byteLength(codexProxy.bodyText),
         });
-        return { response, transformResponse: codexProxy.transformResponse };
+        return { response: retryResponse, transformResponse };
       };
       break;
     }

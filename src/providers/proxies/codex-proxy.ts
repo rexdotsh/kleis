@@ -173,6 +173,69 @@ export const transformCodexRequestBody = (
     ? transformCodexCompactionBodyJson(bodyJson, promptCacheKey)
     : transformCodexBodyJson(bodyJson, promptCacheKey);
 
+export const isCodexBareBadRequest = (payload: unknown): boolean =>
+  isObjectRecord(payload) &&
+  Object.keys(payload).length === 1 &&
+  payload.detail === "Bad Request";
+
+// The ChatGPT backend rejects some requests within a narrow band of body sizes
+// with a bare `{"detail":"Bad Request"}`. Padding only the last input item
+// moves the body out of that band and keeps the cached prompt prefix intact.
+const CODEX_BAD_REQUEST_PADDING = `\n${" ".repeat(1024)}`;
+
+const padLastTextPart = (parts: unknown[]): unknown[] | null => {
+  for (let index = parts.length - 1; index >= 0; index--) {
+    const part = parts[index];
+    if (
+      isObjectRecord(part) &&
+      (part.type === "input_text" || part.type === "output_text") &&
+      typeof part.text === "string"
+    ) {
+      return [
+        ...parts.slice(0, index),
+        { ...part, text: `${part.text}${CODEX_BAD_REQUEST_PADDING}` },
+        ...parts.slice(index + 1),
+      ];
+    }
+  }
+  return null;
+};
+
+const padText = (value: unknown): string | unknown[] | null => {
+  if (typeof value === "string") {
+    return `${value}${CODEX_BAD_REQUEST_PADDING}`;
+  }
+  return Array.isArray(value) ? padLastTextPart(value) : null;
+};
+
+const padInputItem = (item: unknown): JsonObject | null => {
+  if (!isObjectRecord(item)) {
+    return null;
+  }
+  if (item.type === "function_call_output") {
+    const output = padText(item.output);
+    return output === null ? null : { ...item, output };
+  }
+  if (
+    item.type === "message" ||
+    (item.type === undefined && typeof item.role === "string")
+  ) {
+    const content = padText(item.content);
+    return content === null ? null : { ...item, content };
+  }
+  return null;
+};
+
+export const padCodexLastInputItem = (
+  body: JsonObject | null
+): JsonObject | null => {
+  if (!Array.isArray(body?.input)) {
+    return null;
+  }
+  const last = padInputItem(body.input.at(-1));
+  return last ? { ...body, input: [...body.input.slice(0, -1), last] } : null;
+};
+
 const transformCodexResponse = async (
   response: Response,
   onTokenUsage: ((usage: TokenUsage) => void) | null | undefined,
