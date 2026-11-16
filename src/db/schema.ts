@@ -32,6 +32,7 @@ export const providerAccounts = sqliteTable(
     metadataJson: text("metadata_json"),
     lastRefreshAt: integer("last_refresh_at", { mode: "number" }),
     lastRefreshStatus: text("last_refresh_status"),
+    refreshRetryAt: integer("refresh_retry_at", { mode: "number" }),
     createdAt: integer("created_at", { mode: "number" }).notNull(),
     updatedAt: integer("updated_at", { mode: "number" }).notNull(),
   },

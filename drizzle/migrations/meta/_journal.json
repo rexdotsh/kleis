@@ -148,6 +148,13 @@
       "when": 1794318304818,
       "tag": "0020_mighty_strong_guy",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1794835446024,
+      "tag": "0021_brief_vision",
+      "breakpoints": true
     }
   ]
 }

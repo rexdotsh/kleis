@@ -1,0 +1,1 @@
+ALTER TABLE `provider_accounts` ADD `refresh_retry_at` integer;

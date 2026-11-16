@@ -39,6 +39,68 @@ const REFRESH_WAIT_POLL_INTERVAL_MS = 150;
 // 401 instead of being rotated, so a persistent 401 rotates at most once a
 // minute.
 const AUTH_FAILURE_MIN_TOKEN_AGE_MS = 60_000;
+// Codex tokens are refreshed this long before they expire, like OpenCode:
+// https://github.com/anomalyco/opencode/blob/a6b15d33daf6ab7d35569f6d711fdb630b9f04e7/packages/core/src/credential.ts#L33-L34
+// Claude sign-ins are never refreshed, so they are only due once expired.
+const CODEX_EARLY_REFRESH_MS = 5 * 60_000;
+// Shorter-lived tokens, such as the one-minute fallback for a token response
+// without expires_in, are only refreshed once expired.
+const CODEX_EARLY_REFRESH_MIN_LIFETIME_MS = 2 * CODEX_EARLY_REFRESH_MS;
+const REFRESH_RETRY_MIN_MS = 60_000;
+const REFRESH_RETRY_MAX_MS = 30 * 60_000;
+
+// A successful write records the token's issue time in lastRefreshAt, and a
+// new account has never been refreshed. A failed refresh overwrites it, so the
+// lifetime is unknown and the stored retry time spaces the attempts instead.
+const tokenIssuedAt = (account: ProviderAccountRecord): number | null => {
+  if (account.lastRefreshStatus === "success") {
+    return account.lastRefreshAt;
+  }
+  return account.lastRefreshAt === null ? account.createdAt : null;
+};
+
+const isEarlyRefreshDue = (
+  account: ProviderAccountRecord,
+  now: number
+): boolean => {
+  if (
+    account.provider !== "codex" ||
+    account.expiresAt > now + CODEX_EARLY_REFRESH_MS ||
+    (account.refreshRetryAt !== null && account.refreshRetryAt > now)
+  ) {
+    return false;
+  }
+  const issuedAt = tokenIssuedAt(account);
+  return (
+    issuedAt === null ||
+    account.expiresAt - issuedAt >= CODEX_EARLY_REFRESH_MIN_LIFETIME_MS
+  );
+};
+
+const isRefreshDue = (account: ProviderAccountRecord, now: number): boolean =>
+  account.expiresAt <= now || isEarlyRefreshDue(account, now);
+
+// Early refreshes wait at least Retry-After after a failure, and otherwise
+// back off from a minute, doubling while failures continue.
+const nextRefreshRetryAt = (
+  account: ProviderAccountRecord,
+  error: unknown,
+  now: number
+): number => {
+  const previousDelay =
+    account.refreshRetryAt !== null && account.lastRefreshAt !== null
+      ? account.refreshRetryAt - account.lastRefreshAt
+      : 0;
+  const retryAfter =
+    error instanceof OAuthError ? (error.retryAfterMs ?? 0) : 0;
+  return (
+    now +
+    Math.min(
+      REFRESH_RETRY_MAX_MS,
+      Math.max(REFRESH_RETRY_MIN_MS, previousDelay * 2, retryAfter)
+    )
+  );
+};
 
 const assertExpiresAt = (expiresAt: number, now: number): number => {
   if (!Number.isFinite(expiresAt) || expiresAt <= now) {
@@ -207,7 +269,7 @@ const refreshProviderAccountWithLock = async (
     }
 
     const refreshNow = Date.now();
-    if (!forceRefresh && account.expiresAt > refreshNow) {
+    if (!forceRefresh && !isRefreshDue(account, refreshNow)) {
       return account;
     }
 
@@ -291,7 +353,10 @@ const refreshProviderAccountWithLock = async (
         account.id,
         refreshNow,
         lockToken,
-        status
+        status,
+        status === "reauthorize"
+          ? null
+          : nextRefreshRetryAt(account, error, refreshNow)
       );
       throw error;
     } finally {
@@ -657,6 +722,9 @@ const refreshProviderAccountOnce = async (
     );
   }
   assertProviderRefreshAllowed(account);
+  if (!forceRefresh && !isRefreshDue(account, Date.now())) {
+    return account;
+  }
 
   const lockToken = await claimRefreshLock(database, account.id);
   if (lockToken) {
@@ -677,6 +745,7 @@ const refreshProviderAccountOnce = async (
   if (!waited) {
     return null;
   }
+  assertProviderRefreshAllowed(waited);
 
   if (isNewerUnexpiredCredential(waited, account.accessToken)) {
     return waited;
@@ -685,8 +754,6 @@ const refreshProviderAccountOnce = async (
   if (!forceRefresh && waited.expiresAt > now) {
     return waited;
   }
-
-  assertProviderRefreshAllowed(waited);
 
   const retryLockToken = await claimRefreshLock(database, account.id);
   if (!retryLockToken) {
@@ -787,9 +854,21 @@ export const getRoutableProviderAccount = async (
     return null;
   }
 
-  if (account.expiresAt > now) {
+  if (!isRefreshDue(account, now)) {
     return account;
   }
 
-  return refreshProviderAccount(database, account.id, now);
+  try {
+    return await refreshProviderAccount(database, account.id, now);
+  } catch (error) {
+    // A failed early refresh leaves a token that still works.
+    if (
+      account.expiresAt > Date.now() &&
+      !(error instanceof ProviderAccountNeedsReauthorizationError) &&
+      classifyOAuthRefreshError(error) !== "reauthorize"
+    ) {
+      return account;
+    }
+    throw error;
+  }
 };

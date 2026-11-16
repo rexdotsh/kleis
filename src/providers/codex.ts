@@ -7,7 +7,7 @@ import {
   findOAuthState,
 } from "../db/repositories/oauth-states";
 import type { ProviderAccountRecord } from "../db/repositories/provider-accounts";
-import { CODEX_ORIGINATOR } from "./constants";
+import { CODEX_ORIGINATOR, CODEX_USER_AGENT } from "./constants";
 import { readOAuthErrorCode, requireOkResponse } from "./http";
 import type { CodexAccountMetadata } from "./metadata";
 import {
@@ -95,6 +95,13 @@ type CodexDeviceTokenResponse = {
   code_verifier?: string;
 };
 
+// OpenCode sends its user agent on every OAuth call:
+// https://github.com/anomalyco/opencode/blob/a6b15d33daf6ab7d35569f6d711fdb630b9f04e7/packages/core/src/plugin/provider/openai.ts#L340-L342
+const codexAuthHeaders = (contentType: string) => ({
+  "Content-Type": contentType,
+  "User-Agent": CODEX_USER_AGENT,
+});
+
 const resolveCodexOAuthMode = (
   options: Record<string, unknown> | undefined
 ): "browser" | "headless" => {
@@ -169,9 +176,7 @@ const exchangeAuthorizationCodeForTokens = async (input: {
 }): Promise<CodexTokenResponse> => {
   const response = await fetch(CODEX_TOKEN_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
+    headers: codexAuthHeaders("application/x-www-form-urlencoded"),
     body: new URLSearchParams({
       grant_type: "authorization_code",
       code: input.code,
@@ -193,9 +198,7 @@ const requestDeviceAuthorization = async (): Promise<{
 }> => {
   const response = await fetch(CODEX_DEVICE_USER_CODE_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: codexAuthHeaders("application/json"),
     body: JSON.stringify({
       client_id: CODEX_CLIENT_ID,
     }),
@@ -235,9 +238,7 @@ const pollDeviceAuthorizationCode = async (input: {
   while (Date.now() < input.expiresAt) {
     const response = await fetch(CODEX_DEVICE_TOKEN_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: codexAuthHeaders("application/json"),
       body: JSON.stringify({
         device_auth_id: input.deviceAuthId,
         user_code: input.userCode,
@@ -285,9 +286,7 @@ const refreshCodexTokens = async (
   const response = await fetch(CODEX_TOKEN_URL, {
     method: "POST",
     signal: AbortSignal.timeout(15_000),
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
+    headers: codexAuthHeaders("application/x-www-form-urlencoded"),
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,

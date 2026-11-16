@@ -1,4 +1,5 @@
 import { readResponseJson } from "../../utils/response-json";
+import { parseRetryAfterMs } from "../http";
 
 export class AccountTrackingHttpError extends Error {
   readonly retryAfterMs: number | null;
@@ -11,23 +12,6 @@ export class AccountTrackingHttpError extends Error {
     this.retryAfterMs = retryAfterMs;
   }
 }
-
-const parseRetryAfterMs = (
-  value: string | null,
-  now: number
-): number | null => {
-  if (!value) {
-    return null;
-  }
-
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return seconds * 1000;
-  }
-
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? Math.max(0, timestamp - now) : null;
-};
 
 export const fetchTrackingJson = async (input: {
   url: string;

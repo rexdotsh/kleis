@@ -1,4 +1,8 @@
-import { CODEX_ACCOUNT_ID_HEADER } from "../constants";
+import {
+  CODEX_ACCOUNT_ID_HEADER,
+  CODEX_ORIGINATOR,
+  CODEX_USER_AGENT,
+} from "../constants";
 import {
   decodeArray,
   decodeFields,
@@ -268,7 +272,8 @@ const requestCodex = async <T>(
   const headers = new Headers({
     Authorization: `Bearer ${accessToken}`,
     Accept: "application/json",
-    "User-Agent": "codex-cli",
+    "User-Agent": CODEX_USER_AGENT,
+    originator: CODEX_ORIGINATOR,
   });
   if (accountId) {
     headers.set(CODEX_ACCOUNT_ID_HEADER, accountId);

@@ -41,6 +41,7 @@ describe("provider account enablement", () => {
     database = drizzle(client, { schema });
     await migrate(database, { migrationsFolder: "./drizzle/migrations" });
     await client.execute("DROP TRIGGER IF EXISTS reject_codex_refresh");
+    await client.execute("DROP TRIGGER IF EXISTS other_process_reauthorizes");
     await database.delete(providerAccounts);
 
     const now = Date.now();
@@ -71,7 +72,7 @@ describe("provider account enablement", () => {
         isPrimary: true,
         accessToken: "access-codex",
         refreshToken: "refresh-codex",
-        expiresAt: now + 60_000,
+        expiresAt: now + 3_600_000,
         createdAt: now,
         updatedAt: now,
       },
@@ -609,6 +610,117 @@ describe("provider account enablement", () => {
         allowedAccountIds: ["claude-secondary"],
       })
     ).toBeNull();
+  });
+
+  const expireInFourMinutes = (provider: "claude" | "codex") =>
+    database
+      .update(providerAccounts)
+      .set({
+        expiresAt: Date.now() + 4 * 60_000,
+        lastRefreshAt: Date.now() - 56 * 60_000,
+        lastRefreshStatus: "success",
+      })
+      .where(eq(providerAccounts.provider, provider));
+
+  test.each([
+    ["Codex", "codex", "access-after-early-refresh", 1],
+    ["Claude", "claude", "access-primary", 0],
+  ] as const)(
+    "a %s token 4 minutes from expiry is refreshed before use only for Codex",
+    async (_name, provider, accessToken, tokenRequests) => {
+      await expireInFourMinutes(provider);
+      const requested: string[] = [];
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        requested.push(String(input));
+        return Response.json({
+          access_token: "access-after-early-refresh",
+          refresh_token: "refresh-after-early-refresh",
+          expires_in: 3600,
+        });
+      }) as typeof fetch;
+
+      const account = await getRoutableProviderAccount(
+        database,
+        provider,
+        Date.now()
+      );
+
+      expect(account?.accessToken).toBe(accessToken);
+      expect(requested).toHaveLength(tokenRequests);
+    }
+  );
+
+  test.each([
+    [
+      "a failed early refresh",
+      () => expireInFourMinutes("codex"),
+      () => new Response("unavailable", { status: 503 }),
+      "access-codex",
+    ],
+    [
+      "a refresh that returned a one-minute token",
+      () =>
+        database
+          .update(providerAccounts)
+          .set({ expiresAt: Date.now() - 1000 })
+          .where(eq(providerAccounts.id, "codex-primary")),
+      () =>
+        Response.json({
+          access_token: "access-one-minute",
+          refresh_token: "refresh-one-minute",
+          expires_in: 0,
+        }),
+      "access-one-minute",
+    ],
+  ] as const)(
+    "repeated Codex routing makes one refresh attempt after %s",
+    async (_name, setup, respond, accessToken) => {
+      const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+      await setup();
+      let tokenRequests = 0;
+      globalThis.fetch = (async () => {
+        tokenRequests++;
+        return respond();
+      }) as unknown as typeof fetch;
+
+      try {
+        for (let call = 0; call < 5; call++) {
+          const account = await getRoutableProviderAccount(
+            database,
+            "codex",
+            Date.now()
+          );
+          expect(account?.accessToken).toBe(accessToken);
+        }
+        expect(tokenRequests).toBe(1);
+      } finally {
+        warn.mockRestore();
+      }
+    }
+  );
+
+  test("a token another process flags for reauthorization during an early refresh is not routed", async () => {
+    await expireInFourMinutes("codex");
+    // Another process takes the refresh lock and records that the account
+    // needs reauthorization just as this one tries to claim it.
+    await client?.execute(`CREATE TRIGGER other_process_reauthorizes
+      BEFORE UPDATE OF refresh_lock_token ON provider_accounts
+      WHEN NEW.refresh_lock_token IS NOT NULL
+        AND NEW.refresh_lock_token != 'other-process'
+      BEGIN
+        UPDATE provider_accounts
+        SET refresh_lock_token = 'other-process',
+          refresh_lock_expires_at = NEW.refresh_lock_expires_at,
+          last_refresh_status = 'reauthorize'
+        WHERE id = NEW.id;
+        SELECT RAISE(IGNORE);
+      END`);
+    globalThis.fetch = (() =>
+      Promise.reject(new Error("unexpected refresh"))) as typeof fetch;
+
+    await expect(
+      getRoutableProviderAccount(database, "codex", Date.now())
+    ).rejects.toThrow("Codex account needs reauthorization");
   });
 
   test("waits for a slow ordinary Codex refresh instead of returning 502", async () => {

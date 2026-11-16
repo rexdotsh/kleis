@@ -210,6 +210,7 @@ export const upsertProviderAccount = withInvalidation(
           refreshLockExpiresAt: null,
           lastRefreshAt: input.now,
           lastRefreshStatus: "success",
+          refreshRetryAt: null,
           expiresAt: input.expiresAt,
           metadataJson: serializeProviderAccountMetadata(input.metadata),
           updatedAt: input.now,
@@ -501,6 +502,7 @@ export const replaceProviderAccountCredentials = withInvalidation(
       refreshLockExpiresAt: null,
       lastRefreshAt: input.now,
       lastRefreshStatus: "success",
+      refreshRetryAt: null,
       updatedAt: input.now,
     });
     const { reauthLinkId } = input;
@@ -598,6 +600,7 @@ export const updateProviderAccountTokens = withInvalidation(
       expiresAt: input.expiresAt,
       lastRefreshAt: input.now,
       lastRefreshStatus: input.lastRefreshStatus,
+      refreshRetryAt: null,
       updatedAt: input.now,
     };
 
@@ -642,7 +645,8 @@ export const recordProviderAccountRefreshFailure = withInvalidation(
     id: string,
     now: number,
     refreshLockToken?: string,
-    status?: string
+    status?: string,
+    retryAt: number | null = null
   ): Promise<void> => {
     const whereClause = refreshLockToken
       ? and(
@@ -657,6 +661,7 @@ export const recordProviderAccountRefreshFailure = withInvalidation(
       .set({
         lastRefreshAt: now,
         lastRefreshStatus: status ?? "failed",
+        refreshRetryAt: retryAt,
         updatedAt: now,
       })
       .where(whereClause);
