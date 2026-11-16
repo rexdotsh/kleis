@@ -1,4 +1,8 @@
-import { constants as zlibConstants, zstdCompressSync } from "node:zlib";
+import {
+  constants as zlibConstants,
+  gzipSync,
+  zstdCompressSync,
+} from "node:zlib";
 import type { CodexAccountMetadata } from "../metadata";
 import {
   type JsonObject,
@@ -16,6 +20,7 @@ import {
   passthroughProxyResponse,
   transformJsonResponse,
 } from "./response";
+import { readUpstreamErrorPayload } from "./upstream-error";
 
 import {
   CODEX_ACCOUNT_ID_HEADER,
@@ -117,8 +122,8 @@ export const transformCodexBodyJson = (
     return null;
   }
 
-  // ChatGPT rejects output limits and cache lifetimes, and requires stateless
-  // storage. It applies 24h cache retention on its own.
+  // ChatGPT answers prompt_cache_retention and prompt_cache_options with a 400.
+  // Output limits are dropped and storage turned off as other Codex clients do.
   // https://github.com/anomalyco/opencode/blob/d9987ef9c896383eb47b9103f6c93fa772a44b83/packages/core/src/plugin/provider/openai.ts#L311-L317
   // https://github.com/earendil-works/pi/blob/f09d01b85e0384647fcab6779d35ab9dabe04be3/packages/ai/src/api/openai-responses.ts#L361-L369
   const {
@@ -220,16 +225,16 @@ const transformCodexResponse = async (
   });
 };
 
-// The ChatGPT backend rejects uncompressed bodies over about 1 MiB.
-// https://github.com/openai/codex/blob/d138398cef7d49e46fe33f1d0ddbd2ca0ed16aa4/codex-rs/core/src/client.rs#L1769-L1777
 const CODEX_ZSTD_MIN_BODY_LENGTH = 256 * 1024;
+// Uncompressed bodies over 1 MiB have been answered with an Envoy 503.
+// https://github.com/anomalyco/opencode/issues/52269
+const CODEX_UNCOMPRESSED_MAX_BODY_BYTES = 1024 * 1024;
 
 export const encodeCodexRequestBody = (
   headers: Headers,
-  bodyText: string,
-  clientSentZstd: boolean
-): BodyInit => {
-  if (!clientSentZstd && bodyText.length < CODEX_ZSTD_MIN_BODY_LENGTH) {
+  bodyText: string
+): string | Uint8Array<ArrayBuffer> => {
+  if (bodyText.length < CODEX_ZSTD_MIN_BODY_LENGTH) {
     return bodyText;
   }
   headers.set("content-encoding", "zstd");
@@ -238,6 +243,43 @@ export const encodeCodexRequestBody = (
   return zstdCompressSync(bodyText, {
     params: { [zlibConstants.ZSTD_c_windowLog]: 19 },
   }) as Uint8Array<ArrayBuffer>;
+};
+
+export const encodeCodexFallbackRequestBody = (
+  headers: Headers,
+  bodyText: string
+): Uint8Array<ArrayBuffer> => {
+  const bytes = new TextEncoder().encode(bodyText);
+  if (bytes.byteLength <= CODEX_UNCOMPRESSED_MAX_BODY_BYTES) {
+    headers.delete("content-encoding");
+    return bytes;
+  }
+  headers.set("content-encoding", "gzip");
+  return gzipSync(bytes) as Uint8Array<ArrayBuffer>;
+};
+
+// ChatGPT rejects some zstd frames with a bare 400 that uncompressed and gzip
+// bodies don't get. https://github.com/openai/codex/issues/60594
+export const isCodexCompressedBodyRejection = async (
+  response: Response
+): Promise<boolean> => {
+  if (response.status !== 400) {
+    return false;
+  }
+  if (
+    response.headers
+      .get("x-openai-retry-uncompressed")
+      ?.trim()
+      .toLowerCase() === "true"
+  ) {
+    return true;
+  }
+  const payload = await readUpstreamErrorPayload(response);
+  return (
+    isObjectRecord(payload) &&
+    Object.keys(payload).length === 1 &&
+    payload.detail === "Bad Request"
+  );
 };
 
 type CodexProxyPreparationInput = {
