@@ -1941,7 +1941,9 @@ describe("proxy contract: codex", () => {
     expect(lowerHeaderEntries.authorization).toBe("Bearer codex-access");
     expect(lowerHeaderEntries["content-length"]).toBeUndefined();
     expect(lowerHeaderEntries.session_id).toBeUndefined();
-    expect(lowerHeaderEntries["session-id"]).toMatch(/^kleis_/);
+    expect(lowerHeaderEntries["session-id"]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
     expect(lowerHeaderEntries["x-session-affinity"]).toBe(
       lowerHeaderEntries["session-id"]
     );

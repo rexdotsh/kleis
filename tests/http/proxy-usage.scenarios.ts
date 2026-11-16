@@ -42,7 +42,10 @@ const { namespaceCodexKey } =
 const app = new Hono();
 installErrorHandler(app);
 app.use("*", async (context, next) => {
-  context.set("proxyApiKeyId", "fake-key");
+  context.set(
+    "proxyApiKeyId",
+    context.req.header("x-test-api-key-id") ?? "fake-key"
+  );
   context.set("proxyApiKeyAccountScopeIds", null);
   const text = await context.req.text();
   context.set("proxyRequestBody", {
@@ -516,6 +519,50 @@ test("Codex session headers and prompt cache keys are namespaced independently a
         expect(forwarded.body).not.toHaveProperty("prompt_cache_key");
       }
     }
+    await flushProxyUsage();
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("Codex upstream session ids are stable UUIDs scoped to the API key", async () => {
+  const original = globalThis.fetch;
+  const forwarded: { session: string | null; cacheKey: unknown }[] = [];
+  globalThis.fetch = (async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    forwarded.push({
+      session: new Headers(init?.headers).get("session-id"),
+      cacheKey: body.prompt_cache_key,
+    });
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  try {
+    for (const apiKeyId of ["fake-key-a", "fake-key-a", "fake-key-b"]) {
+      const response = await app.request("/openai/v1/responses", {
+        method: "POST",
+        headers: {
+          "session-id": "fake-session",
+          "x-test-api-key-id": apiKeyId,
+        },
+        body: JSON.stringify({
+          model: "gpt-fake",
+          input: [],
+          prompt_cache_key: "fake-session",
+        }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+    }
+    const uuid =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    for (const entry of forwarded) {
+      expect(entry.session).toMatch(uuid);
+      expect(entry.cacheKey).toMatch(uuid);
+    }
+    const [first, second, otherKey] = forwarded;
+    expect(second).toEqual(first);
+    expect(otherKey?.session).not.toBe(first?.session);
+    expect(otherKey?.cacheKey).not.toBe(first?.cacheKey);
     await flushProxyUsage();
   } finally {
     globalThis.fetch = original;
