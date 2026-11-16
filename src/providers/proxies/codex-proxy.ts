@@ -1,3 +1,4 @@
+import { constants as zlibConstants, zstdCompressSync } from "node:zlib";
 import type { CodexAccountMetadata } from "../metadata";
 import {
   type JsonObject,
@@ -222,7 +223,11 @@ export const encodeCodexRequestBody = (
     return bodyText;
   }
   headers.set("content-encoding", "zstd");
-  return Bun.zstdCompressSync(bodyText) as Uint8Array<ArrayBuffer>;
+  // ChatGPT answers some frames with a window over 512 KiB with a bare
+  // {"detail":"Bad Request"}. https://github.com/openai/codex/issues/58569
+  return zstdCompressSync(bodyText, {
+    params: { [zlibConstants.ZSTD_c_windowLog]: 19 },
+  }) as Uint8Array<ArrayBuffer>;
 };
 
 type CodexProxyPreparationInput = {
