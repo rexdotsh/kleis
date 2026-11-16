@@ -186,18 +186,40 @@ test("proxy authorization enforces credentials, provider and model scopes before
   }
 });
 
+// RFC 8878 §3.1.1.1: a single-segment frame's window is its content size.
+const zstdWindowSize = (frame: Uint8Array): number => {
+  const descriptor = frame[4] ?? 0;
+  if (Math.floor(descriptor / 32) % 2 === 0) {
+    const window = frame[5] ?? 0;
+    const base = 2 ** (10 + Math.floor(window / 8));
+    return base + (base / 8) * (window % 8);
+  }
+  const sizeBytes = [1, 2, 4, 8][Math.floor(descriptor / 64)] ?? 1;
+  const offset = 5 + ([0, 1, 2, 4][descriptor % 4] ?? 0);
+  let size = 0;
+  for (let index = sizeBytes - 1; index >= 0; index--) {
+    size = size * 256 + (frame[offset + index] ?? 0);
+  }
+  return sizeBytes === 2 ? size + 256 : size;
+};
+
 test("compressed bodies are decoded for validation and Codex bodies are sent as zstd when compressed or large", async () => {
   const key = await createApiKey(db, {}, Date.now());
   const authenticated = new Hono();
   authenticated.use("*", requireProxyApiKey);
   authenticated.route("/", proxyRoutes);
   const original = globalThis.fetch;
-  let upstream = { encoding: null as string | null, body: "" };
+  let upstream = {
+    encoding: null as string | null,
+    body: "",
+    bytes: new Uint8Array(),
+  };
   globalThis.fetch = (async (_input, init) => {
     const encoding = new Headers(init?.headers).get("content-encoding");
     const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
     upstream = {
       encoding,
+      bytes,
       body: new TextDecoder().decode(
         encoding === "zstd" ? Bun.zstdDecompressSync(bytes) : bytes
       ),
@@ -234,6 +256,9 @@ test("compressed bodies are decoded for validation and Codex bodies are sent as 
       await response.text();
       expect(upstream.encoding).toBe(entry.out);
       expect(JSON.parse(upstream.body)).toMatchObject(JSON.parse(entry.body));
+      if (entry.out === "zstd") {
+        expect(zstdWindowSize(upstream.bytes)).toBeLessThanOrEqual(512 * 1024);
+      }
       bodies.push(upstream.body);
     }
     expect(bodies[4]).toBe(bodies[5]);
