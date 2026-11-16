@@ -26,7 +26,8 @@ export class OAuthError extends Error {
   constructor(
     messagePrefix: string,
     readonly status: number,
-    readonly code: string | null
+    readonly code: string | null,
+    readonly retryAfterMs: number | null = null
   ) {
     super(`${messagePrefix} (HTTP ${status}${code ? `, ${code}` : ""})`);
     this.name = "OAuthError";
@@ -94,6 +95,23 @@ export const classifyOAuthRefreshError = (error: unknown) => {
   return "transient";
 };
 
+export const parseRetryAfterMs = (
+  value: string | null,
+  now: number
+): number | null => {
+  if (!value) {
+    return null;
+  }
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return seconds * 1000;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? Math.max(0, timestamp - now) : null;
+};
+
 export const requireOkResponse = async (
   response: Response,
   messagePrefix: string
@@ -105,6 +123,7 @@ export const requireOkResponse = async (
   throw new OAuthError(
     messagePrefix,
     response.status,
-    await readOAuthErrorCode(response)
+    await readOAuthErrorCode(response),
+    parseRetryAfterMs(response.headers.get("retry-after"), Date.now())
   );
 };
