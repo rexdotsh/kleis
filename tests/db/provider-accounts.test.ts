@@ -71,7 +71,7 @@ describe("provider account enablement", () => {
         isPrimary: true,
         accessToken: "access-codex",
         refreshToken: "refresh-codex",
-        expiresAt: now + 60_000,
+        expiresAt: now + 3_600_000,
         createdAt: now,
         updatedAt: now,
       },
@@ -609,6 +609,58 @@ describe("provider account enablement", () => {
         allowedAccountIds: ["claude-secondary"],
       })
     ).toBeNull();
+  });
+
+  test.each([
+    ["Codex", "codex", "access-after-early-refresh", 1],
+    ["Claude", "claude", "access-primary", 0],
+  ] as const)(
+    "a %s token 4 minutes from expiry is refreshed before use only for Codex",
+    async (_name, provider, accessToken, tokenRequests) => {
+      await database
+        .update(providerAccounts)
+        .set({ expiresAt: Date.now() + 4 * 60_000 })
+        .where(eq(providerAccounts.provider, provider));
+      const requested: string[] = [];
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        requested.push(String(input));
+        return Response.json({
+          access_token: "access-after-early-refresh",
+          refresh_token: "refresh-after-early-refresh",
+          expires_in: 3600,
+        });
+      }) as typeof fetch;
+
+      const account = await getRoutableProviderAccount(
+        database,
+        provider,
+        Date.now()
+      );
+
+      expect(account?.accessToken).toBe(accessToken);
+      expect(requested).toHaveLength(tokenRequests);
+    }
+  );
+
+  test("a failed early Codex refresh still routes the unexpired token", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+    await database
+      .update(providerAccounts)
+      .set({ expiresAt: Date.now() + 4 * 60_000 })
+      .where(eq(providerAccounts.id, "codex-primary"));
+    globalThis.fetch = (async () =>
+      new Response("unavailable", { status: 503 })) as unknown as typeof fetch;
+
+    try {
+      const account = await getRoutableProviderAccount(
+        database,
+        "codex",
+        Date.now()
+      );
+      expect(account?.accessToken).toBe("access-codex");
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("waits for a slow ordinary Codex refresh instead of returning 502", async () => {

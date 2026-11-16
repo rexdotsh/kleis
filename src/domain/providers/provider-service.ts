@@ -39,6 +39,14 @@ const REFRESH_WAIT_POLL_INTERVAL_MS = 150;
 // 401 instead of being rotated, so a persistent 401 rotates at most once a
 // minute.
 const AUTH_FAILURE_MIN_TOKEN_AGE_MS = 60_000;
+// Codex tokens are refreshed this long before they expire, like OpenCode:
+// https://github.com/anomalyco/opencode/blob/a6b15d33daf6ab7d35569f6d711fdb630b9f04e7/packages/core/src/credential.ts#L33-L34
+// Claude sign-ins are never refreshed, so they are only due once expired.
+const CODEX_EARLY_REFRESH_MS = 5 * 60_000;
+
+const isRefreshDue = (account: ProviderAccountRecord, now: number): boolean =>
+  account.expiresAt <=
+  now + (account.provider === "codex" ? CODEX_EARLY_REFRESH_MS : 0);
 
 const assertExpiresAt = (expiresAt: number, now: number): number => {
   if (!Number.isFinite(expiresAt) || expiresAt <= now) {
@@ -207,7 +215,7 @@ const refreshProviderAccountWithLock = async (
     }
 
     const refreshNow = Date.now();
-    if (!forceRefresh && account.expiresAt > refreshNow) {
+    if (!forceRefresh && !isRefreshDue(account, refreshNow)) {
       return account;
     }
 
@@ -787,9 +795,21 @@ export const getRoutableProviderAccount = async (
     return null;
   }
 
-  if (account.expiresAt > now) {
+  if (!isRefreshDue(account, now)) {
     return account;
   }
 
-  return refreshProviderAccount(database, account.id, now);
+  try {
+    return await refreshProviderAccount(database, account.id, now);
+  } catch (error) {
+    // A failed early refresh leaves a token that still works.
+    if (
+      account.expiresAt > Date.now() &&
+      !(error instanceof ProviderAccountNeedsReauthorizationError) &&
+      classifyOAuthRefreshError(error) !== "reauthorize"
+    ) {
+      return account;
+    }
+    throw error;
+  }
 };
