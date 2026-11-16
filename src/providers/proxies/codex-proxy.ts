@@ -55,7 +55,17 @@ export const namespaceCodexKey = async (
 ): Promise<string> => {
   const data = new TextEncoder().encode(`${accountKey}:${key}`);
   const digest = await crypto.subtle.digest("SHA-256", data);
-  return `kleis_${toHex(new Uint8Array(digest)).slice(0, 48)}`;
+  const hex = toHex(new Uint8Array(digest));
+  // RFC 9562 UUIDv8 (version nibble 8, variant 10xx), shaped like the session
+  // ids real clients send.
+  const variant = ((Number.parseInt(hex.charAt(16), 16) % 4) + 8).toString(16);
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    `8${hex.slice(13, 16)}`,
+    `${variant}${hex.slice(17, 20)}`,
+    hex.slice(20, 32),
+  ].join("-");
 };
 
 export const applyCodexSessionHeaders = (
