@@ -1180,15 +1180,17 @@ export const tryProxyCodexWebSocket = async (
 
   const handleMessage = async (
     event: unknown,
-    reservedBytes: number
+    reservedBytes: number,
+    eventEpoch: number
   ): Promise<{ bytes: number; queued: boolean }> => {
-    if (settled) {
+    // Frames a replaced socket queued before a retry belong to the old attempt.
+    if (settled || eventEpoch !== socketEpoch) {
       return { bytes: reservedBytes, queued: false };
     }
     const text = await decodeMessageData(
       isObjectRecord(event) ? event.data : null
     );
-    if (settled || !text) {
+    if (settled || eventEpoch !== socketEpoch || !text) {
       return { bytes: reservedBytes, queued: false };
     }
 
@@ -1313,9 +1315,10 @@ export const tryProxyCodexWebSocket = async (
     }
     bufferedFrameCount++;
     bufferedFrameBytes += reservedBytes;
+    const eventEpoch = socketEpoch;
     messageChain = messageChain
       .then(async () => {
-        const handled = await handleMessage(event, reservedBytes);
+        const handled = await handleMessage(event, reservedBytes, eventEpoch);
         if (!handled.queued) {
           releaseBufferedFrame(handled.bytes);
         }

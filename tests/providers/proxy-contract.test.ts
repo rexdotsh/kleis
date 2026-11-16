@@ -2671,6 +2671,56 @@ describe("proxy contract: codex", () => {
     expect(sentBodies[2]).not.toHaveProperty("previous_response_id");
   });
 
+  test.each([
+    ["connection limit", false, "websocket_connection_limit_reached"],
+    ["missing previous response", true, "previous_response_not_found"],
+  ] as const)(
+    "drops frames the old socket queued before a %s retry",
+    async (_name, continued, errorCode) => {
+      const sentBodies: unknown[] = [];
+      const sockets = installManualCodexWebSocketMock(sentBodies);
+      const firstInput = [
+        { role: "user", content: [{ type: "input_text", text: "First" }] },
+      ];
+      const send = (input: unknown[]) =>
+        tryProxyCodexWebSocket({
+          headers: new Headers({ "x-session-affinity": "fake-race-session" }),
+          bodyJson: { model: "gpt-fake", stream: true, input },
+          accountKey: "fake-key:fake-account",
+        });
+      const complete = (socket: ManualCodexWebSocket | undefined, id: string) =>
+        socket?.dispatch("message", {
+          data: JSON.stringify({
+            type: "response.completed",
+            response: { id, status: "completed" },
+          }),
+        });
+      if (continued) {
+        const first = send(firstInput);
+        await waitFor(() => sentBodies.length === 1);
+        complete(sockets[0], "resp_fake_1");
+        await (await first)?.text();
+      }
+      const sent = sentBodies.length;
+
+      const pending = send([
+        ...firstInput,
+        { role: "user", content: [{ type: "input_text", text: "Second" }] },
+      ]);
+      await waitFor(() => sentBodies.length === sent + 1);
+      sockets[0]?.dispatch("message", {
+        data: JSON.stringify({ type: "error", error: { code: errorCode } }),
+      });
+      complete(sockets[0], "resp_fake_stale");
+      await waitFor(() => sentBodies.length === sent + 2);
+      complete(sockets[1], "resp_fake_retried");
+
+      const text = await (await pending)?.text();
+      expect(text).toContain("resp_fake_retried");
+      expect(text).not.toContain("resp_fake_stale");
+    }
+  );
+
   test("sends a turn over the server's message size limit over HTTP", async () => {
     const sentBodies: unknown[] = [];
     installManualCodexWebSocketMock(sentBodies, { maxMessageBytes: 1024 });
