@@ -21,7 +21,9 @@ import {
 import { prepareClaudeProxyRequest } from "../../providers/proxies/claude-proxy";
 import { isEventStreamResponse } from "../../providers/proxies/response";
 import {
+  encodeCodexFallbackRequestBody,
   encodeCodexRequestBody,
+  isCodexCompressedBodyRejection,
   namespaceCodexKey,
   prepareCodexProxyRequest,
   readCodexPromptCacheKey,
@@ -45,7 +47,7 @@ import {
   type TokenUsage,
 } from "../../usage/token-usage";
 import { isObjectRecord, readBooleanField } from "../../utils/object";
-import { hashLogId } from "../../utils/log";
+import { hashLogId, logWarn } from "../../utils/log";
 import { sendWithAuthReplay } from "../auth-replay";
 import { createUpstreamProxyHeaders } from "../proxy-headers";
 import { createUpstreamFailureLogger } from "../upstream-failure-log";
@@ -374,8 +376,6 @@ const proxyRequest = async (
       const codexPromptCacheKey = promptCacheKey
         ? await namespaceCodexKey(accountKey, promptCacheKey)
         : null;
-      const clientSentZstd =
-        context.req.header("content-encoding")?.trim().toLowerCase() === "zstd";
       sendAttempt = async (attemptAccount) => {
         const attemptHeaders = new Headers(headers);
         const codexProxy = prepareCodexProxyRequest({
@@ -414,20 +414,47 @@ const proxyRequest = async (
           }
         }
 
-        const response = await fetchProxyUpstream({
-          url: codexProxy.upstreamUrl,
-          method: context.req.method,
-          headers: attemptHeaders,
-          body: encodeCodexRequestBody(
-            attemptHeaders,
-            codexProxy.bodyText,
-            clientSentZstd
-          ),
-          signal: context.req.raw.signal,
-          useCodexSseHeaderTimeout:
-            readBooleanField(codexProxy.bodyJson, "stream") === true,
+        const send = (body: BodyInit) =>
+          fetchProxyUpstream({
+            url: codexProxy.upstreamUrl,
+            method: context.req.method,
+            headers: attemptHeaders,
+            body,
+            signal: context.req.raw.signal,
+            useCodexSseHeaderTimeout:
+              readBooleanField(codexProxy.bodyJson, "stream") === true,
+          });
+        const body = encodeCodexRequestBody(
+          attemptHeaders,
+          codexProxy.bodyText
+        );
+        const response = await send(body);
+        if (
+          typeof body === "string" ||
+          !(await isCodexCompressedBodyRejection(response))
+        ) {
+          return { response, transformResponse: codexProxy.transformResponse };
+        }
+
+        await response.body?.cancel().catch(() => undefined);
+        const fallbackBody = encodeCodexFallbackRequestBody(
+          attemptHeaders,
+          codexProxy.bodyText
+        );
+        const retryResponse = await send(fallbackBody);
+        logWarn("codex_compressed_bad_request_retry", {
+          providerAccountId: attemptAccount.id,
+          endpoint: route.endpoint,
+          status: retryResponse.status,
+          bodyBytes: Buffer.byteLength(codexProxy.bodyText),
+          compressedBytes: body.byteLength,
+          retryBytes: fallbackBody.byteLength,
+          retryEncoding: attemptHeaders.get("content-encoding") ?? "identity",
         });
-        return { response, transformResponse: codexProxy.transformResponse };
+        return {
+          response: retryResponse,
+          transformResponse: codexProxy.transformResponse,
+        };
       };
       break;
     }

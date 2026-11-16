@@ -203,7 +203,7 @@ const zstdWindowSize = (frame: Uint8Array): number => {
   return sizeBytes === 2 ? size + 256 : size;
 };
 
-test("compressed bodies are decoded for validation and Codex bodies are sent as zstd when compressed or large", async () => {
+test("compressed bodies are decoded for validation and only large Codex bodies are sent as zstd", async () => {
   const key = await createApiKey(db, {}, Date.now());
   const authenticated = new Hono();
   authenticated.use("*", requireProxyApiKey);
@@ -234,7 +234,7 @@ test("compressed bodies are decoded for validation and Codex bodies are sent as 
     for (const entry of [
       { path: "/openai/v1/responses", body: small, sent: null, out: null },
       { path: "/openai/v1/responses", body: large, sent: null, out: "zstd" },
-      { path: "/openai/v1/responses", body: small, sent: "zstd", out: "zstd" },
+      { path: "/openai/v1/responses", body: small, sent: "zstd", out: null },
       { path: "/openai/v1/responses", body: small, sent: "gzip", out: null },
       { path: "/anthropic/v1/messages", body: claude, sent: "zstd", out: null },
       { path: "/anthropic/v1/messages", body: claude, sent: null, out: null },
@@ -305,6 +305,121 @@ test("undecodable or unsupported compressed bodies are rejected before forwardin
     }
     expect(forwarded).toBe(0);
   } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("Codex retries a compressed body ChatGPT rejects once, uncompressed or gzipped", async () => {
+  const original = globalThis.fetch;
+  const warn = spyOn(console, "warn").mockImplementation(() => undefined);
+  const bare = () => Response.json({ detail: "Bad Request" }, { status: 400 });
+  let cancelled = 0;
+  const flagged = () =>
+    new Response(
+      new ReadableStream({
+        cancel(): void {
+          cancelled++;
+        },
+      }),
+      { status: 400, headers: { "x-openai-retry-uncompressed": "true" } }
+    );
+  const other = () =>
+    Response.json({ detail: "Bad Request", code: "x" }, { status: 400 });
+  const ok = () => Response.json({ output: [] });
+  const medium = JSON.stringify({ model: "gpt-fake", input: "x".repeat(3e5) });
+  const large = JSON.stringify({ model: "gpt-fake", input: "x".repeat(2e6) });
+  const small = JSON.stringify({ model: "gpt-fake", input: "SECRET" });
+  let sent: { encoding: string | null; headers: Headers; body: string }[] = [];
+  let replies: (() => Response)[] = [];
+  globalThis.fetch = (async (_input, init) => {
+    const headers = new Headers(init?.headers);
+    const encoding = headers.get("content-encoding");
+    const bytes = new Uint8Array(await new Response(init?.body).arrayBuffer());
+    const decoded =
+      encoding === "zstd"
+        ? Bun.zstdDecompressSync(bytes)
+        : encoding === "gzip"
+          ? Bun.gunzipSync(bytes)
+          : bytes;
+    sent.push({ encoding, headers, body: new TextDecoder().decode(decoded) });
+    return (replies[sent.length - 1] ?? ok)();
+  }) as typeof fetch;
+  try {
+    for (const entry of [
+      { body: medium, replies: [bare, ok], sent: ["zstd", null], status: 200 },
+      { body: large, replies: [bare, ok], sent: ["zstd", "gzip"], status: 200 },
+      {
+        body: medium,
+        replies: [flagged, ok],
+        sent: ["zstd", null],
+        status: 200,
+      },
+      { body: medium, replies: [other], sent: ["zstd"], status: 400 },
+      { body: small, replies: [bare], sent: [null], status: 400 },
+      {
+        body: medium,
+        replies: [bare, bare],
+        sent: ["zstd", null],
+        status: 400,
+      },
+    ]) {
+      sent = [];
+      replies = entry.replies;
+      cancelled = 0;
+      await flushProxyFailureLogs();
+      warn.mockClear();
+      const response = await app.request("/openai/v1/responses", {
+        method: "POST",
+        body: entry.body,
+      });
+      expect(response.status).toBe(entry.status);
+      await response.text();
+      expect(sent.map((call) => call.encoding)).toEqual(entry.sent);
+      for (const call of sent) {
+        expect(call.body).toBe(sent[0]?.body ?? "");
+        call.headers.delete("content-encoding");
+        expect(call.headers).toEqual(sent[0]?.headers ?? new Headers());
+      }
+      expect(cancelled).toBe(entry.replies[0] === flagged ? 1 : 0);
+
+      const lines = warn.mock.calls.map((call) => String(call[0]));
+      expect(lines.join("\n")).not.toContain("SECRET");
+      const events = lines.map(
+        (line) => JSON.parse(line) as Record<string, unknown>
+      );
+      expect(
+        events.filter(
+          (event) => event.event === "codex_compressed_bad_request_retry"
+        )
+      ).toEqual(
+        sent.length === 2
+          ? [
+              expect.objectContaining({
+                providerAccountId: codexAccount.id,
+                status: entry.status,
+                bodyBytes: Buffer.byteLength(sent[0]?.body ?? ""),
+                retryEncoding: entry.sent[1] ?? "identity",
+              }),
+            ]
+          : []
+      );
+      expect(
+        events.filter(
+          (event) => event.event === "proxy_upstream_response_failed"
+        )
+      ).toHaveLength(entry.status === 200 ? 0 : 1);
+      await flushProxyUsage();
+      expect(await db.select().from(requestUsageBuckets)).toMatchObject([
+        {
+          requestCount: 1,
+          successCount: entry.status === 200 ? 1 : 0,
+          clientErrorCount: entry.status === 200 ? 0 : 1,
+        },
+      ]);
+      await db.delete(requestUsageBuckets);
+    }
+  } finally {
+    warn.mockRestore();
     globalThis.fetch = original;
   }
 });
