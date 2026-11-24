@@ -285,15 +285,12 @@ const refreshProviderAccountWithLock = async (
         }
       };
 
-      let updated = await writeTokens(account.accountUserId);
-      if (!updated) {
-        const current = await findProviderAccountById(database, account.id);
-        if (current && current.accountUserId !== account.accountUserId) {
-          updated = await writeTokens(current.accountUserId);
+      let rowUser = account.accountUserId;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const updated = await writeTokens(rowUser);
+        if (updated) {
+          return updated;
         }
-      }
-
-      if (!updated) {
         const current = await findProviderAccountById(database, account.id);
         if (
           current &&
@@ -301,10 +298,19 @@ const refreshProviderAccountWithLock = async (
         ) {
           return current;
         }
-        throw new Error("Codex refresh lost its credential lock");
+        // Only a write that failed on the user alone is checked again against
+        // the row's current user.
+        const ownsRefresh =
+          current?.refreshLockToken === lockToken &&
+          (current.refreshLockExpiresAt ?? 0) > Date.now() &&
+          (!account.refreshToken ||
+            current.refreshToken === account.refreshToken);
+        if (!ownsRefresh || current.accountUserId === rowUser) {
+          break;
+        }
+        rowUser = current.accountUserId;
       }
-
-      return updated;
+      throw new Error("Codex refresh lost its credential lock");
     } catch (error) {
       const status =
         error instanceof ProviderAccountNeedsReauthorizationError

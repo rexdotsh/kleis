@@ -461,3 +461,41 @@ test.each([
     });
   }
 );
+
+test("a refresh that a reauthorization overtakes returns the new sign-in", async () => {
+  await insertExisting(existingCodex("fake-team", null));
+  await db
+    .update(providerAccounts)
+    .set({ lastRefreshStatus: "success" })
+    .where(eq(providerAccounts.id, EXISTING_ID));
+  const reauthorize = await startSignIn("codex", {
+    replaceAccountId: EXISTING_ID,
+  });
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      expect((await reauthorize()).status).toBe(200);
+      return Response.json(codexTokens("fake-team", "fake-user-a"));
+    }
+    return Response.json({
+      ...codexTokens("fake-team", "fake-user-b"),
+      access_token: "fake-reauthorized-access",
+    });
+  }) as unknown as typeof fetch;
+
+  const response = await postJson(`/admin/accounts/${EXISTING_ID}/refresh`, {});
+
+  expect(response.status).toBe(200);
+  const [row] = await db
+    .select()
+    .from(providerAccounts)
+    .where(eq(providerAccounts.id, EXISTING_ID));
+  expect(row).toMatchObject({
+    accessToken: "fake-reauthorized-access",
+    lastRefreshStatus: "success",
+  });
+  expect(JSON.parse(row?.metadataJson ?? "{}")).toMatchObject({
+    chatgptUserId: "fake-user-b",
+  });
+});
