@@ -228,20 +228,12 @@ const refreshProviderAccountWithLock = async (
       if (!accessToken || !refreshToken) {
         throw new Error("Provider refresh response is missing required tokens");
       }
-      const storedUser = signedInUser(account);
       const refreshedUser = signedInUser(tokens);
-      if (storedUser && refreshedUser && storedUser !== refreshedUser) {
-        throw new ProviderAccountNeedsReauthorizationError(
-          "Provider refresh returned a different user; reauthorize the account"
-        );
-      }
-
       const updateInput = {
         accessToken,
         refreshToken,
         expiresAt: assertExpiresAt(tokens.expiresAt, refreshNow),
         accountId: tokens.accountId,
-        metadata: tokens.metadata,
         refreshLockToken: lockToken,
         ...(account.refreshToken
           ? { expectedRefreshToken: account.refreshToken }
@@ -249,35 +241,56 @@ const refreshProviderAccountWithLock = async (
         lastRefreshStatus: "success" as const,
         now: refreshNow,
       };
-      const writeTokens = async () => {
-        try {
-          return await updateProviderAccountTokens(
-            database,
-            account.id,
-            updateInput
+      // Each write only lands on the user it was checked against, so a user
+      // attached during the refresh is never replaced or cleared.
+      const writeTokens = async (rowUser: string) => {
+        if (rowUser && refreshedUser && rowUser !== refreshedUser) {
+          throw new ProviderAccountNeedsReauthorizationError(
+            "Provider refresh returned a different user; reauthorize the account"
           );
-        } catch (error) {
-          // A refresh naming a user another account already holds leaves this
-          // account's user unknown, so the rotated refresh token is kept.
-          if (
-            !isUniqueConstraintError(error) ||
-            storedUser ||
-            tokens.metadata?.provider !== "codex"
-          ) {
-            throw error;
+        }
+        const metadata =
+          tokens.metadata?.provider === "codex"
+            ? {
+                ...tokens.metadata,
+                chatgptUserId: refreshedUser || rowUser || null,
+              }
+            : tokens.metadata;
+        try {
+          try {
+            return await updateProviderAccountTokens(database, account.id, {
+              ...updateInput,
+              metadata,
+              expectedAccountUserId: rowUser,
+            });
+          } catch (error) {
+            // A refresh naming a user another account already holds leaves
+            // this account's user unknown, so the rotated tokens are kept.
+            if (
+              !isUniqueConstraintError(error) ||
+              rowUser ||
+              metadata?.provider !== "codex"
+            ) {
+              throw error;
+            }
+            return await updateProviderAccountTokens(database, account.id, {
+              ...updateInput,
+              metadata: { ...metadata, chatgptUserId: null },
+              expectedAccountUserId: rowUser,
+            });
           }
-          return updateProviderAccountTokens(database, account.id, {
-            ...updateInput,
-            metadata: { ...tokens.metadata, chatgptUserId: null },
-          });
+        } catch (error) {
+          // Credential-write errors also reach admin responses, without SQL parameters.
+          throw new Error(errorLogFields(error).errorMessage);
         }
       };
-      let updated: ProviderAccountRecord | null;
-      try {
-        updated = await writeTokens();
-      } catch (error) {
-        // Credential-write errors also reach admin responses, without SQL parameters.
-        throw new Error(errorLogFields(error).errorMessage);
+
+      let updated = await writeTokens(account.accountUserId);
+      if (!updated) {
+        const current = await findProviderAccountById(database, account.id);
+        if (current && current.accountUserId !== account.accountUserId) {
+          updated = await writeTokens(current.accountUserId);
+        }
       }
 
       if (!updated) {

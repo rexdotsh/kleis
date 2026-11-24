@@ -483,10 +483,18 @@ describe("provider account enablement", () => {
   });
 
   test("a reconnect clears a previous reauthorization-required refresh status", async () => {
+    const metadata = {
+      provider: "codex",
+      scope: null,
+      chatgptAccountId: "reconnected-account",
+      email: null,
+      chatgptUserId: "reconnected-user",
+    } as const;
     await database
       .update(providerAccounts)
       .set({
         accountId: "reconnected-account",
+        metadataJson: JSON.stringify(metadata),
         lastRefreshAt: Date.now(),
         lastRefreshStatus: "reauthorize",
       })
@@ -497,7 +505,7 @@ describe("provider account enablement", () => {
       accessToken: "new-access",
       refreshToken: "new-refresh",
       expiresAt: Date.now() + 3_600_000,
-      metadata: null,
+      metadata,
       now: Date.now(),
     });
     expect(renewed).toMatchObject({

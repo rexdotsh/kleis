@@ -194,6 +194,13 @@ export const upsertProviderAccount = withInvalidation(
       row: typeof providerAccounts.$inferSelect,
       retried = false
     ): Promise<ProviderAccountRecord> => {
+      // A Codex sign-in without a user can't show it belongs to the row's
+      // user; reauthorizing that account is the explicit way to renew it.
+      if (input.provider === "codex" && !accountUserId(input.metadata)) {
+        throw new ProviderAccountReauthorizationConflict(
+          "This sign-in names no ChatGPT user and the workspace already has an account without one; reauthorize that account instead"
+        );
+      }
       const storedUser = signedInUser(toProviderAccountRecord(row));
       const incomingUser = signedInUser(input);
       if (storedUser && incomingUser && storedUser !== incomingUser) {
@@ -569,6 +576,7 @@ type UpdateProviderAccountTokensInput = {
   metadata?: ProviderAccountMetadata | null;
   refreshLockToken?: string;
   expectedRefreshToken?: string;
+  expectedAccountUserId?: string;
   lastRefreshStatus: "success" | "failed";
   now: number;
 };
@@ -608,7 +616,10 @@ export const updateProviderAccountTokens = withInvalidation(
         : []),
       ...(input.expectedRefreshToken
         ? [eq(providerAccounts.refreshToken, input.expectedRefreshToken)]
-        : [])
+        : []),
+      ...(input.expectedAccountUserId === undefined
+        ? []
+        : [eq(providerAccounts.accountUserId, input.expectedAccountUserId)])
     );
 
     const result = await database
