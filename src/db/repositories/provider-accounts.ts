@@ -138,19 +138,27 @@ export const findPrimaryProviderAccount = async (
   return row ? toProviderAccountRecord(row) : null;
 };
 
-const findProviderAccountByProviderAndAccountId = async (
-  database: Database,
-  provider: Provider,
-  accountId: string
-): Promise<typeof providerAccounts.$inferSelect | null> =>
-  (await database.query.providerAccounts.findFirst({
-    where: and(
-      eq(providerAccounts.provider, provider),
-      eq(providerAccounts.accountId, accountId)
-    ),
-  })) ?? null;
+// Mirrors the generated account_user_id column.
+const accountUserId = (metadata: ProviderAccountMetadata | null): string =>
+  (metadata?.provider === "codex" ? metadata.chatgptUserId : null) || "";
 
-const isUniqueConstraintError = (error: unknown): boolean => {
+// The row holding the unique (provider, accountId, user) slot this input
+// would take.
+const findProviderAccountWithSameSlot = async (
+  database: Database,
+  input: Pick<UpsertProviderAccountInput, "provider" | "accountId" | "metadata">
+): Promise<typeof providerAccounts.$inferSelect | null> =>
+  input.accountId === null
+    ? null
+    : ((await database.query.providerAccounts.findFirst({
+        where: and(
+          eq(providerAccounts.provider, input.provider),
+          eq(providerAccounts.accountId, input.accountId),
+          eq(providerAccounts.accountUserId, accountUserId(input.metadata))
+        ),
+      })) ?? null);
+
+export const isUniqueConstraintError = (error: unknown): boolean => {
   let current = error;
   for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
     if (
@@ -180,20 +188,19 @@ export const upsertProviderAccount = withInvalidation(
     database: Database,
     input: UpsertProviderAccountInput
   ): Promise<ProviderAccountRecord> => {
-    const existing = input.accountId
-      ? await findProviderAccountByProviderAndAccountId(
-          database,
-          input.provider,
-          input.accountId
-        )
-      : null;
+    const existing = await findProviderAccountWithSameSlot(database, input);
 
     const updateExisting = async (
       row: typeof providerAccounts.$inferSelect,
       retried = false
     ): Promise<ProviderAccountRecord> => {
-      // Team members share a workspace ID, so a known, different user is
-      // another person's sign-in.
+      // A Codex sign-in without a user can't show it belongs to the row's
+      // user; reauthorizing that account is the explicit way to renew it.
+      if (input.provider === "codex" && !accountUserId(input.metadata)) {
+        throw new ProviderAccountReauthorizationConflict(
+          "This sign-in names no ChatGPT user and the workspace already has an account without one; reauthorize that account instead"
+        );
+      }
       const storedUser = signedInUser(toProviderAccountRecord(row));
       const incomingUser = signedInUser(input);
       if (storedUser && incomingUser && storedUser !== incomingUser) {
@@ -252,15 +259,9 @@ export const upsertProviderAccount = withInvalidation(
       return created;
     }
 
-    if (input.accountId) {
-      const concurrent = await findProviderAccountByProviderAndAccountId(
-        database,
-        input.provider,
-        input.accountId
-      );
-      if (concurrent) {
-        return updateExisting(concurrent);
-      }
+    const concurrent = await findProviderAccountWithSameSlot(database, input);
+    if (concurrent) {
+      return updateExisting(concurrent);
     }
 
     return attemptInsert({
@@ -339,11 +340,9 @@ export class ProviderAccountReauthorizationConflict extends Error {
   }
 }
 
-// The unique (provider, accountId) index allows one row per ChatGPT
-// workspace, so another member of a connected workspace cannot be added.
 const accountIdConflict = () =>
   new ProviderAccountReauthorizationConflict(
-    "Another Kleis account already uses this provider account ID"
+    "Another Kleis account already uses this provider account ID and user"
   );
 
 export const signedInUser = ({
@@ -358,19 +357,14 @@ export const signedInUser = ({
 };
 
 // Adds a new account and never takes over an existing row, even one with the
-// same account ID.
+// same account ID and user.
 export const addProviderAccount = withInvalidation(
   async (
     database: Database,
     input: UpsertProviderAccountInput
   ): Promise<ProviderAccountRecord> => {
     const accountIdTaken = async () =>
-      input.accountId !== null &&
-      (await findProviderAccountByProviderAndAccountId(
-        database,
-        input.provider,
-        input.accountId
-      )) !== null;
+      (await findProviderAccountWithSameSlot(database, input)) !== null;
     if (await accountIdTaken()) {
       throw accountIdConflict();
     }
@@ -582,6 +576,7 @@ type UpdateProviderAccountTokensInput = {
   metadata?: ProviderAccountMetadata | null;
   refreshLockToken?: string;
   expectedRefreshToken?: string;
+  expectedAccountUserId?: string;
   lastRefreshStatus: "success" | "failed";
   now: number;
 };
@@ -621,7 +616,10 @@ export const updateProviderAccountTokens = withInvalidation(
         : []),
       ...(input.expectedRefreshToken
         ? [eq(providerAccounts.refreshToken, input.expectedRefreshToken)]
-        : [])
+        : []),
+      ...(input.expectedAccountUserId === undefined
+        ? []
+        : [eq(providerAccounts.accountUserId, input.expectedAccountUserId)])
     );
 
     const result = await database

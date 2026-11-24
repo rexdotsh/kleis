@@ -20,11 +20,29 @@ const { createApiKey, findApiKeyById } =
 const { installErrorHandler } = await import("../../src/http/error-handler");
 const { adminAccountsRoutes } =
   await import("../../src/http/routes/admin-accounts");
+const { proxyRoutes } = await import("../../src/http/routes/proxy");
 await migrate(db, { migrationsFolder: "./drizzle/migrations" });
 
 const app = new Hono();
 installErrorHandler(app);
 app.route("/admin/accounts", adminAccountsRoutes);
+
+const proxyApp = new Hono();
+installErrorHandler(proxyApp);
+proxyApp.use("*", async (context, next) => {
+  context.set("proxyApiKeyId", "fake-key");
+  context.set("proxyApiKeyAccountScopeIds", [
+    context.req.header("x-test-account") ?? "",
+  ]);
+  const text = await context.req.text();
+  context.set("proxyRequestBody", {
+    text,
+    parsed: JSON.parse(text) as unknown,
+    model: "gpt-fake",
+  });
+  await next();
+});
+proxyApp.route("/", proxyRoutes);
 
 const EXISTING_ID = "2c8d0f5e-7d43-4b8e-9f0a-3a4b5c6d7e8f";
 const originalFetch = globalThis.fetch;
@@ -179,13 +197,13 @@ test.each([
     "a Codex sign-in for another user of a workspace that holds the ID",
     existingCodex("fake-team", "fake-user-a"),
     codexTokens("fake-team", "fake-user-b"),
-    "conflicts",
+    "adds",
   ],
   [
     "a Codex sign-in for a workspace whose row has no user",
     existingCodex("fake-team", null),
     codexTokens("fake-team", "fake-user-a"),
-    "conflicts",
+    "adds",
   ],
 ] as const)(
   "%s renews the existing account only when the identity matches",
@@ -195,7 +213,7 @@ test.each([
 
     const response = await (await startSignIn(existing.provider))();
 
-    expect(response.status).toBe(outcome === "conflicts" ? 409 : 200);
+    expect(response.status).toBe(200);
     const accounts = await db.select().from(providerAccounts);
     const existingRow = accounts.find((row) => row.id === EXISTING_ID);
     if (outcome === "renews") {
@@ -207,7 +225,7 @@ test.each([
         lastRefreshStatus: "success",
       });
     } else {
-      expect(accounts).toHaveLength(outcome === "adds" ? 2 : 1);
+      expect(accounts).toHaveLength(2);
       expect(existingRow).toMatchObject({
         accessToken: "fake-old-access",
         metadataJson: existing.metadataJson,
@@ -257,38 +275,67 @@ test("concurrent Claude sign-ins for one identity add one account", async () => 
 });
 
 test.each([
-  ["another user", "fake-user-b", 409, "fake-old-access"],
-  ["the same user", "fake-user-a", 200, "fake-imported-access"],
-  ["an unknown user", null, 200, "fake-imported-access"],
+  [
+    "another user",
+    "fake-user-a",
+    "fake-imported-access",
+    "fake-user-b",
+    "adds",
+  ],
+  [
+    "the same user",
+    "fake-user-a",
+    "fake-imported-access",
+    "fake-user-a",
+    "renews",
+  ],
+  [
+    "the same user, named only by the access token",
+    "fake-user-a",
+    codexIdToken("fake-team", "fake-user-a"),
+    null,
+    "renews",
+  ],
+  ["an unknown user", "fake-user-a", "fake-imported-access", null, "adds"],
+  [
+    "an unknown user over a row without a user",
+    null,
+    "fake-imported-access",
+    null,
+    "conflicts",
+  ],
 ] as const)(
   "importing %s of a connected Codex workspace only replaces their own sign-in",
-  async (_name, chatgptUserId, status, storedAccessToken) => {
-    await insertExisting(existingCodex("fake-team", "fake-user-a"));
+  async (_name, existingUser, accessToken, chatgptUserId, outcome) => {
+    const existing = existingCodex("fake-team", existingUser);
+    await insertExisting(existing);
 
     const response = await postJson("/admin/accounts/codex/import", {
-      accessToken: "fake-imported-access",
+      accessToken,
       refreshToken: "fake-imported-refresh",
       expiresAt: Date.now() + 3_600_000,
       accountId: "fake-team",
       metadata: { chatgptUserId },
     });
 
-    expect(response.status).toBe(status);
+    expect(response.status).toBe(outcome === "conflicts" ? 409 : 200);
     const accounts = await db.select().from(providerAccounts);
-    expect(accounts).toHaveLength(1);
-    expect(accounts[0]).toMatchObject({
-      id: EXISTING_ID,
-      accessToken: storedAccessToken,
-    });
-    if (status === 409) {
-      expect(accounts[0]?.metadataJson).toBe(
-        existingCodex("fake-team", "fake-user-a").metadataJson
-      );
+    const existingRow = accounts.find((row) => row.id === EXISTING_ID);
+    if (outcome === "renews") {
+      expect(accounts).toHaveLength(1);
+      expect(existingRow?.accessToken).toBe(accessToken);
+    } else {
+      expect(accounts).toHaveLength(outcome === "adds" ? 2 : 1);
+      expect(existingRow).toMatchObject({
+        accessToken: "fake-old-access",
+        refreshToken: "fake-old-refresh",
+        metadataJson: existing.metadataJson,
+      });
     }
   }
 );
 
-test("concurrent imports of two users into a row without a user keep one", async () => {
+test("imports of two users into a workspace whose row has no user add an account each", async () => {
   await insertExisting(existingCodex("fake-team", null));
   const importUser = (chatgptUserId: string) =>
     postJson("/admin/accounts/codex/import", {
@@ -304,12 +351,151 @@ test("concurrent imports of two users into a row without a user keep one", async
     importUser("fake-user-b"),
   ]);
 
-  const statuses = responses.map((response) => response.status);
-  expect(statuses.toSorted((left, right) => left - right)).toEqual([200, 409]);
-  const winner = statuses[0] === 200 ? "fake-user-a" : "fake-user-b";
-  const [stored] = await db.select().from(providerAccounts);
-  expect(stored?.accessToken).toBe(`fake-access-${winner}`);
-  expect(JSON.parse(stored?.metadataJson ?? "{}")).toMatchObject({
-    chatgptUserId: winner,
+  expect(responses.map((response) => response.status)).toEqual([200, 200]);
+  const accounts = await db.select().from(providerAccounts);
+  expect(accounts).toHaveLength(3);
+  expect(accounts.find((row) => row.id === EXISTING_ID)).toMatchObject({
+    accessToken: "fake-old-access",
+    metadataJson: existingCodex("fake-team", null).metadataJson,
+  });
+});
+
+test("two users of one workspace each route with their own token and the workspace header", async () => {
+  const added: string[] = [];
+  for (const user of ["fake-user-a", "fake-user-b"]) {
+    mockTokenResponse({
+      ...codexTokens("fake-team", user),
+      access_token: `fake-access-${user}`,
+    });
+    const response = await (await startSignIn("codex"))();
+    expect(response.status).toBe(200);
+    const { account } = (await response.json()) as { account: { id: string } };
+    added.push(account.id);
+  }
+
+  const upstream: Headers[] = [];
+  globalThis.fetch = (async (_input, init) => {
+    upstream.push(new Headers(init?.headers));
+    return Response.json({ output: [] });
+  }) as typeof fetch;
+  for (const id of added) {
+    const response = await proxyApp.request("/openai/v1/responses", {
+      method: "POST",
+      headers: { "x-test-account": id },
+      body: "{}",
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+  }
+
+  expect(
+    upstream.map((headers) => [
+      headers.get("authorization"),
+      headers.get("ChatGPT-Account-Id"),
+    ])
+  ).toEqual([
+    ["Bearer fake-access-fake-user-a", "fake-team"],
+    ["Bearer fake-access-fake-user-b", "fake-team"],
+  ]);
+});
+
+test("a row without a user keeps its refreshed sign-in when another account holds that user", async () => {
+  await insertExisting(existingCodex("fake-team", null));
+  await db
+    .update(providerAccounts)
+    .set({ lastRefreshStatus: "success" })
+    .where(eq(providerAccounts.id, EXISTING_ID));
+  mockTokenResponse(codexTokens("fake-team", "fake-user-a"));
+  expect((await (await startSignIn("codex"))()).status).toBe(200);
+  mockTokenResponse({
+    ...codexTokens("fake-team", "fake-user-a"),
+    access_token: "fake-refreshed-access",
+    refresh_token: "fake-refreshed-refresh",
+  });
+
+  const response = await postJson(`/admin/accounts/${EXISTING_ID}/refresh`, {});
+
+  expect(response.status).toBe(200);
+  const accounts = await db.select().from(providerAccounts);
+  expect(accounts).toHaveLength(2);
+  expect(accounts.find((row) => row.id === EXISTING_ID)).toMatchObject({
+    accessToken: "fake-refreshed-access",
+    refreshToken: "fake-refreshed-refresh",
+  });
+});
+
+test.each([
+  ["another user", "fake-user-b", "fake-old-access", "reauthorize"],
+  ["the attached user", "fake-user-a", "fake-refreshed-access", "success"],
+] as const)(
+  "a refresh naming %s never replaces a user attached while it was in flight",
+  async (_name, refreshedUser, accessToken, lastRefreshStatus) => {
+    await insertExisting(existingCodex("fake-team", null));
+    await db
+      .update(providerAccounts)
+      .set({ lastRefreshStatus: "success" })
+      .where(eq(providerAccounts.id, EXISTING_ID));
+    mockTokenResponse(codexTokens("fake-team", "fake-user-b"));
+    expect((await (await startSignIn("codex"))()).status).toBe(200);
+    globalThis.fetch = (async () => {
+      await app.request(`/admin/accounts/${EXISTING_ID}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ metadata: { chatgptUserId: "fake-user-a" } }),
+      });
+      return Response.json({
+        ...codexTokens("fake-team", refreshedUser),
+        access_token: "fake-refreshed-access",
+      });
+    }) as unknown as typeof fetch;
+
+    await postJson(`/admin/accounts/${EXISTING_ID}/refresh`, {});
+
+    const [row] = await db
+      .select()
+      .from(providerAccounts)
+      .where(eq(providerAccounts.id, EXISTING_ID));
+    expect(row).toMatchObject({ accessToken, lastRefreshStatus });
+    expect(JSON.parse(row?.metadataJson ?? "{}")).toMatchObject({
+      chatgptUserId: "fake-user-a",
+    });
+  }
+);
+
+test("a refresh that a reauthorization overtakes returns the new sign-in", async () => {
+  await insertExisting(existingCodex("fake-team", null));
+  await db
+    .update(providerAccounts)
+    .set({ lastRefreshStatus: "success" })
+    .where(eq(providerAccounts.id, EXISTING_ID));
+  const reauthorize = await startSignIn("codex", {
+    replaceAccountId: EXISTING_ID,
+  });
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      expect((await reauthorize()).status).toBe(200);
+      return Response.json(codexTokens("fake-team", "fake-user-a"));
+    }
+    return Response.json({
+      ...codexTokens("fake-team", "fake-user-b"),
+      access_token: "fake-reauthorized-access",
+    });
+  }) as unknown as typeof fetch;
+
+  const response = await postJson(`/admin/accounts/${EXISTING_ID}/refresh`, {});
+
+  expect(response.status).toBe(200);
+  const [row] = await db
+    .select()
+    .from(providerAccounts)
+    .where(eq(providerAccounts.id, EXISTING_ID));
+  expect(row).toMatchObject({
+    accessToken: "fake-reauthorized-access",
+    lastRefreshStatus: "success",
+  });
+  expect(JSON.parse(row?.metadataJson ?? "{}")).toMatchObject({
+    chatgptUserId: "fake-user-b",
   });
 });

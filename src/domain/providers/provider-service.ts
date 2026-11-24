@@ -7,6 +7,7 @@ import {
   findProviderAccountsWithIdentity,
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
+  isUniqueConstraintError,
   markProviderAccountNeedsReauthorization,
   oauthIdentityKey,
   recordProviderAccountRefreshFailure,
@@ -227,20 +228,12 @@ const refreshProviderAccountWithLock = async (
       if (!accessToken || !refreshToken) {
         throw new Error("Provider refresh response is missing required tokens");
       }
-      const storedUser = signedInUser(account);
       const refreshedUser = signedInUser(tokens);
-      if (storedUser && refreshedUser && storedUser !== refreshedUser) {
-        throw new ProviderAccountNeedsReauthorizationError(
-          "Provider refresh returned a different user; reauthorize the account"
-        );
-      }
-
       const updateInput = {
         accessToken,
         refreshToken,
         expiresAt: assertExpiresAt(tokens.expiresAt, refreshNow),
         accountId: tokens.accountId,
-        metadata: tokens.metadata,
         refreshLockToken: lockToken,
         ...(account.refreshToken
           ? { expectedRefreshToken: account.refreshToken }
@@ -248,19 +241,56 @@ const refreshProviderAccountWithLock = async (
         lastRefreshStatus: "success" as const,
         now: refreshNow,
       };
-      let updated: ProviderAccountRecord | null;
-      try {
-        updated = await updateProviderAccountTokens(
-          database,
-          account.id,
-          updateInput
-        );
-      } catch (error) {
-        // Credential-write errors also reach admin responses, without SQL parameters.
-        throw new Error(errorLogFields(error).errorMessage);
-      }
+      // Each write only lands on the user it was checked against, so a user
+      // attached during the refresh is never replaced or cleared.
+      const writeTokens = async (rowUser: string) => {
+        if (rowUser && refreshedUser && rowUser !== refreshedUser) {
+          throw new ProviderAccountNeedsReauthorizationError(
+            "Provider refresh returned a different user; reauthorize the account"
+          );
+        }
+        const metadata =
+          tokens.metadata?.provider === "codex"
+            ? {
+                ...tokens.metadata,
+                chatgptUserId: refreshedUser || rowUser || null,
+              }
+            : tokens.metadata;
+        try {
+          try {
+            return await updateProviderAccountTokens(database, account.id, {
+              ...updateInput,
+              metadata,
+              expectedAccountUserId: rowUser,
+            });
+          } catch (error) {
+            // A refresh naming a user another account already holds leaves
+            // this account's user unknown, so the rotated tokens are kept.
+            if (
+              !isUniqueConstraintError(error) ||
+              rowUser ||
+              metadata?.provider !== "codex"
+            ) {
+              throw error;
+            }
+            return await updateProviderAccountTokens(database, account.id, {
+              ...updateInput,
+              metadata: { ...metadata, chatgptUserId: null },
+              expectedAccountUserId: rowUser,
+            });
+          }
+        } catch (error) {
+          // Credential-write errors also reach admin responses, without SQL parameters.
+          throw new Error(errorLogFields(error).errorMessage);
+        }
+      };
 
-      if (!updated) {
+      let rowUser = account.accountUserId;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const updated = await writeTokens(rowUser);
+        if (updated) {
+          return updated;
+        }
         const current = await findProviderAccountById(database, account.id);
         if (
           current &&
@@ -268,10 +298,19 @@ const refreshProviderAccountWithLock = async (
         ) {
           return current;
         }
-        throw new Error("Codex refresh lost its credential lock");
+        // Only a write that failed on the user alone is checked again against
+        // the row's current user.
+        const ownsRefresh =
+          current?.refreshLockToken === lockToken &&
+          (current.refreshLockExpiresAt ?? 0) > Date.now() &&
+          (!account.refreshToken ||
+            current.refreshToken === account.refreshToken);
+        if (!ownsRefresh || current.accountUserId === rowUser) {
+          break;
+        }
+        rowUser = current.accountUserId;
       }
-
-      return updated;
+      throw new Error("Codex refresh lost its credential lock");
     } catch (error) {
       const status =
         error instanceof ProviderAccountNeedsReauthorizationError
