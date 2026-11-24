@@ -58,6 +58,7 @@ import {
   resolveImportedProviderAccountId,
   type ProviderAccountMetadata,
 } from "../../providers/metadata";
+import { readCodexAccessTokenUserId } from "../../providers/codex";
 import { normalizeEditableText, resolvePatchedValue } from "../../utils/patch";
 import { resolveUsageWindow, usageWindowQuerySchema } from "./usage-window";
 import { toMillisecondsTimestamp } from "../../utils/timestamp";
@@ -448,7 +449,7 @@ export const adminAccountsRoutes = new Hono()
           {
             error: "conflict",
             message:
-              "Another account for this provider already uses that account ID",
+              "Another account for this provider already uses that account ID and user",
           },
           409
         );
@@ -666,6 +667,14 @@ export const adminAccountsRoutes = new Hono()
           },
           400
         );
+      }
+      // Imports renew the account of the same ChatGPT user, so the user comes
+      // from the access token when the metadata leaves it out.
+      if (metadata.provider === "codex" && !metadata.chatgptUserId) {
+        metadata = {
+          ...metadata,
+          chatgptUserId: readCodexAccessTokenUserId(body.accessToken),
+        };
       }
 
       const accountId = resolveImportedProviderAccountId(

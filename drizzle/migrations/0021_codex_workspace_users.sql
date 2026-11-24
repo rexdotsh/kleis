@@ -1,0 +1,3 @@
+DROP INDEX `provider_accounts_provider_account_unique`;--> statement-breakpoint
+ALTER TABLE `provider_accounts` ADD `account_user_id` text GENERATED ALWAYS AS (coalesce(case when json_valid(metadata_json) then json_extract(metadata_json, '$.chatgptUserId') end, '')) VIRTUAL NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX `provider_accounts_provider_account_unique` ON `provider_accounts` (`provider`,`account_id`,`account_user_id`) WHERE "provider_accounts"."account_id" is not null;

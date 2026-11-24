@@ -7,6 +7,7 @@ import {
   findProviderAccountsWithIdentity,
   findPrimaryProviderAccount,
   hasActiveProviderAccountRefreshLock,
+  isUniqueConstraintError,
   markProviderAccountNeedsReauthorization,
   oauthIdentityKey,
   recordProviderAccountRefreshFailure,
@@ -248,13 +249,32 @@ const refreshProviderAccountWithLock = async (
         lastRefreshStatus: "success" as const,
         now: refreshNow,
       };
+      const writeTokens = async () => {
+        try {
+          return await updateProviderAccountTokens(
+            database,
+            account.id,
+            updateInput
+          );
+        } catch (error) {
+          // A refresh naming a user another account already holds leaves this
+          // account's user unknown, so the rotated refresh token is kept.
+          if (
+            !isUniqueConstraintError(error) ||
+            storedUser ||
+            tokens.metadata?.provider !== "codex"
+          ) {
+            throw error;
+          }
+          return updateProviderAccountTokens(database, account.id, {
+            ...updateInput,
+            metadata: { ...tokens.metadata, chatgptUserId: null },
+          });
+        }
+      };
       let updated: ProviderAccountRecord | null;
       try {
-        updated = await updateProviderAccountTokens(
-          database,
-          account.id,
-          updateInput
-        );
+        updated = await writeTokens();
       } catch (error) {
         // Credential-write errors also reach admin responses, without SQL parameters.
         throw new Error(errorLogFields(error).errorMessage);

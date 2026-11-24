@@ -149,6 +149,14 @@ const extractAccountIdFromClaims = (
   claims?.["https://api.openai.com/auth"]?.chatgpt_account_id ||
   null;
 
+const extractUserIdFromClaims = (claims: IdTokenClaims | null) =>
+  readOAuthText(claims?.["https://api.openai.com/auth"]?.chatgpt_user_id) ??
+  readOAuthText(claims?.["https://api.openai.com/auth"]?.user_id);
+
+// Codex access tokens carry the same user claims as the ID token.
+export const readCodexAccessTokenUserId = (accessToken: string) =>
+  extractUserIdFromClaims(parseJwtClaims(accessToken));
+
 const waitForCodexDevicePoll = async (input: {
   intervalMs: number;
   expiresAt: number;
@@ -336,10 +344,7 @@ const buildCodexMetadata = (
       readOAuthText(claims?.["https://api.openai.com/profile"]?.email) ??
       existing?.email ??
       null,
-    chatgptUserId:
-      readOAuthText(auth?.chatgpt_user_id) ??
-      readOAuthText(auth?.user_id) ??
-      existing?.chatgptUserId,
+    chatgptUserId: extractUserIdFromClaims(claims) ?? existing?.chatgptUserId,
     planTypeClaim:
       readOAuthText(auth?.chatgpt_plan_type) ?? existing?.planTypeClaim,
     subscriptionActiveStart:

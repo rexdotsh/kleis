@@ -34,6 +34,14 @@ export const providerAccounts = sqliteTable(
     lastRefreshStatus: text("last_refresh_status"),
     createdAt: integer("created_at", { mode: "number" }).notNull(),
     updatedAt: integer("updated_at", { mode: "number" }).notNull(),
+    // The ChatGPT user signed in to the account_id workspace, since team
+    // members share the workspace ID; '' when unknown.
+    accountUserId: text("account_user_id")
+      .notNull()
+      .generatedAlwaysAs(
+        sql`coalesce(case when json_valid(metadata_json) then json_extract(metadata_json, '$.chatgptUserId') end, '')`,
+        { mode: "virtual" }
+      ),
   },
   (table) => [
     index("provider_accounts_provider_idx").on(table.provider),
@@ -43,7 +51,7 @@ export const providerAccounts = sqliteTable(
       .on(table.provider)
       .where(sql`${table.isPrimary} = 1`),
     uniqueIndex("provider_accounts_provider_account_unique")
-      .on(table.provider, table.accountId)
+      .on(table.provider, table.accountId, table.accountUserId)
       .where(sql`${table.accountId} is not null`),
   ]
 );
