@@ -2690,15 +2690,22 @@ input[type="checkbox"].toggle:checked::after {
 /* Installed app */
 
 /* iOS 27 blurs whatever an installed app draws under the status bar unless an
-   opaque fixed element covers it, and then paints the bar in that element's
-   colour. It must be a real element that WebKit's edge sampling can hit:
+   opaque, full-width fixed element taller than 10px covers the top edge, and
+   then paints the bar in that element's colour. The safe-area inset is 0 there,
+   so the strip adds 12px, which only covers the empty space above the brand row.
+   It must be a real element that WebKit's edge sampling can hit:
    pseudo-elements are not sampled, and an invisible full-screen layer above it
    (the sheet scrim) makes the sampler retry honoring pointer-events. */
 .statusbar {
+  display: none;
+}
+.standalone .statusbar {
   position: fixed;
   inset: 0 0 auto;
   z-index: 920;
-  height: env(safe-area-inset-top);
+  display: block;
+  height: calc(env(safe-area-inset-top) + 12px);
+  padding-top: env(safe-area-inset-top);
   background: var(--page);
 }
 .standalone .top {
