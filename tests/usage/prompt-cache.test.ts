@@ -279,8 +279,16 @@ test("a turn that reads far less than the previous turn cached is reported only 
     [
       "conversations sharing only metadata.user_id",
       [
-        claude(warm, { metadata: { user_id: "fake" } }, { headers: {} }),
-        claude(cold, { metadata: { user_id: "fake" } }, { headers: {} }),
+        claude(
+          warm,
+          { metadata: { user_id: "fake" }, messages: [{ content: "a" }] },
+          { headers: {} }
+        ),
+        claude(
+          cold,
+          { metadata: { user_id: "fake" }, messages: [{ content: "b" }] },
+          { headers: {} }
+        ),
       ],
       null,
     ],
